@@ -1,0 +1,1314 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Fast R-CNN 详解 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Fast R-CNN 详解" />
+<meta property="og:description" content="Fast R-CNN 详解 一、R-CNN 和 SPPNet（一）R-CNN 缺点（二）SPPNet 缺点 二、网络结构（一）RoI pooling（二）训练过程1. 监督预训练2. Fine-turning3. 多任务 loss4. SVD 分解全连接层5. SGD 超参数 Fast R-CNN 论文链接
+Fast R-CNN 是一个 end-to-end 的目标检测模型（除了生成 region proposals 的部分）。它的 主要的创新 有以下几点：
+（1）将目标的分类和 Bounding Box 的回归都集成在同一个网络且同时训练。
+（2）提出了 roi pooling。使网络可以接受多尺度的输入。
+（3）只对整个图像做一次特征提取，后多次利用。大大减少了 R-CNN 中冗余的特征提取操作。
+（4）采用 SVD 分解对 Fast R-CNN 网络末尾并行的全连接层进行分解，减少计算复杂度，加快检测速度。
+Fast R-CNN 在速度、精度、存储的占用上相对于先前的网络都有了质的飞跃。
+一、R-CNN 和 SPPNet （一）R-CNN 缺点 我们先来看一下对于 R-CNN 有哪些缺点？
+训练是多阶段的：R-CNN 中每部分的网络都需要单独的训练，步骤十分繁琐。
+训练速度慢、占用空间多：R-CNN 中生成的 region 经过 CNN 网络提取特征之后，需要把每一个生成的 feature map 保存到硬盘。用于下一阶段 SVM 分类器的训练。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/8c3610e9dccac3d9aacb241c77047535/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-03-22T19:22:39+08:00" />
+<meta property="article:modified_time" content="2020-03-22T19:22:39+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Fast R-CNN 详解</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>Fast R-CNN 详解</h4> 
+ <ul><li><ul><li><a href="#RCNN__SPPNet_18" rel="nofollow">一、R-CNN 和 SPPNet</a></li><li><ul><li><a href="#RCNN__21" rel="nofollow">（一）R-CNN 缺点</a></li><li><a href="#SPPNet__34" rel="nofollow">（二）SPPNet 缺点</a></li></ul> 
+   </li><li><a href="#_46" rel="nofollow">二、网络结构</a></li><li><ul><li><a href="#RoI_pooling_56" rel="nofollow">（一）RoI pooling</a></li><li><a href="#_76" rel="nofollow">（二）训练过程</a></li><li><ul><li><a href="#1__79" rel="nofollow">1. 监督预训练</a></li><li><a href="#2_Fineturning_96" rel="nofollow">2. Fine-turning</a></li><li><a href="#3__loss_114" rel="nofollow">3. 多任务 loss</a></li><li><a href="#4_SVD__153" rel="nofollow">4. SVD 分解全连接层</a></li><li><a href="#5_SGD__177" rel="nofollow">5. SGD 超参数</a></li></ul> 
+   </li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2>Fast R-CNN</h2> 
+<p><a href="https://arxiv.org/pdf/1504.08083.pdf" rel="nofollow">论文链接</a></p> 
+<hr> 
+<blockquote> 
+ <p>Fast R-CNN 是一个 end-to-end 的目标检测模型（除了生成 region proposals 的部分）。它的 <strong><font color="#07f">主要的创新</font></strong> 有以下几点：<br> <font color="#0bf">（1）将目标的分类和 Bounding Box 的回归都集成在同一个网络且同时训练。</font><br> <font color="#0bf">（2）提出了 roi pooling。使网络可以接受多尺度的输入。</font><br> <font color="#0bf">（3）只对整个图像做一次特征提取，后多次利用。大大减少了 R-CNN 中冗余的特征提取操作。</font><br> <font color="#0bf">（4）采用 SVD 分解对 Fast R-CNN 网络末尾并行的全连接层进行分解，减少计算复杂度，加快检测速度。</font><br> Fast R-CNN 在速度、精度、存储的占用上相对于先前的网络都有了质的飞跃。</p> 
+</blockquote> 
+<br> 
+<br> 
+<h3><a id="RCNN__SPPNet_18"></a>一、R-CNN 和 SPPNet</h3> 
+<hr> 
+<h4><a id="RCNN__21"></a>（一）R-CNN 缺点</h4> 
+<br> 
+<p>  我们先来看一下对于 <strong><font color="#07f">R-CNN 有哪些缺点？</font></strong></p> 
+<ol><li> <p><font color="#0bf">训练是多阶段的：</font>R-CNN 中每部分的网络都需要单独的训练，步骤十分繁琐。</p> </li><li> <p><font color="#0bf">训练速度慢、占用空间多：</font>R-CNN 中生成的 region 经过 CNN 网络提取特征之后，需要把每一个生成的 feature map 保存到硬盘。用于下一阶段 SVM 分类器的训练。</p> </li><li> <p><font color="#0bf">目标检测速度过慢：</font>检测时，对于所有生成的 region proposals 都要放入 CNN 网络中进行特征提取。region 之间有很多的重叠部分，且每个 region 都要重新输入一遍网络，没有共享计算。这大大降低了目标检测的速度。</p> </li></ol> 
+<br> 
+<h4><a id="SPPNet__34"></a>（二）SPPNet 缺点</h4> 
+<br> 
+<p>  那么对于 <strong><font color="#07f">SPPNet 有什么缺点？</font></strong><font color="#0bf">SPPNet 无法 fine-turn SPP-Layer 之前的卷积层</font></p> 
+<p>  这是为什么呢？这是因为 <font color="red">SPPNet 训练样本来自不同图像导致反向传播效率低下</font>。SPPNet 中 fine-tuning 的样本是来自所有图像的所有 RoI 打散后均匀采样的，即 RoI-centric sampling，这就导致 SGD 的每个 batch 的样本来自不同的图像，需要同时计算和存储这些图像的 Feature Map，过程变得 expensive。</p> 
+<p>  另一个角度来看，<font color="red">反向传播需要计算每一个 RoI 感受野的卷积层梯度，通常几个 RoI 就会覆盖整个图像。如果用 RoI-centric sampling 方式会由于计算太多整幅图像梯度而变得又慢又耗内存。</font>换句话说，我们计算了太多次的重叠部分的梯度。这样会有很多冗余的计算。</p> 
+<br> 
+<h3><a id="_46"></a>二、网络结构</h3> 
+<hr> 
+<p><img src="https://images2.imgbox.com/12/f2/B6PxhvvE_o.png" alt="图 1"></p> 
+<blockquote> 
+ <p>图 1：Fast R-CNN 网络结构。</p> 
+</blockquote> 
+<p>  <font color="red">Fast R-CNN 的输入为图像的 list 和 这些图像对应 region proposals 的 list。</font>其网络主要由 <strong><font color="#07f">四个部分组成：</font></strong> 第一个部分是 <font color="#0bf">公共的卷积层</font>。第二部分是 <font color="#0bf">RoI pooling 层</font>。第三部分是 <font color="#0bf">公共的全连接层</font>。第四部分是<font color="#0bf"> 分类和回归层</font>，第四部分有两个分支，其中一个分支经过独自的 FC 层后输出一个长度为 class + 1 的向量。第二个分支经过独自的 FC 层后输出长度为 4 的向量，其中通道数为 class。每个通道的 4 个值代表 Bounding box 的左上角坐标（x, y）和 宽高（w, h）。</p> 
+<br> 
+<h4><a id="RoI_pooling_56"></a>（一）RoI pooling</h4> 
+<hr> 
+<p>  RoI pooling 借鉴了 SPPNet 的思想，是简化版的 SPPNet。它可以将不同大小的 feature map 转化为相同大小的特征向量。具体过程的动图如下：</p> 
+<p><img src="https://images2.imgbox.com/62/87/ynCS07il_o.gif" alt="图 2"></p> 
+<blockquote> 
+ <p>图 2：roi pooling 的动态过程。</p> 
+</blockquote> 
+<p>  相比于 SPPNet，RoI pooling 只进行了一组下采样。而 SPPNet 做了多组下采样，然后将结果拼接。RoI pooling 是将 SPPNet 的思想发挥到了精简的极致。</p> 
+<p>  对于一张 feature map，我们先提取出 region proposal 映射到的那部分 feature map 的区域。假如最终我们要生成 H x W 的 feature map，那么我们就 <font color="red">将此 feature map 的区域划分为平均的 H x W 大小的网格。分别求出每个网格中的最大值</font>，我们就会得到 H x W 大小的结果。这就是 roi pooling 的过程。</p> 
+<br> 
+<h4><a id="_76"></a>（二）训练过程</h4> 
+<hr> 
+<h5><a id="1__79"></a>1. 监督预训练</h5> 
+<p>先将通用的网络模型（例如 AlexNet、VGG16 等）在 ImageNet 数据集上进行 <strong><font color="#07f">预训练。然后经过如下的 3 步变换：</font></strong></p> 
+<p><font color="#0bf">（1）将网络最后的 max pooling 层换成 RoI pooling 层。</font></p> 
+<p><font color="#0bf">（2）网络最后的 FC 层和 softmax 替换成并列的 2 层 FC 层。一个 FC 用来分类【输出长度为：类别数 + 1】，另一个 FC 用来回归最后的 Bounding Box。【输出长度为：4，通道数为：类别数 + 1】</font></p> 
+<p><font color="#0bf">（3）将网络修改为接收 2 个值为输入。图像的 list 和属于这些图像中的 roi 的 list。</font></p> 
+<br> 
+<h5><a id="2_Fineturning_96"></a>2. Fine-turning</h5> 
+<table><thead><tr><th>样本</th><th>比例</th><th>来源</th></tr></thead><tbody><tr><td>正样本（<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+        
+         
+          
+          
+            u 
+           
+          
+            ≥ 
+           
+          
+            1 
+           
+          
+         
+           u\ge1 
+          
+         
+       </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.77194em; vertical-align: -0.13597em;"></span><span class="mord mathdefault">u</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">≥</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.64444em; vertical-align: 0em;"></span><span class="mord">1</span></span></span></span></span>）</td><td>25%</td><td>与 ground truth 的 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+        
+         
+          
+          
+            I 
+           
+          
+            O 
+           
+          
+            U 
+           
+          
+            ≥ 
+           
+          
+            0.5 
+           
+          
+         
+           IOU \ge 0.5 
+          
+         
+       </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8193em; vertical-align: -0.13597em;"></span><span class="mord mathdefault" style="margin-right: 0.07847em;">I</span><span class="mord mathdefault" style="margin-right: 0.02778em;">O</span><span class="mord mathdefault" style="margin-right: 0.10903em;">U</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">≥</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.64444em; vertical-align: 0em;"></span><span class="mord">0</span><span class="mord">.</span><span class="mord">5</span></span></span></span></span></td></tr><tr><td>负样本 （<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+        
+         
+          
+          
+            u 
+           
+          
+            = 
+           
+          
+            0 
+           
+          
+         
+           u=0 
+          
+         
+       </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault">u</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.64444em; vertical-align: 0em;"></span><span class="mord">0</span></span></span></span></span>）</td><td>75%</td><td>与 ground truth 的 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+        
+         
+          
+          
+            I 
+           
+          
+            O 
+           
+          
+            U 
+           
+          
+            &lt; 
+           
+          
+            0.5 
+           
+          
+         
+           IOU \lt0.5 
+          
+         
+       </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.72243em; vertical-align: -0.0391em;"></span><span class="mord mathdefault" style="margin-right: 0.07847em;">I</span><span class="mord mathdefault" style="margin-right: 0.02778em;">O</span><span class="mord mathdefault" style="margin-right: 0.10903em;">U</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">&lt;</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.64444em; vertical-align: 0em;"></span><span class="mord">0</span><span class="mord">.</span><span class="mord">5</span></span></span></span></span></td></tr></tbody></table> 
+<p>  我们需要 <strong><font color="#07f">解决 SPPNet 不能 fine-turning SPP-Layer 之前的卷积层的问题</font></strong> 。设 N 为图像的 batch 的个数。R 为一个 batch 的总 roi 的个数。<font color="#0bf">将网络的输入改为，图像的 list 和属于这些图像中的 roi 的 list。然后使用分层采样。先采样 N 个图片组成一个 list，再对每个图片采样 R / N 个 放入 list。</font>这样的话我们每次从 roi 的 list 取出 R / N 个，就是对应的那个图片生成的那些 roi。</p> 
+<p>  这样的策略，可能会导致收敛缓慢。因为同一个样本的 roi 有关联性。不过作者在试验中发现，在实际中并没有出现这种问题。作者使用的 <font color="red">N = 2，R = 128。</font></p> 
+<br> 
+<h5><a id="3__loss_114"></a>3. 多任务 loss</h5> 
+<p><img src="https://images2.imgbox.com/c4/ee/Dvp8wLUq_o.png" alt="图 3"></p> 
+<blockquote> 
+ <p>图 3：多任务 loss</p> 
+</blockquote> 
+<ul><li>cls_score：用于分类，输出 K+1 维数组 p，表示属于 K 类物体和背景的概率。</li><li>bbox_predict：用于调整候选区域位置，输出 4*K 维数组，也就是说对于每个类别都会训练一个单独的回归器。</li><li>loss_cls：评估分类代价，由真实分类 u 对应的概率决定：用 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           L 
+          
+          
+          
+            c 
+           
+          
+            l 
+           
+          
+            s 
+           
+          
+         
+        
+          ( 
+         
+        
+          p 
+         
+        
+          , 
+         
+        
+          u 
+         
+        
+          ) 
+         
+        
+          = 
+         
+        
+          − 
+         
+        
+          l 
+         
+        
+          o 
+         
+        
+          g 
+         
+        
+          ( 
+         
+         
+         
+           p 
+          
+         
+           u 
+          
+         
+        
+          ) 
+         
+        
+       
+         L_{cls}(p,u)=-log(p_u) 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord"><span class="mord mathdefault">L</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.336108em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">c</span><span class="mord mathdefault mtight" style="margin-right: 0.01968em;">l</span><span class="mord mathdefault mtight">s</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mopen">(</span><span class="mord mathdefault">p</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault">u</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord">−</span><span class="mord mathdefault" style="margin-right: 0.01968em;">l</span><span class="mord mathdefault">o</span><span class="mord mathdefault" style="margin-right: 0.03588em;">g</span><span class="mopen">(</span><span class="mord"><span class="mord mathdefault">p</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">u</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span></span></span></span></span> 表示。</li><li>loss_bbox：评估回归损失代价，比较真实分类 u 对应的预测平移缩放参数 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           t 
+          
+         
+           u 
+          
+         
+        
+          = 
+         
+        
+          ( 
+         
+         
+         
+           t 
+          
+         
+           x 
+          
+         
+           u 
+          
+         
+        
+          , 
+         
+         
+         
+           t 
+          
+         
+           y 
+          
+         
+           u 
+          
+         
+        
+          , 
+         
+         
+         
+           t 
+          
+         
+           w 
+          
+         
+           u 
+          
+         
+        
+          , 
+         
+         
+         
+           t 
+          
+         
+           h 
+          
+         
+           u 
+          
+         
+        
+          ) 
+         
+        
+       
+         t^u=(t^u_x,t^u_y,t^u_w,t^u_h) 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.664392em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.664392em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">u</span></span></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.13311em; vertical-align: -0.383108em;"></span><span class="mopen">(</span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.664392em;"><span class="" style="top: -2.453em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">x</span></span></span><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">u</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.247em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.664392em;"><span class="" style="top: -2.453em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">y</span></span></span><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">u</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.383108em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.664392em;"><span class="" style="top: -2.453em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.02691em;">w</span></span></span><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">u</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.247em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.664392em;"><span class="" style="top: -2.41689em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">h</span></span></span><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">u</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.283108em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span></span></span></span></span> 和真实平移缩放参数 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          v 
+         
+        
+          = 
+         
+        
+          ( 
+         
+         
+         
+           v 
+          
+         
+           x 
+          
+         
+        
+          , 
+         
+         
+         
+           v 
+          
+         
+           y 
+          
+         
+        
+          , 
+         
+         
+         
+           v 
+          
+         
+           w 
+          
+         
+        
+          , 
+         
+         
+         
+           v 
+          
+         
+           h 
+          
+         
+        
+          ) 
+         
+        
+       
+         v=(v_x,v_y,v_w,v_h) 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.03588em;">v</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.03611em; vertical-align: -0.286108em;"></span><span class="mopen">(</span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.03588em;">v</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: -0.03588em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">x</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.03588em;">v</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: -0.03588em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">y</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.03588em;">v</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: -0.03588em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.02691em;">w</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.03588em;">v</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.336108em;"><span class="" style="top: -2.55em; margin-left: -0.03588em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">h</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span></span></span></span></span> 的差距，用 smooth l1 表示：</li></ul> 
+<p><span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           L 
+          
+          
+          
+            l 
+           
+          
+            o 
+           
+          
+            c 
+           
+          
+         
+        
+          ( 
+         
+         
+         
+           t 
+          
+         
+           u 
+          
+         
+        
+          , 
+         
+        
+          v 
+         
+        
+          ) 
+         
+        
+          = 
+         
+         
+         
+           ∑ 
+          
+          
+          
+            i 
+           
+          
+            ∈ 
+           
+          
+            { 
+           
+          
+            x 
+           
+          
+            , 
+           
+          
+            y 
+           
+          
+            , 
+           
+          
+            w 
+           
+          
+            , 
+           
+          
+            h 
+           
+          
+            } 
+           
+          
+         
+        
+          s 
+         
+        
+          m 
+         
+        
+          o 
+         
+        
+          o 
+         
+        
+          t 
+         
+         
+         
+           h 
+          
+          
+          
+            L 
+           
+          
+            1 
+           
+          
+         
+        
+          ( 
+         
+         
+         
+           t 
+          
+         
+           i 
+          
+         
+           u 
+          
+         
+        
+          , 
+         
+         
+         
+           v 
+          
+         
+           i 
+          
+         
+        
+          ) 
+         
+        
+       
+         L_{loc}(t^u,v)=\sum_{i\in\{x,y,w,h\}}smooth_{L_1}(t^u_i,v_i) 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord"><span class="mord mathdefault">L</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.336108em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight" style="margin-right: 0.01968em;">l</span><span class="mord mathdefault mtight">o</span><span class="mord mathdefault mtight">c</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mopen">(</span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.714392em;"><span class="" style="top: -3.113em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">u</span></span></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault" style="margin-right: 0.03588em;">v</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 2.56601em; vertical-align: -1.51601em;"></span><span class="mop op-limits"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.05001em;"><span class="" style="top: -1.80899em; margin-left: 0em;"><span class="pstrut" style="height: 3.05em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">i</span><span class="mrel mtight">∈</span><span class="mopen mtight">{<!-- --></span><span class="mord mathdefault mtight">x</span><span class="mpunct mtight">,</span><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">y</span><span class="mpunct mtight">,</span><span class="mord mathdefault mtight" style="margin-right: 0.02691em;">w</span><span class="mpunct mtight">,</span><span class="mord mathdefault mtight">h</span><span class="mclose mtight">}</span></span></span></span><span class="" style="top: -3.05em;"><span class="pstrut" style="height: 3.05em;"></span><span class=""><span class="mop op-symbol large-op">∑</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 1.51601em;"><span class=""></span></span></span></span></span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault">s</span><span class="mord mathdefault">m</span><span class="mord mathdefault">o</span><span class="mord mathdefault">o</span><span class="mord mathdefault">t</span><span class="mord"><span class="mord mathdefault">h</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.328331em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight"><span class="mord mathdefault mtight">L</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.317314em;"><span class="" style="top: -2.357em; margin-left: 0em; margin-right: 0.0714286em;"><span class="pstrut" style="height: 2.5em;"></span><span class="sizing reset-size3 size1 mtight"><span class="mord mtight">1</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.143em;"><span class=""></span></span></span></span></span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2501em;"><span class=""></span></span></span></span></span></span><span class="mopen">(</span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.714392em;"><span class="" style="top: -2.453em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">i</span></span></span><span class="" style="top: -3.113em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">u</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.247em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.03588em;">v</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: -0.03588em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span></span></span></span></span></span></p> 
+<p>  其中：<br> <span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          s 
+         
+        
+          m 
+         
+        
+          o 
+         
+        
+          o 
+         
+        
+          t 
+         
+         
+         
+           h 
+          
+          
+          
+            L 
+           
+          
+            1 
+           
+          
+         
+        
+          ( 
+         
+        
+          x 
+         
+        
+          ) 
+         
+        
+          = 
+         
+         
+         
+           { 
+          
+          
+           
+            
+             
+              
+              
+                0.5 
+               
+               
+               
+                 x 
+                
+               
+                 2 
+                
+               
+              
+             
+            
+            
+             
+              
+             
+            
+            
+             
+             
+               |x|&lt;1 
+              
+             
+            
+           
+           
+            
+             
+              
+              
+                ∣ 
+               
+              
+                x 
+               
+              
+                ∣ 
+               
+              
+                − 
+               
+              
+                0.5 
+               
+              
+             
+            
+            
+             
+              
+             
+            
+            
+             
+             
+               other 
+              
+             
+            
+           
+          
+         
+        
+       
+         smooth_{L1}(x)= \begin{cases} 0.5x^2&amp;&amp; \text{|x|&lt;1}\\ |x|-0.5&amp;&amp; \text{other} \end{cases} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault">s</span><span class="mord mathdefault">m</span><span class="mord mathdefault">o</span><span class="mord mathdefault">o</span><span class="mord mathdefault">t</span><span class="mord"><span class="mord mathdefault">h</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.328331em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">L</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mopen">(</span><span class="mord mathdefault">x</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 3.00003em; vertical-align: -1.25003em;"></span><span class="minner"><span class="mopen delimcenter" style="top: 0em;"><span class="delimsizing size4">{<!-- --></span></span><span class="mord"><span class="mtable"><span class="col-align-l"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.69em;"><span class="" style="top: -3.69em;"><span class="pstrut" style="height: 3.008em;"></span><span class="mord"><span class="mord">0</span><span class="mord">.</span><span class="mord">5</span><span class="mord"><span class="mord mathdefault">x</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span></span></span></span></span></span></span><span class="" style="top: -2.25em;"><span class="pstrut" style="height: 3.008em;"></span><span class="mord"><span class="mord">∣</span><span class="mord mathdefault">x</span><span class="mord">∣</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mord">0</span><span class="mord">.</span><span class="mord">5</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 1.19em;"><span class=""></span></span></span></span></span><span class="arraycolsep" style="width: 1em;"></span><span class="col-align-l"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.69em;"><span class="" style="top: -3.69em;"><span class="pstrut" style="height: 3.008em;"></span><span class="mord"></span></span><span class="" style="top: -2.25em;"><span class="pstrut" style="height: 3.008em;"></span><span class="mord"></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 1.19em;"><span class=""></span></span></span></span></span><span class="arraycolsep" style="width: 0.5em;"></span><span class="col-align-c"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.69em;"><span class="" style="top: -3.69em;"><span class="pstrut" style="height: 3.008em;"></span><span class="mord"><span class="mord text"><span class="mord">|x|&lt;1</span></span></span></span><span class="" style="top: -2.25em;"><span class="pstrut" style="height: 3.008em;"></span><span class="mord"><span class="mord text"><span class="mord">other</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 1.19em;"><span class=""></span></span></span></span></span></span></span><span class="mclose nulldelimiter"></span></span></span></span></span></span></span></p> 
+<p>  图像如下：相比 L2 损失，其对离群点、异常值不敏感。</p> 
+<p><img src="https://images2.imgbox.com/8c/ec/JwE6GWsq_o.png" alt="smooth l1"></p> 
+<p>  结合分类损失和回归损失，Fast R-CNN微调阶段总的损失函数为：</p> 
+<p><span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          L 
+         
+        
+          ( 
+         
+        
+          p 
+         
+        
+          , 
+         
+        
+          u 
+         
+        
+          , 
+         
+         
+         
+           t 
+          
+         
+           u 
+          
+         
+        
+          , 
+         
+        
+          v 
+         
+        
+          ) 
+         
+        
+          = 
+         
+         
+         
+           L 
+          
+          
+          
+            c 
+           
+          
+            l 
+           
+          
+            s 
+           
+          
+         
+        
+          ( 
+         
+        
+          p 
+         
+        
+          , 
+         
+        
+          u 
+         
+        
+          ) 
+         
+        
+          + 
+         
+        
+          λ 
+         
+        
+          [ 
+         
+        
+          u 
+         
+        
+          ≥ 
+         
+        
+          1 
+         
+        
+          ] 
+         
+         
+         
+           L 
+          
+          
+          
+            l 
+           
+          
+            o 
+           
+          
+            c 
+           
+          
+         
+        
+          ( 
+         
+         
+         
+           t 
+          
+         
+           u 
+          
+         
+        
+          , 
+         
+        
+          v 
+         
+        
+          ) 
+         
+        
+       
+         L(p,u,t^u,v)=L_{cls}(p,u)+\lambda[u \ge 1]L_{loc}(t^u,v) 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault">L</span><span class="mopen">(</span><span class="mord mathdefault">p</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault">u</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.714392em;"><span class="" style="top: -3.113em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">u</span></span></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault" style="margin-right: 0.03588em;">v</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord"><span class="mord mathdefault">L</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.336108em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">c</span><span class="mord mathdefault mtight" style="margin-right: 0.01968em;">l</span><span class="mord mathdefault mtight">s</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mopen">(</span><span class="mord mathdefault">p</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault">u</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault">λ</span><span class="mopen">[</span><span class="mord mathdefault">u</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">≥</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord">1</span><span class="mclose">]</span><span class="mord"><span class="mord mathdefault">L</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.336108em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight" style="margin-right: 0.01968em;">l</span><span class="mord mathdefault mtight">o</span><span class="mord mathdefault mtight">c</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mopen">(</span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.714392em;"><span class="" style="top: -3.113em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">u</span></span></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault" style="margin-right: 0.03588em;">v</span><span class="mclose">)</span></span></span></span></span></span></p> 
+<p><span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          [ 
+         
+        
+          u 
+         
+        
+          ≥ 
+         
+        
+          1 
+         
+        
+          ] 
+         
+        
+          = 
+         
+         
+         
+           { 
+          
+          
+           
+            
+             
+             
+               1 
+              
+             
+            
+            
+             
+             
+               u&gt;1 
+              
+             
+            
+           
+           
+            
+             
+             
+               0 
+              
+             
+            
+            
+             
+             
+               otherwise 
+              
+             
+            
+           
+          
+         
+        
+       
+         [u\ge1]= \begin{cases} 1&amp; \text{u&gt;1}\\ 0&amp; \text{otherwise}\\ \end{cases} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mopen">[</span><span class="mord mathdefault">u</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">≥</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord">1</span><span class="mclose">]</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 3.00003em; vertical-align: -1.25003em;"></span><span class="minner"><span class="mopen delimcenter" style="top: 0em;"><span class="delimsizing size4">{<!-- --></span></span><span class="mord"><span class="mtable"><span class="col-align-l"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.69em;"><span class="" style="top: -3.69em;"><span class="pstrut" style="height: 3.008em;"></span><span class="mord"><span class="mord">1</span></span></span><span class="" style="top: -2.25em;"><span class="pstrut" style="height: 3.008em;"></span><span class="mord"><span class="mord">0</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 1.19em;"><span class=""></span></span></span></span></span><span class="arraycolsep" style="width: 1em;"></span><span class="col-align-l"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.69em;"><span class="" style="top: -3.69em;"><span class="pstrut" style="height: 3.008em;"></span><span class="mord"><span class="mord text"><span class="mord">u&gt;1</span></span></span></span><span class="" style="top: -2.25em;"><span class="pstrut" style="height: 3.008em;"></span><span class="mord"><span class="mord text"><span class="mord">otherwise</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 1.19em;"><span class=""></span></span></span></span></span></span></span><span class="mclose nulldelimiter"></span></span></span></span></span></span></span></p> 
+<p>  约定 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         u 
+        
+       
+         = 
+        
+       
+         0 
+        
+       
+      
+        u=0 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault">u</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.64444em; vertical-align: 0em;"></span><span class="mord">0</span></span></span></span></span> 为背景分类，那么 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         [ 
+        
+       
+         u 
+        
+       
+         ≥ 
+        
+       
+         1 
+        
+       
+         ] 
+        
+       
+      
+        [u≥1] 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mopen">[</span><span class="mord mathdefault">u</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">≥</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord">1</span><span class="mclose">]</span></span></span></span></span> 函数表示背景候选区域。即负样本不参与回归损失，不需要对其进行回归操作。<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         λ 
+        
+       
+      
+        λ 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.69444em; vertical-align: 0em;"></span><span class="mord mathdefault">λ</span></span></span></span></span> 控制分类损失和回归损失的平衡，文中所有实验 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         λ 
+        
+       
+         = 
+        
+       
+         1 
+        
+       
+      
+        λ=1 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.69444em; vertical-align: 0em;"></span><span class="mord mathdefault">λ</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.64444em; vertical-align: 0em;"></span><span class="mord">1</span></span></span></span></span>。</p> 
+<br> 
+<h5><a id="4_SVD__153"></a>4. SVD 分解全连接层</h5> 
+<p>  网络的大部分的参数和计算量都在全连接层。对于 Fast R-CNN 而言，对于每个生成的 region proposal 都要经过全连接层。那么全连接层的速度直接影响到了整个网络在训练和测试阶段的速度。对于全连接层，我们可以使用 SVD 对其参数进行分解。将一个全连接层转化为两个小的全连接层，我们选前 t 个特征值进行近似。会大大减少网络的参数量。具体的推导如下。</p> 
+<p>  物体分类和窗口回归都是通过全连接层实现的，假设全连接层输入数据为 x，输出数据为 y，全连接层参数为 W，尺寸为 u × v，那么该层全连接计算为：<br> <span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          y 
+         
+        
+          = 
+         
+        
+          W 
+         
+        
+          x 
+         
+        
+       
+         y=Wx 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.625em; vertical-align: -0.19444em;"></span><span class="mord mathdefault" style="margin-right: 0.03588em;">y</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="mord mathdefault">x</span></span></span></span></span></span></p> 
+<p>  计算复杂度为 u x v。</p> 
+<p>  若将 W 进行 SVD 分解，并用前 t 个特征值近似代替，即：<br> <span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          W 
+         
+        
+          = 
+         
+        
+          U 
+         
+        
+          ∑ 
+         
+         
+         
+           V 
+          
+         
+           T 
+          
+         
+        
+          ≈ 
+         
+        
+          U 
+         
+        
+          ( 
+         
+        
+          u 
+         
+        
+          , 
+         
+        
+          1 
+         
+        
+          : 
+         
+        
+          t 
+         
+        
+          ) 
+           
+        
+          ⋅ 
+         
+        
+          ∑ 
+         
+        
+          ( 
+         
+        
+          1 
+         
+        
+          : 
+         
+        
+          t 
+         
+        
+          , 
+         
+        
+          1 
+         
+        
+          : 
+         
+        
+          t 
+         
+        
+          ) 
+           
+        
+          ⋅ 
+         
+        
+          V 
+         
+        
+          ( 
+         
+        
+          v 
+         
+        
+          , 
+         
+        
+          1 
+         
+        
+          : 
+         
+        
+          t 
+         
+         
+         
+           ) 
+          
+         
+           T 
+          
+         
+        
+       
+         W=U\sum V^T≈U(u,1:t) \;·\sum (1:t,1:t)\; · V(v,1:t)^T 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.60001em; vertical-align: -0.55001em;"></span><span class="mord mathdefault" style="margin-right: 0.10903em;">U</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mop op-symbol large-op" style="position: relative; top: -5e-06em;">∑</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.22222em;">V</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.891331em;"><span class="" style="top: -3.113em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.13889em;">T</span></span></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">≈</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault" style="margin-right: 0.10903em;">U</span><span class="mopen">(</span><span class="mord mathdefault">u</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord">1</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">:</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.60001em; vertical-align: -0.55001em;"></span><span class="mord mathdefault">t</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mpunct">⋅</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mop op-symbol large-op" style="position: relative; top: -5e-06em;">∑</span><span class="mopen">(</span><span class="mord">1</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">:</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.83888em; vertical-align: -0.19444em;"></span><span class="mord mathdefault">t</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord">1</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">:</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault">t</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mpunct">⋅</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault" style="margin-right: 0.22222em;">V</span><span class="mopen">(</span><span class="mord mathdefault" style="margin-right: 0.03588em;">v</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord">1</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">:</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.14133em; vertical-align: -0.25em;"></span><span class="mord mathdefault">t</span><span class="mclose"><span class="mclose">)</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.891331em;"><span class="" style="top: -3.113em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.13889em;">T</span></span></span></span></span></span></span></span></span></span></span></span></span></p> 
+<p>  那么原来的前向传播分解成两步：<br> <span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          y 
+         
+        
+          = 
+         
+        
+          W 
+         
+        
+          x 
+         
+        
+          = 
+         
+        
+          U 
+         
+        
+          ⋅ 
+         
+        
+          ( 
+         
+        
+          ∑ 
+         
+        
+          ⋅ 
+         
+         
+         
+           V 
+          
+         
+           T 
+          
+         
+        
+          ) 
+           
+        
+          ⋅ 
+         
+        
+          x 
+         
+        
+          = 
+         
+        
+          U 
+         
+        
+          ⋅ 
+         
+        
+          z 
+         
+        
+       
+         y=Wx=U·(\sum·V^T)\;·x=U·z 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.625em; vertical-align: -0.19444em;"></span><span class="mord mathdefault" style="margin-right: 0.03588em;">y</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="mord mathdefault">x</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.60001em; vertical-align: -0.55001em;"></span><span class="mord mathdefault" style="margin-right: 0.10903em;">U</span><span class="mpunct">⋅</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mopen">(</span><span class="mop op-symbol large-op" style="position: relative; top: -5e-06em;">∑</span><span class="mpunct">⋅</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.22222em;">V</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.891331em;"><span class="" style="top: -3.113em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.13889em;">T</span></span></span></span></span></span></span></span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mpunct">⋅</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault">x</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.10903em;">U</span><span class="mpunct">⋅</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault" style="margin-right: 0.04398em;">z</span></span></span></span></span></span></p> 
+<p>  计算复杂度为 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         u 
+        
+       
+         × 
+        
+       
+         t 
+        
+       
+         + 
+        
+       
+         v 
+        
+       
+         × 
+        
+       
+         t 
+        
+       
+      
+        u×t+v×t 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.66666em; vertical-align: -0.08333em;"></span><span class="mord mathdefault">u</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 0.69841em; vertical-align: -0.08333em;"></span><span class="mord mathdefault">t</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 0.66666em; vertical-align: -0.08333em;"></span><span class="mord mathdefault" style="margin-right: 0.03588em;">v</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 0.61508em; vertical-align: 0em;"></span><span class="mord mathdefault">t</span></span></span></span></span>，若 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         t 
+        
+       
+         &lt; 
+        
+       
+         m 
+        
+       
+         i 
+        
+       
+         n 
+        
+       
+         ( 
+        
+       
+         u 
+        
+       
+         , 
+        
+       
+         v 
+        
+       
+         ) 
+        
+       
+      
+        t&lt;min(u,v) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.65418em; vertical-align: -0.0391em;"></span><span class="mord mathdefault">t</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">&lt;</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault">m</span><span class="mord mathdefault">i</span><span class="mord mathdefault">n</span><span class="mopen">(</span><span class="mord mathdefault">u</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault" style="margin-right: 0.03588em;">v</span><span class="mclose">)</span></span></span></span></span>，则这种分解会大大减少计算量。</p> 
+<p>  在实现时，<font color="red">相当于把一个全连接层拆分为两个全连接层，第一个全连接层不含偏置，第二个全连接层含偏置。</font>实验表明，SVD 分解全连接层能使 mAP 只下降 0.3% 的情况下提升 30% 的速度，同时该方法也不必再执行额外的微调操作。（见下图）</p> 
+<p><img src="https://images2.imgbox.com/67/ac/SOYC4NgD_o.png" alt="SVD 分解全连接"></p> 
+<br> 
+<h5><a id="5_SGD__177"></a>5. SGD 超参数</h5> 
+<p>  除了修改增加的层，原有的层参数已经通过预训练方式初始化； 用于分类的全连接层以均值为 0、标准差为 0.01 的高斯分布初始化，用于回归的全连接层以均值为 0、标准差为 0.001 的高斯分布初始化，偏置都初始化为 0。</p> 
+<p>  针对 PASCAL VOC 2007 和 2012 训练集，前30k次迭代全局学习率为 0.001，每层权重学习率为 1 倍，偏置学习率为 2 倍，后 10k 次迭代全局学习率更新为 0.0001。动量设置为 0.9，权重衰减设置为 0.0005。</p> 
+<br> 
+<br> 
+<p><strong>参考链接：</strong></p> 
+<p><a href="https://arxiv.org/pdf/1504.08083.pdf" rel="nofollow">https://arxiv.org/pdf/1504.08083.pdf</a><br> <a href="https://blog.csdn.net/WoPawn/article/details/52463853">https://blog.csdn.net/WoPawn/article/details/52463853</a><br> <a href="https://www.jianshu.com/p/fbbb21e1e390" rel="nofollow">https://www.jianshu.com/p/fbbb21e1e390</a></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/4d72f6a22f2a7213d02f4b5b2a1d87fc/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">nginx设置X-Frame-Options的两种方法</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f20c0d3af6efb2aa5b5506ec801e549a/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">年月日格式判断-正则表达式 YYYY/MM/DD、YYYY/MM/DD| YY/MM/DD、 ^(^(\d{4}|\d{2})(\-|\/|\.)\d{1,2}\3\d{1,2}$)|(^\d{4}…</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

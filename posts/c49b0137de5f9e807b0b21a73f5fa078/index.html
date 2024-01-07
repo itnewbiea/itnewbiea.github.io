@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>SonicBoom SFB（short-forwards branch）源码分析 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="SonicBoom SFB（short-forwards branch）源码分析" />
+<meta property="og:description" content="1 目的 最近在研究伯克利的Sonicboom riscv CPU，其内部对于SFB（short-forwards branch）程序进行了优化操作，某些程序序列下能提升1.7倍的IPC；但是处理比较复杂，不是集中在一个模块处理，而是分散于各级pipline。而相应的描述资料又少，因此采用结合源代码和波形仿真的方式来进行一个学习研究。
+2 SFB介绍 SFB翻译过来就是短向前跳分支，简单来说是一串代码序列，如下面一段C程序所示：
+int max = 0 ; int maxid = −1; for ( i = 0 ; i &lt; n ; i &#43;&#43;) { if ( x [ i ] &gt;= max ) { max = x [ i ] ; maxid = i ; } } 这段C代码实现的是最为常见的数组里面找最大值的功能，站在程序员的角度很容易理解。对应的risc-v的汇编程序如下，其中bge指令和后面的两条MV指令组成的就是典型的SFB结构。
+loop : lw x2 , 0( a0 ) bge x1 , x2 , skip mv x1 , x2 mv a1 , t 0 skip : addi a0 , a0 , 4 addi t0 , t0 , 0x1 j loop : 在汇编中可以看见每次循环（loop）都会有一条分支指令（bge）,以及该分支下的两条MV指令，分支指令不跳转（not_taken）的话就会执行两条MV指令，跳转（taken）的话就会调到标记skip的标号（label）。功能很简单，但是对于当今的高性能CPU来说，不局限于RISC-V架构，都有着很深的流水线(pipline)深度，同时针对于分支指令（Branch）会有先进的分支预测技术来预测分支指令跳转的方向，而不用等到一般处于流水线很后的读寄存器阶段（rigister read）或功能单元的执行阶段（execute）来得到实际跳转方向。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/c49b0137de5f9e807b0b21a73f5fa078/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-10-09T10:07:00+08:00" />
+<meta property="article:modified_time" content="2021-10-09T10:07:00+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">SonicBoom SFB（short-forwards branch）源码分析</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="1__1"></a>1 目的</h2> 
+<p>最近在研究伯克利的<strong>Sonicboom riscv CPU</strong>，其内部对于<strong>SFB</strong>（short-forwards branch）程序进行了优化操作，某些程序序列下能提升1.7倍的IPC；但是处理比较复杂，不是集中在一个模块处理，而是分散于各级pipline。而相应的描述资料又少，因此采用结合源代码和波形仿真的方式来进行一个学习研究。</p> 
+<h2><a id="2_SFB_3"></a>2 SFB介绍</h2> 
+<p>SFB翻译过来就是短向前跳分支，简单来说是一串代码序列，如下面一段C程序所示：</p> 
+<pre><code class="prism language-c"><span class="token keyword">int</span> max <span class="token operator">=</span> <span class="token number">0</span> <span class="token punctuation">;</span>
+<span class="token keyword">int</span> maxid <span class="token operator">=</span> −<span class="token number">1</span><span class="token punctuation">;</span>
+<span class="token keyword">for</span> <span class="token punctuation">(</span> i <span class="token operator">=</span> <span class="token number">0</span> <span class="token punctuation">;</span> i <span class="token operator">&lt;</span> n <span class="token punctuation">;</span> i <span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+     <span class="token keyword">if</span> <span class="token punctuation">(</span> x <span class="token punctuation">[</span> i <span class="token punctuation">]</span> <span class="token operator">&gt;=</span> max <span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+     max <span class="token operator">=</span> x <span class="token punctuation">[</span> i <span class="token punctuation">]</span> <span class="token punctuation">;</span>
+     maxid <span class="token operator">=</span> i <span class="token punctuation">;</span>
+     <span class="token punctuation">}</span> 
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>这段C代码实现的是最为常见的数组里面找最大值的功能，站在程序员的角度很容易理解。对应的risc-v的汇编程序如下，其中bge指令和后面的两条MV指令组成的就是典型的SFB结构。</p> 
+<pre><code>loop :
+       lw x2 , 0( a0 )
+       bge x1 , x2 , skip
+       mv x1 , x2
+       mv a1 , t 0
+skip :
+      addi a0 , a0 , 4
+      addi t0 , t0 , 0x1
+      j       loop :
+</code></pre> 
+<p>在汇编中可以看见每次循环（loop）都会有一条分支指令（bge）,以及该分支下的两条MV指令，分支指令不跳转（not_taken）的话就会执行两条MV指令，跳转（taken）的话就会调到标记skip的标号（label）。功能很简单，但是对于当今的高性能CPU来说，不局限于RISC-V架构，都有着很深的流水线(pipline)深度，同时针对于分支指令（Branch）会有先进的分支预测技术来预测分支指令跳转的方向，而不用等到一般处于流水线很后的读寄存器阶段（rigister read）或功能单元的执行阶段（execute）来得到实际跳转方向。<br> 而此时对于这种出现频率特别高的并且覆盖指令很少的分支指令来说，CPU每次都会进行预测，不可避免的会出现预测失败的情况，CPU预测失败就会刷流水线（flush pipline)并重新取指令执行，代价会不可避免的降低IPC。</p> 
+<h2><a id="3_SonicBoomSFB_29"></a>3 SonicBoom中对于SFB的优化</h2> 
+<p>SonicBoom在微结构上对SFB处理进行了优化，将SFB转化为CPU内部带有特殊标记的微编码（microOps），从而在CPU内部pipline中进行了处理，<strong>即使分支预测错误（mispredicted）也不再通过刷流水线的方式(flush pipline)来进行重定向（redirect）</strong>。微架构针对于SFB进行的调整具体如下：</p> 
+<ol><li>在前端Frontend增加了SFB检测逻辑；</li><li>将检测到的SFB指令通过预解码单元（predecode）解析成set-flag和conditional-execute微编码，此时原来的branch微编码被替换了；（set-flag对应到上面例子就是bge，conditional-execute是两条ＭＶ指令。为方便描述并与code一致，set-flag称为sfb_br，conditional-execute称为sfb_shadow）</li><li>增加了单独的寄存器堆（ａ renamed predicate register file,<strong>pregfile</strong>）来存放sfb_br的实际计算结果（taken或者not_taken），该寄存器堆要支持多个写接口从而可以支持多个算中的SFB的处理；</li><li>sfb_shadow指令会去读pregfile来得到其对应sfb_br指令的结果，sfb_br实际算出来是not_taken的话表示预测正确，sfb_shadow指令继续执行自己的操作；如果sfb_br实际算出来是taken的话，表示预测错误，那么sfb_shadow指令会完成修复工作：将指令中<strong>旧的目的物理寄存器的值</strong>（destination physical register）复制到自己的目的物理寄存器中。<br> 根据伯克利的论文中，对于某些指令序列来说，这种针对于SFB的优化将IPC提升到了1.7倍。<br> 下面就从实际chisel源码和EDA仿真波形来进行内部SFB处理逻辑的剖析。<br> 后面涉及到BoomCore的pipline，为方便分析，上图：<br> <img src="https://images2.imgbox.com/9a/c2/hAo6bQdJ_o.png" alt="在这里插入图片描述"></li></ol> 
+<h3><a id="31_BranchDecode_41"></a>3.1 BranchDecode</h3> 
+<p>下面是FrontEnd中的BranchDecoder模块chisel源代码：</p> 
+<pre><code class="prism language-scala"><span class="token keyword">class</span> BranchDecode<span class="token punctuation">(</span><span class="token keyword">implicit</span> p<span class="token operator">:</span> Parameters<span class="token punctuation">)</span> <span class="token keyword">extends</span> BoomModule
+<span class="token punctuation">{<!-- --></span>
+  <span class="token keyword">val</span> io <span class="token operator">=</span> IO<span class="token punctuation">(</span><span class="token keyword">new</span> Bundle <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">val</span> inst    <span class="token operator">=</span> Input<span class="token punctuation">(</span>UInt<span class="token punctuation">(</span><span class="token number">32.</span>W<span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token keyword">val</span> pc      <span class="token operator">=</span> Input<span class="token punctuation">(</span>UInt<span class="token punctuation">(</span>vaddrBitsExtended<span class="token punctuation">.</span>W<span class="token punctuation">)</span><span class="token punctuation">)</span>
+
+    <span class="token keyword">val</span> out <span class="token operator">=</span> Output<span class="token punctuation">(</span><span class="token keyword">new</span> BranchDecodeSignals<span class="token punctuation">)</span>
+  <span class="token punctuation">}</span><span class="token punctuation">)</span>
+
+  <span class="token keyword">val</span> bpd_csignals <span class="token operator">=</span>
+    freechips<span class="token punctuation">.</span>rocketchip<span class="token punctuation">.</span>rocket<span class="token punctuation">.</span>DecodeLogic<span class="token punctuation">(</span>io<span class="token punctuation">.</span>inst<span class="token punctuation">,</span>
+                  List<span class="token punctuation">[</span>BitPat<span class="token punctuation">]</span><span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> X<span class="token punctuation">)</span><span class="token punctuation">,</span>
+<span class="token comment">                               is br?</span>
+<span class="token comment">                               |  is jal?</span>
+<span class="token comment">                               |  |  is jalr?</span>
+<span class="token comment">                               |  |  |</span>
+<span class="token comment">                               |  |  |  shadowable</span>
+<span class="token comment">                               |  |  |  |  has_rs2</span>
+<span class="token comment">                               |  |  |  |  |</span>
+            Array<span class="token punctuation">[</span><span class="token punctuation">(</span>BitPat<span class="token punctuation">,</span> List<span class="token punctuation">[</span>BitPat<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">]</span><span class="token punctuation">(</span>
+               JAL         <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> X<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               JALR        <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> N<span class="token punctuation">,</span> X<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               BEQ         <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>Y<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> X<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               BNE         <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>Y<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> X<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               BGE         <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>Y<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> X<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               BGEU        <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>Y<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> X<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               BLT         <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>Y<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> X<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               BLTU        <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>Y<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> X<span class="token punctuation">)</span><span class="token punctuation">,</span>
+
+               SLLI        <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> N<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               SRLI        <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> N<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               SRAI        <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> N<span class="token punctuation">)</span><span class="token punctuation">,</span>
+
+               ADDIW       <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> N<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               SLLIW       <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> N<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               SRAIW       <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> N<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               SRLIW       <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> N<span class="token punctuation">)</span><span class="token punctuation">,</span>
+
+               ADDW        <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> Y<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               SUBW        <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> Y<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               SLLW        <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> Y<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               SRAW        <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> Y<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               SRLW        <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> Y<span class="token punctuation">)</span><span class="token punctuation">,</span>
+
+               LUI         <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> N<span class="token punctuation">)</span><span class="token punctuation">,</span>
+
+               ADDI        <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> N<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               ANDI        <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> N<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               ORI         <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> N<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               XORI        <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> N<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               SLTI        <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> N<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               SLTIU       <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> N<span class="token punctuation">)</span><span class="token punctuation">,</span>
+
+               SLL         <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> Y<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               ADD         <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> Y<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               SUB         <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> Y<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               SLT         <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> Y<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               SLTU        <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> Y<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               AND         <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> Y<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               OR          <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> Y<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               XOR         <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> Y<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               SRA         <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> Y<span class="token punctuation">)</span><span class="token punctuation">,</span>
+               SRL         <span class="token operator">-&gt;</span> List<span class="token punctuation">(</span>N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> N<span class="token punctuation">,</span> Y<span class="token punctuation">,</span> Y<span class="token punctuation">)</span>
+            <span class="token punctuation">)</span><span class="token punctuation">)</span>
+
+  <span class="token keyword">val</span> <span class="token punctuation">(</span>cs_is_br<span class="token operator">:</span> Bool<span class="token punctuation">)</span> <span class="token operator">::</span> <span class="token punctuation">(</span>cs_is_jal<span class="token operator">:</span> Bool<span class="token punctuation">)</span> <span class="token operator">::</span> <span class="token punctuation">(</span>cs_is_jalr<span class="token operator">:</span>Bool<span class="token punctuation">)</span> <span class="token operator">::</span> <span class="token punctuation">(</span>cs_is_shadowable<span class="token operator">:</span>Bool<span class="token punctuation">)</span> <span class="token operator">::</span> <span class="token punctuation">(</span>cs_has_rs2<span class="token punctuation">)</span> <span class="token operator">::</span> Nil <span class="token operator">=</span> bpd_csignals
+
+  io<span class="token punctuation">.</span>out<span class="token punctuation">.</span>is_call <span class="token operator">:</span><span class="token operator">=</span> <span class="token punctuation">(</span>cs_is_jal <span class="token operator">||</span> cs_is_jalr<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> GetRd<span class="token punctuation">(</span>io<span class="token punctuation">.</span>inst<span class="token punctuation">)</span> <span class="token operator">==</span><span class="token operator">=</span> RA
+  io<span class="token punctuation">.</span>out<span class="token punctuation">.</span>is_ret  <span class="token operator">:</span><span class="token operator">=</span> cs_is_jalr <span class="token operator">&amp;&amp;</span> GetRs1<span class="token punctuation">(</span>io<span class="token punctuation">.</span>inst<span class="token punctuation">)</span> <span class="token operator">==</span><span class="token operator">=</span> BitPat<span class="token punctuation">(</span><span class="token string">"b00?01"</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> GetRd<span class="token punctuation">(</span>io<span class="token punctuation">.</span>inst<span class="token punctuation">)</span> <span class="token operator">==</span><span class="token operator">=</span> X0
+
+  io<span class="token punctuation">.</span>out<span class="token punctuation">.</span>target <span class="token operator">:</span><span class="token operator">=</span> Mux<span class="token punctuation">(</span>cs_is_br<span class="token punctuation">,</span> ComputeBranchTarget<span class="token punctuation">(</span>io<span class="token punctuation">.</span>pc<span class="token punctuation">,</span> io<span class="token punctuation">.</span>inst<span class="token punctuation">,</span> xLen<span class="token punctuation">)</span><span class="token punctuation">,</span>
+                                 ComputeJALTarget<span class="token punctuation">(</span>io<span class="token punctuation">.</span>pc<span class="token punctuation">,</span> io<span class="token punctuation">.</span>inst<span class="token punctuation">,</span> xLen<span class="token punctuation">)</span><span class="token punctuation">)</span>
+  io<span class="token punctuation">.</span>out<span class="token punctuation">.</span>cfi_type <span class="token operator">:</span><span class="token operator">=</span>
+    Mux<span class="token punctuation">(</span>cs_is_jalr<span class="token punctuation">,</span>
+      CFI_JALR<span class="token punctuation">,</span>
+    Mux<span class="token punctuation">(</span>cs_is_jal<span class="token punctuation">,</span>
+      CFI_JAL<span class="token punctuation">,</span>
+    Mux<span class="token punctuation">(</span>cs_is_br<span class="token punctuation">,</span>
+      CFI_BR<span class="token punctuation">,</span>
+      CFI_X<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+
+  <span class="token keyword">val</span> br_offset <span class="token operator">=</span> Cat<span class="token punctuation">(</span>io<span class="token punctuation">.</span>inst<span class="token punctuation">(</span><span class="token number">7</span><span class="token punctuation">)</span><span class="token punctuation">,</span> io<span class="token punctuation">.</span>inst<span class="token punctuation">(</span><span class="token number">30</span><span class="token punctuation">,</span><span class="token number">25</span><span class="token punctuation">)</span><span class="token punctuation">,</span> io<span class="token punctuation">.</span>inst<span class="token punctuation">(</span><span class="token number">11</span><span class="token punctuation">,</span><span class="token number">8</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">0.</span>U<span class="token punctuation">(</span><span class="token number">1.</span>W<span class="token punctuation">)</span><span class="token punctuation">)</span>
+  <span class="token comment">// Is a sfb if it points forwards (offset is positive)</span>
+  io<span class="token punctuation">.</span>out<span class="token punctuation">.</span>sfb_offset<span class="token punctuation">.</span>valid <span class="token operator">:</span><span class="token operator">=</span> cs_is_br <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span>io<span class="token punctuation">.</span>inst<span class="token punctuation">(</span><span class="token number">31</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> br_offset <span class="token operator">=</span><span class="token operator">/=</span> <span class="token number">0.</span>U <span class="token operator">&amp;&amp;</span> <span class="token punctuation">(</span>br_offset <span class="token operator">&gt;&gt;</span> log2Ceil<span class="token punctuation">(</span>icBlockBytes<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">==</span><span class="token operator">=</span> <span class="token number">0.</span>U
+  io<span class="token punctuation">.</span>out<span class="token punctuation">.</span>sfb_offset<span class="token punctuation">.</span>bits  <span class="token operator">:</span><span class="token operator">=</span> br_offset
+  io<span class="token punctuation">.</span>out<span class="token punctuation">.</span>shadowable <span class="token operator">:</span><span class="token operator">=</span> cs_is_shadowable <span class="token operator">&amp;&amp;</span> <span class="token punctuation">(</span>
+    <span class="token operator">!</span>cs_has_rs2 <span class="token operator">||</span>
+    <span class="token punctuation">(</span>GetRs1<span class="token punctuation">(</span>io<span class="token punctuation">.</span>inst<span class="token punctuation">)</span> <span class="token operator">==</span><span class="token operator">=</span> GetRd<span class="token punctuation">(</span>io<span class="token punctuation">.</span>inst<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">||</span>
+    <span class="token punctuation">(</span>io<span class="token punctuation">.</span>inst <span class="token operator">==</span><span class="token operator">=</span> ADD <span class="token operator">&amp;&amp;</span> GetRs1<span class="token punctuation">(</span>io<span class="token punctuation">.</span>inst<span class="token punctuation">)</span> <span class="token operator">==</span><span class="token operator">=</span> X0<span class="token punctuation">)</span>
+  <span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>BranchDecode模块主要完成的是分支指令和相关指令的预先解码，这是为了完成分支预测功能；除此之外，就是SFB的检测逻辑，在这篇文章中我们只关注SFB这块。<br> 1.首先是对sfb_br的检测逻辑，</p> 
+<pre><code class="prism language-scala">  <span class="token keyword">val</span> br_offset <span class="token operator">=</span> Cat<span class="token punctuation">(</span>io<span class="token punctuation">.</span>inst<span class="token punctuation">(</span><span class="token number">7</span><span class="token punctuation">)</span><span class="token punctuation">,</span> io<span class="token punctuation">.</span>inst<span class="token punctuation">(</span><span class="token number">30</span><span class="token punctuation">,</span><span class="token number">25</span><span class="token punctuation">)</span><span class="token punctuation">,</span> io<span class="token punctuation">.</span>inst<span class="token punctuation">(</span><span class="token number">11</span><span class="token punctuation">,</span><span class="token number">8</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">0.</span>U<span class="token punctuation">(</span><span class="token number">1.</span>W<span class="token punctuation">)</span><span class="token punctuation">)</span>
+  <span class="token comment">// Is a sfb if it points forwards (offset is positive)</span>
+  io<span class="token punctuation">.</span>out<span class="token punctuation">.</span>sfb_offset<span class="token punctuation">.</span>valid <span class="token operator">:</span><span class="token operator">=</span> cs_is_br <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span>io<span class="token punctuation">.</span>inst<span class="token punctuation">(</span><span class="token number">31</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> br_offset <span class="token operator">=</span><span class="token operator">/=</span> <span class="token number">0.</span>U <span class="token operator">&amp;&amp;</span> <span class="token punctuation">(</span>br_offset <span class="token operator">&gt;&gt;</span> log2Ceil<span class="token punctuation">(</span>icBlockBytes<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">==</span><span class="token operator">=</span> <span class="token number">0.</span>U
+  io<span class="token punctuation">.</span>out<span class="token punctuation">.</span>sfb_offset<span class="token punctuation">.</span>bits  <span class="token operator">:</span><span class="token operator">=</span> br_offset
+</code></pre> 
+<p>根据riscv-spec-20191213，可以得到Branch指令B类型的编码格式，如下图所示：<br> <img src="https://images2.imgbox.com/f2/24/jKQGqXEn_o.png" alt="在这里插入图片描述"></p> 
+<p>br_offset只选取了branch指令的imm[11:0]，imm[12]为符号位。<br> 那么满足sfb_br的判断条件如下：</p> 
+<ol><li>指令必须是6条分支指令之一；</li><li>指令编码第31位inst[31]为0，也就是imm[12]为0，表示跳转的偏移（offset）必须是正数，也就是往大PC的方向跳转；</li><li>branch指令的偏移量imm[11:0]不能为0；</li><li>最后一个条件(br_offset &gt;&gt; log2Ceil(icBlockBytes)) === 0.U，在这里icBlockbytes为32表示I$的block有32byte，也就是说SFB最大的offset为32，限定了shadow范围，也就是说一个sfb_br后面最多覆盖32条相应的shadow指令。</li></ol> 
+<p>2.接下来是sfb_br后面的sfb_shadow指令，满足的条件如下：</p> 
+<pre><code class="prism language-scala">  io<span class="token punctuation">.</span>out<span class="token punctuation">.</span>shadowable <span class="token operator">:</span><span class="token operator">=</span> cs_is_shadowable <span class="token operator">&amp;&amp;</span> <span class="token punctuation">(</span>
+    <span class="token operator">!</span>cs_has_rs2 <span class="token operator">||</span>
+    <span class="token punctuation">(</span>GetRs1<span class="token punctuation">(</span>io<span class="token punctuation">.</span>inst<span class="token punctuation">)</span> <span class="token operator">==</span><span class="token operator">=</span> GetRd<span class="token punctuation">(</span>io<span class="token punctuation">.</span>inst<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">||</span>
+    <span class="token punctuation">(</span>io<span class="token punctuation">.</span>inst <span class="token operator">==</span><span class="token operator">=</span> ADD <span class="token operator">&amp;&amp;</span> GetRs1<span class="token punctuation">(</span>io<span class="token punctuation">.</span>inst<span class="token punctuation">)</span> <span class="token operator">==</span><span class="token operator">=</span> X0<span class="token punctuation">)</span>
+  <span class="token punctuation">)</span>
+</code></pre> 
+<ol><li>指令必须为decode表中的SLLI、SRLI、…、一直到SRL的29条指令之一；</li><li>下面三个条件是或的关系，也就是至少满足一个就可以：<br> （1）没有Rs2源寄存器，主要是带立即数I的指令；<br> （2）目的寄存器Rd为Rs1源寄存器，如add x10,x10,x5;<br> （3）指令为ADD指令，并且Rs1=x0.<br> 对于shadow指令的检测逻辑可以看出，要求指令中必须空出一个空位置，在后面可以发现这个空位置是为了存放旧目的寄存器的。<br> 为了方便理解，在仿真波形中观看更为直观，波形和log文件如下图所示：<br> <img src="https://images2.imgbox.com/1f/3b/xfVBA5CQ_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/42/55/XFfK51RS_o.png" alt="在这里插入图片描述"><br> 其中，在波形中，红框为sfb_br指令，黄框为相关的第一条sfb_shadow指令，蓝框为相关的第二条sfb_shadow指令。结合log文件，sfb_br的指令为压缩指令：c.beqz，目的地址（pc+offset）为800032ec，pc=0x800032e4，因此offset为0x8（'b1000），br_offset为低5位为5‘b1000，对应十进制是8。<br> 中间的两条sfb_shadow指令为指令slli和压缩指令c.srli。正好满足sfb的条件。</li></ol> 
+<h3><a id="32_Decode_179"></a>3.2 Decode</h3> 
+<p>Decode模块位于core中，处于core流水线第一级，主要是完成对指令的解码，由于整个源代码过于长，下面只贴上SFB在decode中相关的代码。</p> 
+<pre><code class="prism language-scala">  uop<span class="token punctuation">.</span>ldst_is_rs1 <span class="token operator">:</span><span class="token operator">=</span> uop<span class="token punctuation">.</span>is_sfb_shadow
+  <span class="token comment">// SFB optimization</span>
+  when <span class="token punctuation">(</span>uop<span class="token punctuation">.</span>is_sfb_shadow <span class="token operator">&amp;&amp;</span> cs<span class="token punctuation">.</span>rs2_type <span class="token operator">==</span><span class="token operator">=</span> RT_X<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    uop<span class="token punctuation">.</span>lrs2_rtype  <span class="token operator">:</span><span class="token operator">=</span> RT_FIX
+    uop<span class="token punctuation">.</span>lrs2        <span class="token operator">:</span><span class="token operator">=</span> inst<span class="token punctuation">(</span>RD_MSB<span class="token punctuation">,</span>RD_LSB<span class="token punctuation">)</span>
+    uop<span class="token punctuation">.</span>ldst_is_rs1 <span class="token operator">:</span><span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">.</span>B
+  <span class="token punctuation">}</span> <span class="token punctuation">.</span>elsewhen <span class="token punctuation">(</span>uop<span class="token punctuation">.</span>is_sfb_shadow <span class="token operator">&amp;&amp;</span> cs<span class="token punctuation">.</span>uopc <span class="token operator">==</span><span class="token operator">=</span> uopADD <span class="token operator">&amp;&amp;</span> inst<span class="token punctuation">(</span>RS1_MSB<span class="token punctuation">,</span>RS1_LSB<span class="token punctuation">)</span> <span class="token operator">==</span><span class="token operator">=</span> <span class="token number">0.</span>U<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    uop<span class="token punctuation">.</span>uopc        <span class="token operator">:</span><span class="token operator">=</span> uopMOV
+    uop<span class="token punctuation">.</span>lrs1        <span class="token operator">:</span><span class="token operator">=</span> inst<span class="token punctuation">(</span>RD_MSB<span class="token punctuation">,</span> RD_LSB<span class="token punctuation">)</span>
+    uop<span class="token punctuation">.</span>ldst_is_rs1 <span class="token operator">:</span><span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">.</span>B
+  <span class="token punctuation">}</span>
+  when <span class="token punctuation">(</span>uop<span class="token punctuation">.</span>is_sfb_br<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    uop<span class="token punctuation">.</span>fu_code <span class="token operator">:</span><span class="token operator">=</span> FU_JMP
+  <span class="token punctuation">}</span>                      
+</code></pre> 
+<p>在分析源代码之前，先说明一下涉及到的一些常量，下面四个变量表示内部微架构使用的寄存器类型，RT_FIX表示寄存器为整型，接下来三个以此为浮点类型、pass-through类型和不是寄存器。</p> 
+<pre><code class="prism language-scala">  <span class="token comment">// Decode Stage Control Signals</span>
+  <span class="token keyword">val</span> RT_FIX   <span class="token operator">=</span> <span class="token number">0.</span>U<span class="token punctuation">(</span><span class="token number">2.</span>W<span class="token punctuation">)</span>
+  <span class="token keyword">val</span> RT_FLT   <span class="token operator">=</span> <span class="token number">1.</span>U<span class="token punctuation">(</span><span class="token number">2.</span>W<span class="token punctuation">)</span>
+  <span class="token keyword">val</span> RT_PAS   <span class="token operator">=</span> <span class="token number">3.</span>U<span class="token punctuation">(</span><span class="token number">2.</span>W<span class="token punctuation">)</span> <span class="token comment">// pass-through (prs1 := lrs1, etc)</span>
+  <span class="token keyword">val</span> RT_X     <span class="token operator">=</span> <span class="token number">2.</span>U<span class="token punctuation">(</span><span class="token number">2.</span>W<span class="token punctuation">)</span> <span class="token comment">// not-a-register (but shouldn't get a busy-bit, etc.)</span>
+                             <span class="token comment">// TODO rename RT_NAR</span>
+</code></pre> 
+<p>FU_表示一种功能单元（Funtion unit,FU），FU_JMP为其中之一。<br> 下面开始分析decode单元中对SFB的支持。<br> 1.首先是源寄存器Rs2为立即数类型的情况，对应的就是上文分析中三个或条件的第一条。</p> 
+<pre><code class="prism language-scala">  uop<span class="token punctuation">.</span>ldst_is_rs1 <span class="token operator">:</span><span class="token operator">=</span> uop<span class="token punctuation">.</span>is_sfb_shadow
+  <span class="token comment">// SFB optimization</span>
+  when <span class="token punctuation">(</span>uop<span class="token punctuation">.</span>is_sfb_shadow <span class="token operator">&amp;&amp;</span> cs<span class="token punctuation">.</span>rs2_type <span class="token operator">==</span><span class="token operator">=</span> RT_X<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    uop<span class="token punctuation">.</span>lrs2_rtype  <span class="token operator">:</span><span class="token operator">=</span> RT_FIX
+    uop<span class="token punctuation">.</span>lrs2        <span class="token operator">:</span><span class="token operator">=</span> inst<span class="token punctuation">(</span>RD_MSB<span class="token punctuation">,</span>RD_LSB<span class="token punctuation">)</span>
+    uop<span class="token punctuation">.</span>ldst_is_rs1 <span class="token operator">:</span><span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">.</span>B
+</code></pre> 
+<p>做的事情是：</p> 
+<ol><li>将原始指令微编码的lrs2_rtype从RT_X更改为RT_FIX；</li><li>将指令的目的寄存器Rd的编号ID存放到微编码的lrs2中；</li><li>将ldst_is_rs1置0.</li></ol> 
+<p>2.第二种情况为rs1=rd的情况，对应的就是上文分析中三个或条件的第二条。就是通过将微编码中的ldst_is_rs1置为shadow来标识。<br> 3.第三种就是为ADD指令并且Rs1为x0，对应的就是上文分析中三个或条件的第三条。</p> 
+<pre><code class="prism language-scala">  <span class="token punctuation">}</span> <span class="token punctuation">.</span>elsewhen <span class="token punctuation">(</span>uop<span class="token punctuation">.</span>is_sfb_shadow <span class="token operator">&amp;&amp;</span> cs<span class="token punctuation">.</span>uopc <span class="token operator">==</span><span class="token operator">=</span> uopADD <span class="token operator">&amp;&amp;</span> inst<span class="token punctuation">(</span>RS1_MSB<span class="token punctuation">,</span>RS1_LSB<span class="token punctuation">)</span> <span class="token operator">==</span><span class="token operator">=</span> <span class="token number">0.</span>U<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    uop<span class="token punctuation">.</span>uopc        <span class="token operator">:</span><span class="token operator">=</span> uopMOV
+    uop<span class="token punctuation">.</span>lrs1        <span class="token operator">:</span><span class="token operator">=</span> inst<span class="token punctuation">(</span>RD_MSB<span class="token punctuation">,</span> RD_LSB<span class="token punctuation">)</span>
+    uop<span class="token punctuation">.</span>ldst_is_rs1 <span class="token operator">:</span><span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">.</span>B
+  <span class="token punctuation">}</span>
+</code></pre> 
+<p>直接将微编码中的uopc置为uopMOV，把目的寄存器Rd的编码ID放到了lrs1中，再将ldst_is_rs1置1.<br> 总结来说，decode中做的事情主要是保存<strong>旧的目的寄存器</strong>ID编码到微编码中空余的逻辑源寄存器lrs1或lrs2中，那么在后面读寄存器时可以把旧的目的寄存器的值保存到微编码的rs1data或rs2data中。</p> 
+<h3><a id="33_Rename_237"></a>3.3 Rename</h3> 
+<p>Core中流水线的下一级是rename（寄存器重命名）阶段，主要是完成寄存器的重命名，将逻辑寄存器（也叫架构寄存器，riscv中整型逻辑寄存器个数为32个）来映射到数目大于其自身的物理寄存器上，从而来解决超标量处理器的WAW（写后写）和WAR（读后写）依赖性（dependence）的问题。<br> 为了处理SFB，BoomCore微架构在rename阶段的增加了以下逻辑，源代码如下：</p> 
+<pre><code class="prism language-scala"><span class="token keyword">class</span> PredRenameStage<span class="token punctuation">(</span>
+  plWidth<span class="token operator">:</span> <span class="token builtin">Int</span><span class="token punctuation">,</span>
+  numPhysRegs<span class="token operator">:</span> <span class="token builtin">Int</span><span class="token punctuation">,</span>
+  numWbPorts<span class="token operator">:</span> <span class="token builtin">Int</span><span class="token punctuation">)</span>
+  <span class="token punctuation">(</span><span class="token keyword">implicit</span> p<span class="token operator">:</span> Parameters<span class="token punctuation">)</span> <span class="token keyword">extends</span> AbstractRenameStage<span class="token punctuation">(</span>plWidth<span class="token punctuation">,</span> numPhysRegs<span class="token punctuation">,</span> numWbPorts<span class="token punctuation">)</span><span class="token punctuation">(</span>p<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+
+  <span class="token keyword">def</span> BypassAllocations<span class="token punctuation">(</span>uop<span class="token operator">:</span> MicroOp<span class="token punctuation">,</span> older_uops<span class="token operator">:</span> Seq<span class="token punctuation">[</span>MicroOp<span class="token punctuation">]</span><span class="token punctuation">,</span> alloc_reqs<span class="token operator">:</span> Seq<span class="token punctuation">[</span>Bool<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token operator">:</span> MicroOp <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+    uop
+  <span class="token punctuation">}</span>
+
+  ren2_alloc_reqs <span class="token operator">:</span><span class="token operator">=</span> DontCare
+
+  <span class="token keyword">val</span> busy_table <span class="token operator">=</span> RegInit<span class="token punctuation">(</span>VecInit<span class="token punctuation">(</span><span class="token number">0.</span>U<span class="token punctuation">(</span>ftqSz<span class="token punctuation">.</span>W<span class="token punctuation">)</span><span class="token punctuation">.</span>asBools<span class="token punctuation">)</span><span class="token punctuation">)</span>
+  <span class="token keyword">val</span> to_busy <span class="token operator">=</span> WireInit<span class="token punctuation">(</span>VecInit<span class="token punctuation">(</span><span class="token number">0.</span>U<span class="token punctuation">(</span>ftqSz<span class="token punctuation">.</span>W<span class="token punctuation">)</span><span class="token punctuation">.</span>asBools<span class="token punctuation">)</span><span class="token punctuation">)</span>
+  <span class="token keyword">val</span> unbusy <span class="token operator">=</span> WireInit<span class="token punctuation">(</span>VecInit<span class="token punctuation">(</span><span class="token number">0.</span>U<span class="token punctuation">(</span>ftqSz<span class="token punctuation">.</span>W<span class="token punctuation">)</span><span class="token punctuation">.</span>asBools<span class="token punctuation">)</span><span class="token punctuation">)</span>
+
+  <span class="token keyword">val</span> current_ftq_idx <span class="token operator">=</span> Reg<span class="token punctuation">(</span>UInt<span class="token punctuation">(</span>log2Ceil<span class="token punctuation">(</span>ftqSz<span class="token punctuation">)</span><span class="token punctuation">.</span>W<span class="token punctuation">)</span><span class="token punctuation">)</span>
+  <span class="token keyword">var</span> next_ftq_idx <span class="token operator">=</span> current_ftq_idx
+
+  <span class="token keyword">for</span> <span class="token punctuation">(</span>w <span class="token keyword">&lt;-</span> <span class="token number">0</span> until plWidth<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    io<span class="token punctuation">.</span>ren2_uops<span class="token punctuation">(</span>w<span class="token punctuation">)</span> <span class="token operator">:</span><span class="token operator">=</span> ren2_uops<span class="token punctuation">(</span>w<span class="token punctuation">)</span>
+
+    <span class="token keyword">val</span> is_sfb_br <span class="token operator">=</span> ren2_uops<span class="token punctuation">(</span>w<span class="token punctuation">)</span><span class="token punctuation">.</span>is_sfb_br <span class="token operator">&amp;&amp;</span> ren2_fire<span class="token punctuation">(</span>w<span class="token punctuation">)</span>
+    <span class="token keyword">val</span> is_sfb_shadow <span class="token operator">=</span> ren2_uops<span class="token punctuation">(</span>w<span class="token punctuation">)</span><span class="token punctuation">.</span>is_sfb_shadow <span class="token operator">&amp;&amp;</span> ren2_fire<span class="token punctuation">(</span>w<span class="token punctuation">)</span>
+
+    <span class="token keyword">val</span> ftq_idx <span class="token operator">=</span> ren2_uops<span class="token punctuation">(</span>w<span class="token punctuation">)</span><span class="token punctuation">.</span>ftq_idx
+    when <span class="token punctuation">(</span>is_sfb_br<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      io<span class="token punctuation">.</span>ren2_uops<span class="token punctuation">(</span>w<span class="token punctuation">)</span><span class="token punctuation">.</span>pdst <span class="token operator">:</span><span class="token operator">=</span> ftq_idx
+      to_busy<span class="token punctuation">(</span>ftq_idx<span class="token punctuation">)</span> <span class="token operator">:</span><span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">.</span>B
+    <span class="token punctuation">}</span>
+    next_ftq_idx <span class="token operator">=</span> Mux<span class="token punctuation">(</span>is_sfb_br<span class="token punctuation">,</span> ftq_idx<span class="token punctuation">,</span> next_ftq_idx<span class="token punctuation">)</span>
+
+    when <span class="token punctuation">(</span>is_sfb_shadow<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      io<span class="token punctuation">.</span>ren2_uops<span class="token punctuation">(</span>w<span class="token punctuation">)</span><span class="token punctuation">.</span>ppred <span class="token operator">:</span><span class="token operator">=</span> next_ftq_idx
+      io<span class="token punctuation">.</span>ren2_uops<span class="token punctuation">(</span>w<span class="token punctuation">)</span><span class="token punctuation">.</span>ppred_busy <span class="token operator">:</span><span class="token operator">=</span> <span class="token punctuation">(</span>busy_table<span class="token punctuation">(</span>next_ftq_idx<span class="token punctuation">)</span> <span class="token operator">||</span> to_busy<span class="token punctuation">(</span>next_ftq_idx<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span>unbusy<span class="token punctuation">(</span>next_ftq_idx<span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+  <span class="token punctuation">}</span>
+
+  <span class="token keyword">for</span> <span class="token punctuation">(</span>w <span class="token keyword">&lt;-</span> <span class="token number">0</span> until numWbPorts<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    when <span class="token punctuation">(</span>io<span class="token punctuation">.</span>wakeups<span class="token punctuation">(</span>w<span class="token punctuation">)</span><span class="token punctuation">.</span>valid<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      unbusy<span class="token punctuation">(</span>io<span class="token punctuation">.</span>wakeups<span class="token punctuation">(</span>w<span class="token punctuation">)</span><span class="token punctuation">.</span>bits<span class="token punctuation">.</span>uop<span class="token punctuation">.</span>pdst<span class="token punctuation">)</span> <span class="token operator">:</span><span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">.</span>B
+    <span class="token punctuation">}</span>
+  <span class="token punctuation">}</span>
+
+  current_ftq_idx <span class="token operator">:</span><span class="token operator">=</span> next_ftq_idx
+
+  busy_table <span class="token operator">:</span><span class="token operator">=</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>busy_table<span class="token punctuation">.</span>asUInt <span class="token operator">|</span> to_busy<span class="token punctuation">.</span>asUInt<span class="token punctuation">)</span> <span class="token operator">&amp;</span> <span class="token operator">~</span>unbusy<span class="token punctuation">.</span>asUInt<span class="token punctuation">)</span><span class="token punctuation">.</span>asBools
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>做的事情如下：<br> 1.对于sfb_br指令将这条指令的ftq(Fetch Target Queue，ftq)的索引ftq_idx存放在指令微编码的pdst中；</p> 
+<pre><code class="prism language-scala">    <span class="token keyword">val</span> ftq_idx <span class="token operator">=</span> ren2_uops<span class="token punctuation">(</span>w<span class="token punctuation">)</span><span class="token punctuation">.</span>ftq_idx
+    when <span class="token punctuation">(</span>is_sfb_br<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      io<span class="token punctuation">.</span>ren2_uops<span class="token punctuation">(</span>w<span class="token punctuation">)</span><span class="token punctuation">.</span>pdst <span class="token operator">:</span><span class="token operator">=</span> ftq_idx
+      to_busy<span class="token punctuation">(</span>ftq_idx<span class="token punctuation">)</span> <span class="token operator">:</span><span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">.</span>B
+    <span class="token punctuation">}</span>
+    next_ftq_idx <span class="token operator">=</span> Mux<span class="token punctuation">(</span>is_sfb_br<span class="token punctuation">,</span> ftq_idx<span class="token punctuation">,</span> next_ftq_idx<span class="token punctuation">)</span>
+</code></pre> 
+<p>在这里简单介绍一下FTQ，FTQ是前端Frontend的一个queue队列，主要用来存放来自于ICache的PC和Branch分支预测的信息。假如一次可以从ICache取16byte的指令（正常指令4条，压缩指令8条），考虑由于跳转指令引起的PC不对齐情况，一次可以取3-8条指令送到core中，那么此时这一次获取的3-8条指令都会被分配相同的ftq_idx。关于ftq_idx分配的问题，这里再说明一下对于Branch分支指令情况，如果结果预测为跳转，那么会到目的地址的Icache PC处重新取指令，那么相应的原本这条分支指令后面的指令都会是无效的，不会分配ftq_idx，对新取来的指令配成索引是ftq_idx+1；如果预测结果为不跳转，在这3-8条指令中这条分支指令后面的指令也都会配为当前的ftq_idx。<br> 而对于我们的sfb指令来说，sfb_br的前提条件是前端预测为不跳（not_taken），而sfb_shadow指令是紧接着sfb_br之后的指令，那么sfb_shadow指令的ftq_idx肯定是<strong>大于等于</strong>其所对应的sfb_br指令的ftq_idx。这时，再分析在rename中关于sfb_br的逻辑，先把指令自身的ftq_idx存放到微编码的pdst中，然后将这个ftq_idx为索引的向量表to_busy中的这一位置1（1表示busy, 0是ready）。<br> 在这里强调一点，BoomCore是超标量乱序处理器，分发阶段（dispatch）之后就开始乱序执行，这时思考一个问题，如果sfb_shadow指令比它对应的sfb_br指令先执行会发生什么？可能会发生sfb_shadow指令的结果提前算出来然后写回（writeback，wb）了寄存器，而sfb_br指令实际算出的结果是跳转的，应该写回的是原始的目的寄存器的值，那么处理器就出错了。<strong>因此要保证sfb_shadow指令要在sfb_br指令计算完毕之后执行，这样才能保证写回寄存器的值是正确的值。</strong><br> 所以说结合上面，是通过ftq_idx来确定sfb_br和sfb_shadow的先后顺序的。<br> 2.对于sfb_shadow指令，把next_ftq_idx锁存到微编码的ppred信号中，配置ppred_busy表示busy状态或ready状态。</p> 
+<pre><code class="prism language-scala">    when <span class="token punctuation">(</span>is_sfb_shadow<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      io<span class="token punctuation">.</span>ren2_uops<span class="token punctuation">(</span>w<span class="token punctuation">)</span><span class="token punctuation">.</span>ppred <span class="token operator">:</span><span class="token operator">=</span> next_ftq_idx
+      io<span class="token punctuation">.</span>ren2_uops<span class="token punctuation">(</span>w<span class="token punctuation">)</span><span class="token punctuation">.</span>ppred_busy <span class="token operator">:</span><span class="token operator">=</span> <span class="token punctuation">(</span>busy_table<span class="token punctuation">(</span>next_ftq_idx<span class="token punctuation">)</span> <span class="token operator">||</span> to_busy<span class="token punctuation">(</span>next_ftq_idx<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span>unbusy<span class="token punctuation">(</span>next_ftq_idx<span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+  <span class="token punctuation">}</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span>w <span class="token keyword">&lt;-</span> <span class="token number">0</span> until numWbPorts<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    when <span class="token punctuation">(</span>io<span class="token punctuation">.</span>wakeups<span class="token punctuation">(</span>w<span class="token punctuation">)</span><span class="token punctuation">.</span>valid<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      unbusy<span class="token punctuation">(</span>io<span class="token punctuation">.</span>wakeups<span class="token punctuation">(</span>w<span class="token punctuation">)</span><span class="token punctuation">.</span>bits<span class="token punctuation">.</span>uop<span class="token punctuation">.</span>pdst<span class="token punctuation">)</span> <span class="token operator">:</span><span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">.</span>B
+    <span class="token punctuation">}</span>
+  <span class="token punctuation">}</span>
+  
+  current_ftq_idx <span class="token operator">:</span><span class="token operator">=</span> next_ftq_idx
+
+  busy_table <span class="token operator">:</span><span class="token operator">=</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>busy_table<span class="token punctuation">.</span>asUInt <span class="token operator">|</span> to_busy<span class="token punctuation">.</span>asUInt<span class="token punctuation">)</span> <span class="token operator">&amp;</span> <span class="token operator">~</span>unbusy<span class="token punctuation">.</span>asUInt<span class="token punctuation">)</span><span class="token punctuation">.</span>asBools
+</code></pre> 
+<p>可以看出，当sfb_br将相应的ftq_idx索引的向量表to_busy相应位置1后，而unbusy向量表默认为0，可以得到sfb_shadow指令微编码的ppred_busy会被置1，表示busy状态。当sfb_br唤醒（wakeup）之后，unbusy相应位才会置1，此时sfb_shadow指令微编码的ppred_busy才会置为0，表示ready。<br> 关于sfb_shadow指令的所用的next_ftq_idx和sfb_br的ftq_idx什么关系，在源代码中不太容易分析，因此在仿真波形分析以下，波形如下：<br> <img src="https://images2.imgbox.com/4e/27/s5IFaFDf_o.png" alt="在这里插入图片描述"><br> <em>注：这里跑的波形为coremark test。</em><br> 可以发现一条sfb_br指令后面跟着两条连续的sfb_shadow指令，sfb_br指令微编码的pdst锁存的ftq_idx是8，后面连续的两条sfb_shadow指令微编码的ppred锁存的ftq_idx也是8，都是自身指令的ftq_idx。<br> 因此，总的来说在rename这一级，通过ftq_idx的方式来保证sfb_shadow指令在sfb_br指令之后发射（issue)，在下面issue模块继续分析。</p> 
+<h3><a id="34_Dispatch_332"></a>3.4 Dispatch</h3> 
+<p>分发（Dispatch）位于Rename阶段之后，分发阶段主要是将经过重命名之后的指令分发给发射阶段（Issue）、重排序缓存(Reorder Buffer，ROB)和LSU。关于SFB没有做额外的逻辑，因此简单结束。</p> 
+<h3><a id="35_Issue_334"></a>3.5 Issue</h3> 
+<p>发射（Issue）阶段主要完成指令的唤醒、仲裁和发射，BoomCore的Issue模块的结构是分布式、压缩的和非数据捕捉的。在Rename模块我们已经分析了sfb_shadow指令要在sfb_br指令计算出来之后才发射，那么在issue中是如何做的呢？开始分析源代码，由于issue的源码比较多，在这里只贴上sfb相关的：</p> 
+<pre><code class="prism language-scala">    <span class="token keyword">val</span> ppred <span class="token operator">=</span> RegInit<span class="token punctuation">(</span><span class="token boolean">false</span><span class="token punctuation">.</span>B<span class="token punctuation">)</span>
+    <span class="token comment">// these signals are the "next_p*" for the current slot's micro-op.</span>
+    <span class="token comment">// they are important for shifting the current slot_uop up to an other entry.</span>
+    <span class="token keyword">val</span> next_ppred <span class="token operator">=</span> WireInit<span class="token punctuation">(</span>ppred<span class="token punctuation">)</span>
+  
+    when <span class="token punctuation">(</span>io<span class="token punctuation">.</span>in_uop<span class="token punctuation">.</span>valid<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    p1 <span class="token operator">:</span><span class="token operator">=</span> <span class="token operator">!</span><span class="token punctuation">(</span>io<span class="token punctuation">.</span>in_uop<span class="token punctuation">.</span>bits<span class="token punctuation">.</span>prs1_busy<span class="token punctuation">)</span>
+    p2 <span class="token operator">:</span><span class="token operator">=</span> <span class="token operator">!</span><span class="token punctuation">(</span>io<span class="token punctuation">.</span>in_uop<span class="token punctuation">.</span>bits<span class="token punctuation">.</span>prs2_busy<span class="token punctuation">)</span>
+    p3 <span class="token operator">:</span><span class="token operator">=</span> <span class="token operator">!</span><span class="token punctuation">(</span>io<span class="token punctuation">.</span>in_uop<span class="token punctuation">.</span>bits<span class="token punctuation">.</span>prs3_busy<span class="token punctuation">)</span>
+    ppred <span class="token operator">:</span><span class="token operator">=</span> <span class="token operator">!</span><span class="token punctuation">(</span>io<span class="token punctuation">.</span>in_uop<span class="token punctuation">.</span>bits<span class="token punctuation">.</span>ppred_busy<span class="token punctuation">)</span>
+  <span class="token punctuation">}</span>
+    when <span class="token punctuation">(</span>io<span class="token punctuation">.</span>pred_wakeup_port<span class="token punctuation">.</span>valid <span class="token operator">&amp;&amp;</span> io<span class="token punctuation">.</span>pred_wakeup_port<span class="token punctuation">.</span>bits <span class="token operator">==</span><span class="token operator">=</span> next_uop<span class="token punctuation">.</span>ppred<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    ppred <span class="token operator">:</span><span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">.</span>B
+  <span class="token punctuation">}</span>
+  <span class="token comment">//-------------------------------------------------------------</span>
+  <span class="token comment">// Request Logic</span>
+  io<span class="token punctuation">.</span>request <span class="token operator">:</span><span class="token operator">=</span> is_valid <span class="token operator">&amp;&amp;</span> p1 <span class="token operator">&amp;&amp;</span> p2 <span class="token operator">&amp;&amp;</span> p3 <span class="token operator">&amp;&amp;</span> ppred <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span>io<span class="token punctuation">.</span>kill
+</code></pre> 
+<p>可以清晰的看出来，issue发起请求的时候要求ppred为高（表示处于ready状态），而ppred为sfb_shadow指令经过rename之后的ppred_busy的取反，表示还没有ready；那sfb_shadow指令什么时候处于ready状态并发射出去呢？要求sfb_shadow指令对应的sfb_br指令的结果先算出来，才能发射sfb_shadow指令。在上面源代码中可以看出sfb_br的计算结果算出来后，通过wakeup接口传递信息来匹配到sfb_shadow指令的信息，信息一致后，ppred才会ready，结合上文，可以知道这个信息就是它们微编码的ftq_idx。<br> 顺便提一下，issue只会堵住sfb_shadow指令，不会阻塞sfb_br指令。</p> 
+<h3><a id="36_registerread_357"></a>3.6 register-read</h3> 
+<p>因为issue阶段采用的结构式非数据捕捉的，所以issue的下一级为读寄存器（register read，rr）阶段，该阶段主要是获取指令中所用到的寄存器的数据，数据来源有两种：一是数据已经是处于寄存器堆中了，直接读取就行；二是对于某些目前不在寄存器堆中但是可以马上计算出来的通过bypass通路来获取。<br> 对于能经过issue阶段到达下一级rr阶段的，指令所使用的寄存器的值不是已经存在于寄存器堆了，就是在bypass通道可以拿到。同时对于sfb_shadow指令来说，被发射到register read阶段的，其对应的sfb_br指令的结果肯定也已算出。<br> 下面分析相关源代码，：</p> 
+<pre><code class="prism language-scala">    <span class="token comment">// NOTE:</span>
+    <span class="token comment">// rrdLatency==1, we need to send read address at end of ISS stage,</span>
+    <span class="token comment">//    in order to get read data back at end of RRD stage.</span>
+
+    <span class="token keyword">val</span> rs1_addr <span class="token operator">=</span> io<span class="token punctuation">.</span>iss_uops<span class="token punctuation">(</span>w<span class="token punctuation">)</span><span class="token punctuation">.</span>prs1
+    <span class="token keyword">val</span> rs2_addr <span class="token operator">=</span> io<span class="token punctuation">.</span>iss_uops<span class="token punctuation">(</span>w<span class="token punctuation">)</span><span class="token punctuation">.</span>prs2
+    <span class="token keyword">val</span> rs3_addr <span class="token operator">=</span> io<span class="token punctuation">.</span>iss_uops<span class="token punctuation">(</span>w<span class="token punctuation">)</span><span class="token punctuation">.</span>prs3
+    <span class="token keyword">val</span> pred_addr <span class="token operator">=</span> io<span class="token punctuation">.</span>iss_uops<span class="token punctuation">(</span>w<span class="token punctuation">)</span><span class="token punctuation">.</span>ppred
+    
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>enableSFBOpt<span class="token punctuation">)</span> io<span class="token punctuation">.</span>prf_read_ports<span class="token punctuation">(</span>w<span class="token punctuation">)</span><span class="token punctuation">.</span>addr <span class="token operator">:</span><span class="token operator">=</span> pred_addr
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>enableSFBOpt<span class="token punctuation">)</span> rrd_pred_data<span class="token punctuation">(</span>w<span class="token punctuation">)</span> <span class="token operator">:</span><span class="token operator">=</span> Mux<span class="token punctuation">(</span>RegNext<span class="token punctuation">(</span>io<span class="token punctuation">.</span>iss_uops<span class="token punctuation">(</span>w<span class="token punctuation">)</span><span class="token punctuation">.</span>is_sfb_shadow<span class="token punctuation">)</span><span class="token punctuation">,</span> io<span class="token punctuation">.</span>prf_read_ports<span class="token punctuation">(</span>w<span class="token punctuation">)</span><span class="token punctuation">.</span>data<span class="token punctuation">,</span> <span class="token boolean">false</span><span class="token punctuation">.</span>B<span class="token punctuation">)</span>
+
+    <span class="token keyword">val</span> bypassed_pred_data <span class="token operator">=</span> Wire<span class="token punctuation">(</span>Vec<span class="token punctuation">(</span>issueWidth<span class="token punctuation">,</span> Bool<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span>b <span class="token keyword">&lt;-</span> <span class="token number">0</span> until numTotalPredBypassPorts<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">val</span> bypass <span class="token operator">=</span> io<span class="token punctuation">.</span>pred_bypass<span class="token punctuation">(</span>b<span class="token punctuation">)</span>
+      pred_cases <span class="token operator">++</span><span class="token operator">=</span> Array<span class="token punctuation">(</span><span class="token punctuation">(</span>bypass<span class="token punctuation">.</span>valid <span class="token operator">&amp;&amp;</span> <span class="token punctuation">(</span>ppred <span class="token operator">==</span><span class="token operator">=</span> bypass<span class="token punctuation">.</span>bits<span class="token punctuation">.</span>uop<span class="token punctuation">.</span>pdst<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> bypass<span class="token punctuation">.</span>bits<span class="token punctuation">.</span>uop<span class="token punctuation">.</span>is_sfb_br<span class="token punctuation">,</span> bypass<span class="token punctuation">.</span>bits<span class="token punctuation">.</span>data<span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>enableSFBOpt<span class="token punctuation">)</span>     bypassed_pred_data<span class="token punctuation">(</span>w<span class="token punctuation">)</span> <span class="token operator">:</span><span class="token operator">=</span> MuxCase<span class="token punctuation">(</span>rrd_pred_data<span class="token punctuation">(</span>w<span class="token punctuation">)</span><span class="token punctuation">,</span> pred_cases<span class="token punctuation">)</span>    
+ 
+  <span class="token comment">//-------------------------------------------------------------</span>
+  <span class="token comment">//-------------------------------------------------------------</span>
+  <span class="token comment">// **** Execute Stage ****</span>
+  <span class="token keyword">for</span> <span class="token punctuation">(</span>w <span class="token keyword">&lt;-</span> <span class="token number">0</span> until issueWidth<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>enableSFBOpt<span class="token punctuation">)</span>     exe_reg_pred_data<span class="token punctuation">(</span>w<span class="token punctuation">)</span> <span class="token operator">:</span><span class="token operator">=</span> bypassed_pred_data<span class="token punctuation">(</span>w<span class="token punctuation">)</span>
+  <span class="token punctuation">}</span>
+  <span class="token comment">//-------------------------------------------------------------</span>
+  <span class="token comment">// set outputs to execute pipelines</span>
+  <span class="token keyword">for</span> <span class="token punctuation">(</span>w <span class="token keyword">&lt;-</span> <span class="token number">0</span> until issueWidth<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    io<span class="token punctuation">.</span>exe_reqs<span class="token punctuation">(</span>w<span class="token punctuation">)</span><span class="token punctuation">.</span>valid    <span class="token operator">:</span><span class="token operator">=</span> exe_reg_valids<span class="token punctuation">(</span>w<span class="token punctuation">)</span>
+    io<span class="token punctuation">.</span>exe_reqs<span class="token punctuation">(</span>w<span class="token punctuation">)</span><span class="token punctuation">.</span>bits<span class="token punctuation">.</span>uop <span class="token operator">:</span><span class="token operator">=</span> exe_reg_uops<span class="token punctuation">(</span>w<span class="token punctuation">)</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>enableSFBOpt<span class="token punctuation">)</span>     io<span class="token punctuation">.</span>exe_reqs<span class="token punctuation">(</span>w<span class="token punctuation">)</span><span class="token punctuation">.</span>bits<span class="token punctuation">.</span>pred_data <span class="token operator">:</span><span class="token operator">=</span> exe_reg_pred_data<span class="token punctuation">(</span>w<span class="token punctuation">)</span>
+  <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>     
+</code></pre> 
+<p>BoomCore为了实现更好的sfb优化，增加了sfb专用的寄存器堆prf（predicate register file，prf），prf以ppred中保存的ftq_idx为地址，以sfb_br的最终计算结果为数据。除此之外，针对于sfb还有专用的bypass通道，直接把sfb_br的计算结果bypass给sfb_shadow指令。请求sfb_br结果时，先查看的bypass通道，再查看prf。<br> 对于sfb的bypass通道，是直接把sfb_br指令的pdst传递过来与sfb_shadow指令的ppred来匹配，相等的话就匹配上了。此时，再回顾rename中sfb_br和sfb_shadow关于ftq_idx的使用，才发现设计是很巧妙的。</p> 
+<pre><code class="prism language-scala">      pred_cases <span class="token operator">++</span><span class="token operator">=</span> Array<span class="token punctuation">(</span><span class="token punctuation">(</span>bypass<span class="token punctuation">.</span>valid <span class="token operator">&amp;&amp;</span> <span class="token punctuation">(</span>ppred <span class="token operator">==</span><span class="token operator">=</span> bypass<span class="token punctuation">.</span>bits<span class="token punctuation">.</span>uop<span class="token punctuation">.</span>pdst<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> bypass<span class="token punctuation">.</span>bits<span class="token punctuation">.</span>uop<span class="token punctuation">.</span>is_sfb_br<span class="token punctuation">,</span> bypass<span class="token punctuation">.</span>bits<span class="token punctuation">.</span>data<span class="token punctuation">)</span><span class="token punctuation">)</span>
+</code></pre> 
+<h3><a id="37_executionunits_403"></a>3.7 execution-units</h3> 
+<p>接下来是执行（execute,exe）阶段，执行阶段主要是通过各种功能单元（Function Unit, FU）来完成指令的执行，计算出结果，将结果写回寄存器和bypass出去。BoomCore的包括的基本FU单元主要如下所示，主要是10种，而实际BoomCore中的FU一般是由某几个FU基本单元组成，如JmpUnit是由fu_alu、fu_jmp和fu_i2f组成的。而sfb_br指令本质是branch指令，是在fu_alu里面运算；而目前的sfb_shadow指令本质是一些算数逻辑指令，也是在fu_alu里面运算。但是，回顾Decode阶段，对于sfb_br指令加了约束，它只能由FU_JMP来计算，这就和普通的branch指令进行了区分。</p> 
+<pre><code class="prism language-scala"><span class="token keyword">object</span> FUConstants
+<span class="token punctuation">{<!-- --></span>
+  <span class="token comment">// bit mask, since a given execution pipeline may support multiple functional units</span>
+  <span class="token keyword">val</span> FUC_SZ <span class="token operator">=</span> <span class="token number">10</span>
+  <span class="token keyword">val</span> FU_X   <span class="token operator">=</span> BitPat<span class="token punctuation">.</span>dontCare<span class="token punctuation">(</span>FUC_SZ<span class="token punctuation">)</span>
+  <span class="token keyword">val</span> FU_ALU <span class="token operator">=</span>   <span class="token number">1.</span>U<span class="token punctuation">(</span>FUC_SZ<span class="token punctuation">.</span>W<span class="token punctuation">)</span>
+  <span class="token keyword">val</span> FU_JMP <span class="token operator">=</span>   <span class="token number">2.</span>U<span class="token punctuation">(</span>FUC_SZ<span class="token punctuation">.</span>W<span class="token punctuation">)</span>
+  <span class="token keyword">val</span> FU_MEM <span class="token operator">=</span>   <span class="token number">4.</span>U<span class="token punctuation">(</span>FUC_SZ<span class="token punctuation">.</span>W<span class="token punctuation">)</span>
+  <span class="token keyword">val</span> FU_MUL <span class="token operator">=</span>   <span class="token number">8.</span>U<span class="token punctuation">(</span>FUC_SZ<span class="token punctuation">.</span>W<span class="token punctuation">)</span>
+  <span class="token keyword">val</span> FU_DIV <span class="token operator">=</span>  <span class="token number">16.</span>U<span class="token punctuation">(</span>FUC_SZ<span class="token punctuation">.</span>W<span class="token punctuation">)</span>
+  <span class="token keyword">val</span> FU_CSR <span class="token operator">=</span>  <span class="token number">32.</span>U<span class="token punctuation">(</span>FUC_SZ<span class="token punctuation">.</span>W<span class="token punctuation">)</span>
+  <span class="token keyword">val</span> FU_FPU <span class="token operator">=</span>  <span class="token number">64.</span>U<span class="token punctuation">(</span>FUC_SZ<span class="token punctuation">.</span>W<span class="token punctuation">)</span>
+  <span class="token keyword">val</span> FU_FDV <span class="token operator">=</span> <span class="token number">128.</span>U<span class="token punctuation">(</span>FUC_SZ<span class="token punctuation">.</span>W<span class="token punctuation">)</span>
+  <span class="token keyword">val</span> FU_I2F <span class="token operator">=</span> <span class="token number">256.</span>U<span class="token punctuation">(</span>FUC_SZ<span class="token punctuation">.</span>W<span class="token punctuation">)</span>
+  <span class="token keyword">val</span> FU_F2I <span class="token operator">=</span> <span class="token number">512.</span>U<span class="token punctuation">(</span>FUC_SZ<span class="token punctuation">.</span>W<span class="token punctuation">)</span>
+  <span class="token comment">// FP stores generate data through FP F2I, and generate address through MemAddrCalc</span>
+  <span class="token keyword">val</span> FU_F2IMEM <span class="token operator">=</span> <span class="token number">516.</span>U<span class="token punctuation">(</span>FUC_SZ<span class="token punctuation">.</span>W<span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>1.对于sfb_br的处理，BoomCore架构也是将sfb_br指令放在JmpUnit(也叫BranchUnit)来处理，具体如下面源代码：</p> 
+<pre><code class="prism language-scala">  r_val <span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span> <span class="token operator">:</span><span class="token operator">=</span> io<span class="token punctuation">.</span>req<span class="token punctuation">.</span>valid
+  r_data<span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span> <span class="token operator">:</span><span class="token operator">=</span> Mux<span class="token punctuation">(</span>io<span class="token punctuation">.</span>req<span class="token punctuation">.</span>bits<span class="token punctuation">.</span>uop<span class="token punctuation">.</span>is_sfb_br<span class="token punctuation">,</span> pc_sel <span class="token operator">==</span><span class="token operator">=</span> PC_BRJMP<span class="token punctuation">,</span> alu_out<span class="token punctuation">)</span>
+  r_pred<span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span> <span class="token operator">:</span><span class="token operator">=</span> io<span class="token punctuation">.</span>req<span class="token punctuation">.</span>bits<span class="token punctuation">.</span>uop<span class="token punctuation">.</span>is_sfb_shadow <span class="token operator">&amp;&amp;</span> io<span class="token punctuation">.</span>req<span class="token punctuation">.</span>bits<span class="token punctuation">.</span>pred_data
+  <span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token keyword">&lt;-</span> <span class="token number">1</span> until numStages<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    r_val<span class="token punctuation">(</span>i<span class="token punctuation">)</span>  <span class="token operator">:</span><span class="token operator">=</span> r_val<span class="token punctuation">(</span>i<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span>
+    r_data<span class="token punctuation">(</span>i<span class="token punctuation">)</span> <span class="token operator">:</span><span class="token operator">=</span> r_data<span class="token punctuation">(</span>i<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span>
+    r_pred<span class="token punctuation">(</span>i<span class="token punctuation">)</span> <span class="token operator">:</span><span class="token operator">=</span> r_pred<span class="token punctuation">(</span>i<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span>
+  <span class="token punctuation">}</span>
+  io<span class="token punctuation">.</span>resp<span class="token punctuation">.</span>bits<span class="token punctuation">.</span>data <span class="token operator">:</span><span class="token operator">=</span> r_data<span class="token punctuation">(</span>numStages<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span>
+  io<span class="token punctuation">.</span>resp<span class="token punctuation">.</span>bits<span class="token punctuation">.</span>predicated <span class="token operator">:</span><span class="token operator">=</span> r_pred<span class="token punctuation">(</span>numStages<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span>
+  <span class="token comment">// Bypass</span>
+  <span class="token comment">// for the ALU, we can bypass same cycle as compute</span>
+  io<span class="token punctuation">.</span>bypass<span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">.</span>valid <span class="token operator">:</span><span class="token operator">=</span> io<span class="token punctuation">.</span>req<span class="token punctuation">.</span>valid
+  io<span class="token punctuation">.</span>bypass<span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">.</span>bits<span class="token punctuation">.</span>data <span class="token operator">:</span><span class="token operator">=</span> Mux<span class="token punctuation">(</span>io<span class="token punctuation">.</span>req<span class="token punctuation">.</span>bits<span class="token punctuation">.</span>uop<span class="token punctuation">.</span>is_sfb_br<span class="token punctuation">,</span> pc_sel <span class="token operator">==</span><span class="token operator">=</span> PC_BRJMP<span class="token punctuation">,</span> alu_out<span class="token punctuation">)</span>
+  <span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token keyword">&lt;-</span> <span class="token number">1</span> until numStages<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    io<span class="token punctuation">.</span>bypass<span class="token punctuation">(</span>i<span class="token punctuation">)</span><span class="token punctuation">.</span>valid <span class="token operator">:</span><span class="token operator">=</span> r_val<span class="token punctuation">(</span>i<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span>
+    io<span class="token punctuation">.</span>bypass<span class="token punctuation">(</span>i<span class="token punctuation">)</span><span class="token punctuation">.</span>bits<span class="token punctuation">.</span>data <span class="token operator">:</span><span class="token operator">=</span> r_data<span class="token punctuation">(</span>i<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<p>对于sfb_br指令，当pc_sel等于PC_BRJMP时，结果为1，表示跳转（也表示前端Frontend预测失败）；反之，结果为0，表示不跳转（表示前端Frontend预测正确）。把结果通过iresp和bypass通道传输出去，iresp是将结果写回prf，bypass通道是将结果直接传给register read阶段。一般来说bypass要快于iresp，然后在register read优先从bypass通道获取数据结果。<br> 补充一点，对于sfb_shadow指令，会把当前的predicated结果送到resp通道，这个信号主要是rob中使用，标示sfb_shadow指令是commit，还是arch commit，在rob中会详细说明。<br> 2.对于sfb_shadow指令的处理<br> 之前在介绍sfb优化时说过，sfb优化最大的特点是sfb_br预测错误时，不用flush流水线，而通过将原始目的寄存器的旧值再次写回目的寄存器即完成了修复。而实际也是这么做的，如下面源代码：</p> 
+<pre><code class="prism language-scala">  <span class="token keyword">val</span> alu_out <span class="token operator">=</span> Mux<span class="token punctuation">(</span>io<span class="token punctuation">.</span>req<span class="token punctuation">.</span>bits<span class="token punctuation">.</span>uop<span class="token punctuation">.</span>is_sfb_shadow <span class="token operator">&amp;&amp;</span> io<span class="token punctuation">.</span>req<span class="token punctuation">.</span>bits<span class="token punctuation">.</span>pred_data<span class="token punctuation">,</span>
+    Mux<span class="token punctuation">(</span>io<span class="token punctuation">.</span>req<span class="token punctuation">.</span>bits<span class="token punctuation">.</span>uop<span class="token punctuation">.</span>ldst_is_rs1<span class="token punctuation">,</span> io<span class="token punctuation">.</span>req<span class="token punctuation">.</span>bits<span class="token punctuation">.</span>rs1_data<span class="token punctuation">,</span> io<span class="token punctuation">.</span>req<span class="token punctuation">.</span>bits<span class="token punctuation">.</span>rs2_data<span class="token punctuation">)</span><span class="token punctuation">,</span>
+    Mux<span class="token punctuation">(</span>io<span class="token punctuation">.</span>req<span class="token punctuation">.</span>bits<span class="token punctuation">.</span>uop<span class="token punctuation">.</span>uopc <span class="token operator">==</span><span class="token operator">=</span> uopMOV<span class="token punctuation">,</span> io<span class="token punctuation">.</span>req<span class="token punctuation">.</span>bits<span class="token punctuation">.</span>rs2_data<span class="token punctuation">,</span> alu<span class="token punctuation">.</span>io<span class="token punctuation">.</span>out<span class="token punctuation">)</span><span class="token punctuation">)</span>
+    
+  r_data<span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span> <span class="token operator">:</span><span class="token operator">=</span> Mux<span class="token punctuation">(</span>io<span class="token punctuation">.</span>req<span class="token punctuation">.</span>bits<span class="token punctuation">.</span>uop<span class="token punctuation">.</span>is_sfb_br<span class="token punctuation">,</span> pc_sel <span class="token operator">==</span><span class="token operator">=</span> PC_BRJMP<span class="token punctuation">,</span> alu_out<span class="token punctuation">)</span>
+  io<span class="token punctuation">.</span>bypass<span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">.</span>bits<span class="token punctuation">.</span>data <span class="token operator">:</span><span class="token operator">=</span> Mux<span class="token punctuation">(</span>io<span class="token punctuation">.</span>req<span class="token punctuation">.</span>bits<span class="token punctuation">.</span>uop<span class="token punctuation">.</span>is_sfb_br<span class="token punctuation">,</span> pc_sel <span class="token operator">==</span><span class="token operator">=</span> PC_BRJMP<span class="token punctuation">,</span> alu_out<span class="token punctuation">)</span> 
+</code></pre> 
+<p>对于一条sfb_shadow指令，如果sfb_br的指令计算结果为跳转，也就是这里的pred_data为1，那么表示前端frontend预测错误，这时需要修复，因此会把保存在rs1_data或rs2_data中的<strong>目的寄存器的旧值</strong>重新通过resp和bypass通道写回寄存器堆和传给需要的指令。而如果sfb_br的指令计算结果为不跳转，也就是pred_data为0，表示前端预测正确，sfb_shadow指令实际会执行，因此把实际的运算结果写回。</p> 
+<h3><a id="38_rob_460"></a>3.8 rob</h3> 
+<p>重排序缓存（Reorder Buffer, rob）是将乱序执行完后的指令按序提交（commit），从而保证程序是按照程序员期望的顺序来执行的。对于CPU来说，凡是暴露给外面的状态都要是正确的状态，而commit信息就是外部调试CPU所依赖的重要信号。而对于sfb_shadow指令来说，不管其对应的sfb_br指令跳转还是没跳转，sfb_shadow指令都是执行了，那么就会在rob中提交。因此BoomCore针对于sfb情况增加了arch commit，arch commit与平常commit除了sfb情况之外，都是保持一致的，那么外部可以结合arch commit和commit来了解所有指令的提交情况。<br> 具体源代码如下：</p> 
+<pre><code class="prism language-scala">    <span class="token keyword">val</span> rob_predicated <span class="token operator">=</span> Reg<span class="token punctuation">(</span>Vec<span class="token punctuation">(</span>numRobRows<span class="token punctuation">,</span> Bool<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token comment">// Was this instruction predicated out?</span>
+    when <span class="token punctuation">(</span>io<span class="token punctuation">.</span>enq_valids<span class="token punctuation">(</span>w<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      rob_val<span class="token punctuation">(</span>rob_tail<span class="token punctuation">)</span>       <span class="token operator">:</span><span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">.</span>B
+      rob_predicated<span class="token punctuation">(</span>rob_tail<span class="token punctuation">)</span>   <span class="token operator">:</span><span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">.</span>B
+    <span class="token punctuation">}</span> <span class="token punctuation">.</span>elsewhen <span class="token punctuation">(</span>io<span class="token punctuation">.</span>enq_valids<span class="token punctuation">.</span>reduce<span class="token punctuation">(</span>_<span class="token operator">|</span>_<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span>rob_val<span class="token punctuation">(</span>rob_tail<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      rob_uop<span class="token punctuation">(</span>rob_tail<span class="token punctuation">)</span><span class="token punctuation">.</span>debug_inst <span class="token operator">:</span><span class="token operator">=</span> BUBBLE <span class="token comment">// just for debug purposes</span>
+    <span class="token punctuation">}</span>
+    
+    when <span class="token punctuation">(</span>wb_resp<span class="token punctuation">.</span>valid <span class="token operator">&amp;&amp;</span> MatchBank<span class="token punctuation">(</span>GetBankIdx<span class="token punctuation">(</span>wb_uop<span class="token punctuation">.</span>rob_idx<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        rob_predicated<span class="token punctuation">(</span>row_idx<span class="token punctuation">)</span>  <span class="token operator">:</span><span class="token operator">=</span> wb_resp<span class="token punctuation">.</span>bits<span class="token punctuation">.</span>predicated
+      <span class="token punctuation">}</span>
+    <span class="token comment">// Perform Commit</span>
+    io<span class="token punctuation">.</span>commit<span class="token punctuation">.</span>valids<span class="token punctuation">(</span>w<span class="token punctuation">)</span> <span class="token operator">:</span><span class="token operator">=</span> will_commit<span class="token punctuation">(</span>w<span class="token punctuation">)</span>
+    io<span class="token punctuation">.</span>commit<span class="token punctuation">.</span>arch_valids<span class="token punctuation">(</span>w<span class="token punctuation">)</span> <span class="token operator">:</span><span class="token operator">=</span> will_commit<span class="token punctuation">(</span>w<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span>rob_predicated<span class="token punctuation">(</span>com_idx<span class="token punctuation">)</span>      
+</code></pre> 
+<p>可以看出rob_predicated默认为0，也就是除了sfb_shadow指令之外，commit和arch_commit是一致的；当收到的sfb_shadow指令的predicated信号为1时表示这条sfb_shadow指令对应的sfb_br指令预测错误，实际不应该执行，所以arch_commit是拉低的；反之，sfb_shadow指令实际是执行的，arch_commit是拉高的。</p> 
+<h2><a id="4__480"></a>4 总结</h2> 
+<p>总的来说，BoomCore中涉及sfb的流水线为7级：fetch-&gt;decode-&gt;rename-&gt;dispatch-&gt;issue-&gt;register read-&gt;wb，还有commit时的特殊处理，还是挺复杂的。而且思考一个问题，如果sfb_shadow的指令数目太长的话，如大于7，那么就会充满整个pipline，当sfb_br计算结果为实际跳转时，意味着当前pipline都浪费了，而和重定向导致的penalty 周期数差不多，那么sfb 优化带来的收益就没那么明显了。<br> 所以只有sfb_shadow指令数目小于流水线级数，那么收益才会明显。</p> 
+<h2><a id="5__483"></a>5 参考资料</h2> 
+<p>[1]<a href="https://github.com/riscv-boom/riscv-boom">BOOM源代码</a><br> [2]<a href="https://github.com/ucb-bar/chipyard">Chipyard平台框架</a><br> [3]<a href="https://boom-core.org" rel="nofollow">BOOM官方文档</a><br> [4]riscv官方文档：riscv-spec-20191213.<br> [5] Celio C , DA Patterson, K Asanović. The Berkeley Out-of-Order Machine (BOOM): An Industry- Competitive, Synthesizable, Parameterized RISC-V Processor.</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/753d7328ba9607231f4efb7bccc4c40f/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Java-jar包的创建与运行</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/288232953483188e26a6ae532026be33/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">MySQL可视化工具HeidiSQL安装与使用</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

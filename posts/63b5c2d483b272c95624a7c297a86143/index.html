@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>修复Chroot环境下APT包管理对systemd环境识别问题 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="修复Chroot环境下APT包管理对systemd环境识别问题" />
+<meta property="og:description" content="版权声明：本文为博主原创文章，转载请注明出处。
+前言 近期在折腾Chroot环境下的设备时，发现软件包无法更新，得到以下错误：
+1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 (Reading database ... 77272 files and directories currently installed.) Preparing to unpack .../mariadb-server-10.3_1%3a10.3.34-0ubuntu0.20.04.1_arm64.deb ... Running in chroot, ignoring request. /usr/sbin/invoke-rc.d: 551: rc-service: not found invoke-rc.d: initscript mysql, action &#34;stop&#34; failed. dpkg: warning: old mariadb-server-10.3 package pre-removal script subprocess returned error exit status 127 dpkg: trying script from the new package instead ." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/63b5c2d483b272c95624a7c297a86143/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-05-08T11:54:22+08:00" />
+<meta property="article:modified_time" content="2022-05-08T11:54:22+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">修复Chroot环境下APT包管理对systemd环境识别问题</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <blockquote> 
+ <p>版权声明：本文为博主原创文章，转载请注明出处。</p> 
+</blockquote> 
+<h3 id="前言">前言</h3> 
+<p>近期在折腾Chroot环境下的设备时，发现软件包无法更新，得到以下错误：</p> 
+<p></p> 
+<table><tbody><tr><td> <pre>1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+</pre> </td><td> <pre>(Reading database ... 77272 files and directories currently installed.)
+Preparing to unpack .../mariadb-server-10.3_1%3a10.3.34-0ubuntu0.20.04.1_arm64.deb ...
+Running in chroot, ignoring request.
+/usr/sbin/invoke-rc.d: 551: rc-service: not found
+invoke-rc.d: initscript mysql, action "stop" failed.
+dpkg: warning: old mariadb-server-10.3 package pre-removal script subprocess returned error exit status 127
+dpkg: trying script from the new package instead ...
+Running in chroot, ignoring request.
+/usr/sbin/invoke-rc.d: 551: rc-service: not found
+invoke-rc.d: initscript mysql, action "stop" failed.
+dpkg: error processing archive /var/cache/apt/archives/mariadb-server-10.3_1%3a10.3.34-0ubuntu0.20.04.1_arm64.deb (--unpack):
+ new mariadb-server-10.3 package pre-removal script subprocess returned error exit status 127
+Running in chroot, ignoring request.
+Errors were encountered while processing:
+ /var/cache/apt/archives/mariadb-server-10.3_1%3a10.3.34-0ubuntu0.20.04.1_arm64.deb
+E: Sub-process /usr/bin/dpkg returned an error code (1)
+</pre> </td></tr></tbody></table> 
+<p><a id="more"></a></p> 
+<h3 id="问题分析">问题分析</h3> 
+<p>分析文件<code>/usr/sbin/invoke-rc.d:551</code>，可知卸载软件包时，<strong>dpkg</strong>将系统环境识别为<strong>openrc</strong>。</p> 
+<p></p> 
+<table><tbody><tr><td> <pre>1
+2
+3
+</pre> </td><td> <pre>550             elif [ -n "$is_openrc" ]; then
+551                 rc-service "${INITSCRIPTID}" "${saction}" &amp;&amp; exit 0
+552             else
+</pre> </td></tr></tbody></table> 
+<p>由于Ubuntu采用<strong>systemd</strong>作为系统组件，那么<strong>openrc</strong>相关的二进制文件自然是不存在的，最后导致了这个问题的发生。</p> 
+<p>由于文件<code>/usr/sbin/invoke-rc.d</code>有判断是否使用<strong>openrc</strong>的变量，那么对该变量赋值的源头进行分析，可以发现也有判断<strong>systemd</strong>环境的变量。</p> 
+<p></p> 
+<table><tbody><tr><td> <pre>1
+2
+3
+4
+5
+</pre> </td><td> <pre>277 if test -d /run/systemd/system ; then
+278     is_systemd=1
+279     UNIT="${INITSCRIPTID%.sh}.service"
+280 elif test -f /run/openrc/softlevel ; then
+281     is_openrc=1
+</pre> </td></tr></tbody></table> 
+<p>由第<strong>277-278</strong>行可知，要使<strong>dpkg</strong>正确识别<strong>systemd</strong>环境，需要存在目录<code>/run/systemd/system</code>。</p> 
+<p>由于是Chroot环境，外部系统不一定使用systemd进行管理，所以导致了问题的发生。</p> 
+<h3 id="解决方案">解决方案</h3> 
+<p></p> 
+<table><tbody><tr><td> <pre>1
+</pre> </td><td> <pre>mkdir /run/systemd/system
+</pre> </td></tr></tbody></table>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/2247833fbbc9369485fe2af576f10423/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">智能优化算法——遗传算法</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/4b2c7f95590d2fb9b6ce6dc3470ed611/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">创建ingress报错</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

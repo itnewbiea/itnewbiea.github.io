@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>MySQL 8 复制（一）——异步复制 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="MySQL 8 复制（一）——异步复制" />
+<meta property="og:description" content="目录
+一、MySQL异步复制介绍
+1. 复制的用途
+2. 复制如何工作
+3. 两阶段提交
+二、复制实验环境
+三、安装mysql-8.0.16
+四、配置异步复制
+1. 空库
+2. 脱机
+3. 联机
+一、MySQL异步复制介绍 简单说，复制就是将来自一个MySQL数据库服务器（主库）的数据复制到一个或多个MySQL数据库服务器（从库）。传统的MySQL复制提供了一种简单的Primary-Secondary复制方法，默认情况下，复制是单向异步的。MySQL支持两种复制方式：基于行的复制和基于语句的复制。这两种方式都是通过在主库上记录二进制日志（binlog）、在从库重放中继日志（relylog）的方式来实现异步的数据复制。二进制日志或中继日志中的记录被称为事件。所谓异步包含两层含义，一是主库的二进制日志写入与将其发送到从库是异步进行的，二是从库获取与重放日志事件是异步进行的。这意味着，在同一时间点从库上的数据更新可能落后于主库，并且无法保证主从之间的延迟间隔。
+复制给主库增加的开销主要体现在启用二进制日志带来的I/O，但是开销并不大，MySQL官方文档中称开启二进制日志会产生1%的性能损耗。出于对历史事务备份以及从介质失败中恢复的目的，这点开销是非常必要的。除此之外，每个从库也会对主库产生一些负载，例如网络和I/O开销。当从库读取主库的二进制日志时，可能会造成一定的I/O开销。如果从一个主库上复制到多个从库，唤醒多个复制线程发送二进制日志内容的开销将会累加。但所有这些复制带来的额外开销相对于应用对MySQL服务器造成的高负载来说是很小的。
+1. 复制的用途 （1）横向扩展
+通过复制可以将读操作指向从库来获得更好的读扩展。所有写入和更新都在主库上进行，但读取可能发生在一个或多个从库上。在这种读写分离模型中，主库专用于更新，显然比同时进行读写操作会有更好的写性能。需要注意的是，对于写操作并不适合通过复制来扩展。在一主多从架构中，写操作会被执行多次，这时整个系统的写性能取决于写入最慢的那部分。
+（2）负载均衡
+通过MySQL复制可以将读操作分不到多个服务器上，实现对读密集型应用的优化。对于小规模的应用，可以简单地对机器名做硬编码或者使用DNS轮询（将一个机器名指向多个IP地址）。当然也可以使用复杂的方法，例如使用LVS网络负载均衡器等，能够很好地将负载分配到不同的MySQL服务器上。
+（3）提高数据安全性
+提高数据安全性可以从两方面来理解。其一，因为数据被复制到从库，并且从库可以暂停复制过程，所以可以在从库上运行备份服务而不会影响相应的主库。其二，当主库出现问题，还有从库的数据可以被访问。但是，对备份来说，复制仅是一项有意义的技术补充，它既不是备份也不能够取代备份。例如，当用户误删除一个表，而且此操作已经在从库上被复制执行，这种情况下只能用备份来恢复。
+（4）提高高可用性
+复制能够帮助应用程序避免MySQL单点失败，一个包含复制的设计良好的故障切换系统能够显著缩短宕机时间。
+（5）滚动升级
+比较普遍的做法是，使用一个高版本MySQL作为从库，保证在升级全部实例前，查询能够在从库上按照预期执行。测试没有问题后，将高版本的MySQL切换为主库，并将应用连接至该主库，然后重新搭建高版本的从库。
+2. 复制如何工作 如前所述，MySQL复制依赖二进制日志，所以要理解复制如何工作，先要了解MySQL的二进制日志。
+（1）二进制日志
+二进制日志包含描述数据库更改的事件，如建表操作或对表数据的更改等。开启二进制日志有两个重要目的：
+用于复制。主库上的二进制日志提供要发送到从库的数据更改记录。主库将其二进制日志中包含的事件发送到从库，从库执行这些事件以对主服务器上的数据进行相同的更改。用于恢复。当出现介质错误（如磁盘故障）时，数据恢复操作需要使用二进制日志。还原备份后，将重新执行备份后记录的二进制日志中的事件。 不难看出，MySQL二进制日志所起的作用与Oracle的归档日志类似。二进制日志只记录更新数据的事件，不用于SELECT或SHOW等语句。通过设置log-bin系统变量开启二进制日志，MySQL 8中缺省是开启的。
+二进制日志有STATEMENT、ROW、MIXED三种格式，通过binlog-format系统变量设置：
+STATMENT格式，基于SQL语句的复制（statement-based replication，SBR）。每一条会修改数据的SQL语句会记录到binlog中。这种格式的优点是不需要记录每行的数据变化，这样二进制日志会比较少，减少磁盘I/O，提高性能。缺点是在某些情况下会导致主库与从库中的数据不一致，例如last_insert_id()、now()等非确定性函数，以及用户自定义函数（user-defined functions，udf）等易出现问题。ROW格式，基于行的复制（row-based replication，RBR）。不记录每一条SQL语句的上下文信息，仅需记录哪条数据被修改了，修改成了什么样子，能清楚记录每一行数据的修改细节。其优点是不会出现某些特定情况下的存储过程、函数或触发器的调用和触发无法被正确复制的问题。缺点是通常会产生大量的日志，尤其像大表上执行alter table操作时候会让日志暴涨。MIXED格式，混合复制（mixed-based replication，MBR）。是语句和行两种格式的混合使用，默认使用STATEMENT模式保存二进制日志，对于STATEMENT模式无法正确复制的操作，会自动切换到基于行的格式，MySQL会根据执行的SQL语句选择日志保存方式。 MySQL 8缺省使用ROW格式。二进制日志的存放位置最好设置到与MySQL数据目录不同的磁盘分区，以降低磁盘I/O的竞争，提升性能，并且在数据磁盘故障的时候还可以利用备份和二进制日志恢复数据。
+（2）复制步骤
+总的来说，MySQL复制有五个步骤：
+在主库上把数据更改事件记录到二进制日志中。从库上的I/O线程向主库询问二进制日志中的事件。主库上的binlog dump线程向I/O线程发送二进制事件。从库上的I/O线程将二进制日志事件复制到自己的中继日志中。从库上的SQL线程读取中继日志中的事件，并将其重放到从库上。 图1更详细地描述了复制的细节。
+图1 复制如何工作 第一步是在主库上记录二进制日志。在每次准备提交事务完成数据更新前，主库将数据更新的事件记录到二进制日志中。MySQL会按事务提交的顺序而非每条语句的执行顺序来记录二进制日志。在记录二进制日志后，主库会告诉存储引擎可以提交事务了。
+下一步，从库将主库的二进制日志复制到其本地的中继日志中。首先，从库会启动一个工作线程，称为I/O线程，I/O线程跟主库建立一个普通的客户端连接，然后在主库上启动一个特殊的二进制日志转储（binlog dump）线程，它会读取主库上二进制日志中的事件，但不会对事件进行轮询。如果该线程追赶上了主库，它将进入睡眠状态，直到主库发送信号通知其有新的事件时才会被唤醒，从库I/O线程会将接收到的事件记录到中继日志中。
+从库的SQL线程执行最后一步，该线程从中继日志中读取事件并在从库上执行，从而实现从库数据的更新。当SQL线程追赶I/O线程时，中继日志通常已经在系统缓存中，所以重放中继日志的开销很低。SQL线程执行的事件也可以通过log_slave_updates系统变量来决定是否写入其自己的二进制日志中，这可以用于级联复制的场景。
+这种复制架构实现了获取事件和重放事件的解耦，允许这两个过程异步进行。也就是说I/O线程能够独立于SQL线程之外工作。但这种架构也限制了复制的过程，其中最重要的一点是在主库上并发更新的查询在从库上通常只能串行化执行，因为缺省只有一个SQL线程来重放中继日志中的事件。在MySQL 5.6以后已经可以通过配置slave_parallel_workers等系统变量进行并行复制，在后面讨论与复制相关的性能问题时会介绍并行复制的相关细节。
+现在我们已经了解了MySQL复制是以二进制日志为基础的，但是像Innodb这样的事务引擎有自己的事务日志，如ib_logfile，这些事务日志通常被称为重做日志（redo log）。作为背景知识，简单介绍下Innodb重做日志的作用。
+对Innodb的任何修改操作都会首先在称为缓冲池（innodb buffer pool）的内存页面上进行，然后这样的页面将被标记为脏页，并被放到专门的刷新列表上，后续将由master thread或专门的刷脏线程阶段性的将这些页面写入磁盘。这样的好处是避免每次写操作都操作磁盘导致大量的随机I/O，阶段性的刷脏可以将多次对页面的修改合并成一次I/O操作，同时异步写入也降低了访问时延。然而，如果在脏页还未刷入磁盘时，服务器非正常关闭，这些修改操作将会丢失，如果写入操作正在进行，甚至会由于损坏数据文件导致数据库不可用。为了避免上述问题的发生，Innodb将所有对页面的修改操作写入一个专门的文件，并在数据库启动时从此文件进行实例恢复操作，这个文件就是重做日志文件。每当有更新操作时，在数据页变更之前将操作写入重做日志，这样当发生掉电之类的情况时系统可以在重启后继续操作。这就是所谓的预写日志（Write-ahead logging，WAL）。这样的技术推迟了缓冲区页面的刷新，从而提升了数据库的吞吐量。同时由于重做日志的写操作是顺序I/O，相对于写数据文件的随机I/O要快得多。大多数数据库系统都采用类似的技术实现。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/dcda895ac3dfdd0dd8f776b530b10628/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-09-15T09:23:12+08:00" />
+<meta property="article:modified_time" content="2023-09-15T09:23:12+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">MySQL 8 复制（一）——异步复制</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p id="main-toc"><strong>目录</strong></p> 
+<p id="-toc" style="margin-left:0px;"><a href="#%E4%B8%80%E3%80%81MySQL%E5%BC%82%E6%AD%A5%E5%A4%8D%E5%88%B6%E4%BB%8B%E7%BB%8D" rel="nofollow">一、MySQL异步复制介绍</a></p> 
+<p id="1.%20%E5%A4%8D%E5%88%B6%E7%9A%84%E7%94%A8%E9%80%94-toc" style="margin-left:40px;"><a href="#1.%20%E5%A4%8D%E5%88%B6%E7%9A%84%E7%94%A8%E9%80%94" rel="nofollow">1. 复制的用途</a></p> 
+<p id="2.%20%E5%A4%8D%E5%88%B6%E5%A6%82%E4%BD%95%E5%B7%A5%E4%BD%9C-toc" style="margin-left:40px;"><a href="#2.%20%E5%A4%8D%E5%88%B6%E5%A6%82%E4%BD%95%E5%B7%A5%E4%BD%9C" rel="nofollow">2. 复制如何工作</a></p> 
+<p id="3.%20%E4%B8%A4%E9%98%B6%E6%AE%B5%E6%8F%90%E4%BA%A4-toc" style="margin-left:40px;"><a href="#3.%20%E4%B8%A4%E9%98%B6%E6%AE%B5%E6%8F%90%E4%BA%A4" rel="nofollow">3. 两阶段提交</a></p> 
+<p id="%E4%BA%8C%E3%80%81%E5%A4%8D%E5%88%B6%E5%AE%9E%E9%AA%8C%E7%8E%AF%E5%A2%83-toc" style="margin-left:0px;"><a href="#%E4%BA%8C%E3%80%81%E5%A4%8D%E5%88%B6%E5%AE%9E%E9%AA%8C%E7%8E%AF%E5%A2%83" rel="nofollow">二、复制实验环境</a></p> 
+<p id="%E4%B8%89%E3%80%81%E5%AE%89%E8%A3%85mysql-8.0.16-toc" style="margin-left:0px;"><a href="#%E4%B8%89%E3%80%81%E5%AE%89%E8%A3%85mysql-8.0.16" rel="nofollow">三、安装mysql-8.0.16</a></p> 
+<p id="%E5%9B%9B%E3%80%81%E9%85%8D%E7%BD%AE%E5%BC%82%E6%AD%A5%E5%A4%8D%E5%88%B6-toc" style="margin-left:0px;"><a href="#%E5%9B%9B%E3%80%81%E9%85%8D%E7%BD%AE%E5%BC%82%E6%AD%A5%E5%A4%8D%E5%88%B6" rel="nofollow">四、配置异步复制</a></p> 
+<p id="1.%20%E7%A9%BA%E5%BA%93-toc" style="margin-left:40px;"><a href="#1.%20%E7%A9%BA%E5%BA%93" rel="nofollow">1. 空库</a></p> 
+<p id="2.%20%E8%84%B1%E6%9C%BA-toc" style="margin-left:40px;"><a href="#2.%20%E8%84%B1%E6%9C%BA" rel="nofollow">2. 脱机</a></p> 
+<p id="3.%20%E8%81%94%E6%9C%BA-toc" style="margin-left:40px;"><a href="#3.%20%E8%81%94%E6%9C%BA" rel="nofollow">3. 联机</a></p> 
+<hr id="hr-toc"> 
+<h2 id="%E4%B8%80%E3%80%81MySQL%E5%BC%82%E6%AD%A5%E5%A4%8D%E5%88%B6%E4%BB%8B%E7%BB%8D">一、MySQL异步复制介绍</h2> 
+<p>        简单说，复制就是将来自一个MySQL数据库服务器（主库）的数据复制到一个或多个MySQL数据库服务器（从库）。传统的MySQL复制提供了一种简单的Primary-Secondary复制方法，默认情况下，复制是单向异步的。MySQL支持两种复制方式：基于行的复制和基于语句的复制。这两种方式都是通过在主库上记录二进制日志（binlog）、在从库重放中继日志（relylog）的方式来实现异步的数据复制。二进制日志或中继日志中的记录被称为事件。所谓异步包含两层含义，一是主库的二进制日志写入与将其发送到从库是异步进行的，二是从库获取与重放日志事件是异步进行的。这意味着，在同一时间点从库上的数据更新可能落后于主库，并且无法保证主从之间的延迟间隔。</p> 
+<p>        复制给主库增加的开销主要体现在启用二进制日志带来的I/O，但是开销并不大，MySQL官方文档中称开启二进制日志会产生1%的性能损耗。出于对历史事务备份以及从介质失败中恢复的目的，这点开销是非常必要的。除此之外，每个从库也会对主库产生一些负载，例如网络和I/O开销。当从库读取主库的二进制日志时，可能会造成一定的I/O开销。如果从一个主库上复制到多个从库，唤醒多个复制线程发送二进制日志内容的开销将会累加。但所有这些复制带来的额外开销相对于应用对MySQL服务器造成的高负载来说是很小的。</p> 
+<h3 id="1.%20%E5%A4%8D%E5%88%B6%E7%9A%84%E7%94%A8%E9%80%94">1. 复制的用途</h3> 
+<p>（1）横向扩展<br>         通过复制可以将读操作指向从库来获得更好的读扩展。所有写入和更新都在主库上进行，但读取可能发生在一个或多个从库上。在这种读写分离模型中，主库专用于更新，显然比同时进行读写操作会有更好的写性能。需要注意的是，对于写操作并不适合通过复制来扩展。在一主多从架构中，写操作会被执行多次，这时整个系统的写性能取决于写入最慢的那部分。</p> 
+<p>（2）负载均衡<br>         通过MySQL复制可以将读操作分不到多个服务器上，实现对读密集型应用的优化。对于小规模的应用，可以简单地对机器名做硬编码或者使用DNS轮询（将一个机器名指向多个IP地址）。当然也可以使用复杂的方法，例如使用LVS网络负载均衡器等，能够很好地将负载分配到不同的MySQL服务器上。</p> 
+<p>（3）提高数据安全性<br>         提高数据安全性可以从两方面来理解。其一，因为数据被复制到从库，并且从库可以暂停复制过程，所以可以在从库上运行备份服务而不会影响相应的主库。其二，当主库出现问题，还有从库的数据可以被访问。但是，对备份来说，复制仅是一项有意义的技术补充，它既不是备份也不能够取代备份。例如，当用户误删除一个表，而且此操作已经在从库上被复制执行，这种情况下只能用备份来恢复。</p> 
+<p>（4）提高高可用性<br>         复制能够帮助应用程序避免MySQL单点失败，一个包含复制的设计良好的故障切换系统能够显著缩短宕机时间。</p> 
+<p>（5）滚动升级<br>         比较普遍的做法是，使用一个高版本MySQL作为从库，保证在升级全部实例前，查询能够在从库上按照预期执行。测试没有问题后，将高版本的MySQL切换为主库，并将应用连接至该主库，然后重新搭建高版本的从库。</p> 
+<h3 id="2.%20%E5%A4%8D%E5%88%B6%E5%A6%82%E4%BD%95%E5%B7%A5%E4%BD%9C">2. 复制如何工作</h3> 
+<p>        如前所述，MySQL复制依赖二进制日志，所以要理解复制如何工作，先要了解MySQL的二进制日志。<br> （1）二进制日志<br>         二进制日志包含描述数据库更改的事件，如建表操作或对表数据的更改等。开启二进制日志有两个重要目的：</p> 
+<ul><li>用于复制。主库上的二进制日志提供要发送到从库的数据更改记录。主库将其二进制日志中包含的事件发送到从库，从库执行这些事件以对主服务器上的数据进行相同的更改。</li><li>用于恢复。当出现介质错误（如磁盘故障）时，数据恢复操作需要使用二进制日志。还原备份后，将重新执行备份后记录的二进制日志中的事件。</li></ul> 
+<p>        不难看出，MySQL二进制日志所起的作用与Oracle的归档日志类似。二进制日志只记录更新数据的事件，不用于SELECT或SHOW等语句。通过设置log-bin系统变量开启二进制日志，MySQL 8中缺省是开启的。</p> 
+<p>        二进制日志有STATEMENT、ROW、MIXED三种格式，通过binlog-format系统变量设置：</p> 
+<ul><li>STATMENT格式，基于SQL语句的复制（statement-based replication，SBR）。每一条会修改数据的SQL语句会记录到binlog中。这种格式的优点是不需要记录每行的数据变化，这样二进制日志会比较少，减少磁盘I/O，提高性能。缺点是在某些情况下会导致主库与从库中的数据不一致，例如last_insert_id()、now()等非确定性函数，以及用户自定义函数（user-defined functions，udf）等易出现问题。</li><li>ROW格式，基于行的复制（row-based replication，RBR）。不记录每一条SQL语句的上下文信息，仅需记录哪条数据被修改了，修改成了什么样子，能清楚记录每一行数据的修改细节。其优点是不会出现某些特定情况下的存储过程、函数或触发器的调用和触发无法被正确复制的问题。缺点是通常会产生大量的日志，尤其像大表上执行alter table操作时候会让日志暴涨。</li><li>MIXED格式，混合复制（mixed-based replication，MBR）。是语句和行两种格式的混合使用，默认使用STATEMENT模式保存二进制日志，对于STATEMENT模式无法正确复制的操作，会自动切换到基于行的格式，MySQL会根据执行的SQL语句选择日志保存方式。</li></ul> 
+<p>        MySQL 8缺省使用ROW格式。二进制日志的存放位置最好设置到与MySQL数据目录不同的磁盘分区，以降低磁盘I/O的竞争，提升性能，并且在数据磁盘故障的时候还可以利用备份和二进制日志恢复数据。</p> 
+<p>（2）复制步骤<br>         总的来说，MySQL复制有五个步骤：</p> 
+<ol><li>在主库上把数据更改事件记录到二进制日志中。</li><li>从库上的I/O线程向主库询问二进制日志中的事件。</li><li>主库上的binlog dump线程向I/O线程发送二进制事件。</li><li>从库上的I/O线程将二进制日志事件复制到自己的中继日志中。</li><li>从库上的SQL线程读取中继日志中的事件，并将其重放到从库上。</li></ol> 
+<p>        图1更详细地描述了复制的细节。</p> 
+<div style="text-align:center;"> 
+ <figure class="image"> 
+  <img alt="" src="https://images2.imgbox.com/a3/2d/8iPIFld8_o.png"> 
+  <figcaption>
+    图1 复制如何工作 
+  </figcaption> 
+ </figure> 
+</div> 
+<p></p> 
+<p>        第一步是在主库上记录二进制日志。在每次准备提交事务完成数据更新前，主库将数据更新的事件记录到二进制日志中。MySQL会按事务提交的顺序而非每条语句的执行顺序来记录二进制日志。在记录二进制日志后，主库会告诉存储引擎可以提交事务了。</p> 
+<p>        下一步，从库将主库的二进制日志复制到其本地的中继日志中。首先，从库会启动一个工作线程，称为I/O线程，I/O线程跟主库建立一个普通的客户端连接，然后在主库上启动一个特殊的二进制日志转储（binlog dump）线程，它会读取主库上二进制日志中的事件，但不会对事件进行轮询。如果该线程追赶上了主库，它将进入睡眠状态，直到主库发送信号通知其有新的事件时才会被唤醒，从库I/O线程会将接收到的事件记录到中继日志中。</p> 
+<p>        从库的SQL线程执行最后一步，该线程从中继日志中读取事件并在从库上执行，从而实现从库数据的更新。当SQL线程追赶I/O线程时，中继日志通常已经在系统缓存中，所以重放中继日志的开销很低。SQL线程执行的事件也可以通过log_slave_updates系统变量来决定是否写入其自己的二进制日志中，这可以用于级联复制的场景。</p> 
+<p>        这种复制架构实现了获取事件和重放事件的解耦，允许这两个过程异步进行。也就是说I/O线程能够独立于SQL线程之外工作。但这种架构也限制了复制的过程，其中最重要的一点是在主库上并发更新的查询在从库上通常只能串行化执行，因为缺省只有一个SQL线程来重放中继日志中的事件。在MySQL 5.6以后已经可以通过配置slave_parallel_workers等系统变量进行并行复制，在后面讨论与复制相关的性能问题时会介绍并行复制的相关细节。</p> 
+<p>        现在我们已经了解了MySQL复制是以二进制日志为基础的，但是像Innodb这样的事务引擎有自己的事务日志，如ib_logfile，这些事务日志通常被称为重做日志（redo log）。作为背景知识，简单介绍下Innodb重做日志的作用。</p> 
+<p>        对Innodb的任何修改操作都会首先在称为缓冲池（innodb buffer pool）的内存页面上进行，然后这样的页面将被标记为脏页，并被放到专门的刷新列表上，后续将由master thread或专门的刷脏线程阶段性的将这些页面写入磁盘。这样的好处是避免每次写操作都操作磁盘导致大量的随机I/O，阶段性的刷脏可以将多次对页面的修改合并成一次I/O操作，同时异步写入也降低了访问时延。然而，如果在脏页还未刷入磁盘时，服务器非正常关闭，这些修改操作将会丢失，如果写入操作正在进行，甚至会由于损坏数据文件导致数据库不可用。为了避免上述问题的发生，Innodb将所有对页面的修改操作写入一个专门的文件，并在数据库启动时从此文件进行实例恢复操作，这个文件就是重做日志文件。每当有更新操作时，在数据页变更之前将操作写入重做日志，这样当发生掉电之类的情况时系统可以在重启后继续操作。这就是所谓的预写日志（Write-ahead logging，WAL）。这样的技术推迟了缓冲区页面的刷新，从而提升了数据库的吞吐量。同时由于重做日志的写操作是顺序I/O，相对于写数据文件的随机I/O要快得多。大多数数据库系统都采用类似的技术实现。</p> 
+<p>        聪明如你可能已经有了这样的疑问，在复制中二进制日志和重做日志如何协同工作？假设Innodb写完重做日志后，服务异常关闭。主库能够根据重做日志恢复数据，但由于二进制日志没写入，会导致从库同步时少了这个事务么？或者反之，二进制日志写成功，而重做日志没有写完，是否导致从库执行事务，而主库不执行？这些情况会不会产生主从数据不一致的问题呢？解决这些问题是MySQL的核心需求，让我们从MySQL基本架构说起。图2是MySQL的逻辑结构图。</p> 
+<div style="text-align:center;"> 
+ <figure class="image"> 
+  <img alt="" src="https://images2.imgbox.com/de/75/T4gEpcFB_o.png"> 
+  <figcaption>
+    图2 MySQL服务器逻辑架构图 
+  </figcaption> 
+ </figure> 
+</div> 
+<p></p> 
+<p>        最上层用于处理客户端连接、授权认证、安全等等。第二层架构是MySQL服务器层。大多数MySQL的核心服务功能都在这一层，包括查询解析、分析、优化、缓存以及所有内置函数，所有跨存储引擎的功能（存储过程、触发器、视图等）都在这一层实现。如你所料，二进制日志也在这一层实现。第三层包含了存储引擎，负责MySQL中数据的存储和提取。服务器通过API与存储引擎进行通信，存储引擎只是简单地响应上层服务器的请求。显然Innodb的重做日志在这一层实现。</p> 
+<p>        由于MySQL的事务日志包含二进制日志和重做日志，当发生崩溃恢复时，MySQL主库通过重做日志进行恢复，而在主从复制的环境下，从库是依据于主节点的二进制日志进行同步数据的。这样的架构对两种日志有两个基本要求：第一，保证二进制日志里面存在的事务一定在重做日志里面存在，也就是二进制日志里不会比重做日志多事务（可以少，因为重做日志里面记录的事务可能有部分没有提交，这些事务最终可能会被回滚）。第二，两种日志中事务的顺序一致，这也是很重要的一点，假设两者记录的事务顺序不一致，那么会出现类似于主库事务执行的顺序是ta、tb、tc、td，但是二进制日志中记录的是ta、tc、tb、td，被复制到从库后导致主从数据不一致。为了达到这两点要求，MySQL使用内部XA来实现（XA是eXtended Architecture的缩写，是X/Open分布式事务定义的事务中间件与数据库之间的接口规范），其核心是两阶段提交（two phase commit，2PC）。</p> 
+<h3 id="3.%20%E4%B8%A4%E9%98%B6%E6%AE%B5%E6%8F%90%E4%BA%A4">3. 两阶段提交</h3> 
+<p>        在两阶段提交协议中一般分为事务管理器（协调者）和若干事务执行者（参与者）两种角色。在MySQL内部实现的两阶段提交中，二进制日志充当了协调者角色，由它来通知Innodb执行准备、提交或回滚步骤。从实现角度分析，提交流程和代码框架分别如图3、图4所示。</p> 
+<div style="text-align:center;"> 
+ <figure class="image"> 
+  <img alt="" src="https://images2.imgbox.com/dd/f5/OFQ1mqYi_o.png"> 
+  <figcaption>
+    图3 MySQL两阶段提交流程 
+  </figcaption> 
+ </figure> 
+</div> 
+<p></p> 
+<div style="text-align:center;"> 
+ <figure class="image"> 
+  <img alt="" height="189" src="https://images2.imgbox.com/e5/3d/d0lx9glk_o.png" width="698"> 
+  <figcaption>
+    图4 commit命令的MySQL代码框架 
+  </figcaption> 
+ </figure> 
+</div> 
+<p></p> 
+<p>（1）先调用binglog_hton和innobase_hton的prepare方法完成第一阶段，binlog_hton的papare方法实际上什么也没做，innodb的prepare持有prepare_commit_mutex，将重做日志刷磁盘，并将事务状态设为TRX_PREPARED。<br> （2）如果事务涉及的所有存储引擎的prepare都执行成功，则调用TC_LOG_BINLOG::log_xid将事务（STATEMENT格式或ROW格式）写到二进制日志，此时，事务已经铁定要提交了。否则，调用ha_rollback_trans回滚事务，而事务实际上也不会写到二进制日志。<br> （3）最后，调用引擎的commit完成事务的提交。实际上binlog_hton-&gt;commit什么也不会做（上一步已经将二进制日志写入磁盘），innobase_hton-&gt;commit则清除回滚信息，向重做日志中写入COMMIT标记，释放prepare_commit_mutex，并将事务设为TRX_NOT_STARTED状态。</p> 
+<p>        如果数据库系统发生崩溃，当重启数据库时会进行崩溃恢复操作。具体到代码层面，Innodb在恢复的时候，不同状态的事务，会进行不同的处理：</p> 
+<ul><li>对于TRX_COMMITTED_IN_MEMORY的事务，清除回滚段，然后将事务设为TRX_NOT_STARTED；</li><li>对于TRX_NOT_STARTED的事务，表示事务已经提交，跳过；</li><li>对于TRX_PREPARED的事务，要根据二进制日志来决定事务是否提交，暂时跳过;</li><li>对于TRX_ACTIVE的事务，回滚。</li></ul> 
+<p>        简单来讲，当发生崩溃恢复时，数据库根据重做日志进行数据恢复，逐个查看每条重做条目的事务状态，根据图3的流程，如果已进行到TRX_NOT_STARTED阶段，也就是存储引擎commit阶段，那么说明重做日志和二进制日志是一致的，正常根据重做条目进行恢复即可；事务状态为TRX_ACTIVE，没写到二进制日志中，直接回滚；如果事务状态为TRX_PREPARED，要分两种情况，先检查二进制日志是否已写入成功，如果没写入成功，那么就算是TRX_PREPARED状态，也要回滚。如果写入成功了，那么就进行最后一步，调用存储引擎commit，更改事务状态为TRX_NOT_STARTED，也就是真正提交状态，可以用作数据恢复。</p> 
+<p>        可见，MySQL是以二进制日志的写入与否作为事务提交成功与否的标志，通过这种方式让Innodb重做日志和MySQL服务器的二进制日志中的事务状态保持一致。两阶段提交很好的保持了数据一致性和事务顺序性。</p> 
+<p>        了解了所有这些技术细节后，当初的疑问自然也就有了答案。假设在阶段（1）结束之后程序异常，此时没有写入二进制日志，则从库不会同步这个事务。主库上，崩溃恢复时重做日志中这个事务没有trx_commit，因此会被回滚。逻辑上主从库都不会执行这个事务。假设在阶段（2）结束后程序异常，此时二进制日志已经写入，则从库会同步这个事务。主库上，根据重做日志能够正常恢复此事务。也就是说，若二进制日志写入完成，则主从库都会正常完成事务，反之则主从库都回滚事务，都不会出现主从不一致的问题。</p> 
+<p>        MySQL通过innodb_support_xa系统变量控制Innodb是否支持XA事务的2PC，默认是TRUE。如果关闭，则Innodb在prepare阶段就什么也不做，这可能会导致二进制日志的顺序与Innodb提交的顺序不一致，继而导致在恢复时或者从库上产生不同的数据。在MySQL 8中，innodb_support_xa系统变量已被移除，因为始终启用Innodb对XA事务中两阶段提交的支持，不再让用户来选择。</p> 
+<p>        上述的MySQL两阶段提交流程并不是天衣无缝的，主从数据是否一致还与重做日志和二进制日志的写盘方式有关。innodb_flush_log_at_trx_commit和sync_binlog系统变量分别控制两者的落盘策略。</p> 
+<ul><li>innodb_flush_log_at_trx_commit：有0、1、2三个可选值。0表示每秒进行一次刷新，但是每次事务提交不进行任何操作（每秒调用fsync使数据落地到磁盘，不过这里需要注意如果底层存储有cache，比如raid cache，那么这时也不会真正落盘，但是由于一般raid卡都带有备用电源，所以一般都认为此时数据是安全的）。1代表每次事务提交都会进行刷新，这是最安全的模式。2表示每秒刷新，每次事务提交时不刷新，而是调用write将重做日志缓冲区里面的内容刷到操作系统页面缓存。从数据安全性和性能比较三种策略的优劣为：1由于每次事务提交都会是重做日志落盘，所以是最安全的，但是由于fsync的次数增多导致性能下降比较严重。0表示每秒刷新，每次事务提交不进行任何操作，所以MySQL或操作系统崩溃时最多丢失一秒的事务。2相对于0来说了多了每次事务提交时的一个write操作，此时数据虽然没有落磁，但是只要没有操作系统崩溃，即使MySQL崩溃，那么事务也是不会丢失的。</li><li>sync_binlog：MySQL在提交事务时调用MYSQL_LOG::write完成写二进制日志，并根据sync_binlog决定是否进行刷新。默认值是0，即不刷新，从而把控制权交给操作系统。如果设为1，则每次提交事务，就会进行一次磁盘刷新。</li></ul> 
+<p>        这两个参数不同的值会带来不同的效果。两者都设置为1，数据最安全，能保证主从一致，这也是MySQL 8的默认设置。innodb_flush_log_at_trx_commit非1，假设在二进制日志写入完成后系统崩溃，则可能出现这样的情况：从库能够执行事务，但主库中trx_prepare的日志没有被写入到重做日志中，导致主库不执行事务，出现主从不一致的情况。同理若sync_binlog非1，可能导致二进制日志丢失（操作系统异常宕机），从而与Innodb层面的数据不一致，体现在复制上，从库可能丢失事务。在数据一致性要求很高的场景下，建议就使用缺省的全1配置。</p> 
+<h2 id="%E4%BA%8C%E3%80%81%E5%A4%8D%E5%88%B6%E5%AE%9E%E9%AA%8C%E7%8E%AF%E5%A2%83">二、复制实验环境</h2> 
+<p>1. 主机IP<br> 172.16.1.125（主）<br> 172.16.1.126（从）<br> 172.16.1.127（从）</p> 
+<p>2. 软件环境<br> OS：CentOS Linux release 7.2.1511 (Core)<br> MySQL：MySQL Community Server 8.0.16<br> glibc：glibc-2.17-105.el7.x86_64</p> 
+<p>3. 硬件环境<br> 三台虚拟机，每台基本配置为：<br> . 双核双CPU，Intel(R) Xeon(R) CPU E5-2420 0 @ 1.90GHz<br> . 8G物理内存，8G Swap<br> . 100G物理硬盘</p> 
+<h2 id="%E4%B8%89%E3%80%81%E5%AE%89%E8%A3%85mysql-8.0.16">三、安装mysql-8.0.16</h2> 
+<p>        从<a href="https://dev.mysql.com/downloads/mysql/" rel="nofollow" title="MySQL :: Download MySQL Community Server">MySQL :: Download MySQL Community Server</a>下载二进制安装文件mysql-8.0.16-linux-glibc2.12-x86_64.tar.xz，相关选项如图5所示。</p> 
+<div style="text-align:center;"> 
+ <figure class="image"> 
+  <img alt="" src="https://images2.imgbox.com/7d/3c/2C6yvSal_o.png"> 
+  <figcaption>
+    图5 下载mysql-8.0.16安装包 
+  </figcaption> 
+ </figure> 
+</div> 
+<p></p> 
+<p>然后用root用户按顺序执行下面的命令，在三台主机上安装MySQL。</p> 
+<pre class="has"><code># 进入安装目录
+cd /usr/local
+# 从tar包中把提取文件
+tar xvf /home/mysql/mysql-8.0.16-linux-glibc2.12-x86_64.tar.xz 
+# 建立软连接
+ln -s mysql-8.0.16-linux-glibc2.12-x86_64 mysql
+# 进入mysql目录
+cd mysql
+# 建立secure_file_priv系统变量指向的目录
+mkdir mysql-files
+# 修改属主为mysql
+chown mysql:mysql mysql-files
+# 修改目录权限
+chmod 750 mysql-files
+# mysql系统初始化
+bin/mysqld --initialize --user=mysql
+# 建立SSL/RSA相关文件，如果不启用SSL连接，这步可省略
+bin/mysql_ssl_rsa_setup
+# 启动mysql服务器
+bin/mysqld_safe --user=mysql &amp;
+# 连接mysql服务器
+bin/mysql -u root -p
+-- 修改root密码
+alter user user() identified by "123456";
+-- 创建一个新的mysql管理员账号
+create user 'wxy'@'%' identified with mysql_native_password by '123456';
+grant all on *.* to 'wxy'@'%' with grant option;</code></pre> 
+<p>        命令说明：<br> （1）mysql-files目录用作secure_file_priv系统变量的值。该变量将导入和导出操作限制到特定目录。例如由LOAD DATA和SELECT ... INTO OUTFILE语句和LOAD_FILE()函数所执行的操作。仅允许具有FILE权限的用户执行这些操作。secure_file_priv系统变量设置如下：</p> 
+<ul><li>空字符串：变量不起作用，是不安全的设置。</li><li>目录名：mysql限制导入和导出操作仅用于该目录中的文件。目录必须已经存在，mysql不会创建它。</li><li>NULL：mysql禁用导入导出操作。</li></ul> 
+<p>（2）mysqld --initialize 命令创建默认数据库并退出。在过程中会创建一个超级用户，并为该用户产生一个随机密码。命令执行输出如下所示：</p> 
+<pre class="has"><code>[root@hdp2/usr/local/mysql]#bin/mysqld --initialize --user=mysql
+2019-05-05T06:31:58.956385Z 0 [System] [MY-013169] [Server] /usr/local/mysql-8.0.16-linux-glibc2.12-x86_64/bin/mysqld (mysqld 8.0.16) initializing of server in progress as process 10256
+2019-05-05T06:32:01.287093Z 5 [Note] [MY-010454] [Server] A temporary password is generated for root@localhost: w1SN3pgRPL*D
+2019-05-05T06:32:02.901171Z 0 [System] [MY-013170] [Server] /usr/local/mysql-8.0.16-linux-glibc2.12-x86_64/bin/mysqld (mysqld 8.0.16) initializing of server has completed
+[root@hdp2/usr/local/mysql]#</code></pre> 
+<p>        mysql文档中说产生的临时密码会写到.err日志文件里，但在本次安装中，这步并不生成.err文件。保险的做法还是记下临时密码，这点很重要。在initialize情况下，临时密码默认标记为已过期，用户必须在第一次进入mysql后首先修改密码。</p> 
+<p>        如果在执行 initialize 时遇到下面的错误：</p> 
+<pre><code>mysqld: error while loading shared libraries: libaio.so.1: cannot open shared object file: No such file or directory</code></pre> 
+<p>        先安装 libaio：</p> 
+<pre><code>yum install -y libaio</code></pre> 
+<p>（3）mysql_ssl_rsa_setup程序将创建SSL证书和密钥文件，使用SSL进行安全连接所需的RSA密钥对文件。如果现有的SSL文件已过期，mysql_ssl_rsa_setup也可用于创建新的SSL文件。</p> 
+<p>        mysql_ssl_rsa_setup使用openssl命令，因此主机上必须安装有OpenSSL。mysql_ssl_rsa_setup检查数据目录中的以下SSL文件：</p> 
+<pre class="has"><code>ca.pem
+server-cert.pem
+server-key.pem</code></pre> 
+<p>        如果存在任何这些文件，则mysql_ssl_rsa_setup不会创建任何SSL文件。否则，它会调用openssl来创建它们，以及一些其他文件：</p> 
+<pre class="has"><code>ca.pem               自签名CA证书
+ca-key.pem           CA私钥
+server-cert.pem      服务器证书
+server-key.pem       服务器私钥
+client-cert.pem      客户端证书
+client-key.pem       客户端私钥</code></pre> 
+<p>        在启用SSL安全客户端连接时需要这些文件。</p> 
+<p>        之后mysql_ssl_rsa_setup检查数据目录中的以下RSA文件：</p> 
+<pre class="has"><code>private_key.pem      私钥/公钥对的私有成员
+public_key.pem       私钥/公钥对的公共成员</code></pre> 
+<p>        如果存在任何这些文件，则mysql_ssl_rsa_setup不会创建任何RSA文件。否则，它会调用openssl来创建它们。对于sha256_password或caching_sha2_password插件验证的帐户不加密连接时，通过这些文件使用RSA进行安全密码交换。</p> 
+<p>        mysql 8.0.16缺省支持SSL加密连接：</p> 
+<pre class="has"><code>mysql&gt; show variables like 'have_ssl';
++---------------+-------+
+| Variable_name | Value |
++---------------+-------+
+| have_ssl      | YES   |
++---------------+-------+
+1 row in set (0.00 sec)</code></pre> 
+<p>（4）第一次进入mysql后，执行任何命令都会报以下错误：</p> 
+<pre class="has"><code>ERROR 1820 (HY000): You must reset your password using ALTER USER statement before executing this statement.</code></pre> 
+<p>        提示很明显，需要修改初始化时为用户'root'@'localhost'生成的临时密码。mysql 8缺省使用的认证插件是caching_sha2_password：</p> 
+<pre class="has"><code>mysql&gt; show variables like 'default_authentication_plugin';
++-------------------------------+-----------------------+
+| Variable_name                 | Value                 |
++-------------------------------+-----------------------+
+| default_authentication_plugin | caching_sha2_password |
++-------------------------------+-----------------------+
+1 row in set (0.01 sec)</code></pre> 
+<p>        当用老版本mysql的客户端连接mysql 8服务器时，可能报以下错误：</p> 
+<pre class="has"><code>ERROR 2059 (HY000): Authentication plugin 'caching_sha2_password' cannot be loaded: /home/mysql/mysql-5.6.14/lib/plugin/caching_sha2_password.so: cannot open shared object file: No such file or directory</code></pre> 
+<p>        可以使用两个方法解决此问题。第一种方法是在配置文件中设置default_authentication_plugin='mysql_native_password'，然后重启mysql服务器使之生效。default_authentication_plugin是只读系统变量，不能动态修改。第二种方法是在创建用户时，使用兼容新老版本的认证方式，例如：</p> 
+<pre class="has"><code>create user 'wxy'@'%' identified with mysql_native_password by '123456';</code></pre> 
+<p>        通过以下查询可以得到用户所对应的认证插件：</p> 
+<pre class="has"><code>mysql&gt; select host,user,plugin from mysql.user;
++-----------+------------------+-----------------------+
+| host      | user             | plugin                |
++-----------+------------------+-----------------------+
+| %         | wxy              | mysql_native_password |
+| localhost | mysql.infoschema | caching_sha2_password |
+| localhost | mysql.session    | caching_sha2_password |
+| localhost | mysql.sys        | caching_sha2_password |
+| localhost | root             | caching_sha2_password |
++-----------+------------------+-----------------------+
+5 rows in set (0.00 sec)</code></pre> 
+<h2 id="%E5%9B%9B%E3%80%81%E9%85%8D%E7%BD%AE%E5%BC%82%E6%AD%A5%E5%A4%8D%E5%88%B6">四、配置异步复制</h2> 
+<p>        本实验中分别针对空库、脱机、联机三种方式，配置一主两从的mysql标准异步复制。只做整服务器级别的复制，不考虑对个别库表或使用过滤复制的情况。</p> 
+<h3 id="1.%20%E7%A9%BA%E5%BA%93">1. 空库</h3> 
+<p>        初始安装后，mysql中还没有任何应用数据。此时事先配置好复制，再投入使用，是最理想也是最简单的一种情况，具体配置步骤如下。<br> （1）修改server_id系统变量。</p> 
+<pre class="has"><code>-- 主库
+set global server_id=1125;
+
+-- 从库1
+set global server_id=1126;
+
+-- 从库2
+set global server_id=1127;</code></pre> 
+<p>        要求复制中所有MySQL实例的server_id都不相同，这里将三个实例的server_id分别配置为1125、1126、1127。server_id系统变量可以动态修改，这样做的好处是不需要重启实例，配置即可在新连接中生效。但是为了避免MySQL重启后配置信息丢失，还需要同时在/etc/my.cnf配置文件中设置server_id参数。</p> 
+<p>（2）查看主库二进制日志信息，</p> 
+<pre class="has"><code>-- 主库
+show master status;</code></pre> 
+<p>        因为是一个静态的空库，二进制信息此时不会发生变化，可以作为复制的起始点。本例中重启过MySQL实例，输出的信息为：</p> 
+<pre class="has"><code>+---------------+----------+--------------+------------------+-------------------+
+| File          | Position | Binlog_Do_DB | Binlog_Ignore_DB | Executed_Gtid_Set |
++---------------+----------+--------------+------------------+-------------------+
+| binlog.000003 |      155 |              |                  |                   |
++---------------+----------+--------------+------------------+-------------------+</code></pre> 
+<p>（3）在主库上建立复制专属用户</p> 
+<pre class="has"><code>-- 主库
+create user 'repl'@'%' identified with mysql_native_password by '123456';
+grant replication client,replication slave on *.* to 'repl'@'%';</code></pre> 
+<p>        前面说过MySQL 8的用户认证机制，这里仍然使用mysql_native_password方式。</p> 
+<p>（4）在从库创建主库信息。</p> 
+<pre class="has"><code>change master to
+master_host='172.16.1.125',
+master_port=3306,
+master_user='repl',
+master_password='123456',
+master_log_file='binlog.000003',
+master_log_pos=155;</code></pre> 
+<p>        连接主库时，需要使用change master to提供连接到主库的连接选项，包括主机地址、端口、用户名、密码、二进制文件名、复制起始事件位置等。change master to后，在mysql.slave_master_info表中就会生成一条记录，此行为是由master_info_repository系统变量控制的。MySQL 8中，该变量的缺省值为TABLE，即将与复制相关的主库信息记录到mysql.slave_master_info表中。随着复制的进行，表中的数据会随之更新。change master to只是为I/O线程连接主库时提供连接参数，这条语句本身不会连接主库。以后启动I/O线程时，I/O线程都会自动读取这条记录来连接主库，不需要再执行change master to语句。</p> 
+<p>        类似地，MySQL 8缺省会将中继日志的重放信息存到mysql.slave_relay_log_info表中。该行为由系统变量relay_log_info_repository控制。中继日志信息在首次启动复制时生成，并随复制即时改变。SQL线程再次启动时就能从中获取到从中继日志的的哪个地方继续读取、执行。</p> 
+<p>（5）在从库启动复制并查看复制信息</p> 
+<pre class="has"><code>start slave;
+show slave status\G
+select * from mysql.user where user='repl'\G</code></pre> 
+<p>        刚才我们并没有在从库上建立repl用户，但由于create user语句是在起始位置点后执行的，因此可以正常复制到从库，查询mysql.user表即可确认。       </p> 
+<p>        start slave语句会启动I/O线程和SQL线程，并创建一个到主库的客户端连接。该命令执行后，在主库的processlist中会看到类似如下的线程，这些就是从库上I/O线程所建立的，Binlog Dump表示由I/O线程在主库上启动了Binlog Dump线程，每个连接上来的从库对应一个线程，如Id 32和56是两个从库的连接线程：</p> 
+<pre class="has"><code>mysql&gt; show processlist;
++----+-----------------+------------+------+-------------+--------+---------------------------------------------------------------+------------------+
+| Id | User            | Host       | db   | Command     | Time   | State                                                         | Info             |
++----+-----------------+------------+------+-------------+--------+---------------------------------------------------------------+------------------+
+  ...
+| 32 | repl            | hdp4:3723  | NULL | Binlog Dump | 328879 | Master has sent all binlog to slave; waiting for more updates | NULL             |
+| 56 | repl            | hdp3:57308 | NULL | Binlog Dump | 319204 | Master has sent all binlog to slave; waiting for more updates | NULL             |
+  ...</code></pre> 
+<p>        从库上的processlist中会看到类似如下的线程，Id 325和326分别对应I/O线程与SQL线程：</p> 
+<pre class="has"><code>mysql&gt; show processlist;
++--------+-----------------+-----------+-------+---------+--------+--------------------------------------------------------+------------------+
+| Id     | User            | Host      | db    | Command | Time   | State                                                  | Info             |
++--------+-----------------+-----------+-------+---------+--------+--------------------------------------------------------+------------------+
+  ...
+|    325 | system user     |           | NULL  | Connect | 320408 | Waiting for master to send event                       | NULL             |
+|    326 | system user     |           | NULL  | Query   | 320408 | Slave has read all relay log; waiting for more updates | NULL             |
+  ...</code></pre> 
+<p>        从show slave status输出中可以查看复制状态信息：</p> 
+<pre class="has"><code>mysql&gt; show slave status\G
+*************************** 1. row ***************************
+               Slave_IO_State: Waiting for master to send event
+                  Master_Host: 172.16.1.125
+                  Master_User: repl
+                  Master_Port: 3306
+                Connect_Retry: 60
+              Master_Log_File: binlog.000011
+          Read_Master_Log_Pos: 155
+               Relay_Log_File: hdp3-relay-bin.000002
+                Relay_Log_Pos: 319
+        Relay_Master_Log_File: binlog.000011
+             Slave_IO_Running: Yes
+            Slave_SQL_Running: Yes
+              Replicate_Do_DB: 
+          Replicate_Ignore_DB: 
+           Replicate_Do_Table: 
+       Replicate_Ignore_Table: 
+      Replicate_Wild_Do_Table: 
+  Replicate_Wild_Ignore_Table: 
+                   Last_Errno: 0
+                   Last_Error: 
+                 Skip_Counter: 0
+          Exec_Master_Log_Pos: 155
+              Relay_Log_Space: 526
+              Until_Condition: None
+               Until_Log_File: 
+                Until_Log_Pos: 0
+           Master_SSL_Allowed: No
+           Master_SSL_CA_File: 
+           Master_SSL_CA_Path: 
+              Master_SSL_Cert: 
+            Master_SSL_Cipher: 
+               Master_SSL_Key: 
+        Seconds_Behind_Master: 0
+Master_SSL_Verify_Server_Cert: No
+                Last_IO_Errno: 0
+                Last_IO_Error: 
+               Last_SQL_Errno: 0
+               Last_SQL_Error: 
+  Replicate_Ignore_Server_Ids: 
+             Master_Server_Id: 1125
+                  Master_UUID: 8eed0f5b-6f9b-11e9-94a9-005056a57a4e
+             Master_Info_File: mysql.slave_master_info
+                    SQL_Delay: 0
+          SQL_Remaining_Delay: NULL
+      Slave_SQL_Running_State: Slave has read all relay log; waiting for more updates
+           Master_Retry_Count: 86400
+                  Master_Bind: 
+      Last_IO_Error_Timestamp: 
+     Last_SQL_Error_Timestamp: 
+               Master_SSL_Crl: 
+           Master_SSL_Crlpath: 
+           Retrieved_Gtid_Set: 
+            Executed_Gtid_Set: 
+                Auto_Position: 0
+         Replicate_Rewrite_DB: 
+                 Channel_Name: 
+           Master_TLS_Version: 
+       Master_public_key_path: 
+        Get_master_public_key: 0
+            Network_Namespace: 
+1 row in set (0.00 sec)
+
+mysql&gt; </code></pre> 
+<p>        在从库上执行show slave status可以查看从库状态，输出信息非常多，其中除了那些描述I/O线程、SQL线程状态的行，还有几个log_file和pos相关的行。理解这几行的意义至关重要，所以这里完整地描述它们：</p> 
+<ul><li>Master_Log_File：I/O线程正在读取的master binlog；</li><li>Read_Master_Log_Pos：I/O线程已经读取到master binlog的哪个位置；</li><li>Relay_Log_File：SQL线程正在读取和执行的relay log；</li><li>Relay_Log_Pos：SQL线程已经读取和执行到relay log的哪个位置；</li><li>Relay_Master_Log_File：SQL线程最近执行的操作对应的是哪个master binlog；</li><li>Exec_Master_Log_Pos：SQL线程最近执行的操作对应的是master binlog的哪个位置。</li></ul> 
+<p>        （Relay_Master_Log_File, Exec_Master_log_Pos）构成一个坐标，这个坐标表示从库上已经将主库上的哪些数据重放到自己的实例中，它可以用于下一次change master to时指定的二进制日志坐标。与这个坐标相对应的是从库上SQL线程的中继日志坐标（Relay_Log_File, Relay_Log_Pos）。这两个坐标位置不同，但它们对应的数据是一致的。</p> 
+<p>        还有一个延迟参数Seconds_Behind_Master需要说明一下，它的本质意义是SQL线程比I/O线程慢多少。如果主从之间的网络状况优良，那么从库的I/O线程读速度和主库写二进制日志的速度基本一致，所以这个参数也用来描述“SQL线程比主库慢多少”，也就是说从库比主库少多少数据，只不过衡量的单位是秒。需要注意的是，该参数的描述并不标准，只是在网速很好的时候做个大概估计，很多种情况下它的值都是0，即使SQL线程比I/O线程慢了很多也是如此。</p> 
+<h3 id="2.%20%E8%84%B1%E6%9C%BA">2. 脱机</h3> 
+<p>        如果数据库已经存在应用数据，但允许一个可接受的脱机时间窗口做复制，这种场景下常用的做法是先直接将主库的数据目录整体拷贝到从库，再启动复制。具体步骤如下。</p> 
+<p>（1）在主库上建立复制专属用户</p> 
+<pre class="has"><code>-- 主库
+create user 'repl'@'%' identified with mysql_native_password by '123456';
+grant replication client,replication slave on *.* to 'repl'@'%';</code></pre> 
+<p>（2）停掉复制涉及的实例</p> 
+<pre class="has"><code>mysqladmin -uroot -p123456 shutdown</code></pre> 
+<p>        本例中一主两从三个实例都停止。</p> 
+<p>（3）复制将主库的数据目录整体拷贝到从库</p> 
+<pre class="has"><code>scp -r /usr/local/mysql/data/ 172.16.1.126:/usr/local/mysql</code></pre> 
+<p>（4）保证所有参与复制实例的server-uuid和server_id都不同<br>         这是非常重要的一步，相同的server-uuid或server_id会造成复制错误。从MySQL 5.6开始，用 128 位的 server_uuid 代替了原本的 32 位 server_id 的大部分功能。原因很简单，server_id 依赖于 my.cnf 的手工配置，有可能产生冲突。而自动产生 128 位 uuid 的算法可以保证所有的 MySQL uuid 都不会冲突。首次启动时 MySQL 会调用 generate_server_uuid() 自动生成一个 server_uuid，并且保存到 auto.cnf 文件。这个文件目前存在的唯一目的就是保存 server_uuid。在 MySQL 再次启动时会读取 auto.cnf 文件，继续使用上次生成的 server_uuid。使用 show global variables like 'server_uuid' 命令可以查看 MySQL 实例当前使用的 server_uuid​，它是一个全局只读变量。全局唯一的 server_uuid 的一个好处是，可以解决由 server_id 配置冲突带来的 MySQL 主从复制的异常终止。在从库向主库申请二进制日志时，会首先发送自己的 server_uuid，主库用从库发送的 server_uuid 代替 server_id 作为 kill_zombie_dump_threads 的参数，终止冲突或者僵死的 BINLOG_DUMP 线程。</p> 
+<p>        删除data_dir/auto.cnf文件，实例启动时会自动生成server_uuid的值。本例中删除从库的/usr/local/mysql/data/auto.cnf文件，并编辑/etc/my.cnf文件修改server_id，保证三个实例的配置互不相同。</p> 
+<p>（5）重启实例</p> 
+<pre class="has"><code>mysqld_safe --user=mysql &amp;</code></pre> 
+<p>        本例中一主两从三个实例都启动。</p> 
+<p>（6）查看主库二进制日志信息，</p> 
+<pre class="has"><code>-- 主库
+show master status;</code></pre> 
+<p>（7）使用上一步的输出在从库创建主库信息。</p> 
+<pre class="has"><code>change master to
+master_host='172.16.1.125',
+master_port=3306,
+master_user='repl',
+master_password='123456',
+master_log_file='binlog.000004',
+master_log_pos=155;</code></pre> 
+<p>（5）在从库启动复制并查看复制信息</p> 
+<pre class="has"><code>start slave;
+show slave status\G</code></pre> 
+<p>        此时在从库的err日志文件中可以看到复制正常启动的信息：</p> 
+<pre class="has"><code>[mysql@hdp3~]$tail /usr/local/mysql/data/hdp3.err 
+2019-05-10T02:54:22.226249Z mysqld_safe Logging to '/usr/local/mysql/data/hdp3.err'.
+2019-05-10T02:54:22.277620Z mysqld_safe Starting mysqld daemon with databases from /usr/local/mysql/data
+2019-05-10T02:54:22.710162Z 0 [System] [MY-010116] [Server] /usr/local/mysql/bin/mysqld (mysqld 8.0.16) starting as process 20571
+2019-05-10T02:54:23.370413Z 0 [Warning] [MY-010068] [Server] CA certificate ca.pem is self signed.
+2019-05-10T02:54:23.420160Z 0 [System] [MY-010931] [Server] /usr/local/mysql/bin/mysqld: ready for connections. Version: '8.0.16'  socket: '/tmp/mysql.sock'  port: 3306  MySQL Community Server - GPL.
+2019-05-10T02:54:23.547717Z 0 [System] [MY-011323] [Server] X Plugin ready for connections. Socket: '/tmp/mysqlx.sock' bind-address: '::' port: 33060
+2019-05-10T02:56:17.328454Z 144 [Warning] [MY-010604] [Repl] Neither --relay-log nor --relay-log-index were used; so replication may break when this MySQL server acts as a slave and has his hostname changed!! Please use '--relay-log=hdp3-relay-bin' to avoid this problem.
+2019-05-10T02:56:17.333635Z 144 [System] [MY-010597] [Repl] 'CHANGE MASTER TO FOR CHANNEL '' executed'. Previous state master_host='', master_port= 3306, master_log_file='', master_log_pos= 4, master_bind=''. New state master_host='172.16.1.125', master_port= 3306, master_log_file='binlog.000004', master_log_pos= 155, master_bind=''.
+2019-05-10T02:56:25.235523Z 171 [Warning] [MY-010897] [Repl] Storing MySQL user name or password information in the master info repository is not secure and is therefore not recommended. Please consider using the USER and PASSWORD connection options for START SLAVE; see the 'START SLAVE Syntax' in the MySQL Manual for more information.
+2019-05-10T02:56:25.237851Z 171 [System] [MY-010562] [Repl] Slave I/O thread for channel '': connected to master 'repl@172.16.1.125:3306',replication started in log 'binlog.000004' at position 155</code></pre> 
+<h3 id="3.%20%E8%81%94%E6%9C%BA">3. 联机</h3> 
+<p>        脱机建立复制的需求太过理想化，大多数情况下，复制是被要求在不影响线上业务的情况下，联机创建的，而且还要求对线上库的影响越小越好。例如，复制过程化中对主库加锁会影响对主库的访问，因此通常是不被允许的。这种场景下有两种备选的复制方案：使用mysqldump程序或使用如XtraBackup的第三方工具。这两种方案有各自的适用场合。使用mysqldump联机建立复制的过程如下。</p> 
+<p>（1）在主库上建立复制专属用户</p> 
+<pre class="has"><code>-- 主库
+create user 'repl'@'%' identified with mysql_native_password by '123456';
+grant replication client,replication slave on *.* to 'repl'@'%';</code></pre> 
+<p>（2）在从库上创建主库信息</p> 
+<pre class="has"><code>change master to
+master_host='172.16.1.125',
+master_port=3306,
+master_user='repl',
+master_password='123456';</code></pre> 
+<p>        注意在上面这条命令中并没有指定主库二进制文件的文件名和位置。</p> 
+<p>（3）在从库用mysqldump建立复制</p> 
+<pre class="has"><code>mysqldump --single-transaction --all-databases --master-data=1 --host=172.16.1.125 --user=wxy --password=123456 --apply-slave-statements | mysql -uroot -p123456 -h127.0.0.1</code></pre> 
+<p>        说明：</p> 
+<ul><li>--single-transaction参数可以对Innodb表执行非锁定导出。此选项将事务隔离模式设置为REPEATABLE READ，并在转储数据之前向服务器发送START TRANSACTION SQL语句。它仅适用于Innodb等事务表，因为它会在发出START TRANSACTION时转储数据库的一致状态，而不会阻塞任何应用程序。因此这里假定：1. 所有的应用数据表都使用Innodb引擎。2. 所有系统表数据在备份过程中不会发生变化。</li><li>--master-data参数会导致转储输出包含类似 CHANGE MASTER TO MASTER_LOG_FILE='binlog.000004', MASTER_LOG_POS=1480; 的SQL语句，该语句指示主库的二进制日志坐标（文件名和位置）。如果选项值为2，则CHANGE MASTER TO语句将写为SQL注释，因此仅提供信息，不会执行。如果参数值为1，则该语句不会写为注释，并在重新加载转储文件时执行。如果未指定选项值，则默认值为1。</li><li>--apply-slave-statements参数会在CHANGE MASTER TO语句之前添加STOP SLAVE语句，并在输出结尾处添加START SLAVE语句，用来自动开启复制。</li><li>通过管道操作符，导出导入一步进行，不需要中间落盘生成文件。</li></ul> 
+<p>（4）确认复制状态</p> 
+<pre class="has"><code>-- 从库
+show slave status\G</code></pre> 
+<p>        mysqldump方式的优点是可以进行部分复制，如在配置文件中定义replicate-do-table=db1.*，则用这种方法可以只复制db1库而忽略其它复制事件。缺点是由于mysqldump会生成主库转储数据的SQL语句，实际是一种逻辑备份方式所以速度较慢，不适用于大库。</p> 
+<p>        联机建立复制的另一种可选方案是使用XtraBackup。XtraBackup是Percona公司的开源项目，用以实现类似Innodb官方的热备份工具InnoDB Hot Backup的功能，它支持在线热备份，备份时不影响数据读写。到目前为止，最新的版本为Percona XtraBackup 8.0.6，可以从<a href="https://www.percona.com/downloads/" rel="nofollow" title="Software Downloads - Percona">Software Downloads - Percona</a>下载安装包。XtraBackup有很多功能和优点，例如支持全备、增量备份、部分备份；支持压缩备份；备份不影响数据读写、事务等，但是也有缺陷不足：例如不支持脱机备份、不支持直接备份到磁带设备、不支持Cloud Back，MyISAM的备份也会阻塞。不过这些小瑕疵不影响XtraBackup成为一款流行的MySQL备份工具。另外，注意XtraBackup只支持Linux平台，不支持Windows平台。下面演示用XtraBackup联机搭建主从复制的过程，主库已经建立了用于执行复制的用户repl。</p> 
+<p>（1）在主、从库安装XtraBackup</p> 
+<pre class="has"><code># 安装依赖包
+yum -y install libev
+yum -y install perl perl-devel libaio libaio-devel perl-Time-HiRes perl-DBD-MySQL
+yum -y install rsync perl l perl-Digest-MD5
+
+# 或者下载 rpm 文件安装 libev
+wget http://rpmfind.net/linux/centos/7.9.2009/extras/x86_64/Packages/libev-4.15-7.el7.x86_64.rpm
+rpm -ivh libev-4.15-7.el7.x86_64.rpm
+
+# 安装XtraBackup
+rpm -ivh percona-xtrabackup-80-8.0.6-1.el7.x86_64.rpm</code></pre> 
+<p>（2）配置主库到从库的SSH免密码连接</p> 
+<pre class="has"><code># 主库执行
+ssh-keygen    
+... 一路回车 ...    
+ssh-copy-id 172.16.1.126</code></pre> 
+<p>（3）停止从库，并清空从库的数据目录</p> 
+<pre class="has"><code># 从库执行
+mysqladmin -u root -p123456 shutdown
+
+# 清空数据目录
+rm -rf /usr/local/mysql/data/*</code></pre> 
+<p>（3）备份并传输</p> 
+<pre class="has"><code># 主库执行
+xtrabackup -uroot -p123456 --socket=/tmp/mysql.sock --no-lock --backup --compress --stream=xbstream --parallel=4 --target-dir=./ | ssh mysql@172.16.1.126 "xbstream -x -C /usr/local/mysql/data/ --decompress"</code></pre> 
+<p>        这条命令连接主库，进行并行压缩流式备份，同时将备份通过管道操作符传输到从库，并直接解压缩到从库的数据目录。所有操作一条命令完成，不需要中间落盘生成文件。</p> 
+<p>（4）在从库恢复备份</p> 
+<pre class="has"><code># 应用日志
+xtrabackup --prepare --target-dir=/usr/local/mysql/data/</code></pre> 
+<p>（5）查看二进制日志坐标</p> 
+<pre class="has"><code>cat /usr/local/mysql/data/xtrabackup_binlog_info</code></pre> 
+<p>（6）启动从库</p> 
+<pre class="has"><code>mysqld_safe --user=mysql &amp;</code></pre> 
+<p>（7）登录从库启动复制</p> 
+<pre class="has"><code>-- 创建主库信息，其中的master_log_file和master_log_pos值来自第（5）步
+change master to
+master_host='172.16.1.125',
+master_port=3306,
+master_user='repl',
+master_password='123456',
+master_log_file='binlog.000011',
+master_log_pos=155;
+
+-- 启动复制
+start slave;
+
+-- 确认复制状态
+show slave status\G</code></pre> 
+<p>        XtraBackup是物理复制，性能比mysqldump高的多，而且对主库的影响极小，非常适用于从头联机创建高负载、大数据量、全实例从库的场景。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/8d92f333ca7e5a0259d0142f2c4b5195/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">AWK快速入门教程</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/15ade283b92b17c03ffc8176259f97b6/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【含面试】解锁MySQL group_concat的无限可能性：解决长度限制并实现高效查询</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

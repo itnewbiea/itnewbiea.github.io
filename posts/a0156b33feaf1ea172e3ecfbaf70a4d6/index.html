@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>DRUPAL 8.x远程代码执行漏洞(CVE-2018-7600) - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="DRUPAL 8.x远程代码执行漏洞(CVE-2018-7600)" />
+<meta property="og:description" content="事件背景 框架漏洞收集
+CVE-2018-7600有两个POC分别是7和8的，本文仅研究8版本的POC，与其它的文章不同的事，本文我将数据流向调试并记录下来了
+漏洞说明 1. 漏洞原理：Drupal对表单请求内容未做严格过滤，因此，这使得攻击者可能将恶意注入表单内容，此漏洞允许未经身份验证的攻击者在默认或常见的Drupal安装上执行远程代码执行。
+2. 组件描述：Drupal是使用PHP语言编写的开源内容管理框架（CMF），它由由内容管理系统和PHP开发框架共同构成，在GPL2.0及更新协议下发布。连续多年荣获全球最佳CMS大奖，是基于PHP语言最著名的WEB应用程序。
+3. 影响版本： 7.x-8.x，本篇分析漏洞仅对版本8有效，版本7的是另外的利用点，但是CVE编号相同
+漏洞复现 环境搭建：GitHub - drupal/drupal at 8.3.3
+这里可能需要利用docker环境的命令配置一下，我自己的环境为：windows10、PHP7.1、电脑带有docker可使用composer命令生成vendor目录、需要提供yaml环境（https://www.cnblogs.com/yycode/p/16039854.html）、在php.ini文件中添加”yaml.decode_php=On“
+然后访问/core/install.php进入安装界面，简单填数据库的信息安装即可
+直接用payload
+url : ?element_parents=account/mail/%23value&amp;ajax_form=1
+POST : form_id=user_register_form&amp;mail[0][#lazy_builder][0]=passthru&amp;mail[0][#lazy_builder][1][0]=whoami
+命令执行成功
+漏洞分析 漏洞的原因来源于框架的一个特点，即drupal采用引擎对数组渲染生成HTML表达
+这里出现了两个问题，而这两个问题则就造成了漏洞的利用，一个是框架对数组数据的传入没有任何过滤，二是生成的表单最后会传入到drupal\core\modules\file\src\Element\ManagedFile.php的uploadAjaxCallback方法中解析，而在解析的过程中有几个框架自带的属性可以造成漏洞的利用
+#access_callback
+由Drupal使用来确定当前用户是否有权访问元素。#pre_render
+在渲染之前操作渲染数组。#post_render
+接收渲染过程的结果并在其周围添加包装。#lazy_builder
+用于在渲染过程的最后添加元素。 #access_callback 标签虽然callback回调函数可控，但需要回调处理的字符串不可控，导致无法利用
+由于对数组无任何过滤输入，即可传入这些自带的属性，造成回调函数的利用，不过有个问题就是数据怎么传入，如何触发漏洞，从头开始分析，构造的HTML表单的key值一般都是前期写死的，而我们经过分析必须得向表单传入可控键才能触发漏洞，这个问题的解决方法就是一个很正常的功能造成的
+打个断点监听一下，运行以后如下
+说明在buildform打的断点没有停下来，不过如果再以上述步骤一模一样操作一遍会发现
+可以看到在断点处停下来了，第二次请求就停下来了，说明用户存在的话断点会走到最后，将表单返回
+这就是一个一般网站常用的便捷功能，当注册的用户或邮箱存在时会保留上次输入的信息，而保留的这部分数据可以导致了数据的输入，这些数据最后会流入到drupal\core\modules\file\src\Element\ManagedFile.php::uploadAjaxCallback中解析，而现在还是没有解决，如何才能修改表单的键，根据其它师傅的分析才明白可以利用注册中图片的一个传输获得payload的大概身影，尝试抓取直接上传图片的请求，可以得到如下
+由于格式是multipart/form-data，不太方便，再查看缓存的POST
+利用burp抓到的url以及缓存的POST，提取几个关键的参数伪造为application/x-www-form-urlencoded类型的请求即可，经过分析大概提取了如下几个关键参数
+url中element_parents参数的内容是定位到表单的一个位置最后提取其中的数据，比如上传图片时为user_picture/widget/0，则会将$form表单下的user_picture下的widget下的0提取出来无论为数组还是元素，代码实现如下
+经过测试GET参数还有ajax_form为必须，不是很清楚具体作用，根据参数名和回显数据猜测应该是保存的表单
+POST提取出了三处，分别为form_id、mail、name，其中form_id是必须定位到注册接口的，mail和name都可以传入数据，但是经过测试发现name有过滤，不接受数组的传输，而mail无任何过滤，因此采用mail传值
+接下来从drupal\core\modules\file\src\Element\ManagedFile.php::uploadAjaxCallback开始审计
+explode()函数会把element_parents内容以斜杆划分为几个值的数组，接下来步入getValue
+大概作用为递归查询$form中是否有$form_parents，有的话最后把值返回，没有则返回空，因此最后$form为我们构造恶意的键对应的值，往下继续看
+根据上述可以大概了解$form现在有三个键，一个是我们传入的，一个是#suffix，一个是#prefix，最后$form被传入$renderer-&gt;renderRoot()，跟进查看
+继续跟进render()查看
+就和套娃一样，继续跟进doRender()
+由于没有#access和#access_callback因此如上条件判断皆可跳过，往下走
+这里又添加了一个键值，下面的条件判断依旧可以跳过
+这里即是最开始说的几个框架自带属性功能#lazy_builder，这也是我构造payload一个方法，因此如果利用的是#lazy_builder攻击，则进入条件判断查看，根据如上大概需要构造的payload有如下几个要求
+#lazy_builder对应的值为数组
+#lazy_builder对应的数组有且仅仅包含两个键
+#lazy_builder下键为1对应的值为数组，测试如下
+继续看下面
+array_diff()函数用于比较两个（或更多个）数组的值，并返回差集，差集仅仅限于前减后
+根据上例，我们必须保证$elements的键值小于等于$supported_keys且不能比在里面的数据多些什么，但是根据前面的数据我们很显然无法达到要求，其中#suffix、#prefix、还有后来添加的#cache，因此此处无法绕过，会导致报错，那么真的就没有办法了吗？确实，在这一层没有办法了，那我们就不能进入#lazy_builder这层条件了，这说明了#lazy_builder不可用吗？其实并不是，跳过这个条件继续看下去
+其中经过数据处理$children为一个0数组 $elements[&#39;#children&#39;]为空$theme_is_implemented为false
+已知$children为0数组，则提出来的值为0，因此就相当于将$elements中0键对应的值重新循环了一遍，而这次循环不再带有#suffix、#prefix等其它的键，那我们是不是可以将原本恶意的数据封装在0数组里，然后就可以绕过之前#lazy_builder条件里的一个判断了，那么解决了之前的那个困惑，后面直接看到关键条件
+根据分析两个参数都可控的条件下利用回调函数call_user_func_array()最后实现命令注入，payload的构造为
+URL : ?element_parents=account/mail/%23value&amp;ajax_form=1" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/a0156b33feaf1ea172e3ecfbaf70a4d6/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-07-28T10:39:32+08:00" />
+<meta property="article:modified_time" content="2023-07-28T10:39:32+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">DRUPAL 8.x远程代码执行漏洞(CVE-2018-7600)</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2 id="CdaJV">事件背景</h2> 
+<p id="u6cb28fc5">框架漏洞收集</p> 
+<p>CVE-2018-7600有两个POC分别是7和8的，本文仅研究8版本的POC，与其它的文章不同的事，本文我将数据流向调试并记录下来了</p> 
+<h2 id="nWpWy">漏洞说明</h2> 
+<p id="u78f33b30">1. 漏洞原理：Drupal对表单请求内容未做严格过滤，因此，这使得攻击者可能将恶意注入表单内容，此漏洞允许未经身份验证的攻击者在默认或常见的Drupal安装上执行远程代码执行。</p> 
+<p id="u1f7cef28">2. 组件描述：Drupal是使用PHP语言编写的开源内容管理框架（CMF），它由由内容管理系统和PHP开发框架共同构成，在GPL2.0及更新协议下发布。连续多年荣获全球最佳CMS大奖，是基于PHP语言最著名的WEB应用程序。</p> 
+<p id="u34c16f2c">3. 影响版本： 7.x-8.x，本篇分析漏洞仅对版本8有效，版本7的是另外的利用点，但是CVE编号相同</p> 
+<h2 id="G8nBC">漏洞复现</h2> 
+<p id="u40dbf792">环境搭建：<a href="https://github.com/drupal/drupal/tree/8.3.3" title="GitHub - drupal/drupal at 8.3.3">GitHub - drupal/drupal at 8.3.3</a></p> 
+<p id="u9a56e4f3">这里可能需要利用docker环境的命令配置一下，我自己的环境为：windows10、PHP7.1、电脑带有docker可使用composer命令生成vendor目录、需要提供yaml环境（<a href="https://www.cnblogs.com/yycode/p/16039854.html" rel="nofollow" title="https://www.cnblogs.com/yycode/p/16039854.html">https://www.cnblogs.com/yycode/p/16039854.html</a>）、在php.ini文件中添加”yaml.decode_php=On“</p> 
+<p id="u514aad55"></p> 
+<p class="img-center"><img alt="" height="639" id="ufd88bffe" src="https://images2.imgbox.com/0b/73/WohD3hnw_o.png" width="1200"></p> 
+<p id="u0d3be59e">然后访问/core/install.php进入安装界面，简单填数据库的信息安装即可</p> 
+<p id="ue492bc57"></p> 
+<p class="img-center"><img alt="" height="904" id="ue915bb68" src="https://images2.imgbox.com/4b/47/9VzOaXUZ_o.png" width="1200"></p> 
+<p id="u3e53fe6a">直接用payload</p> 
+<p id="u7c4fbf13">url : ?element_parents=account/mail/%23value&amp;ajax_form=1</p> 
+<p id="u65de6518">POST : form_id=user_register_form&amp;mail[0][#lazy_builder][0]=passthru&amp;mail[0][#lazy_builder][1][0]=whoami</p> 
+<p id="ufefd8f59"></p> 
+<p class="img-center"><img alt="" height="375" id="u60ebccce" src="https://images2.imgbox.com/df/11/ZSUAy62A_o.jpg" width="1200"></p> 
+<p id="u9535513d">命令执行成功</p> 
+<h2 id="i0yNi">漏洞分析</h2> 
+<p id="u0e2a213c">漏洞的原因来源于框架的一个特点，即drupal采用引擎对数组渲染生成HTML表达</p> 
+<p class="img-center"><img alt="" height="158" id="udc8dfd72" src="https://images2.imgbox.com/34/96/OQ5wMy0R_o.png" width="865"></p> 
+<p id="ua2286555">这里出现了两个问题，而这两个问题则就造成了漏洞的利用，一个是框架对数组数据的传入没有任何过滤，二是生成的表单最后会传入到drupal\core\modules\file\src\Element\ManagedFile.php的uploadAjaxCallback方法中解析，而在解析的过程中有几个框架自带的属性可以造成漏洞的利用</p> 
+<ul><li id="u79fb6c30">#access_callback<br> 由Drupal使用来确定当前用户是否有权访问元素。</li><li id="uc8550396">#pre_render<br> 在渲染之前操作渲染数组。</li><li id="u14a7c8b1">#post_render<br> 接收渲染过程的结果并在其周围添加包装。</li><li id="u197236d4">#lazy_builder<br> 用于在渲染过程的最后添加元素。</li></ul> 
+<p id="ua789c598">#access_callback 标签虽然callback回调函数可控，但需要回调处理的字符串不可控，导致无法利用</p> 
+<p id="ua715bbcd">由于对数组无任何过滤输入，即可传入这些自带的属性，造成回调函数的利用，不过有个问题就是数据怎么传入，如何触发漏洞，从头开始分析，构造的HTML表单的key值一般都是前期写死的，而我们经过分析必须得向表单传入可控键才能触发漏洞，这个问题的解决方法就是一个很正常的功能造成的</p> 
+<p id="uc6bfc58b"></p> 
+<p class="img-center"><img alt="" height="768" id="ueee9c030" src="https://images2.imgbox.com/b7/09/2MbbHfIu_o.png" width="1200"></p> 
+<p id="u34915d86"></p> 
+<p class="img-center"><img alt="" height="417" id="ue9328de8" src="https://images2.imgbox.com/73/99/kTOTc9bY_o.png" width="1128"></p> 
+<p id="u996b13ed">打个断点监听一下，运行以后如下</p> 
+<p id="ud57f4062"></p> 
+<p class="img-center"><img alt="" height="599" id="ua5931e60" src="https://images2.imgbox.com/1a/8c/bwTIXjxm_o.png" width="1200"></p> 
+<p id="u2565a470">说明在buildform打的断点没有停下来，不过如果再以上述步骤一模一样操作一遍会发现</p> 
+<p id="u1e06fd96"></p> 
+<p class="img-center"><img alt="" height="915" id="uf25eb8ea" src="https://images2.imgbox.com/21/a9/8pVdi4Rc_o.png" width="1200"></p> 
+<p id="uc1810de9">可以看到在断点处停下来了，第二次请求就停下来了，说明用户存在的话断点会走到最后，将表单返回</p> 
+<p id="u35045d07"></p> 
+<p class="img-center"><img alt="" height="839" id="u8f695170" src="https://images2.imgbox.com/fa/d7/kmfj2CMc_o.png" width="1200"></p> 
+<p id="u1d9f2778">这就是一个一般网站常用的便捷功能，当注册的用户或邮箱存在时会保留上次输入的信息，而保留的这部分数据可以导致了数据的输入，这些数据最后会流入到drupal\core\modules\file\src\Element\ManagedFile.php::uploadAjaxCallback中解析，而现在还是没有解决，如何才能修改表单的键，根据其它师傅的分析才明白可以利用注册中图片的一个传输获得payload的大概身影，尝试抓取直接上传图片的请求，可以得到如下</p> 
+<p id="u3fc4c970"></p> 
+<p class="img-center"><img alt="" height="769" id="u42342f85" src="https://images2.imgbox.com/34/f3/PLSCHjRw_o.png" width="1200"></p> 
+<p id="u37f1cd4d">由于格式是multipart/form-data，不太方便，再查看缓存的POST</p> 
+<p id="u07362cd4"></p> 
+<p class="img-center"><img alt="" height="807" id="u340f4c14" src="https://images2.imgbox.com/8d/eb/Ixu2LB40_o.png" width="1200"></p> 
+<p id="u477b7201">利用burp抓到的url以及缓存的POST，提取几个关键的参数伪造为application/x-www-form-urlencoded类型的请求即可，经过分析大概提取了如下几个关键参数</p> 
+<p id="u6bce56a7">url中element_parents参数的内容是定位到表单的一个位置最后提取其中的数据，比如上传图片时为user_picture/widget/0，则会将$form表单下的user_picture下的widget下的0提取出来无论为数组还是元素，代码实现如下</p> 
+<p id="ue479f519"></p> 
+<p class="img-center"><img alt="" height="333" id="ucf27e72e" src="https://images2.imgbox.com/e4/58/nE65kKhl_o.png" width="1132"></p> 
+<p id="uf30764f6">经过测试GET参数还有ajax_form为必须，不是很清楚具体作用，根据参数名和回显数据猜测应该是保存的表单</p> 
+<p id="u56c2a371">POST提取出了三处，分别为form_id、mail、name，其中form_id是必须定位到注册接口的，mail和name都可以传入数据，但是经过测试发现name有过滤，不接受数组的传输，而mail无任何过滤，因此采用mail传值</p> 
+<p id="u5483237d">接下来从drupal\core\modules\file\src\Element\ManagedFile.php::uploadAjaxCallback开始审计</p> 
+<p id="u982db1cc"></p> 
+<p class="img-center"><img alt="" height="346" id="ua63a319a" src="https://images2.imgbox.com/60/a3/hMuErQQ3_o.png" width="1200"></p> 
+<p id="u07b5a226">explode()函数会把element_parents内容以斜杆划分为几个值的数组，接下来步入getValue</p> 
+<p id="ua0d6ab76"></p> 
+<p class="img-center"><img alt="" height="563" id="ud0522bb9" src="https://images2.imgbox.com/22/c6/D570YyX3_o.png" width="1093"></p> 
+<p id="ub0b8650b">大概作用为递归查询$form中是否有$form_parents，有的话最后把值返回，没有则返回空，因此最后$form为我们构造恶意的键对应的值，往下继续看</p> 
+<p id="u5bec7f16"></p> 
+<p class="img-center"><img alt="" height="499" id="ub40c8e6e" src="https://images2.imgbox.com/c4/db/X9QJLuuR_o.png" width="1200"></p> 
+<p id="u833611b9">根据上述可以大概了解$form现在有三个键，一个是我们传入的，一个是#suffix，一个是#prefix，最后$form被传入$renderer-&gt;renderRoot()，跟进查看</p> 
+<p id="u953d11fa"></p> 
+<p class="img-center"><img alt="" height="488" id="u1e8e7db7" src="https://images2.imgbox.com/60/97/bZAgXEZu_o.png" width="1200"></p> 
+<p id="u26fb421e">继续跟进render()查看</p> 
+<p id="u884b443c"></p> 
+<p class="img-center"><img alt="" height="616" id="uabdb682e" src="https://images2.imgbox.com/f5/7d/nKSrZvjq_o.png" width="1042"></p> 
+<p id="uabbdf044">就和套娃一样，继续跟进doRender()</p> 
+<p id="u04ca098c"></p> 
+<p class="img-center"><img alt="" height="631" id="u88931c58" src="https://images2.imgbox.com/af/55/9yQGNitb_o.png" width="1200"></p> 
+<p id="u9faeb6f1">由于没有#access和#access_callback因此如上条件判断皆可跳过，往下走</p> 
+<p id="u79ee3c0c"></p> 
+<p class="img-center"><img alt="" height="606" id="u9286bf69" src="https://images2.imgbox.com/3e/02/CIF7YRgp_o.png" width="1200"></p> 
+<p id="ue5a4c75d">这里又添加了一个键值，下面的条件判断依旧可以跳过</p> 
+<p id="ud6ae4e87"></p> 
+<p class="img-center"><img alt="" height="758" id="u694de168" src="https://images2.imgbox.com/e9/eb/k9DuBAp1_o.png" width="1200"></p> 
+<p id="u0506d831">这里即是最开始说的几个框架自带属性功能#lazy_builder，这也是我构造payload一个方法，因此如果利用的是#lazy_builder攻击，则进入条件判断查看，根据如上大概需要构造的payload有如下几个要求</p> 
+<p id="uda807307">#lazy_builder对应的值为数组</p> 
+<p id="uda0700e3">#lazy_builder对应的数组有且仅仅包含两个键</p> 
+<p id="u43d89439">#lazy_builder下键为1对应的值为数组，测试如下</p> 
+<p id="u78e468af"></p> 
+<p class="img-center"><img alt="" height="399" id="u44bcfdfc" src="https://images2.imgbox.com/03/17/Lu4vxSyf_o.png" width="1200"></p> 
+<p id="u692e9f37">继续看下面</p> 
+<p id="u91418cde"></p> 
+<p class="img-center"><img alt="" height="608" id="u48862c79" src="https://images2.imgbox.com/e7/47/RxfScJiG_o.png" width="1200"></p> 
+<p id="u9b713a88">array_diff()函数用于比较两个（或更多个）数组的值，并返回差集，差集仅仅限于前减后</p> 
+<p id="u9159cb8e"></p> 
+<p class="img-center"><img alt="" height="261" id="u944207f2" src="https://images2.imgbox.com/38/24/2xe57zFt_o.png" width="1200"></p> 
+<p id="u2d1dcf0b">根据上例，我们必须保证$elements的键值小于等于$supported_keys且不能比在里面的数据多些什么，但是根据前面的数据我们很显然无法达到要求，其中#suffix、#prefix、还有后来添加的#cache，因此此处无法绕过，会导致报错，那么真的就没有办法了吗？确实，在这一层没有办法了，那我们就不能进入#lazy_builder这层条件了，这说明了#lazy_builder不可用吗？其实并不是，跳过这个条件继续看下去</p> 
+<p id="ueb2210b5"></p> 
+<p class="img-center"><img alt="" height="550" id="u1c487902" src="https://images2.imgbox.com/fb/62/szAJRtEK_o.png" width="1088"></p> 
+<p id="u3a475463"></p> 
+<p class="img-center"><img alt="" height="542" id="ufbae2821" src="https://images2.imgbox.com/1a/2f/buQ0cXd0_o.png" width="1066"></p> 
+<p id="ue32c600d"></p> 
+<p class="img-center"><img alt="" height="510" id="uc5a4ddc0" src="https://images2.imgbox.com/34/10/D6xyz6da_o.png" width="987"></p> 
+<p id="uc400ab1e">其中经过数据处理$children为一个0数组 $elements['#children']为空$theme_is_implemented为false</p> 
+<p id="u272f0efd"></p> 
+<p class="img-center"><img alt="" height="309" id="u80974e6c" src="https://images2.imgbox.com/1b/d7/VyFQgI8W_o.png" width="1200"></p> 
+<p id="ua8d3cf1b">已知$children为0数组，则提出来的值为0，因此就相当于将$elements中0键对应的值重新循环了一遍，而这次循环不再带有#suffix、#prefix等其它的键，那我们是不是可以将原本恶意的数据封装在0数组里，然后就可以绕过之前#lazy_builder条件里的一个判断了，那么解决了之前的那个困惑，后面直接看到关键条件</p> 
+<p id="uff58ff07"></p> 
+<p class="img-center"><img alt="" height="588" id="ua6a8d1b8" src="https://images2.imgbox.com/6e/33/Jo8EY6Xb_o.png" width="1200"></p> 
+<p id="ud35a06e5">根据分析两个参数都可控的条件下利用回调函数call_user_func_array()最后实现命令注入，payload的构造为</p> 
+<p id="uc6091a46">URL : ?element_parents=account/mail/%23value&amp;ajax_form=1</p> 
+<p id="ueeeacb9f"></p> 
+<p id="u72fdb257">POST : form_id=user_register_form&amp;mail[0][#lazy_builder][0]=passthru&amp;mail[0][#lazy_builder][1][0]=whoami</p> 
+<p id="u80bcdfab">当然，这也仅仅是利用到一个#lazy_builder属性造成的漏洞，另外有一个#pre_render</p> 
+<p id="ufd14b3fb"></p> 
+<p class="img-center"><img alt="" height="342" id="u217e99da" src="https://images2.imgbox.com/33/35/lN6auc6M_o.png" width="1118"></p> 
+<p id="ue4f87b74">但是$elements数据不能完全控制，导致这个利用点很鸡肋，只能用需要一个参数且对参数要求不严格的函数，如print_r、var_dump等</p> 
+<p id="ufc88bd52"></p> 
+<p class="img-center"><img alt="" height="596" id="u84d0187b" src="https://images2.imgbox.com/2d/6c/xhVNYHDj_o.png" width="1178"></p> 
+<p id="u80b4d9e0">除此之外还有一个看着像是可以利用的，为#post_render</p> 
+<p id="uf2469225"></p> 
+<p class="img-center"><img alt="" height="392" id="u8aff8263" src="https://images2.imgbox.com/01/05/VbaYwcmu_o.png" width="1200"></p> 
+<p id="u2a97ef05">回调函数会把#post_render的值作为函数名，后面两个则作为参数</p> 
+<p id="u19e5a943"></p> 
+<p class="img-center"><img alt="" height="266" id="u9a6081c8" src="https://images2.imgbox.com/3e/6e/h56hn9K2_o.png" width="1200"></p> 
+<p id="u18611471"></p> 
+<p class="img-center"><img alt="" height="496" id="ud29e111a" src="https://images2.imgbox.com/f5/ea/A4CxX03s_o.png" width="693"></p> 
+<p id="u2a1a3949">最后$elements['#children']取决于$elements['#markup']，因此控制$elements['#markup']的值即可</p> 
+<p id="uf13002e2">payload为</p> 
+<p id="u01f6a50a"></p> 
+<p class="img-center"><img alt="" height="546" id="ud9edf285" src="https://images2.imgbox.com/4c/55/ZMYFCvPE_o.png" width="1160"></p> 
+<p id="u129e26ec">虽然未成功，但是经过测试发现call_user_func()函数一个问题，也就是两个参数时可能会出现的问题，测试一下便明白</p> 
+<p id="u40829db6"></p> 
+<p class="img-center"><img alt="" height="811" id="ua99a3b2e" src="https://images2.imgbox.com/10/97/FN7Dfk54_o.png" width="1200"></p> 
+<p id="u873cadcd">不知道为什么，在本地测试时发现以变量传入就是会报错，而我尝试在在线平台测试时发现</p> 
+<p id="uf36787b2"></p> 
+<p class="img-center"><img alt="" height="444" id="u01c7bd8d" src="https://images2.imgbox.com/99/26/PY41IwmD_o.png" width="1200"></p> 
+<p id="u097a0d4f">可以看到在线平台则可以，这说明这个函数是有缺陷的，我大胆猜测可能是php版本的原因，于是在本地测了一下和在线一样版本7.4发现</p> 
+<p id="uba0d9f35"></p> 
+<p class="img-center"><img alt="" height="565" id="u7f27994c" src="https://images2.imgbox.com/b3/8b/gaeBfLBV_o.jpg" width="1200"></p> 
+<p id="u80a392d6">报了500还是不行，猜测可能是配置原因或者是报错的一个设置，但是找不出来，不过#lazy_builder可以实现即可。</p> 
+<h2 id="QsHdH">Referer</h2> 
+<p><a href="https://paper.seebug.org/567/" rel="nofollow" title="云鼎实验室：Drupal CVE-2018-7600 分析及 PoC 构造">云鼎实验室：Drupal CVE-2018-7600 分析及 PoC 构造</a></p> 
+<p><a href="https://xz.aliyun.com/t/2271" rel="nofollow" title="揭开Drupalgeddon 2的神秘面纱 - 先知社区">揭开Drupalgeddon 2的神秘面纱 - 先知社区</a></p> 
+<p><a href="http://blog.nsfocus.net/cve-2018-7600-analysis/" rel="nofollow" title="【漏洞分析】Drupal远程代码执行漏洞(CVE-2018-7600)分析 – 绿盟科技技术博客">【漏洞分析】Drupal远程代码执行漏洞(CVE-2018-7600)分析 – 绿盟科技技术博客</a></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/d94dfcd38740dd3d4a8e4265c0d854bf/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Drupal YAML 反序列化代码执行漏洞(CVE-2017-6920)</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/96f22d5beb956b81b4eaf209592c2357/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">mmrotate框架基本使用</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

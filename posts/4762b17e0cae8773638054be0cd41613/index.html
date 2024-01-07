@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>关于M0内核MCU的Bootloader编写 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="关于M0内核MCU的Bootloader编写" />
+<meta property="og:description" content="在使用MCU的时候如果要使用程序下载、程序升级或程序备份，那么都需要自己编写Bootloader。那么编写Bootloader使首先应该完成的是什么呢？没错，就是中断向量表。那如果操作中断向量表呢？这里就详细说一下：
+要操作中断向量表，首先要知道中断向量表是什么，它的作用是什么？在编写MCU程序的时候都会用到中断，然后会有中断回调函数。MCU是如何通过中断而转到中断回调函数呢？这就需要中断向量表了，可以简单的理解，中断向量表就是连接中断事件和中断回调函数的桥梁。当有中断产生的时候，MCU会到中断会向量表中找回调函数，进而去执行。如果想了解更多的可以看M0和M3内核手册。
+那知道了中断向量表是什么，现在要编写Bootloader的时候需要对中断向量表进行处理。在我的另一篇文章《STM32 IAP下载》篇中有介绍M3内核的相关操作，这里就不做过多介绍了，有兴趣的可以去看一下，附上链接：https://blog.csdn.net/qq_26226375/article/details/80158869 这篇文章还是以一个特定的MCU来解释，因为最近都在玩Nordic的51822芯片，所以，就以51822为例来介绍。51822是一款可以跑蓝牙协议栈的芯片，这里并没有使用协议栈，用的裸机。言归正传，如何操作中断向量表，M0和M3内核有一定的区别，使用M3内核的STM32F1XX可以直接对中断向量表进行映射，而且这个操作只需要配置一个寄存器就好了。而使用M0的51822芯片却不能这么做，有兴趣的可以试一下，如果写两个工程，一个Boot程序，一个应用程序，两个工程的起始地址不一样。如果可以完成从Boot程序成功跳转到应用程序，那么恭喜，已经成功了四分之一了。如果这时候在应用程序中进入了中断回调函数，会发现好像中断回调函数的执行结果和自己在应用程序中写的中断回调函数结果不一样，但是却好像跟Boot的中断回调函数一样，这就很气了。这是为什么呢？这是因为所有程序的起始地址都是从0x00000000开始，从起始地址向后偏移一定的位置是中断向量表，MCU都是根据这个中断向量表来找到中断回调函数。虽然在应用程序中也定义了中断向量表，但是如果不做处理，这个向量表不能被MCU检测到。所以当在应用程序中调用回调函数的时候，程序会回到Boot的中断回调函数位置，然后调用Boot的回调函数。那么我们最关键的就是让应用程序能调用应用程序的回调函数。
+这里顺便介绍一下M0的启动流程。通常M0处理器都是从0x00000000开始的，内容如下图：
+0x00000000的地址有个0x20008000的地址，这个地址就是(MSP)主栈指针的初始值，在往上的4个字节是复位后的程序执行的起始地址（会先执行复位）。从图上可以看到是0x000000c1，也就是说，程序在复位后，会从0x000000c1的位置开始。而0x00000000-0x000000c0的内容都被称之为“向量表”。那之后的是什么呢？见下图：
+这个图就可以详细的看到向量表中存储的是什么。复位向量后是NMI向量，之后是硬件错误。。bulabula。。。这些看起来是不是有点眼熟。没错，这些就是在启动文件里的向量表内容。一般都会在.s文件里。这里依旧以51822为例：
+可以看到这个启动文件里的东西，跟我们上边说的是对应的。我们看到的都是异常中断的中断回调函数，当程序出现异常的时候就会进入这些异常回调函数中。同样，图片下方的POWER_CLOCK_IRQHandler 、RADIO_IRQHandler..bulabula 也都是中断回调函数。既然M0内核没有办法进行中断向量表映射，那我们就需要让程序在boot和应用程序分别调用自己的中断回调函数。但是每次中断，程序都会回到0x00000008的位置开始寻找，所以必须在0x00000008的位置开始就区分开。
+因为中断回调函数也是函数，也是调用一个地址的内容，所以我们可以把中断回调函数的内容都换成有序的、可以被我们控制的地址。那么当调用中断回调函数的时候，程序就会调用我们希望其调用的地址。可以这样做，如下附上代码：
+/*
+中断向量表重映射，映射到0x20000000的位置
+*/
+uint32_t my_vectors[48] __attribute__((at(0x20000000)));
+void NMI_Handler()
+{
+(*(void(*)(void))my_vectors[2])();
+}
+void HardFault_Handler()
+{
+//(*(void(*)(void))my_vectors[3])();
+}
+void SVC_Handler()
+{
+(*(void(*)(void))my_vectors[11])();
+}
+void PendSV_Handler()
+{
+(*(void(*)(void))my_vectors[14])();
+}
+。。。。
+这样，所有的中断回调函数全都会去调用my_vectors这个数组的内容的地址位置。我们把这个数组的地址定义到Boot程序和应用程序都能调用到的RAM区域，当然，这个地址要保护起来（Boot程序和应用程序都不会使用该地址）。然后我们在boot里将从0x00000000-0x000000c0的内容（向量表）拷贝到my_vectors数组中，这样就完成了boot向量表的拷贝。当程序在Boot区执行完成后，要跳转到应用程序之前，将应用程序的前0xc0的内容拷贝到my_vectors数组中，这样也就完成了应用程序的向量表重定义。这样，每次在执行boot程序的时候，执行的是boot的中断回调函数，而执行应用程序的时候，执行的是应用程序的中断回调函数。
+起始，方法还有很多，这个只是其中的一种而已。欢迎留言评论，如果有说的不对的地方，也欢迎大佬指正。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/4762b17e0cae8773638054be0cd41613/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2019-08-27T20:15:33+08:00" />
+<meta property="article:modified_time" content="2019-08-27T20:15:33+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">关于M0内核MCU的Bootloader编写</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>      在使用MCU的时候如果要使用程序下载、程序升级或程序备份，那么都需要自己编写Bootloader。那么编写Bootloader使首先应该完成的是什么呢？没错，就是中断向量表。那如果操作中断向量表呢？这里就详细说一下：</p> 
+<p>      要操作中断向量表，首先要知道中断向量表是什么，它的作用是什么？在编写MCU程序的时候都会用到中断，然后会有中断回调函数。MCU是如何通过中断而转到中断回调函数呢？这就需要中断向量表了，可以简单的理解，中断向量表就是连接中断事件和中断回调函数的桥梁。当有中断产生的时候，MCU会到中断会向量表中找回调函数，进而去执行。如果想了解更多的可以看M0和M3内核手册。</p> 
+<p>      那知道了中断向量表是什么，现在要编写Bootloader的时候需要对中断向量表进行处理。在我的另一篇文章《STM32 IAP下载》篇中有介绍M3内核的相关操作，这里就不做过多介绍了，有兴趣的可以去看一下，附上链接：<a href="https://blog.csdn.net/qq_26226375/article/details/80158869">https://blog.csdn.net/qq_26226375/article/details/80158869 </a></p> 
+<p>      这篇文章还是以一个特定的MCU来解释，因为最近都在玩Nordic的51822芯片，所以，就以51822为例来介绍。51822是一款可以跑蓝牙协议栈的芯片，这里并没有使用协议栈，用的裸机。言归正传，如何操作中断向量表，M0和M3内核有一定的区别，使用M3内核的STM32F1XX可以直接对中断向量表进行映射，而且这个操作只需要配置一个寄存器就好了。而使用M0的51822芯片却不能这么做，有兴趣的可以试一下，如果写两个工程，一个Boot程序，一个应用程序，两个工程的起始地址不一样。如果可以完成从Boot程序成功跳转到应用程序，那么恭喜，已经成功了四分之一了。如果这时候在应用程序中进入了中断回调函数，会发现好像中断回调函数的执行结果和自己在应用程序中写的中断回调函数结果不一样，但是却好像跟Boot的中断回调函数一样，这就很气了。这是为什么呢？这是因为所有程序的起始地址都是从0x00000000开始，从起始地址向后偏移一定的位置是中断向量表，MCU都是根据这个中断向量表来找到中断回调函数。虽然在应用程序中也定义了中断向量表，但是如果不做处理，这个向量表不能被MCU检测到。所以当在应用程序中调用回调函数的时候，程序会回到Boot的中断回调函数位置，然后调用Boot的回调函数。那么我们最关键的就是让应用程序能调用应用程序的回调函数。</p> 
+<p>    这里顺便介绍一下M0的启动流程。通常M0处理器都是从0x00000000开始的，内容如下图：</p> 
+<p>   <img alt="" class="has" src="https://images2.imgbox.com/89/41/JlGksETx_o.png"></p> 
+<p>0x00000000的地址有个0x20008000的地址，这个地址就是(MSP)主栈指针的初始值，在往上的4个字节是复位后的程序执行的起始地址（会先执行复位）。从图上可以看到是0x000000c1，也就是说，程序在复位后，会从0x000000c1的位置开始。而0x00000000-0x000000c0的内容都被称之为“向量表”。那之后的是什么呢？见下图：</p> 
+<p><img alt="" class="has" height="452" src="https://images2.imgbox.com/79/64/Krtwmax4_o.png" width="704"></p> 
+<p>这个图就可以详细的看到向量表中存储的是什么。复位向量后是NMI向量，之后是硬件错误。。bulabula。。。这些看起来是不是有点眼熟。没错，这些就是在启动文件里的向量表内容。一般都会在.s文件里。这里依旧以51822为例：</p> 
+<p><img alt="" class="has" height="568" src="https://images2.imgbox.com/e4/3c/uCMTKSnh_o.png" width="410"></p> 
+<p>可以看到这个启动文件里的东西，跟我们上边说的是对应的。我们看到的都是异常中断的中断回调函数，当程序出现异常的时候就会进入这些异常回调函数中。同样，图片下方的POWER_CLOCK_IRQHandler 、RADIO_IRQHandler..bulabula 也都是中断回调函数。既然M0内核没有办法进行中断向量表映射，那我们就需要让程序在boot和应用程序分别调用自己的中断回调函数。但是每次中断，程序都会回到0x00000008的位置开始寻找，所以必须在0x00000008的位置开始就区分开。</p> 
+<p>因为中断回调函数也是函数，也是调用一个地址的内容，所以我们可以把中断回调函数的内容都换成有序的、可以被我们控制的地址。那么当调用中断回调函数的时候，程序就会调用我们希望其调用的地址。可以这样做，如下附上代码：</p> 
+<p>/*<br> 中断向量表重映射，映射到0x20000000的位置<br> */<br> uint32_t my_vectors[48] __attribute__((at(0x20000000)));<br> void NMI_Handler()<br> {<!-- --><br>     (*(void(*)(void))my_vectors[2])();<br> }<br> void HardFault_Handler()<br> {<!-- --><br>     //(*(void(*)(void))my_vectors[3])();<br> }<br> void SVC_Handler()<br> {<!-- --><br>     (*(void(*)(void))my_vectors[11])();<br> }<br> void PendSV_Handler()<br> {<!-- --><br>     (*(void(*)(void))my_vectors[14])();<br> }</p> 
+<p>。。。。</p> 
+<p>这样，所有的中断回调函数全都会去调用my_vectors这个数组的内容的地址位置。我们把这个数组的地址定义到Boot程序和应用程序都能调用到的RAM区域，当然，这个地址要保护起来（Boot程序和应用程序都不会使用该地址）。然后我们在boot里将从0x00000000-0x000000c0的内容（向量表）拷贝到my_vectors数组中，这样就完成了boot向量表的拷贝。当程序在Boot区执行完成后，要跳转到应用程序之前，将应用程序的前0xc0的内容拷贝到my_vectors数组中，这样也就完成了应用程序的向量表重定义。这样，每次在执行boot程序的时候，执行的是boot的中断回调函数，而执行应用程序的时候，执行的是应用程序的中断回调函数。</p> 
+<p>起始，方法还有很多，这个只是其中的一种而已。欢迎留言评论，如果有说的不对的地方，也欢迎大佬指正。</p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/99cccf387c28efa6b822685b30434544/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Oracle timeStamp时间类型相减，单位为毫秒</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/b5c1b71434b9e5edacf3368f886bfd3a/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">phpStudy &#43; PhpStorm &#43; XDebug调试【绝对能用】</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>视觉SLAM②--初识SLAM - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="视觉SLAM②--初识SLAM" />
+<meta property="og:description" content="目录
+2.0 本章主要内容
+2.1 引子：小萝卜的例子
+2.2 经典视觉SLAM框架
+2.2.1 视觉里程计 2.2.2 后端优化 2.2.3 回环检测 2.2.4 建图 2.3 SLAM的数学问题描述 2.4 实践 编程基础
+2.4.1 安装Linux操作系统
+2.4.2 Hello Slam
+2.4.3 使用cmake
+2.4.4 使用库 SLAM是 Simultaneous Localization and Mapping 的缩写，中文译作“同时定位与地图构建”。它是指搭载特定传感器的主体，在没有环境先验信息的情况下，于运动过程中建立环境的模型，同时估计自己的运动。如果这里的传感器主要为相机，那就称为&#34;视觉SLAM&#34;。
+2.0 本章主要内容 Ⅰ.理解一个视觉SLAM框架由哪几个模块组成，各模块的任务是什么。 Ⅱ.搭建编程环境,为开发和实验做准备。
+Ⅲ.理解如何在Linux下编译并运行一个程序，如果程序出了问题，又该如何调试它。
+Ⅳ.掌握cmake的基本使用方法。
+2.1 引子：小萝卜的例子 假设我们组装一台叫做小萝卜的机器人，大概的样子如图所示
+图2-1 一个简易机器人 1.这个机器人能干什么
+自主运动能力：
+自主运动能力是许多高级功能的前提。不管是扫地还是搬东西，首先要让它动起来。要移动就得有轮子和电机，所以我们在小萝卜的下方安装了轮子(足式机器人步态很复杂)。有了轮子，机器人就能够四处行动了，但不加规划和控制的话,小萝卜不知道行动的目标，就只能四处乱走，更糟糕的情况下会撞上墙造成损毁。而要规划和控制,首先需要感知周边的环境。为此，我们在它的脑袋上安装了一个相机。安装相机的主要动机，是考虑到这样一个机器人和人类非常相似——从画面上一眼就能看出。有眼睛、大脑和四肢的人类，能够在任意环境里轻松自在地行走、探索，我们觉得机器人也能够完成这件事。为了使小萝卜能够探索一个房间，它至少需要知道两件事:
+Ⅰ．我在什么地方?——定位
+Ⅱ．周围环境是什么样?——建图
+2.定位与建图
+“定位”和“建图”，可以看成感知的“内外之分”。作为一个“内外兼修”的小萝卜，一方面要明白自身的状态（即位置)，另一方面也要了解外在的环境（即地图)。当然，解决这两个问题的方法非常多。例如，我们可以在房间地板上铺设导引线,在墙壁上贴识别二维码,在桌子上放置无线电定位设备（这其实是现在很多仓储物流机器人的做法)。如果在室外，还可以在小萝卜脑袋上安装GPS信号接收器（像手机或汽车一样)。有了这些东西，定位问题是否就解决了呢?我们不妨把这些传感器分为两类
+一类传感器是携带于机器人本体上的，例如机器人的轮式编码器、相机、激光传感器,等等。另一类是安装于环境中的，例如前面讲的导轨、二维码标志，等等。安装于环境中的传感设备,通常能够直接测量机器人的位置信息，简单有效地解决定位问题。然而，由于它们要求环境必须由人工布置,在一定程度上限制了机器人的使用范围。例如，室内环境往往没有GPS 一类传感器是携带于机器人本体上的，例如机器人的轮式编码器、相机、激光传感器，等等.另一类是安装于环境中的，例如前面讲的导轨、二维码标志，等等.安装于环境中的传感设备，通常能够直接测量机器人的位置信息，简单有效地解决定位问题.然而，由于它们要求环境必须由人工布置，在一定程度上限制了机器人的使用范围。例如，室内环境往往没有全球定位系统信号，绝大信号，绝大多数园区无法铺设导轨，这时该怎么定位呢? 多数园区无法铺设导轨，这时该怎么定位呢？
+这类传感器约束了外部环境。只有在这些约束满足时，基于它们的定位方案才能工作。反之，当约束无法满足时，我们就无法进行定位。所以，虽然这类传感器简单可靠，但它们无法提供一个普遍的、通用的解决方案。相对地，那些携带于机器人本体上的传感器，比如激光传感器、相机、轮式编码器、惯性测量单元（Inertial Measurement Unit，IMU)等，它们测量的通常都是一些间接的物理量而不是直接的位置数据。例如，轮式编码器会测量轮子转动的角度,IMU测量运动的角速度和加速度，相机和激光传感器则读取外部环境的某种观测数据。我们只能通过一些间接的手段，从这些数据推算自己的位置。虽然听上去这是一种迂回战术，但更明显的好处是，它们没有对环境提出任何要求，从而使得这种定位方案可适用于未知环境。
+3.相机的分类
+按照工作方式的不同,相机可以分为单目(Monocular)相机、双目(Stereo）相机和深度（RGB-D)相机三大类。直观看来，单目相机只有一个摄像头，双目有两个，而 RGB-D的原理较复杂，除了能够采集到彩色图片，还能读出每个像素与相机之间的距离。深度相机通常携带多个摄像头,工作原理和普通相机不尽相同。此外，SLAM中还有全景相机、Event相机等特殊或新兴的种类。虽然偶尔能看到它们在SLAM 中的应用。
+Ⅰ.单目相机
+只使用一个摄像头进行SLAM的做法称为单目SLAM ( Monocular SLAM )。这种传感器结" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/10f3528772bb837c8c30cb03d68c1f8c/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-05-06T18:14:31+08:00" />
+<meta property="article:modified_time" content="2022-05-06T18:14:31+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">视觉SLAM②--初识SLAM</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p id="main-toc"><strong>目录</strong></p> 
+<p id="2.0%20%E6%9C%AC%E7%AB%A0%E4%B8%BB%E8%A6%81%E5%86%85%E5%AE%B9-toc" style="margin-left:40px;"><a href="#2.0%20%E6%9C%AC%E7%AB%A0%E4%B8%BB%E8%A6%81%E5%86%85%E5%AE%B9" rel="nofollow">2.0 本章主要内容</a></p> 
+<p id="2.1%20%E5%BC%95%E5%AD%90%EF%BC%9A%E5%B0%8F%E8%90%9D%E5%8D%9C%E7%9A%84%E4%BE%8B%E5%AD%90-toc" style="margin-left:40px;"><a href="#2.1%20%E5%BC%95%E5%AD%90%EF%BC%9A%E5%B0%8F%E8%90%9D%E5%8D%9C%E7%9A%84%E4%BE%8B%E5%AD%90" rel="nofollow">2.1 引子：小萝卜的例子</a></p> 
+<p id="2.2%20%E7%BB%8F%E5%85%B8%E8%A7%86%E8%A7%89SLAM%E6%A1%86%E6%9E%B6-toc" style="margin-left:40px;"><a href="#2.2%20%E7%BB%8F%E5%85%B8%E8%A7%86%E8%A7%89SLAM%E6%A1%86%E6%9E%B6" rel="nofollow">2.2 经典视觉SLAM框架</a></p> 
+<p id="2.2.1%20%E8%A7%86%E8%A7%89%E9%87%8C%E7%A8%8B%E8%AE%A1%C2%A0-toc" style="margin-left:80px;"><a href="#2.2.1%20%E8%A7%86%E8%A7%89%E9%87%8C%E7%A8%8B%E8%AE%A1%C2%A0" rel="nofollow">2.2.1 视觉里程计 </a></p> 
+<p id="2.2.2%20%E5%90%8E%E7%AB%AF%E4%BC%98%E5%8C%96%C2%A0-toc" style="margin-left:80px;"><a href="#2.2.2%20%E5%90%8E%E7%AB%AF%E4%BC%98%E5%8C%96%C2%A0" rel="nofollow">2.2.2 后端优化 </a></p> 
+<p id="2.2.3%20%E5%9B%9E%E7%8E%AF%E6%A3%80%E6%B5%8B%C2%A0-toc" style="margin-left:80px;"><a href="#2.2.3%20%E5%9B%9E%E7%8E%AF%E6%A3%80%E6%B5%8B%C2%A0" rel="nofollow">2.2.3 回环检测 </a></p> 
+<p id="2.2.4%20%E5%BB%BA%E5%9B%BE%C2%A0-toc" style="margin-left:80px;"><a href="#2.2.4%20%E5%BB%BA%E5%9B%BE%C2%A0" rel="nofollow">2.2.4 建图 </a></p> 
+<p id="2.3%20SLAM%E7%9A%84%E6%95%B0%E5%AD%A6%E9%97%AE%E9%A2%98%E6%8F%8F%E8%BF%B0%C2%A0-toc" style="margin-left:40px;"><a href="#2.3%20SLAM%E7%9A%84%E6%95%B0%E5%AD%A6%E9%97%AE%E9%A2%98%E6%8F%8F%E8%BF%B0%C2%A0" rel="nofollow">2.3 SLAM的数学问题描述 </a></p> 
+<p id="2.4%20%E5%AE%9E%E8%B7%B5%20%E7%BC%96%E7%A8%8B%E5%9F%BA%E7%A1%80-toc" style="margin-left:40px;"><a href="#2.4%20%E5%AE%9E%E8%B7%B5%20%E7%BC%96%E7%A8%8B%E5%9F%BA%E7%A1%80" rel="nofollow">2.4 实践 编程基础</a></p> 
+<p id="2.4.1%20%E5%AE%89%E8%A3%85Linux%E6%93%8D%E4%BD%9C%E7%B3%BB%E7%BB%9F-toc" style="margin-left:80px;"><a href="#2.4.1%20%E5%AE%89%E8%A3%85Linux%E6%93%8D%E4%BD%9C%E7%B3%BB%E7%BB%9F" rel="nofollow">2.4.1 安装Linux操作系统</a></p> 
+<p id="2.4.2%20Hello%20Slam-toc" style="margin-left:80px;"><a href="#2.4.2%20Hello%20Slam" rel="nofollow">2.4.2 Hello Slam</a></p> 
+<p id="2.4.3%20%E4%BD%BF%E7%94%A8cmake-toc" style="margin-left:80px;"><a href="#2.4.3%20%E4%BD%BF%E7%94%A8cmake" rel="nofollow">2.4.3 使用cmake</a></p> 
+<p id="2.4.4%20%E4%BD%BF%E7%94%A8%E5%BA%93%C2%A0-toc" style="margin-left:80px;"><a href="#2.4.4%20%E4%BD%BF%E7%94%A8%E5%BA%93%C2%A0" rel="nofollow">2.4.4 使用库 </a></p> 
+<hr id="hr-toc"> 
+<p></p> 
+<blockquote> 
+ <p>        SLAM是 Simultaneous Localization and Mapping 的缩写，中文译作“<span style="color:#fe2c24;"><strong>同时定位与地图构建</strong>”</span>。它是指搭载<strong>特定传感器的主体</strong>，在没有环境先验信息的情况下，于运动过程中建立环境的模型，同时估计自己的运动。如果这里的传感器主要为<span style="color:#fe2c24;">相机</span>，那就称为"<strong>视觉SLAM</strong>"。</p> 
+</blockquote> 
+<h3 id="2.0%20%E6%9C%AC%E7%AB%A0%E4%B8%BB%E8%A6%81%E5%86%85%E5%AE%B9">2.0 本章主要内容</h3> 
+<blockquote> 
+ <p>Ⅰ.理解一个视觉SLAM框架由哪几个模块组成，各模块的任务是什么。 </p> 
+ <p>Ⅱ.搭建编程环境,为开发和实验做准备。<br> Ⅲ.理解如何在Linux下编译并运行一个程序，如果程序出了问题，又该如何调试它。</p> 
+ <p>Ⅳ.掌握cmake的基本使用方法。</p> 
+</blockquote> 
+<h3 id="2.1%20%E5%BC%95%E5%AD%90%EF%BC%9A%E5%B0%8F%E8%90%9D%E5%8D%9C%E7%9A%84%E4%BE%8B%E5%AD%90">2.1 引子：小萝卜的例子</h3> 
+<p>假设我们组装一台叫做小萝卜的机器人，大概的样子如图所示</p> 
+<div class="img-center"> 
+ <figure class="image"> 
+  <img alt="" height="620" src="https://images2.imgbox.com/1b/da/uRfrQ3Xy_o.png" width="1195"> 
+  <figcaption> 
+   <strong>图2-1 一个简易机器人</strong> 
+  </figcaption> 
+ </figure> 
+</div> 
+<p>1.这个机器人能干什么</p> 
+<blockquote> 
+ <p><strong>自主运动能力：</strong></p> 
+ <p>自主运动能力是许多高级功能的前提。不管是扫地还是搬东西，首先要让它<span style="color:#fe2c24;">动起来</span>。要移动就得有<span style="color:#38d8f0;">轮子和电机</span>，所以我们在小萝卜的下方安装了轮子(足式机器人步态很复杂)。有了轮子，机器人就能够四处行动了，但不加规划和控制的话,小萝卜不知道行动的目标，就只能四处乱走，更糟糕的情况下会撞上墙造成损毁。而要<span style="color:#fe2c24;">规划和控制</span>,首先需要感知周边的环境。为此，我们在它的脑袋上安装了一个<span style="color:#38d8f0;">相机</span>。安装相机的主要动机，是考虑到这样一个机器人和人类非常相似——从画面上一眼就能看出。有眼睛、大脑和四肢的人类，能够在任意环境里轻松自在地行走、探索，我们觉得机器人也能够完成这件事。为了使小萝卜能够探索一个房间，它至少需要知道两件事:</p> 
+ <p><br> Ⅰ．我在什么地方?——定位</p> 
+ <p>Ⅱ．周围环境是什么样?——建图</p> 
+</blockquote> 
+<p>2.定位与建图</p> 
+<blockquote> 
+ <p>“定位”和“建图”，可以看成感知的“内外之分”。作为一个“内外兼修”的小萝卜，一方面要明白<strong>自身的状态（即位置)</strong>，另一方面也要了解<strong>外在的环境（即地图)</strong>。当然，解决这两个问题的方法非常多。例如，我们可以在房间地板上铺设导引线,在墙壁上贴识别二维码,在桌子上放置无线电定位设备（这其实是现在很多仓储物流机器人的做法)。如果在室外，还可以在小萝卜脑袋上安装GPS信号接收器（像手机或汽车一样)。有了这些东西，定位问题是否就解决了呢?我们不妨把这些传感器分为两类</p> 
+ <p></p> 
+ <p>一类传感器是携带于<strong>机器人本体上的</strong>，例如机器人的轮式编码器、相机、激光传感器,等等。另一类是<strong>安装于环境中的</strong>，例如前面讲的导轨、二维码标志，等等。安装于环境中的传感设备,通常能够直接测量机器人的位置信息，简单有效地解决定位问题。<strong>然而，由于它们要求环境必须由人工布置,在一定程度上限制了机器人的使用范围</strong>。例如，<strong>室内环境往往没有GPS 一类传感器是携带于机器人本体上的，例如机器人的轮式编码器、相机、激光传感器，等等.另一类是安装于环境中的，例如前面讲的导轨、二维码标志，等等.安装于环境中的传感设备，通常能够直接测量机器人的位置信息，简单有效地解决定位问题.然而，由于它们要求环境必须由人工布置，在一定程度上限制了机器人的使用范围。</strong>例如，室内环境往往没有全球定位系统信号，绝大信号，绝大多数园区无法铺设导轨，这时该怎么定位呢? 多数园区无法铺设导轨，这时该怎么定位呢？</p> 
+ <p><br> 这类传感器约束了外部环境。只有在这些约束满足时，基于它们的定位方案才能工作。反之，当约束无法满足时，我们就无法进行定位。所以，虽然这类传感器简单可靠，但它们无法提供一个普遍的、通用的解决方案。相对地，那些<strong>携带于机器人本体上的传感器</strong>，比如激光传感器、相机、轮式编码器、惯性测量单元（Inertial Measurement Unit，IMU)等，它们测量的通常都是一些<strong>间接的物理量而不是直接的位置数据</strong>。例如，轮式编码器会测量轮子转动的角度,IMU测量运动的角速度和加速度，相机和激光传感器则读取外部环境的某种观测数据。我们只能通过一些间接的手段，从这些数据推算自己的位置。虽然听上去这是一种迂回战术，但更明显的好处是，<strong>它们没有对环境提出任何要求，从而使得这种定位方案可适用于未知环境</strong>。</p> 
+</blockquote> 
+<p>3.相机的分类</p> 
+<blockquote> 
+ <p>按照工作方式的不同,相机可以分为单目(Monocular)相机、双目(Stereo）相机和深度（RGB-D)相机三大类。直观看来，单目相机只有一个摄像头，双目有两个，而 RGB-D的原理较复杂，除了能够采集到彩色图片，还能读出每个像素与相机之间的距离。深度相机通常携带多个摄像头,工作原理和普通相机不尽相同。此外，SLAM中还有全景相机、Event相机等特殊或新兴的种类。虽然偶尔能看到它们在SLAM 中的应用。</p> 
+</blockquote> 
+<p>Ⅰ.单目相机</p> 
+<blockquote> 
+ <p>      只使用一个摄像头进行SLAM的做法称为单目<span style="color:#be191c;"><strong>SLAM ( Monocular SLAM )</strong></span>。这种传感器结<br> 构特别简单，成本特别低，所以单目SLAM非常受研究者关注。你肯定见过单目相机的数据:照片。是的，作为一张照片,它有什么特点呢?<br>       照片本质上是拍摄某个<span style="color:#be191c;"><strong>场景(Scene)</strong></span>在相机的成像平面上留下的一个<strong>投影</strong>，<strong>它以二维的形<br> 式记录了三维的世界</strong>。显然，这个过程丢掉了<strong>场景的一个维度，也就是所谓的深度和距离，</strong>之后我们会看单目相机中，我们<strong>无法通过单张图片计算场景中物体与相机之间的距离(远近)。</strong><br>       这个距离将是SLAM中非常关键的信息。我们见过大量图像，形成了一种天生的直觉，对大部分场景都有一个直观的<strong>距离感（空间感）</strong>，它可以帮助我们判断图像中物体的远近关系。<br>       例如，我们能够辨认出图像中的物体，并且知道其大致的大小;近处的物体会挡住远处的物体，而太阳、月亮等天体一般在很远的地方;物体受光照后会留下影子，等等。这些信息都可以帮助我们判断物体的远近，但也存在一些情况会使这种<strong>距离感失效</strong>，这时我们就无法判断物体的远近及其真实大小了。</p> 
+ <p>        下图就是这样一个例子，我们无法仅通过这张图像判断后面那些小人是真实的人，还是小型模型。除非我们转换视角，观察场景的三维结构。</p> 
+ <p>        换言之，在单张图像里，无法确定一个物体的真实大小。它可能是一个很大但很远的物体，也可能是一个很近但很小的物体。由于近大远小的透视关系，它们可能在图像中变成同样大小的样子。</p> 
+ <div class="img-center"> 
+  <figure class="image"> 
+   <img alt="" height="564" src="https://images2.imgbox.com/5b/21/qeLoEWIT_o.png" width="845"> 
+   <figcaption> 
+    <strong>图2-2 单目视觉的缺陷</strong> 
+   </figcaption> 
+  </figure> 
+ </div> 
+ <p>        由于单目相机拍摄的图像只是三维空间的二维投影,所以,如果真想恢复三维结构,必须改变相机的<strong>视角</strong>。在单目SLAM中也是同样的原理。我们必须移动相机,才能估计它的<span style="color:#be191c;"><strong>运动(Motion)</strong></span>,同时估计场景中物体的远近和大小，不妨称之为<span style="color:#be191c;"><strong>结构(Structure)</strong></span>。那么，怎么估计这些运动和结构呢?想象你坐在一辆运动的列车中。一方面，如果列车往右边移动,那么我们看到的东西就会往左边移动------这就给我们推测运动带来了信息。另一方面，我们还知道:近处的物体移动快，远处的物体移动慢，极远处（无穷远处）的物体（如太阳、月亮）看上去是不动的。于是,当相机移动时，这些物体在图像上的运动就形成了<span style="color:#be191c;"><strong>视差（Disparity)</strong></span>。通过视差，我们就能定量地判断哪些物体离得远，哪些物体离得近。</p> 
+ <p>        然而，即使我们知道了物体远近，它们仍然只是一个相对的值。比如我们在看电影时，虽然能够知道电影场景中哪些物体比另一些大，但无法确定电影里那些物体的“真实尺度”:那些大楼是真实的高楼大厦，还是放在桌上的模型?而摧毁大厦的是真实怪兽，还是穿着特摄服装的演员?如果把相机的运动和场景大小同时放大两倍，单目相机所看到的像是一样的。同样地，把这个大小乘以任意倍数,我们都将看到一样的景象。这说明,单目SLAM估计的轨迹和地图将与真实的轨迹和地图相差一个因子，也就是所谓的<span style="color:#be191c;"><strong>尺度(Scale )</strong></span>。由于单目SLAM无法仅凭图像确定这个真实尺度，所以又称为<span style="color:#be191c;"><strong>尺度不确定性(Scale Ambiguity)</strong></span>。<br>         <strong>平移之后才能计算深度，以及无法确定真实尺度，这两件事情给单目SLAM的应用造成了很大的麻烦。其根本原因是通过单张图像无法确定深度。所以,为了得到这个深度人们开始使用双目相机和深度相机。</strong></p> 
+</blockquote> 
+<p>Ⅱ.双目相机和深度相机 </p> 
+<blockquote> 
+ <p>        使用双目相机和深度相机的目的是通过某种手段测量<strong>物体与相机之间的距离，克服单目相机无法知道距离的缺点</strong>。一旦知道了距离，场景的三维结构就可以通过单个图像恢复，同时消除尺度不确定性。尽管都是为了测量距离，但双目相机与深度相机测量深度的原理是不一样的。双目相机由两个单目相机组成，但这两个相机之间的距离[称为<span style="color:#be191c;"><strong>基线（Baseline)</strong></span>〕是已知的。我们通过这个基线来估计每个像素的空间位置——这和人眼非常相似。我们人类可以通过左右眼图像的差异判断物体的远近，在计算机上也是同样的道理。如果对双目相机进行拓展,则可以搭建多目相机，不过本质上并没有什么不同。</p> 
+ <div class="img-center"> 
+  <figure class="image"> 
+   <img alt="" height="449" src="https://images2.imgbox.com/72/68/fiidHcQa_o.png" width="1200"> 
+   <figcaption> 
+    <strong>图2-3 双目相机成像</strong> 
+   </figcaption> 
+  </figure> 
+ </div> 
+ <p>        计算机上的双目相机需要大量的计算才能（不太可靠地）估计每一个像素点的深度。双目相机测量到的深度范围<strong>与基线相关</strong>。<strong>基线距离越大，能够测量到的物体就越远</strong>，所以无人车上搭载的双目相机通常会是个很大的家伙。双目相机的距离估计是比较左右眼的图像获得的，并不依赖其他传感设备，所以它既可以应用在室内，又可应用于室外。双目或多目相机的缺点是配置与标定均较为复杂，其深度量程和精度受双目的基线与分辨率所限,而且视差的计算非常消耗计算资源，需要使用GPU和 FPGA设备加速，才能实时输出整张图像的距离信息。因此在现有的条件下，计算量是双目的主要问题之一。</p> 
+ <p>       <span style="color:#be191c;"><strong> 深度相机（又称RGB-D相机</strong></span>），它最大的特点是可以通过红外结构光或Time-of-Flight (ToF)原理，像激光传感器那样，通过主动向物体发射光并接收返回的光，测出物体与相机之间的距离。<strong>它并不像双目相机那样通过软件计算来解决，而是通过物理的测量手段，所以相比于双目相机可节省大量的计算资源</strong>。目前常用的RGB-D相机包括Kinect/Kinect V2、Xtion Pro Live 深度相机(又称RGB-D相机)。在一些手机上人们也用它来识别人脸。不过，现在多数RGB-D相机还存在测量范围窄、噪声大、视野小、易受日光干扰、无法测量透射材质等诸多问题，在SLAM方面，主要用于室内，室外则较难应用。 在一些手机上人们也用它来识别人脸.不过，现在多数RGB-D相机还存在测量范围窄、噪声大、视野小、易受日光干扰、无法测量透射材质等诸多问题，在SLAM方面，主要用于室内，室外则较难应用.</p> 
+</blockquote> 
+<h3 id="2.2%20%E7%BB%8F%E5%85%B8%E8%A7%86%E8%A7%89SLAM%E6%A1%86%E6%9E%B6">2.2 经典视觉SLAM框架</h3> 
+<div class="img-center"> 
+ <figure class="image"> 
+  <img alt="" height="309" src="https://images2.imgbox.com/da/02/Y4E7rHL0_o.png" width="888"> 
+  <figcaption> 
+   <strong>图2-4  经典视觉SLAM框架</strong> 
+  </figcaption> 
+ </figure> 
+</div> 
+<blockquote> 
+ <p>整个视觉SLAM流程包括以下步骤。<br> 1.<strong>传感器信息读取</strong>。在视觉SLAM中主要为相机图像信息的读取和预处理。如果是在机器人中,还可能有码盘、惯性传感器等信息的读取和同步。<br> 2.<span style="color:#be191c;"><strong>前端视觉里程计（Visual Odometry，VO)</strong></span>。视觉里程计的任务是估算相邻图像间相机的<br> 运动，以及<strong>局部地图</strong>的样子。VO又称为前端（Front End)。<br> 3.<span style="color:#be191c;"><strong>后端（非线性）优化(Optimization)</strong></span>。后端接受不同时刻视觉里程计测量的相机位姿，以<br> 及回环检测的信息，对它们进行优化得到<strong>全局一致的轨迹和地图</strong>。由于接在VO之后,又称为后端(Back End)。<br> 4.<span style="color:#be191c;"><strong>回环检测(Loop Closure Detection)</strong></span>。回环检测判断机器人是否到达过先前的位置。如果<br> 检测到回环,它会把信息提供给后端进行处理。<br> 5.<span style="color:#be191c;"><strong>建图(Mapping)</strong></span>。它根据估计的轨迹，建立与任务要求对应的地图。</p> 
+</blockquote> 
+<h4 id="2.2.1%20%E8%A7%86%E8%A7%89%E9%87%8C%E7%A8%8B%E8%AE%A1%C2%A0">2.2.1 视觉里程计 </h4> 
+<p>1.视觉里程计关心相邻图像之间的相机运动，最简单的情况当然是两张图像之间的运动关系。</p> 
+<p>2.一个例子</p> 
+<blockquote> 
+ <div class="img-center"> 
+  <figure class="image"> 
+   <img alt="" height="365" src="https://images2.imgbox.com/b9/bc/ohohZFic_o.png" width="1124"> 
+   <figcaption> 
+    <strong>图2-5 判断两张图片的先后旋转</strong> 
+   </figcaption> 
+  </figure> 
+ </div> 
+ <p>        直观来看，右图应该是左图向左旋转一定角度的结果，但如果问能否确定旋转了多少度，平移了多少厘米?我们就很难给出一个确切的答案...<br>         在计算机视觉领域，人类在直觉上看来十分自然的事情,在计算机视觉中却非常困难。图像在计算机里只是一个数值矩阵。这个矩阵里表达着什么东西，计算机毫无概念（这也正是现在机器学习要解决的问题)。而在视觉SLAM中，我们只能看到一个个像素，知道它们是某些空间点在相机的成像平面上投影的结果。所以，为了定量地估计相机运动，必须先了解相机与<strong>空间点的几何关系</strong>，要讲清这个几何关系及视觉里程计的实现方法，需要铺垫一些背景知识。读者现在只需知道，视觉里程计能够通过相邻帧间的图像估计相机运动，并恢复场景的空间结构。<strong>称它为“里程计”是因为它和实际的里程计一样，只计算相邻时刻的运动，而和过去的信息没有关联。</strong>在这一点上，视觉里程计就像一种只有短时记忆的物种（不过可以不限于两帧，数量可以更多一些，例如5～10帧)。</p> 
+ <p>        现在，假定我们已有了一个视觉里程计，估计了两张图像间的相机运动。那么，一方面，只要把相邻时刻的运动“串”起来，就构成了机器人的运动轨迹，从而<strong>解决了定位问题</strong>。另一方面，我们根据每个时刻的相机位置，计算出各像素对应的空间点的位置，就得<strong>到了地图</strong>。这么说来,有了视觉里程计,是不是就解决了SLAM问题呢?</p> 
+ <p>        然而，仅通过视觉里程计来估计轨迹，将不可避免地出现<span style="color:#be191c;"><strong>累积漂移(Accumulating Drift )</strong></span>。这是由于视觉里程计在最简单的情况下只估计两个图像间的运动造成的。我们知道,每次估计都带有一定的误差，而由于里程计的工作方式，先前时刻的误差将会传递到下一时刻,导致经过一段时间之后，估计的轨迹将不再准确。</p> 
+ <div class="img-center"> 
+  <figure class="image"> 
+   <img alt="" height="502" src="https://images2.imgbox.com/5b/6c/rfsNPYLw_o.png" width="1053"> 
+   <figcaption> 
+    <strong>图2-6 误差与修复</strong> 
+   </figcaption> 
+  </figure> 
+ </div> 
+ <p>这也就是所谓的<span style="color:#be191c;"><strong>漂移(Drift )</strong></span>。它将导致我们无法建立一致的地图。你会发现原本直的走廊变成了斜的，而原本90°的直角不再是90°——这实在是一件令人难以忍受的事情!为了解决漂移问题,我们还需要两种技术:<strong>后端优化和回环检测。回环检测负责把“机器人回到原始位置”的事情检测出来，而后端优化则根据该信息，校正整个轨迹的形状。</strong></p> 
+</blockquote> 
+<h4 id="2.2.2%20%E5%90%8E%E7%AB%AF%E4%BC%98%E5%8C%96%C2%A0">2.2.2 后端优化 </h4> 
+<blockquote> 
+ <p>        后端优化主要指处理SLAM过程中的噪声问题。虽然我们很希望所有的数据都是准确的，但是在现实中，再精确的传感器也带有一定的噪声。便宜的传感器测量误差较大，昂贵的可能会小一些，有的传感器还会受磁场、温度的影响。所以，除了解决“如何从图像估计出相机运动”，我们还要关心这个估计带有多大的噪声，这些噪声是如何从上一时刻传递到下一时刻的，而我们又对当前的估计有多大的自信。后端优化要考虑的问题，就是如何从这些带有噪声的数据中估计整个系统的状态,以及这个状态估计的不确定性有多大——这称为最<span style="color:#be191c;"><strong>大后验概率估计( Maximum-a-Posteriori,MAP)</strong></span>。这里的状态既包括机器人自身的轨迹,也包含地图。</p> 
+ <p>        <strong>视觉里程计部分有时被称为“前端”。在SLAM框架中，前端给后端提供待优化的数据，以及这些数据的初始值。而后端负责整体的优化过程，它往往面对的只有数据，不必关心这些数据到底来自什么传感器</strong>。在视觉SLAM 中，前端和计算机视觉研究领域更为相关，比如图像的特征提取与匹配等，后端则主要是滤波与非线性优化算法。</p> 
+</blockquote> 
+<h4 id="2.2.3%20%E5%9B%9E%E7%8E%AF%E6%A3%80%E6%B5%8B%C2%A0">2.2.3 回环检测 </h4> 
+<p>1.定义</p> 
+<blockquote> 
+ <p>        <span style="color:#be191c;"><strong>回环检测，又称闭环检测，主要解决位置估计随时间漂移的问题</strong></span>。怎么解决呢?假设实际情况下机器人经过一段时间的运动后回到了原点，但是由于漂移，它的位置估计值却没有回到原点。怎么办呢?如果有某种手段，让机器人知道“回到了原点”这件事，或者把“原点”识别出来，我们再把位置估计值“拉”过去，就可以消除漂移了。这就是所谓的回环检测。</p> 
+</blockquote> 
+<p>2.与“定位”和“建图”关系</p> 
+<blockquote> 
+ <p>        我们认为，地图存在的主要意义是让机器人知晓自己到过的地方。为了实现回环检测，我们需要让机器人<strong>具有识别到过的场景的能力</strong>。它的实现手段有很多。例如像前面说的那样：</p> 
+ <p>Ⅰ.我们可以在机器人下方<strong>设置一个标志物(如一张二维码图片)</strong>。它只要看到了这个标志，就知道自己回到了原点。该标志物实质上是一种环境中的传感器，对应用环境做了限制(万一不能贴二维码怎么办?)。</p> 
+ <p>Ⅱ.我们更希望机器人能<strong>使用携带的传感器——也就是图像本身，来完成这一任务</strong>。例如，可以<strong>判断图像间的相似性</strong>来完成回环检测。这一点和人是相似的。当我们看到两张相似的图片时，容易辨认它们来自同一个地方如果回环检测成功，则可以显著地减小累积误差。所以，视觉回环检测实质上是一种计算图像数据相似性的算法。由于图像的信息非常丰富，使得正确检测回环的难度降低了不少。<br> 在检测到回环之后，我们会把“A与B是同一个点”这样的信息告诉后端优化算法。然后,后端根据这些新的信息，把轨迹和地图调整到符合回环检测结果的样子。这样，如果我们有充分而且正确的回环检测，则可以消除累积误差,得到全局一致的轨迹和地图。</p> 
+</blockquote> 
+<h4 id="2.2.4%20%E5%BB%BA%E5%9B%BE%C2%A0">2.2.4 建图 </h4> 
+<p>1.定义</p> 
+<blockquote> 
+ <p><span style="color:#be191c;"><strong>建图是指构建地图的过程</strong></span>。地图是对环境的描述，但这个描述并不是固定的,需要视SLAM的应用而定。</p> 
+ <div class="img-center"> 
+  <figure class="image"> 
+   <img alt="" height="848" src="https://images2.imgbox.com/3a/66/202nhUiR_o.png" width="1200"> 
+   <figcaption> 
+    <strong>图2-7 几种地图</strong> 
+   </figcaption> 
+  </figure> 
+ </div> 
+ <p>        对于地图，我们有太多的想法和需求。因此，相比于前面提到的视觉里程计、后端优化和回环检测，建图并没有一个固定的形式和算法。一组空间点的集合可以称为地图，一个漂亮的3D模型也是地图，一个标记着城市、村庄、铁路、河道的图片还是地图。地图的形式随SLAM的应用场合而定。大体上讲，可以分为度量地图与拓扑地图两种。</p> 
+</blockquote> 
+<p>2.度量地图</p> 
+<blockquote> 
+ <p>        度量地图强调精确地表示地图中物体的位置关系，通常用稀疏(Sparse)与稠密(Dense)对<br> 其分类。稀疏地图进行了一定程度的抽象，并不需要表达所有的物体。例如，我们选择一部分具有代表意义的东西，称之为<span style="color:#be191c;"><strong>路标( Landmark )</strong></span>，那么—张稀疏地图就是由路标组成的地图，而不是路标的部分就可以忽略。相对地，稠密地图着重于建模所有看到的东西。定位时用稀疏路标地图就足够了。<strong>而用于导航时，则往往需要稠密地图（否则撞上两个路标之间的墙怎么办?)</strong>。</p> 
+ <p>        稠密地图通常按照某种分辨率，由许多个小块组成，在二维度量地图中体现为许多个小<span style="color:#be191c;"><strong>格子(Grid )</strong></span>,而在三维度量地图中则体现为许多<span style="color:#be191c;"><strong>小方块( Voxel )</strong></span>。通常，一个小块含有占据、空闲、未知三种状态，以表达该格内是否有物体。当查询某个空间位置时，地图能够给出该位置是否可以通过的信息。这样的地图可以用于各种导航算法，如A*、D*等，为机器人研究者所重视<br>         但是我们也看到，一方面，这种地图需要存储每一个格点的状态，会耗费大量的存储空间，而且多数情况下地图的许多细节部分是无用的。另一方面，大规模度量地图有时会出现一致性问题很小的一点转向误差,可能会导致两间屋子的墙出现重叠,使地图失效。</p> 
+</blockquote> 
+<p>3.拓扑地图</p> 
+<blockquote> 
+ <p>        相比于度量地图的精确性,拓扑地图更强调<strong>地图元素之间的关系</strong>。拓扑地图是一个<span style="color:#be191c;"><strong>图(Graph )</strong></span>,由节点和边组成，只考虑节点间的连通性，例如只关注A、B点是连通的，而不考虑如何从A点到达B点。它放松了地图对精确位置的需要，去掉了地图的细节，是一种更为紧凑的表达方式。然而，拓扑地图不擅长表达具有复杂结构的地图。如何对地图进行分割，形成节点与边，又如何使用拓扑地图进行导航与路径规划，仍是有待研究的问题。 </p> 
+</blockquote> 
+<h3 id="2.3%20SLAM%E7%9A%84%E6%95%B0%E5%AD%A6%E9%97%AE%E9%A2%98%E6%8F%8F%E8%BF%B0%C2%A0">2.3 SLAM的数学问题描述 </h3> 
+<p>后文再谈</p> 
+<h3 id="2.4%20%E5%AE%9E%E8%B7%B5%20%E7%BC%96%E7%A8%8B%E5%9F%BA%E7%A1%80">2.4 实践 编程基础</h3> 
+<h4 id="2.4.1%20%E5%AE%89%E8%A3%85Linux%E6%93%8D%E4%BD%9C%E7%B3%BB%E7%BB%9F">2.4.1 安装Linux操作系统</h4> 
+<p>使用Ubuntu 18.04 </p> 
+<h4 id="2.4.2%20Hello%20Slam">2.4.2 Hello Slam</h4> 
+<blockquote> 
+ <p>1.编写程序hello slam</p> 
+ <pre><code class="language-cpp">#include &lt;iostream&gt;
+using namespace std;
+​
+int main(int argc, char const *argv[])
+{
+    cout &lt;&lt; "hello Slam" &lt;&lt; endl;
+    return 0;
+}</code></pre> 
+ <p>输入命令</p> 
+ <pre><code>g++ helloSlam.cpp</code></pre> 
+ <p>然后发现，当前目录多出一个a.out文件</p> 
+ <div class="img-center"> 
+  <figure class="image"> 
+   <img alt="" height="100" src="https://images2.imgbox.com/28/39/CQ9bd4bI_o.png" width="199"> 
+   <figcaption> 
+    <strong>图2-8 g++执行完毕</strong> 
+   </figcaption> 
+  </figure> 
+ </div> 
+ <p></p> 
+ <p> 刚才这条编译命令把 helloSLAM.cpp文本文件编译成了一个可执行程序。我们检查当前目录，会发现多了一个a.out 文件，而且它具有执行权限（终端里颜色不同)。我们输入./a.out即可运行此程序：</p> 
+ <pre><code>liuhongwei@liuhongwei-virtual-machine:~/slam/slam01/src$ ./a.out </code></pre> 
+</blockquote> 
+<h4 id="2.4.3%20%E4%BD%BF%E7%94%A8cmake">2.4.3 使用cmake</h4> 
+<p>1.为什么使用cmake</p> 
+<blockquote> 
+ <p>        理论上，任意一个C++程序都可以用g++来编译。但当程序规模越来越大时，一个工程可能有许多个文件夹和源文件，这时输入的编译命令将越来越长。通常，一个小型C++项目可能含有十几个类，各类间还存在着复杂的依赖关系。其中一部分要编译成可执行文件，另一部分编译成库文件。如果仅靠g++命令，则需要输入大量的编译指令，整个编译过程会变得异常烦琐。因此，对于C++项目，使用一些工程管理工具会更加高效。在历史上，工程师们曾使用makefile进行自动编译，cmake比它更加方便。并且 cmake在工程上广泛使用。我们会看到后面提到的大多数库都使用cmake管理源代码。</p> 
+</blockquote> 
+<p>2.cmake使用</p> 
+<blockquote> 
+ <p>        在一个cmake 工程中，我们会用cmake命令生成一个makefile文件，然后，用make命令根据这个makefile文件的内容编译整个工程。这次我们不是直接使用g++，而是用cmake来制作一个工程，然后编译它。在目录下面新建CMakeLists.txt文件</p> 
+ <pre><code>liuhongwei@liuhongwei-virtual-machine:~/slam/slam01$ touch CMakeLists.txt</code></pre> 
+ <p>内容如下:</p> 
+ <pre><code>#声明要求cmake的最低版本
+cmake_minimum_required(VERSION 3.0.2)
+​
+#声明一个cmake工程
+project(helloslam)
+​
+#添加一个可执行程序，可执行文件名  cpp文件名
+add_executable(helloSlam src/helloSlam.cpp)</code></pre> 
+ <p>        CMakeLists.txt文件用于告诉cmake要对这个目录下的文件做什么事情。</p> 
+ <p>        现在，在当前目录下，调用cmake对该工程进行cmake编译：</p> 
+ <p>        终端输入：</p> 
+ <pre><code class="language-cpp">cmake .</code></pre> 
+ <p>        cmake会输出一些编译信息,然后在当前目录下生成一些中间文件,其中最重要的就是MakeFile。由于MakeFile是自动生成的，我们不必修改它。现在，用make命令对工程进行编译:</p> 
+ <div class="img-center"> 
+  <figure class="image"> 
+   <img alt="" height="728" src="https://images2.imgbox.com/d1/9e/YLygPC8G_o.png" width="879"> 
+   <figcaption> 
+    <strong>图2-9 执行cmake. </strong> 
+   </figcaption> 
+  </figure> 
+ </div> 
+ <p></p> 
+ <p>        cmake会输出一些编译信息,然后在当前目录下生成一些中间文件,其中最重要的就是MakeFile。由于MakeFile是自动生成的，我们不必修改它。现在，用make命令对工程进行编译: </p> 
+ <p>        在编译过程中会输出一个编译进度。如果顺利通过，我们就可以得到在CMakeLists.txt 中声明的那个可执行程序helloSLAM。执行它:</p> 
+ <div class="img-center"> 
+  <figure class="image"> 
+   <img alt="" height="721" src="https://images2.imgbox.com/1b/09/4RxPxZGp_o.png" width="864"> 
+   <figcaption> 
+    <strong>图2-10 执行make</strong> 
+   </figcaption> 
+  </figure> 
+ </div> 
+ <p></p> 
+ <div class="img-center"> 
+  <figure class="image"> 
+   <img alt="" height="335" src="https://images2.imgbox.com/9c/4e/UnasdxDR_o.png" width="771"> 
+   <figcaption> 
+    <strong>图2-11 执行helloslam</strong> 
+   </figcaption> 
+  </figure> 
+ </div> 
+ <p></p> 
+ <p>        因为我们并没有修改源代码,所以得到的结果和之前是一样的。请想想这种做法和之前直接使用g++编译的区别。</p> 
+ <p>        这次我们使用了<strong>先执行cmake再执行make的做法,执行cmake 的过程处理了工程文件之间的关系，而执行make过程实际调用了g++来编译程序。虽然这个过程中多了调用cmake和 make的步骤，但我们对项目的编译管理工作，从输入一串g++命令，变成了维护若干个比较直观的CMakeLists.txt文件，这将明显降低维护整个工程的难度</strong>。</p> 
+ <p>        例如，如果想<strong>新增一个可执行文件，只需在CMakeLists.txt 中添加一行“add_executable”命令即可</strong>，而后续的步骤是不变的。cmake会帮我们解决代码的依赖关系，无须输人一大串g++命令。<br>         现在这个过程中唯一让我们不满的是，cmake生成的中间文件还留在我们的代码文件中。当想要发布代码时，我们并不希望把这些中间文件一同发布出去。这时我们还需要把它们一个个地删除，十分不便。一种更好的做法是让这些中间文件都放在一个中间目录中，在编译成功后，把这个中间目录删除即可。所以，更常见的编译cmake工程的做法如下:  </p> 
+ <div class="img-center"> 
+  <figure class="image"> 
+   <img alt="" height="234" src="https://images2.imgbox.com/d7/e4/djfmpOOK_o.png" width="326"> 
+   <figcaption> 
+    <strong>图2-12 优化上述步骤</strong> 
+   </figcaption> 
+  </figure> 
+ </div> 
+ <p>        我们新建了一个中间文件夹“build”，然后进入 build文件夹，通过cmake ..命令对<strong>上一层</strong>文件夹，也就是代码所在的文件夹进行编译。这样，cmake产生的中间文件就会生成在 build文件夹中，与源代码分开。当发布源代码时，只要把build文件夹删掉即可。</p> 
+ <p>        下面是这种方式对代码进行编译，然后调用生成的可执行程序。</p> 
+ <p>        </p> 
+ <div class="img-center"> 
+  <figure class="image"> 
+   <img alt="" height="226" src="https://images2.imgbox.com/b8/6a/ftxd3e4X_o.png" width="543"> 
+   <figcaption> 
+    <strong>图3-13 建立build文件夹方便查看</strong> 
+   </figcaption> 
+  </figure> 
+ </div> 
+</blockquote> 
+<h4 id="2.4.4%20%E4%BD%BF%E7%94%A8%E5%BA%93%C2%A0">2.4.4 使用库 </h4> 
+<blockquote> 
+ <p>Ⅰ.库的作用：在一个C++工程中，并不是所有代码都会编译成可执行文件。只有带有main函数的文件才会生成可执行程序。而另一些代码，我们只想把它们打包成一个东西，供其他程序调用。这个东西叫作<span style="color:#be191c;"><strong>库（ Library )</strong></span>。</p> 
+ <p>Ⅱ.编写一个库并调用：<br> ①libHelloSLAM.cpp</p> 
+ <pre><code class="language-cpp">//这是一个库文件
+#include &lt;iostream&gt;
+using namespace std;
+
+void printHello() {
+  cout &lt;&lt; "Hello SLAM" &lt;&lt; endl;
+}
+</code></pre> 
+ <p>        这个库提供了一个printHello函数，调用此函数将输出一条信息。但是它没有main函数，这意味着这个库中没有可执行文件。我们在CMakeLists.txt里加上如下内容：</p> 
+ <p>         add_library( hello libHelloSLAM.cpp)</p> 
+ <p>        这条命令告诉cmake，我们想把这个文件编译成一个叫作 "hello” 的库。然后，和上面一样，使用cmake编译整个工程：<br>  </p> 
+ <div class="img-center"> 
+  <figure class="image"> 
+   <img alt="" height="136" src="https://images2.imgbox.com/0c/2c/5jV0K6fv_o.png" width="434"> 
+   <figcaption> 
+    <strong>图3-14 使用库（未编译前）</strong> 
+   </figcaption> 
+  </figure> 
+ </div> 
+ <p>         调用命令：</p> 
+ <pre><code>cd build
+cmake..
+make</code></pre> 
+ <div class="img-center"> 
+  <figure class="image"> 
+   <img alt="" height="309" src="https://images2.imgbox.com/70/36/ztJg7v7N_o.png" width="394"> 
+   <figcaption> 
+    <strong>图3-14 使用库（编译后）</strong> 
+   </figcaption> 
+  </figure> 
+ </div> 
+ <p>         这时，在<strong>build文件夹</strong>中就会生成一个libhello.a文件，这就是我们得到的库。</p> 
+ <p>Ⅲ.共享库</p> 
+ <p>        在Linux中，库文件分成静态库和共享库两种。静态库以.a作为后缀名,共享库以.so结尾。</p> 
+ <p>        所有库都是一些函数打包后的集合，差别在于<strong>静态库每次被调用都会生成一个副本，而共享库则只有一个副本，更省空间</strong>。如果想生成共享库而不是静态库，只需使用以下语句即可。此时得到的文件就是libhello_shared.so。</p> 
+ <p>        </p> 
+ <pre><code>add_library( hello_shared SHARED libHelloSLAM.cpp )
+</code></pre> 
+ <p>此时，cMakeLists.txt文件内容如下：</p> 
+ <p>        </p> 
+ <pre><code>cmake_minimum_required(VERSION 2.8)
+project(HelloSlam)
+add_executable(helloslam hello.cpp)
+add_library( hello libHelloSLAM.cpp)
+add_library( hello_shared SHARED libHelloSLAM.cpp )
+</code></pre> 
+ <div class="img-center"> 
+  <figure class="image"> 
+   <img alt="" height="107" src="https://images2.imgbox.com/17/02/r23d8wcV_o.png" width="689"> 
+   <figcaption> 
+    <strong>图3-15 编译后出现.so文件</strong> 
+   </figcaption> 
+  </figure> 
+ </div> 
+ <p> Ⅲ.使用库函数：</p> 
+ <p>        库文件是一个压缩包，里面有编译好的二进制函数。如果仅有.a或.so库文件，我们并不知道里面的函数到底是什么，调用的形式又是什么样的。为了让别人（或者自己）使用这个库，<span style="color:#fe2c24;"><strong>我们需要提供一个头文件，说明这些库里都有些什么</strong></span>。因此，对于库的使用者，只要拿到了头文件和库文件,就可以调用这个库。下面编写libhello的头文件。</p> 
+ <p>文件libHelloSLAM.h</p> 
+ <pre><code class="language-cpp">#ifndef LIBHELLOSLAM_H_
+#define LIBHELLOSLAM_H_
+// 上面的宏定义是为了防止重复引用这个头文件而引起的重定义错误
+
+// 打印一句hello的函数
+void printHello();
+
+#endif</code></pre> 
+ <p>        这样，根据这个文件和我们刚才编译得到的库文件,就可以使用printHello函数了。最后,我们写一个可执行程序来调用这个简单的函数：</p> 
+ <p>useHello.cpp</p> 
+ <pre><code class="language-cpp">#include "libHelloSLAM.h"
+
+// 使用 libHelloSLAM.h 中的 printHello() 函数
+int main(int argc, char **argv) {
+  printHello();
+  return 0;
+}
+</code></pre> 
+ <p>        然后,在 CMakeLists.txt 中添加一个可执行程序的生成命令<strong>链接</strong>到刚才使用的库上：</p> 
+ <p>add_executable( useHello useHello.cpp )<br> target_link_libraries( useHello hello_shared )</p> 
+ <p>        这时，CMakeLists.txt内容为：</p> 
+ <p></p> 
+ <pre><code># 声明要求的 cmake 最低版本
+cmake_minimum_required(VERSION 2.8)
+
+# 声明一个 cmake 工程
+project(HelloSLAM)
+
+# 添加一个可执行程序
+# 语法：add_executable( 程序名 源代码文件 ）
+
+
+# 添加hello库
+add_library(hello libHelloSLAM.cpp)
+# 共享库
+add_library(hello_shared SHARED libHelloSLAM.cpp)
+
+# 添加可执行程序调用hello库中函数
+add_executable(useHello useHello.cpp)
+# 将库文件链接到可执行程序上
+target_link_libraries(useHello hello_shared)</code></pre> 
+ <p>        </p> 
+ <div class="img-center"> 
+  <figure class="image"> 
+   <img alt="" height="110" src="https://images2.imgbox.com/87/be/sO8Heuq9_o.png" width="472"> 
+   <figcaption> 
+    <strong>图3-16 使用库文件</strong> 
+   </figcaption> 
+  </figure> 
+ </div> 
+ <p></p> 
+</blockquote>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/7f2c72a2c887ff02e0fafa191014cdbf/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【深度学习知识点扫盲】病态、病态条件</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/e420142d383d46aaa61cc82709c3fa5c/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Android studio开发常见错误集合</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

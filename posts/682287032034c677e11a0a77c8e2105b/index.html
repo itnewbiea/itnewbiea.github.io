@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>二十. Kubernetes 存储挂载 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="二十. Kubernetes 存储挂载" />
+<meta property="og:description" content="目录 一. 存储挂载volumes卷的分类1. EmptyDir 示例2. hostPath 示例3. HostDir 示例4. NFS 网络数据卷示例(持久化卷) 二. 持久化存储的 PV&amp;PVC&amp;StorageClassPV 的创建与使用细节StorageClass 动态供应的创建与使用细节1. 存储制备器2. 允许卷扩展3. 挂载选项4. 回收策略5. 卷绑定模式6. 允许的拓扑结构7. 创建StorageClass指定provisioner示例 PVC 创建与使用细节 一. 存储挂载 先提出问题,或者存储挂载出现的原因: 通过k8s部署应用时,可能会生成或者读写一些配置文件,在应用部署完成后运行过程中也可能需要生成或者读写一些文件或数据,进而引出问题 这些文件或数据如何存储的这些文件或数据如何读取的如何做到持久化,即使k8s把当前pod杀掉重新拉起,怎样才能读取上一个版本生成的文件数据 我理解的卷挂载就是将文件或数据保存到容器外部指定的存储资源中例如主机文件系统、网络存储、云存储等,然后容器内部通过指定的方式例如路径,http请求等读取指定位置的文件或数据,将文件或数据挂载到容器内部的指定位置,进而解决了以下问题： 存储：卷挂载允许我们将文件或数据存储在容器之外，可以是主机节点的文件系统、网络存储（如 NFS）、云存储等。确保数据的持久性和可靠性，使得即使 Pod 被重新调度或重启，数据仍然可以被访问。读取：通过将卷挂载到容器内的指定路径，应用程序可以直接读取和写入这些文件或数据。应用程序可以像访问本地文件一样访问挂载的文件。持久化：通过卷挂载，即使 Pod 被杀掉重新拉起，以前生成的文件或数据也可以保留。因为卷通常与持久化存储关联，所以即使 Pod 终止并被替换，新 Pod 仍然可以挂载相同的卷，并继续访问之前生成的文件或数据 使用Docker时就有数据卷的概念,存在容器删除数据也被删除的问题，想要持久化使用数据，需要把主机上的目录挂载到Docker中，在K8S中默认情况下如果Pod删除，数据卷也会一起删除，k8s中提出了卷的概念,是docker数据卷的扩展, 参考博客简述一下怎么使用卷挂载一个挂载ymal示例与解释: 在编写部署应用pod的yaml时,或者通过deployment部署编写pod模板时,有几个属性:首先通过&#34;spec.volumes&#34;属性声明多个卷,指定卷名称,卷类型然后在容器中通过&#34;spec.containers.volumeMounts&#34;下的name指定使用spec.volumes中的哪个卷,通过&#34;spec.containers.volumeMounts&#34;下的mountPath指定将该卷挂载到容器的哪个位置后续容器应用在运行过程中,如果spec.containers.volumeMounts.mountPath位置需要读取数据,就会通过对应卷指定的方式到指定位置读取 apiVersion: v1 kind: Pod #类型是Pod metadata: labels: name: redis role: master #定义为主redis name: redis-master spec: volumes: #先声明需要的卷名称,卷类型 - name: redis-data #卷名称 emptyDir: {} #卷类型宿主机挂载点	- name: volumn-sls-mydemo #卷名称 emptyDir: {} #卷类型 - name: acm secret: secretName: &lt;ENVS&gt;-acm-&lt;APP_NAME&gt;-secret - name: config-volume configMap: name: redis-config containers: - name: master image: redis:latest env: #定义环境变量 - name: MASTER value: &#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/682287032034c677e11a0a77c8e2105b/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-08-17T16:22:41+08:00" />
+<meta property="article:modified_time" content="2023-08-17T16:22:41+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">二十. Kubernetes 存储挂载</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>目录</h4> 
+ <ul><li><a href="#__1" rel="nofollow">一. 存储挂载</a></li><li><ul><li><a href="#volumes_55" rel="nofollow">volumes卷的分类</a></li><li><ul><li><a href="#1_EmptyDir__81" rel="nofollow">1. EmptyDir 示例</a></li><li><a href="#2_hostPath__114" rel="nofollow">2. hostPath 示例</a></li><li><a href="#3_HostDir__134" rel="nofollow">3. HostDir 示例</a></li><li><a href="#4_NFS__142" rel="nofollow">4. NFS 网络数据卷示例(持久化卷)</a></li></ul> 
+  </li></ul> 
+  </li><li><a href="#__PVPVCStorageClass_213" rel="nofollow">二. 持久化存储的 PV&amp;PVC&amp;StorageClass</a></li><li><ul><li><a href="#PV__276" rel="nofollow">PV 的创建与使用细节</a></li><li><a href="#StorageClass__306" rel="nofollow">StorageClass 动态供应的创建与使用细节</a></li><li><ul><li><a href="#1__328" rel="nofollow">1. 存储制备器</a></li><li><a href="#2__332" rel="nofollow">2. 允许卷扩展</a></li><li><a href="#3__335" rel="nofollow">3. 挂载选项</a></li><li><a href="#4__337" rel="nofollow">4. 回收策略</a></li><li><a href="#5__339" rel="nofollow">5. 卷绑定模式</a></li><li><a href="#6__349" rel="nofollow">6. 允许的拓扑结构</a></li><li><a href="#7_StorageClassprovisioner_368" rel="nofollow">7. 创建StorageClass指定provisioner示例</a></li></ul> 
+   </li><li><a href="#PVC__422" rel="nofollow">PVC 创建与使用细节</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="__1"></a>一. 存储挂载</h2> 
+<ol><li>先提出问题,或者存储挂载出现的原因: 通过k8s部署应用时,可能会生成或者读写一些配置文件,在应用部署完成后运行过程中也可能需要生成或者读写一些文件或数据,进而引出问题</li></ol> 
+<blockquote> 
+ <ol><li>这些文件或数据如何存储的</li><li>这些文件或数据如何读取的</li><li>如何做到持久化,即使k8s把当前pod杀掉重新拉起,怎样才能读取上一个版本生成的文件数据</li></ol> 
+</blockquote> 
+<ol start="2"><li>我理解的卷挂载就是将文件或数据保存到容器外部指定的存储资源中例如主机文件系统、网络存储、云存储等,然后容器内部通过指定的方式例如路径,http请求等读取指定位置的文件或数据,将文件或数据挂载到容器内部的指定位置,进而解决了以下问题：</li></ol> 
+<blockquote> 
+ <ol><li>存储：卷挂载允许我们将文件或数据存储在容器之外，可以是主机节点的文件系统、网络存储（如 NFS）、云存储等。确保数据的持久性和可靠性，使得即使 Pod 被重新调度或重启，数据仍然可以被访问。</li><li>读取：通过将卷挂载到容器内的指定路径，应用程序可以直接读取和写入这些文件或数据。应用程序可以像访问本地文件一样访问挂载的文件。</li><li>持久化：通过卷挂载，即使 Pod 被杀掉重新拉起，以前生成的文件或数据也可以保留。因为卷通常与持久化存储关联，所以即使 Pod 终止并被替换，新 Pod 仍然可以挂载相同的卷，并继续访问之前生成的文件或数据</li></ol> 
+</blockquote> 
+<ol start="3"><li>使用Docker时就有数据卷的概念,存在容器删除数据也被删除的问题，想要持久化使用数据，需要把主机上的目录挂载到Docker中，在K8S中默认情况下如果Pod删除，数据卷也会一起删除，k8s中提出了卷的概念,是docker数据卷的扩展, <a href="https://www.jianshu.com/p/4cbc9edef18d" rel="nofollow">参考博客</a></li><li>简述一下怎么使用卷挂载一个挂载ymal示例与解释:</li></ol> 
+<blockquote> 
+ <ol><li>在编写部署应用pod的yaml时,或者通过deployment部署编写pod模板时,有几个属性:</li><li>首先通过"spec.volumes"属性声明多个卷,指定卷名称,卷类型</li><li>然后在容器中通过"spec.containers.volumeMounts"下的name指定使用spec.volumes中的哪个卷,通过"spec.containers.volumeMounts"下的mountPath指定将该卷挂载到容器的哪个位置</li><li>后续容器应用在运行过程中,如果spec.containers.volumeMounts.mountPath位置需要读取数据,就会通过对应卷指定的方式到指定位置读取</li></ol> 
+</blockquote> 
+<pre><code class="prism language-yaml"><span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> v1
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> Pod        <span class="token comment">#类型是Pod</span>
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">labels</span><span class="token punctuation">:</span>
+    <span class="token key atrule">name</span><span class="token punctuation">:</span> redis
+    <span class="token key atrule">role</span><span class="token punctuation">:</span> master        <span class="token comment">#定义为主redis</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> redis<span class="token punctuation">-</span>master
+<span class="token key atrule">spec</span><span class="token punctuation">:</span>
+  <span class="token key atrule">volumes</span><span class="token punctuation">:</span> <span class="token comment">#先声明需要的卷名称,卷类型</span>
+    <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> redis<span class="token punctuation">-</span>data <span class="token comment">#卷名称</span>
+      <span class="token key atrule">emptyDir</span><span class="token punctuation">:</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span> <span class="token comment">#卷类型宿主机挂载点	</span>
+    <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> volumn<span class="token punctuation">-</span>sls<span class="token punctuation">-</span>mydemo <span class="token comment">#卷名称</span>
+      <span class="token key atrule">emptyDir</span><span class="token punctuation">:</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span> <span class="token comment">#卷类型</span>
+    <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> acm
+      <span class="token key atrule">secret</span><span class="token punctuation">:</span>
+        <span class="token key atrule">secretName</span><span class="token punctuation">:</span> &lt;ENVS<span class="token punctuation">&gt;</span><span class="token punctuation">-</span>acm<span class="token punctuation">-</span>&lt;APP_NAME<span class="token punctuation">&gt;</span><span class="token punctuation">-</span>secret
+    <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> config<span class="token punctuation">-</span>volume
+      <span class="token key atrule">configMap</span><span class="token punctuation">:</span>
+        <span class="token key atrule">name</span><span class="token punctuation">:</span> redis<span class="token punctuation">-</span>config
+  <span class="token key atrule">containers</span><span class="token punctuation">:</span>
+    <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> master
+      <span class="token key atrule">image</span><span class="token punctuation">:</span> redis<span class="token punctuation">:</span>latest
+      <span class="token key atrule">env</span><span class="token punctuation">:</span>        <span class="token comment">#定义环境变量</span>
+        <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> MASTER
+          <span class="token key atrule">value</span><span class="token punctuation">:</span> <span class="token string">"true"</span>
+      <span class="token key atrule">ports</span><span class="token punctuation">:</span>        <span class="token comment">#容器内端口</span>
+        <span class="token punctuation">-</span> <span class="token key atrule">containerPort</span><span class="token punctuation">:</span> <span class="token number">6379</span>
+      <span class="token key atrule">volumeMounts</span><span class="token punctuation">:</span>        <span class="token comment">#容器内挂载点,将指定的卷挂载到容器的指定位置</span>
+        <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> redis<span class="token punctuation">-</span>data <span class="token comment">#挂载哪个卷,要与pod中volumes中的对应</span>
+          <span class="token key atrule">mountPath</span><span class="token punctuation">:</span> /data <span class="token comment">#挂载的路径,也就是当前容器内部需要挂载出去的路径</span>
+        <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> volumn<span class="token punctuation">-</span>sls<span class="token punctuation">-</span>mydemo
+          <span class="token key atrule">mountPath</span><span class="token punctuation">:</span> /home/app/log
+        <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> acm
+          <span class="token key atrule">mountPath</span><span class="token punctuation">:</span> <span class="token string">"/config"</span>
+          <span class="token key atrule">readOnly</span><span class="token punctuation">:</span> <span class="token boolean important">true</span>
+        <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> config<span class="token punctuation">-</span>volume
+          <span class="token key atrule">mountPath</span><span class="token punctuation">:</span> /usr/local/etc/redis/    
+</code></pre> 
+<h3><a id="volumes_55"></a>volumes卷的分类</h3> 
+<ol><li>volumes卷是有类型区分的,根据功能不同可以分为: 配置信息相关的, 临时存储相关的, 持久化存储相关</li><li>配置信息相关的:(实际这两种是配置,因为配置也可以挂载)</li></ol> 
+<blockquote> 
+ <ol><li>Secret: 密码相关的</li><li>ConfigMap: 配置相关的,例如将存放到配置中心的文件做成ConfigMap放到k8s管理</li><li>两者区别Secret中保存的信息会使用base64编码,而ConfigMap不会</li></ol> 
+</blockquote> 
+<ol start="3"><li>临时存储相关的:</li></ol> 
+<blockquote> 
+ <ol><li>emptyDir: 相当于分配一个当前pod上的空目录</li><li>hostPath: 挂载一个主机的目录</li><li>为什么这两种称为临时存储: 如果当前pod宕机,在其它节点拉起,由于其它节点上没有对应的目录,可能访问不到数据</li></ol> 
+</blockquote> 
+<ol start="4"><li>持久化存储相关的:</li></ol> 
+<blockquote> 
+ <ol><li>glusterFS:</li><li>nfs:</li><li>cephfs:</li><li>…</li></ol> 
+</blockquote> 
+<ol start="5"><li>也可以这样区分: K8S中适配了各种存储系统:</li></ol> 
+<blockquote> 
+ <ol><li>本地存储,非持久性存储: EmptyDir, HostPath</li><li>网络连接性存储:</li></ol> 
+ <blockquote> 
+  <p>SAN：iSCSI、ScaleIO Volumes、FC (Fibre Channel)<br> NFS：nfs，cfs</p> 
+ </blockquote> 
+ <ol start="3"><li>分布式存储: Glusterfs, RBD (Ceph Block Device), CephFS, Portworx Volumes, Quobyte Volumes</li><li>云端存储: GCEPersistentDisk, AWSElasticBlockStore, AzureFile, AzureDisk, Cinder (OpenStack block storage), VsphereVolume, StorageOS</li><li>自定义存储: FlexVolume</li></ol> 
+</blockquote> 
+<ol start="6"><li>type属性<br> <img src="https://images2.imgbox.com/db/ee/ETTiBzj3_o.png" alt="在这里插入图片描述"></li><li>subPath属性: 有时，在单个 Pod 中共享卷以供多方使用是很有用的。 <code>volumeMounts.subPath</code> 属性可用于指定所引用的卷内的子路径，而不是其根路径(注意点configMap或Secret使用subPath子路径挂载时不支持热更新)</li></ol> 
+<h4><a id="1_EmptyDir__81"></a>1. EmptyDir 示例</h4> 
+<ol><li>EmptyDir是跟随pod的,如果pod删除对应的文件也会被删除,所以称为临时挂载(容器重启不会丢失)</li><li>编写一个创建 redis 的pod yaml 解释 EmptyDir使用示例,</li></ol> 
+<blockquote> 
+ <ol><li>在下方的yaml中,通过"volumes"设置卷,通过"volumeMounts.mountPath"指定挂载点,通过"volumeMounts.name"指定使名称,指定使用哪个挂载点"redis-data"</li><li>然后执行"kubectl create -f 当前yaml文件名称.yaml" 应用该yaml</li></ol> 
+</blockquote> 
+<pre><code class="prism language-yaml"><span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> v1
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> Pod        <span class="token comment">#类型是Pod</span>
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">labels</span><span class="token punctuation">:</span>
+    <span class="token key atrule">name</span><span class="token punctuation">:</span> redis
+    <span class="token key atrule">role</span><span class="token punctuation">:</span> master        <span class="token comment">#定义为主redis</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> redis<span class="token punctuation">-</span>master
+<span class="token key atrule">spec</span><span class="token punctuation">:</span>
+  <span class="token key atrule">volumes</span><span class="token punctuation">:</span> <span class="token comment">#containers容器中使用挂载时,指定挂载类型</span>
+    <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> redis<span class="token punctuation">-</span>data        <span class="token comment">#跟下面volumeMounts设置的挂载的名称对应</span>
+      <span class="token key atrule">emptyDir</span><span class="token punctuation">:</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>        <span class="token comment">#宿主机挂载点	</span>
+  <span class="token key atrule">containers</span><span class="token punctuation">:</span>
+    <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> master
+      <span class="token key atrule">image</span><span class="token punctuation">:</span> redis<span class="token punctuation">:</span>latest
+      <span class="token key atrule">env</span><span class="token punctuation">:</span>        <span class="token comment">#定义环境变量</span>
+        <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> MASTER
+          <span class="token key atrule">value</span><span class="token punctuation">:</span> <span class="token string">"true"</span>
+      <span class="token key atrule">ports</span><span class="token punctuation">:</span>        <span class="token comment">#容器内端口</span>
+        <span class="token punctuation">-</span> <span class="token key atrule">containerPort</span><span class="token punctuation">:</span> <span class="token number">6379</span>
+      <span class="token key atrule">volumeMounts</span><span class="token punctuation">:</span>        <span class="token comment">#容器内挂载点</span>
+        <span class="token punctuation">-</span> <span class="token key atrule">mountPath</span><span class="token punctuation">:</span> /data
+          <span class="token key atrule">name</span><span class="token punctuation">:</span> redis<span class="token punctuation">-</span>data        <span class="token comment">#必须有名称</span>
+</code></pre> 
+<ol start="3"><li>当上方yaml应用创建pod成功后,由于内部使用"volumeMounts"设置了挂载,会发现:</li></ol> 
+<blockquote> 
+ <ol><li>在宿主机上的访问路径为/var/lib/kubelet/pods/&lt; pod uid&gt;/volumes/kubernetes.io~empty-dir/redis-data,如果在此目录中创建删除文件，都将对容器中的/data目录有影响，</li><li><strong>如果删除Pod，文件将全部删除</strong>，即使是在宿主机上创建的文件也是如此，</li><li>在宿主机上删除容器则k8s会再自动创建一个容器，此时文件仍然存在</li></ol> 
+</blockquote> 
+<h4><a id="2_hostPath__114"></a>2. hostPath 示例</h4> 
+<ol><li>以时间问题为例: 容器内部用容器的时间,但是我们要取机器的时间,可以吧机器的时间挂载到对应的容器上</li></ol> 
+<pre><code class="prism language-yaml"><span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> v1
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> Pod
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> test<span class="token punctuation">-</span>pd
+<span class="token key atrule">spec</span><span class="token punctuation">:</span>
+  <span class="token key atrule">containers</span><span class="token punctuation">:</span>
+  <span class="token punctuation">-</span> <span class="token key atrule">image</span><span class="token punctuation">:</span> k8s.gcr.io/test<span class="token punctuation">-</span>webserver
+    <span class="token key atrule">name</span><span class="token punctuation">:</span> test<span class="token punctuation">-</span>container
+    <span class="token key atrule">volumeMounts</span><span class="token punctuation">:</span>
+    <span class="token punctuation">-</span> <span class="token key atrule">mountPath</span><span class="token punctuation">:</span> /etc/localtime <span class="token comment">#路径</span>
+      <span class="token key atrule">name</span><span class="token punctuation">:</span> test<span class="token punctuation">-</span>volume
+  <span class="token key atrule">volumes</span><span class="token punctuation">:</span>
+  <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> test<span class="token punctuation">-</span>volume
+    <span class="token key atrule">hostPath</span><span class="token punctuation">:</span> <span class="token comment">#通过hostPath获取宿主机上的数据挂载到对应的挂载点</span>
+      <span class="token key atrule">path</span><span class="token punctuation">:</span> /usr/share/zoneinfo/Asia/Shanghai 
+      <span class="token key atrule">type</span><span class="token punctuation">:</span> Directory <span class="token comment">#可选字段,当前表示是个文件夹,如果没有会报错</span>
+</code></pre> 
+<h4><a id="3_HostDir__134"></a>3. HostDir 示例</h4> 
+<ol><li>在宿主机上指定一个目录，挂载到Pod的容器中，其实跟上面的写法不尽相同，这里只截取不同的部分，当pod删除时，本地仍然保留文件</li></ol> 
+<pre><code class="prism language-yaml">  <span class="token key atrule">volumes</span><span class="token punctuation">:</span>
+    <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> redis<span class="token punctuation">-</span>data <span class="token comment">#跟volumeMounts中指定的的名称对应</span>
+      <span class="token key atrule">hostPath</span><span class="token punctuation">:</span> 
+        <span class="token key atrule">path</span><span class="token punctuation">:</span> /data <span class="token comment">#宿主机挂载点</span>
+</code></pre> 
+<h4><a id="4_NFS__142"></a>4. NFS 网络数据卷示例(持久化卷)</h4> 
+<ol><li>k8s支持不同类型的挂载,并且可以挂载多个,分为临时与持久的,临时卷类型的生命周期与 Pod 相同，持久卷可以比 Pod 的存活期长,不会销毁 持久卷(容器重启不会造成临时数据的丢失,因为临时卷是在pod的)</li><li>使用卷时, 在 <code>.spec.volumes</code> 字段中设置为 Pod 提供的卷，并在 <code>.spec.containers[*].volumeMounts</code> 字段中声明卷在容器中的挂载位置。</li><li>安装NFS</li></ol> 
+<pre><code class="prism language-sh"><span class="token comment"># 在任意机器</span>
+yum <span class="token function">install</span> <span class="token parameter variable">-y</span> nfs-utils
+<span class="token comment">#执行命令 vi /etc/exports，创建 exports 文件，文件内容如下：</span>
+<span class="token builtin class-name">echo</span> <span class="token string">"/nfs/data/ *(insecure,rw,sync,no_root_squash)"</span> <span class="token operator">&gt;</span> /etc/exports
+<span class="token comment">#/nfs/data  172.26.248.0/20(rw,no_root_squash)</span>
+
+<span class="token comment"># 执行以下命令，启动 nfs 服务;创建共享目录</span>
+<span class="token function">mkdir</span> <span class="token parameter variable">-p</span> /nfs/data
+systemctl <span class="token builtin class-name">enable</span> rpcbind
+systemctl <span class="token builtin class-name">enable</span> nfs-server
+systemctl start rpcbind
+systemctl start nfs-server
+exportfs <span class="token parameter variable">-r</span>
+<span class="token comment">#检查配置是否生效</span>
+exportfs
+<span class="token comment"># 输出结果如下所示</span>
+/nfs/data /nfs/data
+</code></pre> 
+<ol start="4"><li>设置挂载的yaml示例</li></ol> 
+<pre><code class="prism language-yaml"><span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> v1
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> Pod
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> nfs<span class="token punctuation">-</span>web
+<span class="token key atrule">spec</span><span class="token punctuation">:</span>
+  <span class="token key atrule">containers</span><span class="token punctuation">:</span>
+    <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> web
+      <span class="token key atrule">image</span><span class="token punctuation">:</span> nginx
+      <span class="token key atrule">imagePullPolicy</span><span class="token punctuation">:</span> Never <span class="token comment">#如果已经有镜像，就不需要再拉取镜像</span>
+      <span class="token key atrule">ports</span><span class="token punctuation">:</span>
+        <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> web
+          <span class="token key atrule">containerPort</span><span class="token punctuation">:</span> <span class="token number">80</span>
+          <span class="token key atrule">hostPort</span><span class="token punctuation">:</span> <span class="token number">80</span> <span class="token comment">#将容器的80端口映射到宿主机的80端口</span>
+      <span class="token key atrule">volumeMounts</span><span class="token punctuation">:</span>
+        <span class="token punctuation">-</span> <span class="token key atrule">name</span> <span class="token punctuation">:</span> nfs <span class="token comment">#指定名称必须与下面一致</span>
+          <span class="token key atrule">mountPath</span><span class="token punctuation">:</span> <span class="token string">"/usr/share/nginx/html"</span> <span class="token comment">#容器内的挂载点</span>
+  <span class="token key atrule">volumes</span><span class="token punctuation">:</span>
+    <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> nfs  <span class="token comment">#指定名称必须与上面一致</span>
+      <span class="token key atrule">nfs</span><span class="token punctuation">:</span>  <span class="token comment">#nfs存储</span>
+        <span class="token key atrule">server</span><span class="token punctuation">:</span> 192.168.66.50  <span class="token comment">#nfs服务器ip或是域名</span>
+        <span class="token key atrule">path</span><span class="token punctuation">:</span> <span class="token string">"/test"</span>  <span class="token comment">#nfs服务器共享的目录</span>
+</code></pre> 
+<ol start="5"><li>因为映射的是代码目录，在/test目录中创建index.html文件后，这个文件也将在容器中生效，当Pod删除时,文件不受影响，实现了数据持久化</li><li>扩展-NFS文件同步</li></ol> 
+<pre><code class="prism language-sh"><span class="token comment">#服务器端防火墙开放111、662、875、892、2049的 tcp / udp 允许，否则远端客户无法连接。</span>
+<span class="token comment">#安装客户端工具</span>
+yum <span class="token function">install</span> <span class="token parameter variable">-y</span> nfs-utils
+<span class="token comment">#执行以下命令检查 nfs 服务器端是否有设置共享目录</span>
+<span class="token comment"># showmount -e $(nfs服务器的IP)</span>
+showmount <span class="token parameter variable">-e</span> <span class="token number">172.26</span>.165.243
+<span class="token comment"># 输出结果如下所示</span>
+Export list <span class="token keyword">for</span> <span class="token number">172.26</span>.165.243
+/nfs/data *
+
+<span class="token comment">#执行以下命令挂载 nfs 服务器上的共享目录到本机路径 /root/nfsmount</span>
+<span class="token function">mkdir</span> /root/nfsmount
+<span class="token comment"># mount -t nfs $(nfs服务器的IP):/root/nfs_root /root/nfsmount</span>
+<span class="token comment">#高可用备份的方式</span>
+<span class="token function">mount</span> <span class="token parameter variable">-t</span> nfs <span class="token number">172.26</span>.165.243:/nfs/data /root/nfsmount
+<span class="token comment"># 写入一个测试文件</span>
+<span class="token builtin class-name">echo</span> <span class="token string">"hello nfs server"</span> <span class="token operator">&gt;</span> /root/nfsmount/test.txt
+
+<span class="token comment">#在 nfs 服务器上执行以下命令，验证文件写入成功</span>
+<span class="token function">cat</span> /root/nfsmount/test.txt
+</code></pre> 
+<h2><a id="__PVPVCStorageClass_213"></a>二. 持久化存储的 PV&amp;PVC&amp;StorageClass</h2> 
+<ol><li>什么是PV, PVC</li></ol> 
+<blockquote> 
+ <ol><li>因为在使用不同的存储时,挂载方式也不同,原始volumes挂载编写起来比较繁琐,为了方便开发,提供了专门的挂载编写方式也就是PV, PVC,内部封装存储和如何供应的细节, 实际就是在集群中定义了一块存储,和这块存储的使用方式的API<a href="https://kubernetes.io/zh-cn/docs/tasks/configure-pod-container/configure-persistent-volume-storage/" rel="nofollow">官方文档</a>,并且PV拥有独立于Pod的生命周期</li><li>PersistentVolumeClaim: 简称PVC, 持久化卷申,与PV是一一对应的,可以看成时一个接口,容器内部在读取卷进行挂载时,只需要调用这个接口即可</li><li>Persistent Volume: 简称PV,可以看成对应PVC接口的实现，比通过volumes更详细的定义了卷的细节,除了可以指定卷的类型比如时nfs还是ceph等等以外,还可以设置卷的容量, 回收策略,共享地址,读写模式等等</li><li>还可以这样理解: 开发人员并不关注卷底层实现,存储介质,所以只编写pvc, pod中通过pvc去挂载,然后由运维人员编写底层的pv, pvc选中对应的pv即可</li></ol> 
+</blockquote> 
+<ol start="2"><li>如下示例</li></ol> 
+<blockquote> 
+ <ol><li>编写pv指定实际存储方式为hostPath,容量10G,读写模式ReadWriteOnce等,并给当前pv加上标签my-pv</li><li>编写pvc,进行指定配置后,通过matchLabels选中指定pv进行绑定也就是my-pv</li><li>pod中首先通过volumes.persistentVolumeClaim选中指定pvc,并命名,然后再pod的container指定容器中设置通过pvc进行挂载</li></ol> 
+</blockquote> 
+<pre><code class="prism language-yaml"><span class="token comment"># 步骤1: 创建持久卷（PV）</span>
+<span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> v1
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> PersistentVolume
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> my<span class="token punctuation">-</span>pv  <span class="token comment"># PV 的名称</span>
+  <span class="token key atrule">labels</span><span class="token punctuation">:</span>
+    <span class="token key atrule">pv-type</span><span class="token punctuation">:</span> my<span class="token punctuation">-</span>pv  <span class="token comment"># 设置 PV 的 label</span>
+<span class="token key atrule">spec</span><span class="token punctuation">:</span>
+  <span class="token key atrule">capacity</span><span class="token punctuation">:</span>
+    <span class="token key atrule">storage</span><span class="token punctuation">:</span> 10Gi  <span class="token comment"># 容量大小</span>
+  <span class="token key atrule">accessModes</span><span class="token punctuation">:</span>
+    <span class="token punctuation">-</span> ReadWriteOnce  <span class="token comment"># 访问模式</span>
+  <span class="token key atrule">persistentVolumeReclaimPolicy</span><span class="token punctuation">:</span> Retain  <span class="token comment"># PV 回收策略</span>
+  <span class="token key atrule">hostPath</span><span class="token punctuation">:</span>
+    <span class="token key atrule">path</span><span class="token punctuation">:</span> /data/my<span class="token punctuation">-</span>pv  <span class="token comment"># 主机路径，用于存储 PV 数据</span>
+
+<span class="token comment"># 步骤2: 创建持久卷声明（PVC）</span>
+<span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> v1
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> PersistentVolumeClaim
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> my<span class="token punctuation">-</span>pvc  <span class="token comment"># PVC 的名称</span>
+<span class="token key atrule">spec</span><span class="token punctuation">:</span>
+  <span class="token key atrule">accessModes</span><span class="token punctuation">:</span>
+    <span class="token punctuation">-</span> ReadWriteOnce  <span class="token comment"># 访问模式</span>
+  <span class="token key atrule">selector</span><span class="token punctuation">:</span>  <span class="token comment"># 设置 PVC 的 selector</span>
+    <span class="token key atrule">matchLabels</span><span class="token punctuation">:</span>
+      <span class="token key atrule">pv-type</span><span class="token punctuation">:</span> my<span class="token punctuation">-</span>pv  <span class="token comment"># 匹配 PV 的 label</span>
+  <span class="token key atrule">resources</span><span class="token punctuation">:</span>
+    <span class="token key atrule">requests</span><span class="token punctuation">:</span>
+      <span class="token key atrule">storage</span><span class="token punctuation">:</span> 5Gi  <span class="token comment"># 所需的存储容量</span>
+
+<span class="token comment"># 步骤3: 创建使用 PV 和 PVC 的 Pod</span>
+<span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> v1
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> Pod
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> my<span class="token punctuation">-</span>pod  <span class="token comment"># Pod 的名称</span>
+<span class="token key atrule">spec</span><span class="token punctuation">:</span>
+  <span class="token key atrule">containers</span><span class="token punctuation">:</span>
+    <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> my<span class="token punctuation">-</span>app
+      <span class="token key atrule">image</span><span class="token punctuation">:</span> nginx
+      <span class="token key atrule">volumeMounts</span><span class="token punctuation">:</span>
+        <span class="token punctuation">-</span> <span class="token key atrule">mountPath</span><span class="token punctuation">:</span> /data  <span class="token comment"># 挂载路径</span>
+          <span class="token key atrule">name</span><span class="token punctuation">:</span> my<span class="token punctuation">-</span>volume
+  <span class="token key atrule">volumes</span><span class="token punctuation">:</span>
+    <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> my<span class="token punctuation">-</span>volume
+      <span class="token key atrule">persistentVolumeClaim</span><span class="token punctuation">:</span>
+        <span class="token key atrule">claimName</span><span class="token punctuation">:</span> my<span class="token punctuation">-</span>pvc  <span class="token comment"># 关联的 PVC</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/c3/e3/FEDYdsXt_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/2a/9b/mXfAZ5Av_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="PV__276"></a>PV 的创建与使用细节</h3> 
+<ol><li>PV与PVC直接的关系</li></ol> 
+<blockquote> 
+ <ol><li>pv没有namespace名称空间概念，而pvc有namespace名称空间的概念</li><li>pv和pvc一一对应绑定的</li></ol> 
+</blockquote> 
+<ol start="2"><li>PV的分类</li></ol> 
+<blockquote> 
+ <ol><li>静态模式：管理员手工创建许多PV，在定义PV时需要将后端存储的特性进行手动设置</li><li>动态模式：集群管理员无须手工创建PV，而是通过StorageClass的设置对后端存储进行描述，标记为某种 “类型(Class)”。此时要求PVC对存储的类型进行声明，系统将自动完成PV的创建及PVC的绑定。PVC可以声明Class为""，说明该PVC禁止使用动态模式</li></ol> 
+</blockquote> 
+<ol start="3"><li>PV的回收策略: 当pod资源被删除时，其相关pv和数据如何操作？kubernetes通过persistentVolumeReclaimPolicy字段进行设置：</li></ol> 
+<blockquote> 
+ <ol><li>Delete： 数据和pv都会删除</li><li>Recyle： （已废弃）</li><li>Retain： 数据和pv都不动</li></ol> 
+</blockquote> 
+<ol start="4"><li>第一步： 搭建一个NFS共享服务器，共享目录为 /data/share</li><li>创建pv ，并添加NFS共享服务器地址和目录</li></ol> 
+<pre><code class="prism language-yaml"><span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> v1
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> PersistentVolume <span class="token comment">#指定为PV类型</span>
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span>  zhaobei <span class="token comment">#指定PV的名称</span>
+  <span class="token key atrule">labels</span><span class="token punctuation">:</span>  <span class="token comment">#指定PV的标签</span>
+    <span class="token key atrule">release</span><span class="token punctuation">:</span> zhaobei
+<span class="token key atrule">spec</span><span class="token punctuation">:</span>
+  <span class="token key atrule">capacity</span><span class="token punctuation">:</span> 
+    <span class="token key atrule">storage</span><span class="token punctuation">:</span> 1Gi <span class="token comment">#指定PV的容量</span>
+  <span class="token key atrule">accessModes</span><span class="token punctuation">:</span>
+  <span class="token punctuation">-</span> ReadWriteOnce <span class="token comment">#指定PV的访问模式，简写为RWO，只支持挂在1个Pod的读和写</span>
+  <span class="token key atrule">persistentVolumeReclaimPolicy</span><span class="token punctuation">:</span> Delete <span class="token comment">#指定PV的回收策略，Recycle表示支持回收，回收完成后支持再次利用</span>
+  <span class="token key atrule">nfs</span><span class="token punctuation">:</span> <span class="token comment">#指定PV的存储类型，本文是以nfs为例</span>
+    <span class="token key atrule">path</span><span class="token punctuation">:</span> /data/share/test<span class="token punctuation">-</span>pv <span class="token comment">#共享的地址</span>
+    <span class="token key atrule">server</span><span class="token punctuation">:</span> 10.9.175.79 <span class="token comment">#服务器地址</span>
+</code></pre> 
+<h3><a id="StorageClass__306"></a>StorageClass 动态供应的创建与使用细节</h3> 
+<ol><li>在pv,pvc中开发人员并不关注卷底层实现,存储介质,所以只编写pvc, pod中通过pvc去挂载,然后由运维人员编写底层的pv, pvc选中对应的pv即可, 但是每出现一个pvc申请,运营可能就需要配合写一个真实的pv,也比较繁琐,引出了一块通过pvc自动创建pv的StorageClass, 运维只需要针对不同的存储介质编写StorageClass即可,在使用时StorageClass配合pvc可以自动创建对应的pv, <a href="https://kubernetes.io/zh-cn/docs/concepts/storage/storage-classes/" rel="nofollow">官方文档:StorageClass </a></li><li>k8s提供了一套可以自动创建PV的机制，即：Dynamic Provisioning。而这个机制的核心在于StorageClass这个API对象,内部会根据用户提交的PVC中定义的存储类型，Volume的大小，存储插件，即存储制备器,找到一个对应的StorageClass，根据StorageClass声明的存储插件，进而创建出需要的PV</li><li>使用原理: 比如存储后端使用的是 nfs，那么需要使用到一个 nfs-client 的自动配置程序 Provisioner(制备器), 这个程序会通过已经创建号的的 nfs 服务器，来自动创建持久卷，也就是自动帮我们创建 PV</li></ol> 
+<blockquote> 
+ <ol><li>自动创建的 PV 以$ {namespace}-$ {pvcName}-${pvName}这样的命名格式创建在 NFS 服务器上的共享数据目录中</li><li>而当这个 PV 被回收后会以archieved-$ {namespace}-$ {pvcName}-${pvName}这样的命名格式存在 NFS 服务器上</li></ol> 
+</blockquote> 
+<ol start="6"><li>每个 StorageClass 都包含 provisioner、parameters 和 reclaimPolicy 字段， 这些字段会在 StorageClass 需要动态分配 PersistentVolume 时会使用到</li><li>简单来说就是运维针对不同的持久化存储系统编写StorageClass, 开发人员在挂载时只需要编写pvc,通过pvc指定使用的StorageClass,由StorageClass自动创建pv即可</li></ol> 
+<pre><code class="prism language-yaml"><span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> storage.k8s.io/v1
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> StorageClass
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> standard
+<span class="token key atrule">provisioner</span><span class="token punctuation">:</span> kubernetes.io/aws<span class="token punctuation">-</span>ebs <span class="token comment">#设置指定存储系统供应商的名字(要与部署的存储系统中env.PROVISIONER_NAME这个key的value相同?)</span>
+<span class="token key atrule">parameters</span><span class="token punctuation">:</span> <span class="token comment">#对存储类驱动相关设置(由对应存储系统供应商提供支持的)</span>
+  <span class="token key atrule">type</span><span class="token punctuation">:</span> gp2
+<span class="token key atrule">reclaimPolicy</span><span class="token punctuation">:</span> Retain
+<span class="token key atrule">allowVolumeExpansion</span><span class="token punctuation">:</span> <span class="token boolean important">true</span>
+<span class="token key atrule">mountOptions</span><span class="token punctuation">:</span>
+  <span class="token punctuation">-</span> debug
+<span class="token key atrule">volumeBindingMode</span><span class="token punctuation">:</span> Immediate
+</code></pre> 
+<h4><a id="1__328"></a>1. 存储制备器</h4> 
+<ol><li>每个StorageClass都有一个制备器Provisioner,用来决定使用哪个卷插件制备 PV 该字段必须指定,并且不限于下方列出的 “内置” 制备器,还可以运行和指定外部制备器，这些独立的程序遵循由 Kubernetes 定义的 规范。 外部供应商的作者完全可以自由决定他们的代码保存于何处、打包方式、运行方式、使用的插件（包括 Flex）等。 代码仓库 kubernetes-sigs/sig-storage-lib-external-provisioner 包含一个用于为外部制备器编写功能实现的类库。你可以访问代码仓库 kubernetes-sigs/sig-storage-lib-external-provisioner 了解外部驱动列表。例如NFS 没有内部制备器，但可以使用外部制备器。 也有第三方存储供应商提供自己的外部制备器</li></ol> 
+<p><img src="https://images2.imgbox.com/8b/a9/b2AmMAsH_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="2__332"></a>2. 允许卷扩展</h4> 
+<ol><li>PersistentVolume 可以配置为可扩展,将此功能设置为 true 时,允许用户通过编辑相应的 PVC 对象来调整卷大小,当下层 StorageClass 的 allowVolumeExpansion 字段设置为 true 时，以下类型的卷支持卷扩展<br> <img src="https://images2.imgbox.com/e8/c8/uXmRWg55_o.png" alt="在这里插入图片描述"></li></ol> 
+<h4><a id="3__335"></a>3. 挂载选项</h4> 
+<ol><li>由 StorageClass 动态创建的 PersistentVolume 将使用类中 mountOptions 字段指定的挂载选项。如果卷插件不支持挂载选项，却指定了该选项，则制备操作会失败。 挂载选项在 StorageClass 和 PV 上都不会做验证，所以如果挂载选项无效，那么这个 PV 就会失败</li></ol> 
+<h4><a id="4__337"></a>4. 回收策略</h4> 
+<ol><li>由 StorageClass 动态创建的 PersistentVolume 会在类的 reclaimPolicy 字段中指定回收策略，可以是 Delete 或者 Retain。如果 StorageClass 对象被创建时没有指定 reclaimPolicy，它将默认为 Delete。通过 StorageClass 手动创建并管理的 PersistentVolume 会使用它们被创建时指定的回收政策。</li></ol> 
+<h4><a id="5__339"></a>5. 卷绑定模式</h4> 
+<ol><li>volumeBindingMode 字段控制了卷绑定和动态制备应该发生在什么时候。默认情况下，Immediate 模式表示一旦创建了 PersistentVolumeClaim 也就完成了卷绑定和动态制备。 对于由于拓扑限制而非集群所有节点可达的存储后端，PersistentVolume 会在不知道 Pod 调度要求的情况下绑定或者制备。</li><li>集群管理员可以通过指定 WaitForFirstConsumer 模式来解决此问题。 该模式将延迟 PersistentVolume 的绑定和制备，直到使用该 PersistentVolumeClaim 的 Pod 被创建。 PersistentVolume 会根据 Pod 调度约束指定的拓扑来选择或制备。这些包括但不限于 资源需求、 节点筛选器、 pod 亲和性和互斥性、 以及污点和容忍度。</li><li>以下插件支持动态供应的 WaitForFirstConsumer 模式:</li></ol> 
+<blockquote> 
+ <ol><li>AWSElasticBlockStore</li><li>GCEPersistentDisk</li><li>AzureDisk</li></ol> 
+</blockquote> 
+<ol start="4"><li>以下插件支持预创建绑定 PersistentVolume 的 WaitForFirstConsumer 模式：</li></ol> 
+<blockquote> 
+ <ol><li>上述全部</li><li>Local</li></ol> 
+</blockquote> 
+<h4><a id="6__349"></a>6. 允许的拓扑结构</h4> 
+<ol><li>当集群操作人员使用了 WaitForFirstConsumer 的卷绑定模式， 在大部分情况下就没有必要将制备限制为特定的拓扑结构。如果需要的可以使用 allowedTopologies。</li><li>下方示例描述了如何将供应卷的拓扑限制在特定的区域，在使用时应该根据插件 支持情况替换 zone 和 zones 参数</li></ol> 
+<pre><code class="prism language-yaml"><span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> storage.k8s.io/v1
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> StorageClass
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> standard
+<span class="token key atrule">provisioner</span><span class="token punctuation">:</span> kubernetes.io/gce<span class="token punctuation">-</span>pd
+<span class="token key atrule">parameters</span><span class="token punctuation">:</span>
+  <span class="token key atrule">type</span><span class="token punctuation">:</span> pd<span class="token punctuation">-</span>standard
+<span class="token key atrule">volumeBindingMode</span><span class="token punctuation">:</span> WaitForFirstConsumer
+<span class="token key atrule">allowedTopologies</span><span class="token punctuation">:</span>
+<span class="token punctuation">-</span> <span class="token key atrule">matchLabelExpressions</span><span class="token punctuation">:</span>
+  <span class="token punctuation">-</span> <span class="token key atrule">key</span><span class="token punctuation">:</span> failure<span class="token punctuation">-</span>domain.beta.kubernetes.io/zone
+    <span class="token key atrule">values</span><span class="token punctuation">:</span>
+    <span class="token punctuation">-</span> us<span class="token punctuation">-</span>central1<span class="token punctuation">-</span>a
+    <span class="token punctuation">-</span> us<span class="token punctuation">-</span>central1<span class="token punctuation">-</span>b
+</code></pre> 
+<h4><a id="7_StorageClassprovisioner_368"></a>7. 创建StorageClass指定provisioner示例</h4> 
+<pre><code class="prism language-yaml"><span class="token comment"># 创建NFS资源的StorageClass</span>
+<span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> storage.k8s.io/v1
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> StorageClass <span class="token comment"># 创建StorageClass</span>
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> managed<span class="token punctuation">-</span>nfs<span class="token punctuation">-</span>storage
+<span class="token key atrule">provisioner</span><span class="token punctuation">:</span> qgg<span class="token punctuation">-</span>nfs<span class="token punctuation">-</span>storage <span class="token comment">#这里的名称要和provisioner配置文件中的环境变量PROVISIONER_NAME保持一致</span>
+<span class="token key atrule">parameters</span><span class="token punctuation">:</span>  
+   <span class="token key atrule">archiveOnDelete</span><span class="token punctuation">:</span> <span class="token string">"false"</span>
+
+<span class="token comment"># 创建NFS provisioner</span>
+<span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> apps/v1
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> Deployment <span class="token comment"># 部署nfs-client-provisioner</span>
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> nfs<span class="token punctuation">-</span>client<span class="token punctuation">-</span>provisioner
+  <span class="token key atrule">labels</span><span class="token punctuation">:</span>
+    <span class="token key atrule">app</span><span class="token punctuation">:</span> nfs<span class="token punctuation">-</span>client<span class="token punctuation">-</span>provisioner
+  <span class="token key atrule">namespace</span><span class="token punctuation">:</span> default <span class="token comment">#与RBAC文件中的namespace保持一致</span>
+<span class="token key atrule">spec</span><span class="token punctuation">:</span>
+  <span class="token key atrule">replicas</span><span class="token punctuation">:</span> <span class="token number">1</span>
+  <span class="token key atrule">selector</span><span class="token punctuation">:</span>
+    <span class="token key atrule">matchLabels</span><span class="token punctuation">:</span>
+      <span class="token key atrule">app</span><span class="token punctuation">:</span> nfs<span class="token punctuation">-</span>client<span class="token punctuation">-</span>provisioner
+  <span class="token key atrule">strategy</span><span class="token punctuation">:</span>
+    <span class="token key atrule">type</span><span class="token punctuation">:</span> Recreate
+  <span class="token key atrule">selector</span><span class="token punctuation">:</span>
+    <span class="token key atrule">matchLabels</span><span class="token punctuation">:</span>
+      <span class="token key atrule">app</span><span class="token punctuation">:</span> nfs<span class="token punctuation">-</span>client<span class="token punctuation">-</span>provisioner
+  <span class="token key atrule">template</span><span class="token punctuation">:</span>
+    <span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+      <span class="token key atrule">labels</span><span class="token punctuation">:</span>
+        <span class="token key atrule">app</span><span class="token punctuation">:</span> nfs<span class="token punctuation">-</span>client<span class="token punctuation">-</span>provisioner
+    <span class="token key atrule">spec</span><span class="token punctuation">:</span>
+      <span class="token key atrule">serviceAccountName</span><span class="token punctuation">:</span> nfs<span class="token punctuation">-</span>client<span class="token punctuation">-</span>provisioner <span class="token comment"># 指定serviceAccount!</span>
+      <span class="token key atrule">containers</span><span class="token punctuation">:</span>
+        <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> nfs<span class="token punctuation">-</span>client<span class="token punctuation">-</span>provisioner
+          <span class="token key atrule">image</span><span class="token punctuation">:</span> hub.kaikeba.com/java12/nfs<span class="token punctuation">-</span>client<span class="token punctuation">-</span>provisioner<span class="token punctuation">:</span>v1 <span class="token comment">#镜像地址</span>
+          <span class="token key atrule">volumeMounts</span><span class="token punctuation">:</span> <span class="token comment"># 挂载数据卷到容器指定目录</span>
+            <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> nfs<span class="token punctuation">-</span>client<span class="token punctuation">-</span>root
+              <span class="token key atrule">mountPath</span><span class="token punctuation">:</span> /persistentvolumes
+          <span class="token key atrule">env</span><span class="token punctuation">:</span>
+            <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> PROVISIONER_NAME <span class="token comment"># 配置provisioner的Name</span>
+              <span class="token key atrule">value</span><span class="token punctuation">:</span> qgg<span class="token punctuation">-</span>nfs<span class="token punctuation">-</span>storage <span class="token comment"># 确保该名称与 StorageClass 资源中的provisioner名称保持一致</span>
+            <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> NFS_SERVER <span class="token comment">#绑定的nfs服务器</span>
+              <span class="token key atrule">value</span><span class="token punctuation">:</span> 192.168.66.13
+            <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> NFS_PATH   <span class="token comment">#绑定的nfs服务器目录</span>
+              <span class="token key atrule">value</span><span class="token punctuation">:</span> /opt/k8s
+      <span class="token key atrule">volumes</span><span class="token punctuation">:</span> <span class="token comment"># 申明nfs数据卷</span>
+        <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> nfs<span class="token punctuation">-</span>client<span class="token punctuation">-</span>root
+          <span class="token key atrule">nfs</span><span class="token punctuation">:</span>
+            <span class="token key atrule">server</span><span class="token punctuation">:</span> 192.168.66.13
+            <span class="token key atrule">path</span><span class="token punctuation">:</span> /opt/k8s
+</code></pre> 
+<h3><a id="PVC__422"></a>PVC 创建与使用细节</h3> 
+<ol><li>在用户定义好PVC后，系统将根据PVC对存储资源的请求 (存储空间和访问模式)在已存在的PV中选择一个满足PVC要求的PV，一旦找到，就将该PV与用户定义的PVC进行绑定，然后用户的应用就可以使用这个PVC了。如果系统中没有满足PVC要求的PV，PVC则会无限期处于Pending状态，直到等到系统管理员创建了一个符合要求的PV。PV一旦绑定在某个PVC上，就被这个PVC独占，不能再与其他PVC进行绑定了。在这种情况下，当PVC申请的存储空间比PV的少时，整个PV的空间都能够为PVC所用，可能会造成资源的浪费。如果资源供应使用的是动态模式，则系统在PVC找到合适的StorageClass后，将会自动创建PV并完成PVC的绑定</li><li>PVC 中可以通过"spec.accessModes"设置访问模式,支持:</li></ol> 
+<blockquote> 
+ <ol><li>ReadWriteOnce: 卷可以被一个节点以读写的方式挂载</li><li>ReadOnlyMany: 卷可以被多个节点以只读的方式挂载</li><li>ReadWriteMany: 卷可以被多个节点以读写的方式挂载</li></ol> 
+</blockquote> 
+<ol start="3"><li>先编写pvc申请yaml</li></ol> 
+<pre><code class="prism language-yaml"><span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> v1
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> PersistentVolumeClaim <span class="token comment">#类型,当前表示持久化申请</span>
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> nginx<span class="token punctuation">-</span>pvc <span class="token comment">#名字</span>
+  <span class="token key atrule">namespace</span><span class="token punctuation">:</span> default
+  <span class="token key atrule">labels</span><span class="token punctuation">:</span>
+    <span class="token key atrule">app</span><span class="token punctuation">:</span> nginx<span class="token punctuation">-</span>pvc
+<span class="token key atrule">spec</span><span class="token punctuation">:</span>
+  <span class="token key atrule">storageClassName</span><span class="token punctuation">:</span> my<span class="token punctuation">-</span>nfs<span class="token punctuation">-</span>storage <span class="token comment">#存储类的名字</span>
+  <span class="token key atrule">accessModes</span><span class="token punctuation">:</span>
+  <span class="token punctuation">-</span> ReadWriteOnce
+  <span class="token key atrule">resources</span><span class="token punctuation">:</span>
+    <span class="token key atrule">requests</span><span class="token punctuation">:</span>
+      <span class="token key atrule">storage</span><span class="token punctuation">:</span> 50m
+</code></pre> 
+<ol start="4"><li>需要挂载设置的pod的yaml示例,需要挂载的pod中通过persistentVolumeClaim属性指定使用哪个持久化申请,通过指定的持久化申请获取到挂载</li></ol> 
+<blockquote> 
+ <p>Pod 使用时通过volume的定义，将PVC挂载到容器内的某个路径进行使用。volume的类型为persistentVoulumeClaim，在容器应用挂载了一个PVC后，就能被持续独占使用。不过，多个Pod可以挂载同一个PVC，应用程序需要考虑多个实例共同访问一块存储空间的问题</p> 
+</blockquote> 
+<pre><code class="prism language-yaml"><span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> v1
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> Pod
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> <span class="token string">"nginx-pvc"</span>
+  <span class="token key atrule">namespace</span><span class="token punctuation">:</span> default
+  <span class="token key atrule">labels</span><span class="token punctuation">:</span>
+    <span class="token key atrule">app</span><span class="token punctuation">:</span> <span class="token string">"nginx-pvc"</span>
+<span class="token key atrule">spec</span><span class="token punctuation">:</span>
+  <span class="token key atrule">containers</span><span class="token punctuation">:</span>
+  <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> nginx<span class="token punctuation">-</span>pvc
+    <span class="token key atrule">image</span><span class="token punctuation">:</span> <span class="token string">"nginx"</span>
+    <span class="token key atrule">ports</span><span class="token punctuation">:</span>
+    <span class="token punctuation">-</span> <span class="token key atrule">containerPort</span><span class="token punctuation">:</span>  <span class="token number">80</span>
+      <span class="token key atrule">name</span><span class="token punctuation">:</span>  http
+    <span class="token key atrule">volumeMounts</span><span class="token punctuation">:</span>
+    <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> localtime
+      <span class="token key atrule">mountPath</span><span class="token punctuation">:</span> /etc/localtime
+    <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> html
+      <span class="token key atrule">mountPath</span><span class="token punctuation">:</span> /usr/share/nginx/html
+  <span class="token key atrule">volumes</span><span class="token punctuation">:</span>
+    <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> localtime
+      <span class="token key atrule">hostPath</span><span class="token punctuation">:</span>
+        <span class="token key atrule">path</span><span class="token punctuation">:</span> /usr/share/zoneinfo/Asia/Shanghai
+    <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> html
+      <span class="token key atrule">persistentVolumeClaim</span><span class="token punctuation">:</span> <span class="token comment">#通过该注解设置使用哪个持久化申请</span>
+         <span class="token key atrule">claimName</span><span class="token punctuation">:</span>  nginx<span class="token punctuation">-</span>pvc  <span class="token comment">#使用的申请书的名字</span>
+  <span class="token key atrule">restartPolicy</span><span class="token punctuation">:</span> Always
+</code></pre>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/f296861d35fb2f9100a3fad5addecce2/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">ovs&#43;dpdk 三级流表(microflow/megaflow/openflow)</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/8ded43fd1349f675a0728b30ca20dbe3/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">uniapp 微信小程序分包</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

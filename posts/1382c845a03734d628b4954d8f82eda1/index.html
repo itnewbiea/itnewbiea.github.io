@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Weblogic安全漫谈(二) - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Weblogic安全漫谈(二)" />
+<meta property="og:description" content="前言 继本系列上篇从CVE-2015-4852入手了解T3协议的构造后，本篇继续分析开启T3反序列化魔盒后的修复与绕过。
+Weblogic对于10.3.6推出了p20780171和p22248372用于修复CVE-2015-4852，在补丁详情中又提示了p21984589是它的超集，所以可以直接装这个合集。跟着压缩包里自带的README.txt走就行，注意一点是要改一下bsu.sh中的内存限制，不然会遇到Java heap space OutOfMemoryError。
+unzip p21984589_1036_Generic.zip -d /u01/app/oracle/middleware/utils/bsu/cache_dir/ cd /u01/app/oracle/middleware/utils/bsu/ sed -i &#39;s/512/1024/&#39; bsu.sh ./bsu.sh -install -patch_download_dir=/u01/app/oracle/middleware/utils/bsu/cache_dir -patchlist=S8C2 -prod_dir=/u01/app/oracle/middleware/wlserver . /u01/app/oracle/middleware/wlserver/server/bin/setWLSEnv.sh /java/bin/java weblogic.version 补丁在重写的ServerChannelInputStream#resolveClass中新增了类名黑名单，加入了CC链比较关键的包。
+梳理一下：
+原生反序列化依然存在，流程中的各个关键方法可用。
+CC链在黑名单以外的部分，仍然可以用作调用链。
+黑名单类不在ServerChannelInputStream做反序列化就不受限制。
+根据第三点先获取所有用到readObject的地方，用Serializable.class.isAssignableFrom(clazz)筛出可被序列化的类，筛出数据可控的二次反序列化。找到的两个可用类刚好对应两个CVE。
+CVE-2016-0638 看到weblogic.jms.common.StreamMessageImpl#readExternal，完成父类readExternal后读到的字节是十进制1时会进入存在readObject的分支。
+跟进中间会经过的createPayload方法，读到的整数大于CHUNK_LINK_THRESHOLD会做一些处理。中间这块的处理看不太懂，我们假设它不满足判断继续往后走，一直跟到Chunk.createOneSharedChunk。
+虽然中间一些Chunk的判断和操作由于笔者太菜了看不懂，但到了这里就能看出，这个先前读到的被一路传过来的整数是后段数据长度。后面这段数据被完整读出并封装赋值给this.payload，随后进行第二次反序列化。
+按照同样的数据顺序重写StreamMessageImpl的writeExternal，写入相应格式的CC链序列化payload，再经过一次正常新建类对象并经过第二次序列化，最后用上一篇的EXP打出去就行。
+readExternal:1433, StreamMessageImpl (weblogic.jms.common) readExternalData:1814, ObjectInputStream (java.io) readOrdinaryObject:1773, ObjectInputStream (java.io) resolveClass:110, InboundMsgAbbrev$ServerChannelInputStream (weblogic.rjvm) readNonProxyDesc:1589, ObjectInputStream (java.io) readClassDesc:1494, ObjectInputStream (java.io) readOrdinaryObject:1748, ObjectInputStream (java.io) readObject0:1327, ObjectInputStream (java.io) CVE-2016-3510 看到weblogic.corba.utils.MarshalledObject#readResolve，是比上一个品相更好的二次反序列化类。this.objBytes属性来自构造函数传入的对象，直接将payload对象作为参数给进去就行。
+readResolve:58, MarshalledObject (weblogic.corba.utils) invoke0:-1, NativeMethodAccessorImpl (sun.reflect) invoke:39, NativeMethodAccessorImpl (sun." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/1382c845a03734d628b4954d8f82eda1/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-01-03T10:49:33+08:00" />
+<meta property="article:modified_time" content="2024-01-03T10:49:33+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Weblogic安全漫谈(二)</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h3>前言</h3> 
+<p>继本系列上篇从CVE-2015-4852入手了解T3协议的构造后，本篇继续分析开启T3反序列化魔盒后的修复与绕过。</p> 
+<p>Weblogic对于10.3.6推出了p20780171和p22248372用于修复CVE-2015-4852，在补丁详情中又提示了p21984589是它的超集，所以可以直接装这个合集。跟着压缩包里自带的<span style="color:#be191c;"><code><span style="background-color:#cccccc;">README.txt</span></code></span>走就行，注意一点是要改一下<span style="color:#be191c;"><code><span style="background-color:#cccccc;">bsu.sh</span></code></span>中的内存限制，不然会遇到<span style="color:#be191c;"><code><span style="background-color:#cccccc;">Java heap space OutOfMemoryError</span></code></span>。</p> 
+<pre><code class="hljs">unzip p21984589_1036_Generic.zip -d /u01/app/oracle/middleware/utils/bsu/cache_dir/
+
+cd /u01/app/oracle/middleware/utils/bsu/
+
+sed -i 's/512/1024/' bsu.sh
+
+./bsu.sh -install -patch_download_dir=/u01/app/oracle/middleware/utils/bsu/cache_dir -patchlist=S8C2 -prod_dir=/u01/app/oracle/middleware/wlserver
+
+. /u01/app/oracle/middleware/wlserver/server/bin/setWLSEnv.sh
+/java/bin/java weblogic.version</code></pre> 
+<p> 补丁在重写的<span style="color:#be191c;"><code><span style="background-color:#cccccc;">ServerChannelInputStream#resolveClass</span></code></span>中新增了类名黑名单，加入了CC链比较关键的包。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="489" src="https://images2.imgbox.com/b0/60/US4KBYtM_o.png" width="1080"></p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="489" src="https://images2.imgbox.com/d4/9a/sAIlgTS4_o.png" width="1080"></p> 
+<p>梳理一下：</p> 
+<ol><li> <p>原生反序列化依然存在，流程中的各个关键方法可用。</p> </li><li> <p>CC链在黑名单以外的部分，仍然可以用作调用链。</p> </li><li> <p>黑名单类不在<span style="color:#be191c;"><code><span style="background-color:#cccccc;">ServerChannelInputStream</span></code></span>做反序列化就不受限制。</p> </li></ol> 
+<p>根据第三点先获取所有用到<span style="color:#be191c;"><code><span style="background-color:#cccccc;">readObject</span></code></span>的地方，用<span style="color:#be191c;"><code><span style="background-color:#cccccc;">Serializable.class.isAssignableFrom(clazz)</span></code></span>筛出可被序列化的类，筛出数据可控的二次反序列化。找到的两个可用类刚好对应两个CVE。</p> 
+<h3>CVE-2016-0638</h3> 
+<p>看到<span style="color:#be191c;"><code><span style="background-color:#cccccc;">weblogic.jms.common.StreamMessageImpl#readExternal</span></code></span>，完成父类<span style="color:#be191c;"><code><span style="background-color:#cccccc;">readExternal</span></code></span>后读到的字节是十进制1时会进入存在<span style="color:#be191c;"><code><span style="background-color:#cccccc;">readObject</span></code></span>的分支。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="660" src="https://images2.imgbox.com/19/9d/NwlOrC36_o.png" width="1080"></p> 
+<p>跟进中间会经过的<span style="color:#be191c;"><code><span style="background-color:#cccccc;">createPayload</span></code></span>方法，读到的整数大于<span style="color:#be191c;"><code><span style="background-color:#cccccc;">CHUNK_LINK_THRESHOLD</span></code></span>会做一些处理。中间这块的处理看不太懂，我们假设它不满足判断继续往后走，一直跟到<span style="color:#be191c;"><code><span style="background-color:#cccccc;">Chunk.createOneSharedChunk</span></code></span>。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="660" src="https://images2.imgbox.com/b8/55/du44SrPq_o.png" width="1080"></p> 
+<p>虽然中间一些<span style="color:#be191c;"><code><span style="background-color:#cccccc;">Chunk</span></code></span>的判断和操作由于笔者太菜了看不懂，但到了这里就能看出，这个先前读到的被一路传过来的整数是后段数据长度。后面这段数据被完整读出并封装赋值给<span style="color:#be191c;"><code><span style="background-color:#cccccc;">this.payload</span></code></span>，随后进行第二次反序列化。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="433" src="https://images2.imgbox.com/46/bd/gWJge4sz_o.png" width="1080"></p> 
+<p>按照同样的数据顺序重写<span style="color:#be191c;"><code><span style="background-color:#cccccc;">StreamMessageImpl</span></code></span>的<span style="color:#be191c;"><code><span style="background-color:#cccccc;">writeExternal</span></code></span>，写入相应格式的CC链序列化payload，再经过一次正常新建类对象并经过第二次序列化，最后用上一篇的EXP打出去就行。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="528" src="https://images2.imgbox.com/0c/3d/rMibZlD9_o.png" width="1080"></p> 
+<p> </p> 
+<pre><code class="hljs">readExternal:1433, StreamMessageImpl (weblogic.jms.common)
+readExternalData:1814, ObjectInputStream (java.io)
+readOrdinaryObject:1773, ObjectInputStream (java.io)
+
+resolveClass:110, InboundMsgAbbrev$ServerChannelInputStream (weblogic.rjvm)
+readNonProxyDesc:1589, ObjectInputStream (java.io)
+readClassDesc:1494, ObjectInputStream (java.io)
+readOrdinaryObject:1748, ObjectInputStream (java.io)
+readObject0:1327, ObjectInputStream (java.io)</code></pre> 
+<h3>CVE-2016-3510</h3> 
+<p>看到<span style="color:#be191c;"><code><span style="background-color:#cccccc;">weblogic.corba.utils.MarshalledObject#readResolve</span></code></span>，是比上一个品相更好的二次反序列化类。<span style="color:#be191c;"><code><span style="background-color:#cccccc;">this.objBytes</span></code></span>属性来自构造函数传入的对象，直接将payload对象作为参数给进去就行。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="528" src="https://images2.imgbox.com/6f/b6/yiK0ltOM_o.png" width="1080"></p> 
+<p> </p> 
+<pre><code class="hljs">readResolve:58, MarshalledObject (weblogic.corba.utils)
+invoke0:-1, NativeMethodAccessorImpl (sun.reflect)
+invoke:39, NativeMethodAccessorImpl (sun.reflect)
+invoke:25, DelegatingMethodAccessorImpl (sun.reflect)
+invoke:597, Method (java.lang.reflect)
+invokeReadResolve:1056, ObjectStreamClass (java.io)
+readOrdinaryObject:1784, ObjectInputStream (java.io)
+readObject0:1327, ObjectInputStream (java.io)</code></pre> 
+<p><img alt="" height="572" src="https://images2.imgbox.com/3f/be/ckT7COG6_o.png" width="1080"></p> 
+<p>补丁在上述两个类反序列化前单独添加了检查，随后进入下一个对RMI的利用阶段。</p> 
+<h3>CVE-2017-3248</h3> 
+<p>与此前<a href="http://mp.weixin.qq.com/s?__biz=MzkxMjI3MDgwOA==&amp;mid=2247484014&amp;idx=1&amp;sn=deac4e024f485d9b0265671056e73ad9&amp;chksm=c10e36d9f679bfcf7b85bc5c531e9d1bdc722d680fa8e41fa3248f1b694bbb8f2b9a41747dc0&amp;scene=21#wechat_redirect" rel="nofollow" title="《攻击JavaRMI概述》">《攻击JavaRMI概述》</a>中唯一不同的一点是，第一步触发反序列化时的通讯协议，从Java原生的JRMP协议变为了Weblogic的T3协议。生成一个JRMPClient的payload用于在目标反序列化时发起JRMP请求，其它攻击流程一致。</p> 
+<h3>CVE-2018-2628</h3> 
+<p><span style="color:#be191c;"><code><span style="background-color:#cccccc;">ysoserial</span></code></span>的<span style="color:#be191c;"><code><span style="background-color:#cccccc;">RMIRegistryExploit</span></code></span>设计用于攻击Java原生RMI注册端，用了给<span style="color:#be191c;"><code><span style="background-color:#cccccc;">JRMPClient</span></code></span>的payload套上Registry动态代理的方式，来兼容Java原生registry.bind方法的参数要求。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="384" src="https://images2.imgbox.com/f9/83/tjp8Al6W_o.png" width="1080"></p> 
+<p>而这大概就是Weblogic企图靠<span style="color:#be191c;"><code><span style="background-color:#cccccc;">InboundMsgAbbrev</span></code></span>重写<span style="color:#be191c;"><code><span style="background-color:#cccccc;">resolveProxyClass</span></code></span>作为CVE-2017-3248的修复方式原因之一。我们是用自己的EXP作为T3客户端，不存在参数类型兼容的问题，直接去掉动态代理类的包装即可绕过检查（或者使用不同的接口代理）。</p> 
+<p>不过与此同时补丁也给CC包加上了手动开关，基本断了这条链的生路。所以这一阶段的Sink链大多基于7u21/8u20。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="524" src="https://images2.imgbox.com/59/1b/YrdOcR26_o.png" width="1080"></p> 
+<h3>CVE-2018-2893</h3> 
+<p>据参考文章，在<span style="color:#be191c;"><code><span style="background-color:#cccccc;">cpuapr2018</span></code></span>补丁中黑名单新增了<span style="color:#be191c;"><code><span style="background-color:#cccccc;">sun.rmi.server.UnicastRef</span></code></span>。看到<span style="color:#be191c;"><code><span style="background-color:#cccccc;">java.rmi.server.RemoteObjectInvocationHandler</span></code></span>会使用父类的<span style="color:#be191c;"><code><span style="background-color:#cccccc;">RemoteObject</span></code></span>，读到<span style="color:#be191c;"><code><span style="background-color:#cccccc;">refClassName</span></code></span>时就会做一次神奇的第二次反序列化，自带绕过特效。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="390" src="https://images2.imgbox.com/28/31/ElFnC8zG_o.png" width="1080"></p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="776" src="https://images2.imgbox.com/f6/d2/YoSz35zz_o.png" width="1080"></p> 
+<p>要素察觉！CVE-2016-0638和CVE-2016-3510也是二次反序列化绕过黑名单，不过<span style="color:#be191c;"><code><span style="background-color:#cccccc;">MarshalledObject</span></code></span>被去掉了Serializable接口，<span style="color:#be191c;"><code><span style="background-color:#cccccc;">StreamMessageImpl</span></code></span>则仍然可用于绕过。</p> 
+<h3>CVE-2018-3245</h3> 
+<p>在<span style="color:#be191c;"><code><span style="background-color:#cccccc;">cpujul2018</span></code></span>补丁中黑名单继续增加了：</p> 
+<pre><code class="hljs">java.rmi.activation
+sun.rmi.server
+java.rmi.server.UnicastRemoteObject
+java.rmi.server.RemoteObjectInvocationHandler</code></pre> 
+<p><span style="color:#be191c;"><code><span style="background-color:#cccccc;">RemoteObject</span></code></span>不在黑名单的子类们仍然可用，直到<span style="color:#be191c;"><code><span style="background-color:#cccccc;">cpuoct2018</span></code></span>将基类纳入黑名单。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/d1eabde0d0a2774972ae309740585c5c/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">30&#43;后端程序员的2023年总结</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/ddc3a071e801a2e78fcf05c3feb2ee0a/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">异步爬虫-协程的使用</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

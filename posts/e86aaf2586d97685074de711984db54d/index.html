@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>移动机器人多模态自主导航详解 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="移动机器人多模态自主导航详解" />
+<meta property="og:description" content="点击上方“3D视觉工坊”，选择“星标”
+干货第一时间送达
+作者丨ROSrookie
+来源丨古月居
+点击进入—&gt;3D视觉工坊学习交流群
+想象我们要去某个地方游玩，你是不是会先在脑海中勾勒出一条路线，然后出发前往这个地方？
+人类的导航如此，那对于机器人来讲，该如何实现导航功能呢？
+1.机器人自主导航
+我们先来理清自主导航的框架，其关键是自主定位和路径规划。针对这两个核心功能，ROS提供了一套完整的框架支持，收到导航目标位置后，机器人只需要发布必要的传感器信息，框架中的功能包即可帮助机器人完成导航。
+其中，move_base功能包实现机器人导航中的最优路径规划，amcl实现二维地图中的机器人定位。
+为了实现机器人全局最优路径规划与实时避障路径规划，move_base需要订阅机器人发布的深度传感器信息（sensor_msgs/LaserScan或 sensor_msgs/PointCloud）和里程计信息（nav_msgs/Odometry），同时完整的TF坐标变换也是实现路径规划的重要基础。
+导航框架最终的输出是控制机器人的速度指令（geometry_msgs/Twist），这就要求机器人控制节点具备解析控制指令中线速度、角速度的能力，并且控制机器人完成相应的运动。
+注：
+导航框架所包含的功能包很多，可以直接使用如下命令安装：
+$ sudo apt-get install ros-melodic-navigation
+2.机器人定位
+导航功能的顺利进行，离不开机器人的精准定位。自主定位即机器人在任意状态下都可以推算出自己在地图中所处的位置。ROS为开发者提供了一种自适蒙特卡罗定位方法（Adaptive Monte Carlo Localization，amcl），这是一种概率统计方法，针对已有地图使用粒子滤波器跟踪一个机器人的姿态。
+给定初始位姿后，AMCL会在机器人周围随机撒一些粒子，随着机器人的运动，每个粒子也会实时跟随机器人的速度更新位姿，当粒子周边的环境状态与机器人差距较大时，就会被逐渐淘汰，反之，则会在机器人周边产生更多粒子。以此类推，粒子都集中在机器人所在位置可能性高的地方，也就是定位的结果。
+为了调教以上粒子滤波算法，AMCL功能包中可配置的参数很多，一般初次上手不建议，只需要注意订阅和发布的话题名匹配即可，感兴趣的小伙伴可以在官网（http://wiki.ros.org/amcl）查看各个参数的详细介绍，相关的理论算法请参考《概率机器人》一书。
+3.机器人路径规划
+机器人知道自己的位置后，如何像人一样根据自己的经验规划出一条路径来呢？move_base功能包就是负责这样的功能，主要由全局路径规划器和本地实时规划器（局部路径规划器）组成。
+全局规划就好比我们依靠经验（或地图数据）规划点到点最优路径的过程；局部规划可以理解为去往目的地途中，不断调整机器人姿态、躲避障碍物，以贴合最优路径的过程。
+全局路径规划常用Dijkstra算法和A*算法。Dijkstra算法深度优先，往往可以找到全局最优路径，不过搜索时间长、消耗资源多，而A*算法加入了启发函数，虽然不一定可以找到全局最优路径，但搜索时间更快，适合大空间范围的规划。移动机器人大部分是在室内有限范围内使用，两者搜索时间和消耗资源的差距并不明显，一般使用Dijkstra算法即可。
+本地实时规划常用Dynamic Window Approaches（DWA）和Time Elastic Band（TEB）算法，两种算法的核心思想如下，具体算法实现大家可以在网上搜索相关的论文。
+为了完成以上这些规划器算法的配置，move_base功能包的启动也需要配置不少参数，比如下图所示的这些参数文件：
+包含通用配置文件（costmap_common）、全局规划配置文件（global_costmap）、本地规划配置文件（local_costmap）、本地规划器（planer）、路径规划算法（全局base_global_planner和局部base_local_planner）和控制频率（controller_frequency）、规划频率（planner_frequency）等一些参数。这些参数的详细介绍可以去官网（http://wiki.ros.org/move_base）查看。
+4.代价地图的配置
+人在导航去某个地方的时候可以通过眼睛和经验判断哪里有墙、哪里有水坑、哪里能走和哪里不能走。机器人如何判断呢？
+move_base导航使用两种代价地图存储周围环境中的障碍信息：一种用于全局路径规划（global_costmap），一种用于本地实时路径规划（local_costmap）。两种代价地图需要使用一些共用的或独立的配置文件：通用配置文件（costmap_common_params）、全局规划配置文件（global_costmap_params）和本地规划配置文件（local_costmap_params）。
+通用配置文件costmap_common_params.yaml的代码和关键参数的含义如下：
+注意话题名不要设置错了，footprint也需要根据实际机器人的大小进行设置。
+全局规划配置文件global_costmap_params.yaml的代码和关键参数的含义如下：
+由于我们这里是已经有地图了，所以将static_map设置true。若我们想使用机器人探索未知的地方并且进行建图的话，则将static_map设置为false。
+本地规划配置文件local_costmap_params.yaml的代码和关键参数的含义如下：
+其中width、height、resolution参数用于设置代价地图的长（米）、高（米）和分辨率（米/格）。rolling_window参数用来设置在机器人移动过程中是否需要滚动窗口，以保持机器人处于中心位置。
+既然导航的各个问题都已经梳理清楚，那么是否真的可以实现导航呢？以及在不同运动模态下，机器人的导航效果又会怎样？接下来我们就用LIMO机器人试一试。
+注：关于该机器人运动模态的配置与SLAM，请参考以下内容：
+《 细数移动机器人那些常用的运动模态 》
+《 如何在移动机器人中部署Gmapping SLAM算法 》
+5. 差速移动机器人自主导航
+打开机器人的启动文件limo_start.launch，将use_mcnamu设置为false，如下图所示。
+局部规划器选用的算法为TEB，由于相关参数比较多，这里就不一一展示和说明，若想了解每个参数，可以前往官网查看相关说明：http://wiki.ros.org/teb_local_planner
+下面是一些参数的配置与介绍：
+注意，当运动模式为差速运动时，y方向的速度必须设置为0。为了导航效果更好，这里将最小转弯半径（min_turning_radius）设置为0。
+注意min_obstacle_dist不要设置的比costmap_common_params.yaml中的膨胀半径小，不然会报错。
+然后运行下面的命令，开启导航功能。
+$ roslaunch limo_bringup limo_start.launch $ roslaunch limo_bringup limo_navigation_diff." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/e86aaf2586d97685074de711984db54d/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-02-03T07:00:52+08:00" />
+<meta property="article:modified_time" content="2023-02-03T07:00:52+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">移动机器人多模态自主导航详解</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div id="js_content"> 
+ <p style="text-align:center;">点击上方“3D视觉工坊”，选择“星标”</p> 
+ <p style="text-align:center;">干货第一时间送达</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/43/88/BgfAjv1a_o.jpg" alt="1b361df579198363fff8180d8625ca28.jpeg"></p> 
+ <p style="text-align:left;">作者丨ROSrookie</p> 
+ <p style="text-align:left;">来源丨古月居</p> 
+ <p style="text-align:left;"><strong>点击进入</strong>—&gt;<a href="" rel="nofollow"><strong>3D视觉工坊学习交流群</strong></a></p> 
+ <p>想象我们要去某个地方游玩，你是不是会先在脑海中勾勒出一条路线，然后出发前往这个地方？</p> 
+ <p>人类的导航如此，那对于机器人来讲，该如何实现导航功能呢？</p> 
+ <p><strong>1.机器人自主导航</strong></p> 
+ <p>我们先来理清自主导航的框架，其关键是自主定位和路径规划。针对这两个核心功能，ROS提供了一套完整的框架支持，收到导航目标位置后，机器人只需要发布必要的传感器信息，框架中的功能包即可帮助机器人完成导航。</p> 
+ <p><img src="https://images2.imgbox.com/fb/f2/FfZS47n2_o.png" alt="0ac6b0c67977f62ee738c1f89c5c9cff.png"></p> 
+ <p>其中，move_base功能包实现机器人导航中的最优路径规划，amcl实现二维地图中的机器人定位。</p> 
+ <p>为了实现机器人全局最优路径规划与实时避障路径规划，move_base需要订阅机器人发布的深度传感器信息（sensor_msgs/LaserScan或 sensor_msgs/PointCloud）和里程计信息（nav_msgs/Odometry），同时完整的TF坐标变换也是实现路径规划的重要基础。</p> 
+ <p>导航框架最终的输出是控制机器人的速度指令（geometry_msgs/Twist），这就要求机器人控制节点具备解析控制指令中线速度、角速度的能力，并且控制机器人完成相应的运动。</p> 
+ <p><strong>注：</strong></p> 
+ <p>导航框架所包含的功能包很多，可以直接使用如下命令安装：</p> 
+ <p>$ sudo apt-get install ros-melodic-navigation</p> 
+ <p><strong>2.机器人定位</strong></p> 
+ <p>导航功能的顺利进行，离不开机器人的精准定位。自主定位即机器人在任意状态下都可以推算出自己在地图中所处的位置。ROS为开发者提供了一种自适蒙特卡罗定位方法（Adaptive Monte Carlo Localization，amcl），这是一种概率统计方法，针对已有地图使用粒子滤波器跟踪一个机器人的姿态。</p> 
+ <p><img src="https://images2.imgbox.com/42/67/77tGf3pE_o.jpg" alt="fa791e32af3846851e65b81be8569b7a.jpeg"></p> 
+ <p>给定初始位姿后，AMCL会在机器人周围随机撒一些粒子，随着机器人的运动，每个粒子也会实时跟随机器人的速度更新位姿，当粒子周边的环境状态与机器人差距较大时，就会被逐渐淘汰，反之，则会在机器人周边产生更多粒子。以此类推，粒子都集中在机器人所在位置可能性高的地方，也就是定位的结果。<br></p> 
+ <p><img src="https://images2.imgbox.com/33/a5/sXx0DRZE_o.gif" alt="3964718ef4ff971b3879aad7341fa00b.gif"></p> 
+ <p style="text-align:left;">为了调教以上粒子滤波算法，AMCL功能包中可配置的参数很多，一般初次上手不建议，只需要注意订阅和发布的话题名匹配即可，感兴趣的小伙伴可以在官网（http://wiki.ros.org/amcl）查看各个参数的详细介绍，相关的理论算法请参考《概率机器人》一书。<br></p> 
+ <p><img src="https://images2.imgbox.com/39/67/Gk3EiAkl_o.png" alt="1f28818d0d883b0985ee372d38dfd32c.png"></p> 
+ <p><strong>3.机器人路径规划</strong></p> 
+ <p>机器人知道自己的位置后，如何像人一样根据自己的经验规划出一条路径来呢？move_base功能包就是负责这样的功能，主要由全局路径规划器和本地实时规划器（局部路径规划器）组成。</p> 
+ <p>全局规划就好比我们依靠经验（或地图数据）规划点到点最优路径的过程；局部规划可以理解为去往目的地途中，不断调整机器人姿态、躲避障碍物，以贴合最优路径的过程。</p> 
+ <p><img src="https://images2.imgbox.com/58/d5/4SXumQpd_o.png" alt="f1db478aba51094645edb593a19e9bb1.png"></p> 
+ <p>全局路径规划常用Dijkstra算法和A*算法。Dijkstra算法深度优先，往往可以找到全局最优路径，不过搜索时间长、消耗资源多，而A*算法加入了启发函数，虽然不一定可以找到全局最优路径，但搜索时间更快，适合大空间范围的规划。移动机器人大部分是在室内有限范围内使用，两者搜索时间和消耗资源的差距并不明显，一般使用Dijkstra算法即可。</p> 
+ <p><img src="https://images2.imgbox.com/b2/81/FkN1tbVH_o.gif" alt="30064ae8d60ab4617166dab7099dfdf9.gif"></p> 
+ <p><img src="https://images2.imgbox.com/43/29/egCZDIrI_o.gif" alt="bfe13458c01c98fd455a37a4f9c12cec.gif"></p> 
+ <p>本地实时规划常用Dynamic Window Approaches（DWA）和Time Elastic Band（TEB）算法，两种算法的核心思想如下，具体算法实现大家可以在网上搜索相关的论文。</p> 
+ <p><img src="https://images2.imgbox.com/f5/d3/xybJioCc_o.png" alt="52df42185425241b271d1ddfc76bc3ae.png"></p> 
+ <p><img src="https://images2.imgbox.com/bf/8e/WigMwgbj_o.png" alt="14139bf56e280fe1d3674c1d61e9aace.png"></p> 
+ <p>为了完成以上这些规划器算法的配置，move_base功能包的启动也需要配置不少参数，比如下图所示的这些参数文件：<br></p> 
+ <p><img src="https://images2.imgbox.com/f2/ff/8NqYcLzf_o.png" alt="18b11d5e7c6429c51bb896012b05df10.png"></p> 
+ <p>包含通用配置文件（costmap_common）、全局规划配置文件（global_costmap）、本地规划配置文件（local_costmap）、本地规划器（planer）、路径规划算法（全局base_global_planner和局部base_local_planner）和控制频率（controller_frequency）、规划频率（planner_frequency）等一些参数。这些参数的详细介绍可以去官网（http://wiki.ros.org/move_base）查看。</p> 
+ <p><strong>4.代价地图的配置</strong></p> 
+ <p>人在导航去某个地方的时候可以通过眼睛和经验判断哪里有墙、哪里有水坑、哪里能走和哪里不能走。机器人如何判断呢？</p> 
+ <p>move_base导航使用两种代价地图存储周围环境中的障碍信息：一种用于全局路径规划（global_costmap），一种用于本地实时路径规划（local_costmap）。两种代价地图需要使用一些共用的或独立的配置文件：通用配置文件（costmap_common_params）、全局规划配置文件（global_costmap_params）和本地规划配置文件（local_costmap_params）。</p> 
+ <p>通用配置文件costmap_common_params.yaml的代码和关键参数的含义如下：</p> 
+ <p><img src="https://images2.imgbox.com/ba/f8/DVoJPcCf_o.png" alt="e501408690d266a7a37706ab29a263d2.png"></p> 
+ <p>注意话题名不要设置错了，footprint也需要根据实际机器人的大小进行设置。</p> 
+ <p>全局规划配置文件global_costmap_params.yaml的代码和关键参数的含义如下：</p> 
+ <p><img src="https://images2.imgbox.com/bb/1b/Acl1hKNa_o.png" alt="f583a5f73dff558f492bbfe0548e6757.png"></p> 
+ <p>由于我们这里是已经有地图了，所以将static_map设置true。若我们想使用机器人探索未知的地方并且进行建图的话，则将static_map设置为false。</p> 
+ <p>本地规划配置文件local_costmap_params.yaml的代码和关键参数的含义如下：</p> 
+ <p><img src="https://images2.imgbox.com/06/91/rTPuyKIO_o.png" alt="526f26e0ee557aeec23323ae39242eb9.png"></p> 
+ <p>其中width、height、resolution参数用于设置代价地图的长（米）、高（米）和分辨率（米/格）。rolling_window参数用来设置在机器人移动过程中是否需要滚动窗口，以保持机器人处于中心位置。</p> 
+ <p>既然导航的各个问题都已经梳理清楚，那么是否真的可以实现导航呢？以及在不同运动模态下，机器人的导航效果又会怎样？接下来我们就用LIMO机器人试一试。</p> 
+ <p>注：关于该机器人运动模态的配置与SLAM，请参考以下内容：</p> 
+ <p><a href="" rel="nofollow">《 细数移动机器人那些常用的运动模态 》</a><br></p> 
+ <p><a href="" rel="nofollow">《 如何在移动机器人中部署Gmapping SLAM算法 》</a><br></p> 
+ <p><strong>5. 差速移动机器人自主导航</strong></p> 
+ <p>打开机器人的启动文件limo_start.launch，将use_mcnamu设置为false，如下图所示。</p> 
+ <p><img src="https://images2.imgbox.com/73/07/1CAXPjBI_o.png" alt="932736d8c53aad3e6a719012c39a75f7.png"></p> 
+ <p>局部规划器选用的算法为TEB，由于相关参数比较多，这里就不一一展示和说明，若想了解每个参数，可以前往官网查看相关说明：http://wiki.ros.org/teb_local_planner</p> 
+ <p>下面是一些参数的配置与介绍：</p> 
+ <p><img src="https://images2.imgbox.com/7f/72/5tS4f69S_o.png" alt="27225ff3b07dd987d7559422ba5974a7.png"></p> 
+ <p>注意，当运动模式为差速运动时，y方向的速度必须设置为0。为了导航效果更好，这里将最小转弯半径（min_turning_radius）设置为0。</p> 
+ <p><img src="https://images2.imgbox.com/ca/20/kTEndY15_o.png" alt="3e8e3d31d91a263a0c5c7326d753f3f8.png"></p> 
+ <p>注意min_obstacle_dist不要设置的比costmap_common_params.yaml中的膨胀半径小，不然会报错。</p> 
+ <p>然后运行下面的命令，开启导航功能。</p> 
+ <pre class="has"><code class="language-c">$ roslaunch limo_bringup limo_start.launch
+$ roslaunch limo_bringup limo_navigation_diff.launch</code></pre> 
+ <p style="text-align:left;"><img src="https://images2.imgbox.com/f8/48/b8JwbWBO_o.png" alt="cf8f3e2b79c159ead733a3d010542321.png"><br></p> 
+ <p>启动的rviz如图所示，可以通过途中黄色箭头所指的工具设定机器人的初始位姿，通过红色箭头所指示的工具设定机器人的目标位姿。机器人实现效果如下：</p> 
+ <div class="csdn-video-box"> 
+  <iframe id="m3306glk5v4-1675442264677" frameborder="0" src="https://v.qq.com/txp/iframe/player.html?vid=m3306glk5v4" allowfullscreen="true" data-mediaembed="tencent"></iframe> 
+  <p></p> 
+ </div> 
+ <p><strong>6. 全向移动机器人自主导航</strong></p> 
+ <p>更改LIMO机器人的运动模态，打开机器人的启动文件limo_start.launch，将use_mcnamu设置为true，如下图所示：</p> 
+ <p><img src="https://images2.imgbox.com/4a/c7/NMrGvFYb_o.png" alt="e2626081461bd1f39b0731e373ab50a4.png"></p> 
+ <p>为了更好地体现出全向运动的效果，这里局部规划器选用的算法为TEB。下面是一些参数的配置与介绍：</p> 
+ <p><img src="https://images2.imgbox.com/e7/1e/SMEEu0IX_o.png" alt="851778f3bd7fdfa23b398a0c588551b5.png"></p> 
+ <p>与差速模式不同，全向模式可以横向移动，所以y方向的速度不必设置为0，而是可以设置为任意速度。</p> 
+ <p><img src="https://images2.imgbox.com/97/07/0P2lZm8i_o.png" alt="a9a4f14053f73c138d253501dca66a30.png"></p> 
+ <p> weight_kinematics_nh用于调整顺应纵向运动和非顺应横向运动（扫射）之间的权衡。当此参数设置比较大时，将倾向于纵向运动；当此参数设置较小时，将更倾向于与横向运动。weight_optimaltime参数为最优时间权重，如果设置较大时，那么机器人会在直道上快速加速，并且路径规划的也会切内道。</p> 
+ <p>运行下面的命令，开启导航功能。  </p> 
+ <pre class="has"><code class="language-c">$ roslaunch limo_bringup limo_start.launch
+$ roslaunch limo_bringup limo_navigation_mcnamu.launch</code></pre> 
+ <p>用上文提到的方法设定移动机器人的初始位姿和目标位姿。机器人导航的效果如下：<br></p> 
+ <div class="csdn-video-box"> 
+  <iframe id="t3306er56at-1675442264677" frameborder="0" src="https://v.qq.com/txp/iframe/player.html?vid=t3306er56at" allowfullscreen="true" data-mediaembed="tencent"></iframe> 
+  <p></p> 
+ </div> 
+ <p><strong>7. 阿克曼移动机器人自主导航</strong></p> 
+ <p>更改LIMO机器人的运动模态，打开机器人的启动文件limo_start.launch，将use_mcnamu设置为false，如下图所示。</p> 
+ <p><img src="https://images2.imgbox.com/dc/8e/hrAtYc8i_o.png" alt="fa13748c9bf4c88373b6d4a57b0f13d9.png"></p> 
+ <p>由于阿克曼运动只适用TEB算法，所以我们这里仍然选用TEB算法。下面是一些参数的配置与介绍：</p> 
+ <p><img src="https://images2.imgbox.com/c3/12/0l7t71ZN_o.png" alt="73c92b60486a57ac914584ed0e2d8040.png"></p> 
+ <p>我们这里也将y方向的速度设置为0，但是最小转弯半径此时不能设置为0，而是需要根据机器人的实际最小转弯半径来设置。为了方便测量出机器人的最小转弯半径，我们可以用遥控器让机器人以最大角速度做圆周运动，然后就可以用尺子测量出机器人的最小转弯半径。注意设置的最小转弯半径不能小于最小转弯半径。</p> 
+ <p>然后运行下面的命令，开启导航功能。</p> 
+ <pre class="has"><code class="language-c">$ roslaunch limo_bringup limo_start.launch
+$ roslaunch limo_bringup limo_navigation_ackerman.launch</code></pre> 
+ <p>依然使用上文提到的方法设定移动机器人的初始位姿和目标位姿。机器人导航的效果如下：</p> 
+ <div class="csdn-video-box"> 
+  <iframe id="g3306nuk2jz-1675442264677" frameborder="0" src="https://v.qq.com/txp/iframe/player.html?vid=g3306nuk2jz" allowfullscreen="true" data-mediaembed="tencent"></iframe> 
+  <p></p> 
+ </div> 
+ <p><strong>8. 总结</strong></p> 
+ <p>以上只演示了各种运动模态下使用某一种本地实时规划算法的导航效果，每种本地实时规划算法都有其优缺点，各个算法介绍如下图，可以根据需求选择相应的算法。</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/66/9f/K9qHFZK0_o.png" alt="814cc5afe1da997b8c0d3fd81b26240e.png"></p> 
+ <p style="text-align:left;">本文仅做学术分享，如有侵权，请联系删文。</p> 
+ <p style="text-align:left;"><strong>点击进入</strong>—&gt;<a href="" rel="nofollow"><strong>3D视觉工坊学习交流群</strong></a></p> 
+ <p style="text-align:left;"><strong>干货下载与学习</strong><br></p> 
+ <p style="text-align:left;">后台回复：<strong><strong>巴塞罗</strong></strong><strong><strong>那</strong></strong><strong>自治大学课件，</strong>即可下载国外大学沉淀数年3D Vison精品课件</p> 
+ <p style="text-align:left;">后台回复：<strong>计算机视觉</strong><strong>书籍，</strong>即可下载3D视觉领域经典书籍pdf</p> 
+ <p style="text-align:left;">后台回复：<strong>3D视觉课程，</strong>即可学习3D视觉领域精品课程</p> 
+ <p style="text-align:center;"><strong><strong>3D视觉工坊精品课程官网：</strong><strong>3dcver.com</strong></strong></p> 
+ <p style="text-align:left;">1<a href="" rel="nofollow">.面向自动驾驶领域的3D点云目标检测全栈学习路线！(单模态+多模态/数据+代码)</a><br><a href="" rel="nofollow">2.彻底搞透视觉三维重建：原理剖析、代码讲解、及优化改进</a><br><a href="" rel="nofollow">3.国内首个面向工业级实战的点云处理课程</a><br>4<a href="" rel="nofollow">.激光-视觉-IMU-GPS融合SLAM算法梳理和代码讲解</a><br>5<a href="" rel="nofollow">.彻底搞懂视觉-惯性SLAM：基于VINS-Fusion正式开课啦</a><br><a href="" rel="nofollow">6.彻底搞懂基于LOAM框架的3D激光SLAM: 源码剖析到算法优化</a><br><a href="" rel="nofollow">7.彻底剖析室内、室外激光SLAM关键算法原理、代码和实战(cartographer+LOAM +LIO-SAM)</a></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">8.从零搭建一套结构光3D重建系统[理论+源码+实践]</a></p> 
+ <p style="text-align:left;">9<a href="" rel="nofollow">.单目深度估计方法：算法梳理与代码实现</a></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">10.自动驾驶中的深度学习模型部署实战</a></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">11.相机模型与标定(单目+双目+鱼眼）</a></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">12.重磅！四旋翼飞行器：算法与实战</a></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">13.ROS2从入门到精通：理论与实战</a></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">14.国内首个3D缺陷检测教程：理论、源码与实战</a></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">15.基于Open3D的点云处理入门与实战教程</a></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">16.透彻理解视觉ORB-SLAM3：理论基础+代码解析+算法改进</a></p> 
+ <h3></h3> 
+ <p style="text-align:center;"><strong>重磅！粉丝学习</strong><strong>交流群</strong><strong>已成立</strong></p> 
+ <h3></h3> 
+ <p style="text-align:left;">交流群主要有<strong>3D视觉、CV&amp;深度学习、SLAM、三维重建、点云后处理、自动驾驶、多传感器融合、CV入门、三维测量、VR/AR、3D人脸识别、医疗影像、缺陷检测、行人重识别、目标跟踪、视觉产品落地、视觉竞赛、车牌识别、硬件选型、ORB-SLAM系列源码交流、深度估计、TOF、<strong>求职交流</strong></strong>等方向。</p> 
+ <p style="text-align:left;">扫描以下二维码，添加小助理微信（<strong>dddvisiona</strong>）,一定要备注：<strong>研究方向+学校/公司+昵称</strong>，例如：”3D视觉 + 上海交大 + 静静“。请按照格式备注，可快速被通过且邀请进群。<strong>原创投稿</strong>也请联系。</p> 
+ <h3></h3> 
+ <p><img src="https://images2.imgbox.com/aa/90/okJJCQRi_o.png" alt="efbd312f9c1dc16ddd238d6876f86946.jpeg"></p> 
+ <p>▲长按加微信群或投稿，微信号：dddvisiona</p> 
+ <h3></h3> 
+ <p style="text-align:left;"><strong>3D视觉从入门到精通知识星球</strong>：针对3D视觉领域的<strong>视频课</strong><strong>程</strong>（三维重建系列、三维点云系列、结构光系列、手眼标定、相机标定、激光/视觉SLAM、自动驾驶等）<strong>、</strong><strong>源码分享、</strong><strong>知识点汇总、入门进阶学习路线、最新paper分享、疑问解答等</strong>进行深耕，更有各类大厂的算法工程人员进行技术指导。与此同时，星球将联合知名企业发布3D视觉相关算法开发<strong>岗位以及项目</strong>对接信息，打造成集技术与就业为一体的铁杆粉丝聚集区，6000+星球成员为创造更好的AI世界共同进步，知识星球入口：</p> 
+ <h3></h3> 
+ <p style="text-align:center;">学习3D视觉核心技术，扫描查看，3天内无条件退款</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/9a/be/dGKvcaJt_o.png" alt="3e1e844ed6b6b40cef9426ebe7da2732.jpeg"></p> 
+ <p style="text-align:center;">高质量教程资料、答疑解惑、助你高效解决问题</p> 
+ <p style="text-align:right;"><strong>觉得有用，麻烦给个赞和在看~</strong><strong>  </strong></p> 
+</div>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/2afc52ecd57d3568614e690b76bd8b0d/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Pinia知识点（vue3版本）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/9bfcab18d57cd377330279b3eaa4fd92/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【微积分易错点总结】函数、极限和连续</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

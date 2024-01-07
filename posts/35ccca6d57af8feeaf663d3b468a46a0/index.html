@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>VINS-Mono详解（一） - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="VINS-Mono详解（一）" />
+<meta property="og:description" content="文章目录 VINS-Mono前端概述入口函数main()回调函数img_callback()发布频率控制特征点提取与光流跟踪单目处理逻辑双目处理逻辑 FeatureTracker::readImage()函数更新特征点id VINS-Mono前端概述 VINS-Mono将前端封装为一个ROS节点feature_tracker，该节点订阅相机图像话题数据后，提取特征点（cv::GoodFeatureToTrack()检测的角点），然后用KLT光流进行特征点跟踪。feature_tracker节点将跟踪的特征点作为话题进行发布，供后端ROS节点使用。同时feature_tracker_node还会发布标记了特征点的图片，可供Rviz显示以供调试。
+前端节点的实现在feature_tracker目录下的src中，src里共有3个头文件和3个源文件：
+tic_toc.h中是作者自己封装的一个类TIC_TOC，用来计时；parameters.h和parameters.cpp处理前端中需要用到的一些参数；feature_tracker.h和feature_tracker.cpp实现了一个类FeatureTracker，用来完成特征点提取和特征点跟踪等主要功能；feature_tracker_node.cpp构造了一个ROS节点feature_tracker_node，主要调用FeatureTracker类来实现前端功能。 入口函数main() 前端的入口函数为feature_tracker_node.cpp中的main()函数。在main()函数中，首先创建名为“feature_tracker”的节点，然后调用parameters.cpp中定义的函数readParameters()，读取特征点提取和跟踪需要用到的一些配置参数。
+在feature_tracker_node.cpp的开头，main()函数之外，会创建由FeatureTracker类的实例组成的数组trackerData[NUM_OF_CAM]，其中NUM_OF_CAM为相机的个数，这意味这每一个相机都有一个FeatureTracker的实例，每个相机的FeatureTracker实例通过调用成员函数FeatureTracker::readIntrinsicParameter()，来读取每个相机各自对应的内参。
+特别的，如果相机是鱼眼相机，需要读取FISHEYE_MASK，存到相机FeatureTracker的实例的成员变量fisheye_mask中，它会在后续操作中被用来去除边缘噪点。
+接着定义一个订阅器和两个发布器。订阅器sub_img从话题IMAGE_TOPIC中订阅相机图像数据，回调函数为img_callback()。发布器pub_img在名为feature的话题下发布一条类型为sensor_msgs::PointCloud的消息，该话题消息为从相机图像中跟踪的特征点。发布器pub_match在名为feature_img的话题下发布一条类型为sensor_msgs::Image的消息，该话题消息为标记出了特征点的图像。
+nametopictype消息内容subscribersub_imgIMAGE_TOPICsensor_msgs::Image相机图像数据publisherpub_imgfeaturesensor_msgs::PointCloud跟踪的特征点publisherpub_matchfeature_imgsensor_msgs::Image标记出了特征点的图像 接着便循环等待回调函数，直至程序退出。
+回调函数img_callback() 前端的功能主要就在img_callback()，每当接收到从IMAGE_TOPIC话题订阅的数据，就会进入回调函数img_callback()进行处理。
+发布频率控制 并不是每处理一帧图像，都将特征点检测跟踪结果发布出去。数据发布频率由配置参数FREQ给定，通过PUB_THIS_FRAME控制是否发布当前帧的检测跟踪数据，将数据平均发布频率稳定在FREQ：如果当前统计时间内的平均数据发布频率快于FREQ，则将PUB_THIS_FRAME置为false，只进行特征点的跟踪，但不发布当前帧的数据；否则，将PUB_THIS_FRAME置为true，进行特征点的跟踪且发布当前帧的数据。
+特征点提取与光流跟踪 这一部分代码可处理单目相机和双目相机两种情况。
+单目处理逻辑 如果是单目相机（双目开关STEREO_TRACK为0），则只有一个相机：相机0。调用FeatureTracker::readImage()函数，读取单目图像数据，然后在readImage()函数中，对前一帧图像中的特征点进行金字塔光流跟踪，必要时检测新的特征点对特征点数量进行补充。
+双目处理逻辑 如果是双目相机（双目开关STEREO_TRACK为1），则有两个相机：相机0和相机1。对于相机0：在readImage()函数中，前后两帧图像之间进行金字塔光流跟踪，必要时在当前帧中检测新特征点以补充特征点数量。对于相机1：如果需要发布当前帧的数据（PUB_THIS_FRAME为true），且相机0的前一帧图像中特征点数量不为空，则直接在回调函数img_callback()中，相机1的当前帧图像对相机0的前一帧图像进行金字塔光流跟踪，这里光流跟踪的处理过程与单目模式下的类似，只是不会补充新的特征点；否则不需要进一步处理。
+FeatureTracker::readImage()函数 FeatureTracker类中的主要处理函数就是readImage()，在这个函数中涉及到几个变量名，需要对它们的含义进行特别说明（以下说明针对单目模式，其含义并不适用于双目模式），否则根据变量名称去揣测其含义会出错。
+图像数据变量：
+prev_img： 上一次发布数据时对应的图像帧cur_img： 光流跟踪的前一帧图像，而不是“当前帧”forw_img： 光流跟踪的后一帧图像，真正意义上的“当前帧” 特征点数据变量：
+prev_pts： 上一次发布的，且能够被当前帧（forw）跟踪到的特征点cur_pts： 在光流跟踪的前一帧图像中，能够被当前帧（forw）跟踪到的特征点forw_pts： 光流跟踪的后一帧图像，即当前帧中的特征点（除了跟踪到的特征点，可能还包含新检测的特征点） FeatureTracker::readImage()函数的处理流程为：
+如果控制参数EQUALIZE为true，调用cv::createCLAHE对图像进行自适应直方图均衡处理；
+调用cv::calcOpticalFlowPyrLK()对前一帧的特征点cur_pts进行金字塔光流跟踪，得到forw_pts。status标记了cur_pts中各个特征点的跟踪状态，根据status将跟踪失败的特征点从prev_pts、cur_pts和forw_pts中剔除，而且在记录特征点id的ids，和记录特征点被跟踪次数的track_cnt中，也要把这些跟踪失败的特征点对应位置的记录删除。被status标记为跟踪正常的特征点，在当前帧图像中的位置可能已经处于图像边界外了，这些特征点也应该被删除，删除操作同上。
+如果不需要发布当前帧的数据，则直接将当前帧forw的相关数据赋给上一帧cur，然后在这一步整个readImage的流程就结束了。
+如果需要发布当前帧的数据，先调用FeatureTracker::rejectWithF()函数，剔除outliers。具体方法为：调用cv::findFundamentalMat()对prev_pts和forw_pts计算F矩阵，通过F矩阵去除outliers。剩下的特征点track_cnt都加1。
+调用FeatureTracker::setMask()，通过设置一个mask，使跟踪的特征点在整幅图像中能够均匀分布，防止特征点扎堆。FeatureTracker::setMask()的具体操作为：对光流跟踪到的特征点forw_pts，按照被跟踪到的次数降序排列，然后按照降序遍历这些特征点。每选中一个特征点，在mask中将该点周围半径为MIN_DIST的区域设置为0，后面不再选取该区域内的特征点。这样会删去一些特征点，使得特征点分布得更加均匀，同时尽可能地保留被跟踪次数更多的特征点。
+由于光流跟踪到的特征点会减少，而且setMask()的处理过程中也会删除一些特征点，所以需要新检测一些特征点（只有需要发布数据时，才会检测新的特征点，否则只跟踪，不检测新的特征点）。具体操作为：调用cv::goodFeaturesToTrack()在mask中不为0的区域检测新的特征点，将特征点数量补充至指定数量。然后调用FeatureTracker::addPoints()，将新检测到的特征点到forw_pts中去，id初始化为-1，track_cnt初始化为1。
+更新特征点id 特征点id相当于特征点的身份证号，对数据关联（data association）至关重要。需要注意的是，更新特征点id的步骤被特意放到了回调函数img_callback()中，而不是FeatureTracker::readImage()函数内部。有一种说法是，n_id是FeatureTracker类的静态变量：
+static int n_id; FeatureTracker类的多个实例对象会共享一个n_id，在readImage()函数内部更新特征点id的话，如果多个相机并行调用readImage()，它们都要去访问n_id并改变它的值，可能会产生问题。我有一个疑问：为什么会出现多个相机并行调用readImage()的情况，因为从源代码来说，可以保证多个相机的调用存在时序上的先后关系。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/35ccca6d57af8feeaf663d3b468a46a0/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2018-10-13T16:07:19+08:00" />
+<meta property="article:modified_time" content="2018-10-13T16:07:19+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">VINS-Mono详解（一）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#VINSMono_1" rel="nofollow">VINS-Mono前端概述</a></li><li><a href="#main_12" rel="nofollow">入口函数main()</a></li><li><a href="#img_callback_29" rel="nofollow">回调函数img_callback()</a></li><li><ul><li><a href="#_32" rel="nofollow">发布频率控制</a></li><li><a href="#_35" rel="nofollow">特征点提取与光流跟踪</a></li><li><ul><li><a href="#_38" rel="nofollow">单目处理逻辑</a></li><li><a href="#_41" rel="nofollow">双目处理逻辑</a></li></ul> 
+   </li><li><a href="#FeatureTrackerreadImage_44" rel="nofollow">FeatureTracker::readImage()函数</a></li><li><a href="#id_72" rel="nofollow">更新特征点id</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="VINSMono_1"></a>VINS-Mono前端概述</h2> 
+<p>VINS-Mono将前端封装为一个ROS节点feature_tracker，该节点订阅相机图像话题数据后，提取特征点（cv::GoodFeatureToTrack()检测的角点），然后用KLT光流进行特征点跟踪。feature_tracker节点将跟踪的特征点作为话题进行发布，供后端ROS节点使用。同时feature_tracker_node还会发布标记了特征点的图片，可供Rviz显示以供调试。</p> 
+<p>前端节点的实现在feature_tracker目录下的src中，src里共有3个头文件和3个源文件：</p> 
+<ul><li>tic_toc.h中是作者自己封装的一个类TIC_TOC，用来计时；</li><li>parameters.h和parameters.cpp处理前端中需要用到的一些参数；</li><li>feature_tracker.h和feature_tracker.cpp实现了一个类FeatureTracker，用来完成特征点提取和特征点跟踪等主要功能；</li><li>feature_tracker_node.cpp构造了一个ROS节点feature_tracker_node，主要调用FeatureTracker类来实现前端功能。</li></ul> 
+<h2><a id="main_12"></a>入口函数main()</h2> 
+<p>前端的入口函数为feature_tracker_node.cpp中的main()函数。在main()函数中，首先创建名为“feature_tracker”的节点，然后调用parameters.cpp中定义的函数readParameters()，读取特征点提取和跟踪需要用到的一些配置参数。</p> 
+<p>在feature_tracker_node.cpp的开头，main()函数之外，会创建由FeatureTracker类的实例组成的数组trackerData[NUM_OF_CAM]，其中NUM_OF_CAM为相机的个数，这意味这每一个相机都有一个FeatureTracker的实例，每个相机的FeatureTracker实例通过调用成员函数FeatureTracker::readIntrinsicParameter()，来读取每个相机各自对应的内参。</p> 
+<p>特别的，如果相机是鱼眼相机，需要读取FISHEYE_MASK，存到相机FeatureTracker的实例的成员变量fisheye_mask中，它会在后续操作中被用来去除边缘噪点。</p> 
+<p>接着定义一个订阅器和两个发布器。订阅器sub_img从话题IMAGE_TOPIC中订阅相机图像数据，回调函数为img_callback()。发布器pub_img在名为feature的话题下发布一条类型为sensor_msgs::PointCloud的消息，该话题消息为从相机图像中跟踪的特征点。发布器pub_match在名为feature_img的话题下发布一条类型为sensor_msgs::Image的消息，该话题消息为标记出了特征点的图像。</p> 
+<table><thead><tr><th></th><th>name</th><th>topic</th><th>type</th><th>消息内容</th></tr></thead><tbody><tr><td>subscriber</td><td>sub_img</td><td>IMAGE_TOPIC</td><td>sensor_msgs::Image</td><td>相机图像数据</td></tr><tr><td>publisher</td><td>pub_img</td><td>feature</td><td>sensor_msgs::PointCloud</td><td>跟踪的特征点</td></tr><tr><td>publisher</td><td>pub_match</td><td>feature_img</td><td>sensor_msgs::Image</td><td>标记出了特征点的图像</td></tr></tbody></table> 
+<p>接着便循环等待回调函数，直至程序退出。</p> 
+<h2><a id="img_callback_29"></a>回调函数img_callback()</h2> 
+<p>前端的功能主要就在img_callback()，每当接收到从IMAGE_TOPIC话题订阅的数据，就会进入回调函数img_callback()进行处理。</p> 
+<h3><a id="_32"></a>发布频率控制</h3> 
+<p>并不是每处理一帧图像，都将特征点检测跟踪结果发布出去。数据发布频率由配置参数FREQ给定，通过PUB_THIS_FRAME控制是否发布当前帧的检测跟踪数据，将数据平均发布频率稳定在FREQ：如果当前统计时间内的平均数据发布频率快于FREQ，则将PUB_THIS_FRAME置为false，只进行特征点的跟踪，但不发布当前帧的数据；否则，将PUB_THIS_FRAME置为true，进行特征点的跟踪且发布当前帧的数据。</p> 
+<h3><a id="_35"></a>特征点提取与光流跟踪</h3> 
+<p>这一部分代码可处理单目相机和双目相机两种情况。</p> 
+<h4><a id="_38"></a>单目处理逻辑</h4> 
+<p>如果是单目相机（双目开关STEREO_TRACK为0），则只有一个相机：相机0。调用FeatureTracker::readImage()函数，读取单目图像数据，然后在readImage()函数中，对前一帧图像中的特征点进行金字塔光流跟踪，必要时检测新的特征点对特征点数量进行补充。</p> 
+<h4><a id="_41"></a>双目处理逻辑</h4> 
+<p>如果是双目相机（双目开关STEREO_TRACK为1），则有两个相机：相机0和相机1。对于相机0：在readImage()函数中，前后两帧图像之间进行金字塔光流跟踪，必要时在当前帧中检测新特征点以补充特征点数量。对于相机1：如果需要发布当前帧的数据（PUB_THIS_FRAME为true），且相机0的前一帧图像中特征点数量不为空，则直接在回调函数img_callback()中，相机1的当前帧图像对相机0的前一帧图像进行金字塔光流跟踪，这里光流跟踪的处理过程与单目模式下的类似，只是不会补充新的特征点；否则不需要进一步处理。</p> 
+<h3><a id="FeatureTrackerreadImage_44"></a>FeatureTracker::readImage()函数</h3> 
+<p>FeatureTracker类中的主要处理函数就是readImage()，在这个函数中涉及到几个变量名，需要对它们的含义进行特别说明（以下说明针对单目模式，其含义并不适用于双目模式），否则根据变量名称去揣测其含义会出错。</p> 
+<p>图像数据变量：</p> 
+<ul><li>prev_img： 上一次发布数据时对应的图像帧</li><li>cur_img： 光流跟踪的前一帧图像，而不是“当前帧”</li><li>forw_img： 光流跟踪的后一帧图像，真正意义上的“当前帧”</li></ul> 
+<p>特征点数据变量：</p> 
+<ul><li>prev_pts： 上一次发布的，且能够被当前帧（forw）跟踪到的特征点</li><li>cur_pts： 在光流跟踪的前一帧图像中，能够被当前帧（forw）跟踪到的特征点</li><li>forw_pts： 光流跟踪的后一帧图像，即当前帧中的特征点（除了跟踪到的特征点，可能还包含新检测的特征点）</li></ul> 
+<p>FeatureTracker::readImage()函数的处理流程为：</p> 
+<ol><li> <p>如果控制参数EQUALIZE为true，调用cv::createCLAHE对图像进行自适应直方图均衡处理；</p> </li><li> <p>调用cv::calcOpticalFlowPyrLK()对前一帧的特征点cur_pts进行金字塔光流跟踪，得到forw_pts。status标记了cur_pts中各个特征点的跟踪状态，根据status将跟踪失败的特征点从prev_pts、cur_pts和forw_pts中剔除，而且在记录特征点id的ids，和记录特征点被跟踪次数的track_cnt中，也要把这些跟踪失败的特征点对应位置的记录删除。被status标记为跟踪正常的特征点，在当前帧图像中的位置可能已经处于图像边界外了，这些特征点也应该被删除，删除操作同上。</p> </li><li> <p>如果不需要发布当前帧的数据，则直接将当前帧forw的相关数据赋给上一帧cur，然后在这一步整个readImage的流程就结束了。</p> </li><li> <p>如果需要发布当前帧的数据，先调用FeatureTracker::rejectWithF()函数，剔除outliers。具体方法为：调用cv::findFundamentalMat()对prev_pts和forw_pts计算F矩阵，通过F矩阵去除outliers。剩下的特征点track_cnt都加1。</p> </li><li> <p>调用FeatureTracker::setMask()，通过设置一个mask，使跟踪的特征点在整幅图像中能够均匀分布，防止特征点扎堆。FeatureTracker::setMask()的具体操作为：对光流跟踪到的特征点forw_pts，按照被跟踪到的次数降序排列，然后按照降序遍历这些特征点。每选中一个特征点，在mask中将该点周围半径为MIN_DIST的区域设置为0，后面不再选取该区域内的特征点。这样会删去一些特征点，使得特征点分布得更加均匀，同时尽可能地保留被跟踪次数更多的特征点。</p> </li><li> <p>由于光流跟踪到的特征点会减少，而且setMask()的处理过程中也会删除一些特征点，所以需要新检测一些特征点（只有需要发布数据时，才会检测新的特征点，否则只跟踪，不检测新的特征点）。具体操作为：调用cv::goodFeaturesToTrack()在mask中不为0的区域检测新的特征点，将特征点数量补充至指定数量。然后调用FeatureTracker::addPoints()，将新检测到的特征点到forw_pts中去，id初始化为-1，track_cnt初始化为1。</p> </li></ol> 
+<h3><a id="id_72"></a>更新特征点id</h3> 
+<p>特征点id相当于特征点的身份证号，对数据关联（data association）至关重要。需要注意的是，更新特征点id的步骤被特意放到了回调函数img_callback()中，而不是FeatureTracker::readImage()函数内部。有一种说法是，n_id是FeatureTracker类的静态变量：</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">static</span> <span class="token keyword">int</span> n_id<span class="token punctuation">;</span>
+</code></pre> 
+<p>FeatureTracker类的多个实例对象会共享一个n_id，在readImage()函数内部更新特征点id的话，如果多个相机并行调用readImage()，它们都要去访问n_id并改变它的值，可能会产生问题。我有一个疑问：为什么会出现多个相机并行调用readImage()的情况，因为从源代码来说，可以保证多个相机的调用存在时序上的先后关系。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/2efb748703f8ce1cfc0bb380e8f3172b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">ubuntu16.04设置root用户登陆图形界面的方法</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/6ec44227cc90f7d74d5a4601ee44f798/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">斯坦福大学-自然语言处理入门 笔记  第三课 最小编辑距离</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

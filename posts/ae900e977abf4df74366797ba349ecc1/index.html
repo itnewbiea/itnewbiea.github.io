@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>WS2812全彩RGB驱动方法 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="WS2812全彩RGB驱动方法" />
+<meta property="og:description" content="一. 简介 买了一个圆形的WS2812模块玩玩，特来总结一下驱动方法，感觉对比于普通的RGB灯来说，还是有点不一样的。
+踩了一些坑，也在此列出。
+二. ws2812驱动 驱动方法其实很简单，就是发送一个24bit的数据即可，数据0和1的定义分别如下。
+三. 特别提示 它没有所谓的空闲态，如果两个24bit的数据传输时间间隔相差过大，那个第二个24bit数据，不会传递到后面的ws2812灯上，而是会更新当前ws2812灯的状态。 四. FPGA实现 整个模块的实现方式如下，欢迎关注，写的比较随便了。
+module ws2812_driver( input	sys_clk_50M, input	rst_n, output	ws2812_o, //外部控制 input	ws2812_req,	//显示请求 output	ws2812_ack,	//显示完成应答 input	ws2812_reset,	//显示复位 output	ws2812_reset_ack, //显示复位完成 input[7:0]	ws2812_r,	//显示的数据 input[7:0]	ws2812_g, input[7:0]	ws2812_b ); //逻辑0高低电平持续周期数 localparam	T0_H	=	6&#39;d16; //320ns localparam	T0_L	=	6&#39;d42; //840ns //逻辑1高低电平持续周期数 localparam	T1_H	=	6&#39;d42; //840ns localparam	T1_L	=	6&#39;d16; //320ns //复位持续周期数 localparam	T_RESET	=	14&#39;d15000;//300us localparam	S_IDLE	=	3&#39;d0; localparam	S_DATA	=	3&#39;d1; localparam	S_RESET	=	3&#39;d2; localparam	S_ACK	=	3&#39;d3; localparam	S_Sub_IDLE	=	4&#39;d0; localparam	S_Sub_T0_L	=	4&#39;d1; localparam	S_Sub_T0_H	=	4&#39;d2; localparam	S_Sub_T1_L	=	4&#39;d3; localparam	S_Sub_T1_H	=	4&#39;d4; localparam	S_Sub_ACK	=	4&#39;d5; reg[2:0]	state , next_state; reg[3:0]	sub_state , sub_next_state; reg[13:0]	t_cnt;	//时间计数 reg[5:0]	bit_cnt;	//发送比特位计数 reg[23:0]	color_rgb; assign	ws2812_o = (sub_state == S_Sub_T0_L || sub_state == S_Sub_T1_L || state == S_RESET) ?" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/ae900e977abf4df74366797ba349ecc1/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-12-22T20:25:36+08:00" />
+<meta property="article:modified_time" content="2022-12-22T20:25:36+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">WS2812全彩RGB驱动方法</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-tomorrow-night">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h3><a id="__0"></a>一. 简介</h3> 
+<p>买了一个圆形的WS2812模块玩玩，特来总结一下驱动方法，感觉对比于普通的RGB灯来说，还是有点不一样的。<br> 踩了一些坑，也在此列出。</p> 
+<h3><a id="_ws2812_6"></a>二. ws2812驱动</h3> 
+<p>驱动方法其实很简单，就是发送一个24bit的数据即可，数据0和1的定义分别如下。<br> <img src="https://images2.imgbox.com/7f/c5/lzsfJNCh_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="__10"></a>三. 特别提示</h3> 
+<ol><li>它没有所谓的空闲态，如果两个24bit的数据传输时间间隔相差过大，那个第二个24bit数据，不会传递到后面的ws2812灯上，而是会更新当前ws2812灯的状态。</li></ol> 
+<h3><a id="_FPGA_14"></a>四. FPGA实现</h3> 
+<p>整个模块的实现方式如下，欢迎关注，写的比较随便了。</p> 
+<pre><code class="prism language-cpp">
+<span class="token keyword">module</span> <span class="token module">ws2812_driver</span><span class="token punctuation">(</span>
+	
+	input				sys_clk_50M<span class="token punctuation">,</span>
+	input				rst_n<span class="token punctuation">,</span>
+	
+	output			ws2812_o<span class="token punctuation">,</span>
+	
+	
+	
+	<span class="token comment">//外部控制</span>
+	input				ws2812_req<span class="token punctuation">,</span>			<span class="token comment">//显示请求</span>
+	output			ws2812_ack<span class="token punctuation">,</span>		   <span class="token comment">//显示完成应答</span>
+	input				ws2812_reset<span class="token punctuation">,</span>	   <span class="token comment">//显示复位</span>
+	output			ws2812_reset_ack<span class="token punctuation">,</span> <span class="token comment">//显示复位完成</span>
+	input<span class="token punctuation">[</span><span class="token number">7</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>		ws2812_r<span class="token punctuation">,</span>			<span class="token comment">//显示的数据</span>
+	input<span class="token punctuation">[</span><span class="token number">7</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>		ws2812_g<span class="token punctuation">,</span>
+	input<span class="token punctuation">[</span><span class="token number">7</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>		ws2812_b
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+
+
+<span class="token comment">//逻辑0高低电平持续周期数</span>
+localparam	T0_H		<span class="token operator">=</span>	<span class="token number">6'</span>d16<span class="token punctuation">;</span>  <span class="token comment">//320ns</span>
+localparam	T0_L		<span class="token operator">=</span>	<span class="token number">6'</span>d42<span class="token punctuation">;</span>  <span class="token comment">//840ns</span>
+
+
+<span class="token comment">//逻辑1高低电平持续周期数</span>
+localparam	T1_H		<span class="token operator">=</span>	<span class="token number">6'</span>d42<span class="token punctuation">;</span>  <span class="token comment">//840ns</span>
+localparam	T1_L		<span class="token operator">=</span>	<span class="token number">6'</span>d16<span class="token punctuation">;</span>  <span class="token comment">//320ns</span>
+
+<span class="token comment">//复位持续周期数</span>
+localparam	T_RESET	<span class="token operator">=</span>	<span class="token number">14'</span>d15000<span class="token punctuation">;</span><span class="token comment">//300us</span>
+
+
+localparam	S_IDLE		<span class="token operator">=</span>		<span class="token number">3'</span>d0<span class="token punctuation">;</span>
+localparam	S_DATA		<span class="token operator">=</span>		<span class="token number">3'</span>d1<span class="token punctuation">;</span>
+localparam	S_RESET		<span class="token operator">=</span>		<span class="token number">3'</span>d2<span class="token punctuation">;</span>
+localparam	S_ACK			<span class="token operator">=</span>		<span class="token number">3'</span>d3<span class="token punctuation">;</span>
+
+
+
+localparam	S_Sub_IDLE		<span class="token operator">=</span>		<span class="token number">4'</span>d0<span class="token punctuation">;</span>
+localparam	S_Sub_T0_L		<span class="token operator">=</span>		<span class="token number">4'</span>d1<span class="token punctuation">;</span>
+localparam	S_Sub_T0_H		<span class="token operator">=</span>		<span class="token number">4'</span>d2<span class="token punctuation">;</span>
+localparam	S_Sub_T1_L		<span class="token operator">=</span>		<span class="token number">4'</span>d3<span class="token punctuation">;</span>
+localparam	S_Sub_T1_H		<span class="token operator">=</span>		<span class="token number">4'</span>d4<span class="token punctuation">;</span>
+localparam	S_Sub_ACK		<span class="token operator">=</span>		<span class="token number">4'</span>d5<span class="token punctuation">;</span>
+
+
+
+
+
+
+
+reg<span class="token punctuation">[</span><span class="token number">2</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>		state <span class="token punctuation">,</span> next_state<span class="token punctuation">;</span>
+reg<span class="token punctuation">[</span><span class="token number">3</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>		sub_state <span class="token punctuation">,</span> sub_next_state<span class="token punctuation">;</span>
+
+
+reg<span class="token punctuation">[</span><span class="token number">13</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>	t_cnt<span class="token punctuation">;</span>				<span class="token comment">//时间计数</span>
+reg<span class="token punctuation">[</span><span class="token number">5</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>		bit_cnt<span class="token punctuation">;</span>				<span class="token comment">//发送比特位计数</span>
+
+reg<span class="token punctuation">[</span><span class="token number">23</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>	color_rgb<span class="token punctuation">;</span>
+
+
+
+
+assign	ws2812_o <span class="token operator">=</span> <span class="token punctuation">(</span>sub_state <span class="token operator">==</span> S_Sub_T0_L <span class="token operator">||</span> sub_state <span class="token operator">==</span> S_Sub_T1_L <span class="token operator">||</span> state <span class="token operator">==</span> S_RESET<span class="token punctuation">)</span> <span class="token operator">?</span> <span class="token number">1'</span>b0 <span class="token operator">:</span> <span class="token number">1'</span>b1<span class="token punctuation">;</span>
+assign	ws2812_ack <span class="token operator">=</span> <span class="token punctuation">(</span> state <span class="token operator">==</span> S_ACK <span class="token punctuation">)</span> <span class="token operator">?</span> <span class="token number">1'</span>b1 <span class="token operator">:</span> <span class="token number">1'</span>b0<span class="token punctuation">;</span>
+always@<span class="token punctuation">(</span>posedge sys_clk_50M <span class="token operator">or</span> negedge rst_n<span class="token punctuation">)</span>
+begin
+	<span class="token keyword">if</span><span class="token punctuation">(</span> rst_n <span class="token operator">==</span> <span class="token number">1'</span>b0 <span class="token punctuation">)</span>
+		state <span class="token operator">&lt;=</span> S_IDLE<span class="token punctuation">;</span>
+	<span class="token keyword">else</span>
+		state <span class="token operator">&lt;=</span> next_state<span class="token punctuation">;</span>
+end
+
+
+always@<span class="token punctuation">(</span><span class="token operator">*</span><span class="token punctuation">)</span>
+begin
+	<span class="token keyword">case</span><span class="token punctuation">(</span>state<span class="token punctuation">)</span>
+	S_IDLE<span class="token operator">:</span>
+		<span class="token keyword">if</span><span class="token punctuation">(</span> ws2812_reset <span class="token operator">==</span> <span class="token number">1'</span>b1<span class="token punctuation">)</span>
+			next_state <span class="token operator">&lt;=</span> S_RESET<span class="token punctuation">;</span>
+		<span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> ws2812_req <span class="token operator">==</span> <span class="token number">1'</span>b1<span class="token punctuation">)</span>
+			next_state <span class="token operator">&lt;=</span> S_DATA<span class="token punctuation">;</span>
+		<span class="token keyword">else</span>
+			next_state <span class="token operator">&lt;=</span> S_IDLE<span class="token punctuation">;</span>
+	S_DATA<span class="token operator">:</span>
+		<span class="token keyword">if</span><span class="token punctuation">(</span> bit_cnt <span class="token operator">==</span> 'd23<span class="token punctuation">)</span>
+			next_state <span class="token operator">&lt;=</span> S_ACK<span class="token punctuation">;</span>
+		<span class="token keyword">else</span>
+			next_state <span class="token operator">&lt;=</span> S_DATA<span class="token punctuation">;</span>
+	S_RESET<span class="token operator">:</span>
+		<span class="token keyword">if</span><span class="token punctuation">(</span> t_cnt <span class="token operator">==</span> T_RESET<span class="token punctuation">)</span>
+			next_state <span class="token operator">&lt;=</span> S_ACK<span class="token punctuation">;</span>
+		<span class="token keyword">else</span>
+			next_state <span class="token operator">&lt;=</span> S_RESET<span class="token punctuation">;</span>
+	S_ACK<span class="token operator">:</span>
+		next_state <span class="token operator">&lt;=</span> S_IDLE<span class="token punctuation">;</span>
+	<span class="token keyword">default</span><span class="token operator">:</span> next_state <span class="token operator">&lt;=</span> S_IDLE<span class="token punctuation">;</span>
+	endcase 
+end
+
+
+
+
+always@<span class="token punctuation">(</span>posedge sys_clk_50M <span class="token operator">or</span> negedge rst_n<span class="token punctuation">)</span>
+begin
+	<span class="token keyword">if</span><span class="token punctuation">(</span> rst_n <span class="token operator">==</span> <span class="token number">1'</span>b0 <span class="token punctuation">)</span>
+		t_cnt <span class="token operator">&lt;=</span> <span class="token number">8'</span>d0<span class="token punctuation">;</span>
+	<span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> state <span class="token operator">!=</span> next_state <span class="token punctuation">)</span>
+		t_cnt <span class="token operator">&lt;=</span> <span class="token number">8'</span>d0<span class="token punctuation">;</span>
+		
+	<span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> state <span class="token operator">==</span> S_DATA <span class="token punctuation">)</span>
+		<span class="token keyword">if</span><span class="token punctuation">(</span> sub_state <span class="token operator">==</span> S_Sub_T0_L <span class="token operator">&amp;&amp;</span> t_cnt <span class="token operator">==</span> T0_L<span class="token punctuation">)</span>
+			t_cnt <span class="token operator">&lt;=</span> <span class="token number">8'</span>d0<span class="token punctuation">;</span>
+		<span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> sub_state <span class="token operator">==</span> S_Sub_T0_H <span class="token operator">&amp;&amp;</span> t_cnt <span class="token operator">==</span> T0_H<span class="token punctuation">)</span>
+			t_cnt <span class="token operator">&lt;=</span> <span class="token number">8'</span>d0<span class="token punctuation">;</span>
+		<span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> sub_state <span class="token operator">==</span> S_Sub_T1_L <span class="token operator">&amp;&amp;</span> t_cnt <span class="token operator">==</span> T1_L<span class="token punctuation">)</span>
+			t_cnt <span class="token operator">&lt;=</span> <span class="token number">8'</span>d0<span class="token punctuation">;</span>
+		<span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> sub_state <span class="token operator">==</span> S_Sub_T1_H <span class="token operator">&amp;&amp;</span> t_cnt <span class="token operator">==</span> T1_H<span class="token punctuation">)</span>
+			t_cnt <span class="token operator">&lt;=</span> <span class="token number">8'</span>d0<span class="token punctuation">;</span>
+		<span class="token keyword">else</span>
+			t_cnt <span class="token operator">&lt;=</span> t_cnt <span class="token operator">+</span> <span class="token number">1'</span>b1<span class="token punctuation">;</span>
+	<span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> state <span class="token operator">==</span> S_RESET <span class="token punctuation">)</span>
+		t_cnt <span class="token operator">&lt;=</span> t_cnt <span class="token operator">+</span> <span class="token number">1'</span>b1<span class="token punctuation">;</span>
+	<span class="token keyword">else</span>
+		t_cnt <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+
+end
+
+
+
+
+always@<span class="token punctuation">(</span>posedge sys_clk_50M <span class="token operator">or</span> negedge rst_n<span class="token punctuation">)</span>
+begin
+	<span class="token keyword">if</span><span class="token punctuation">(</span> rst_n <span class="token operator">==</span> <span class="token number">1'</span>b0 <span class="token punctuation">)</span>
+		sub_state <span class="token operator">&lt;=</span> S_Sub_IDLE<span class="token punctuation">;</span>
+	<span class="token keyword">else</span>
+		sub_state <span class="token operator">&lt;=</span> sub_next_state<span class="token punctuation">;</span>
+
+end
+
+
+always@<span class="token punctuation">(</span><span class="token operator">*</span><span class="token punctuation">)</span>
+begin
+	<span class="token keyword">case</span><span class="token punctuation">(</span>sub_state<span class="token punctuation">)</span>
+	S_Sub_IDLE<span class="token operator">:</span>
+		<span class="token keyword">if</span><span class="token punctuation">(</span> state <span class="token operator">==</span> S_DATA <span class="token operator">&amp;&amp;</span> color_rgb<span class="token punctuation">[</span><span class="token number">23</span><span class="token punctuation">]</span> <span class="token operator">==</span> <span class="token number">1'</span>b1<span class="token punctuation">)</span>
+			sub_next_state <span class="token operator">&lt;=</span> S_Sub_T1_H<span class="token punctuation">;</span>
+		<span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> state <span class="token operator">==</span> S_DATA <span class="token operator">&amp;&amp;</span> color_rgb<span class="token punctuation">[</span><span class="token number">23</span><span class="token punctuation">]</span> <span class="token operator">==</span> <span class="token number">1'</span>b0<span class="token punctuation">)</span>
+			sub_next_state <span class="token operator">&lt;=</span> S_Sub_T0_H<span class="token punctuation">;</span>
+		<span class="token keyword">else</span>
+			sub_next_state <span class="token operator">&lt;=</span> S_Sub_IDLE<span class="token punctuation">;</span>
+	S_Sub_T0_H<span class="token operator">:</span>
+		<span class="token keyword">if</span><span class="token punctuation">(</span> t_cnt <span class="token operator">==</span> T0_H<span class="token punctuation">)</span>
+			sub_next_state <span class="token operator">&lt;=</span> S_Sub_T0_L<span class="token punctuation">;</span>
+		<span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> state <span class="token operator">==</span> S_ACK <span class="token punctuation">)</span>
+			sub_next_state <span class="token operator">&lt;=</span> S_Sub_IDLE<span class="token punctuation">;</span>
+		<span class="token keyword">else</span>
+			sub_next_state <span class="token operator">&lt;=</span> S_Sub_T0_H<span class="token punctuation">;</span>
+	
+	S_Sub_T0_L<span class="token operator">:</span>
+		<span class="token keyword">if</span><span class="token punctuation">(</span> t_cnt <span class="token operator">==</span> T0_L <span class="token operator">&amp;&amp;</span> color_rgb<span class="token punctuation">[</span><span class="token number">23</span><span class="token punctuation">]</span> <span class="token operator">==</span> <span class="token number">1'</span>b0<span class="token punctuation">)</span>
+			sub_next_state <span class="token operator">&lt;=</span> S_Sub_T0_H<span class="token punctuation">;</span>
+		<span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> t_cnt <span class="token operator">==</span> T0_L <span class="token operator">&amp;&amp;</span> color_rgb<span class="token punctuation">[</span><span class="token number">23</span><span class="token punctuation">]</span> <span class="token operator">==</span> <span class="token number">1'</span>b1<span class="token punctuation">)</span>
+			sub_next_state <span class="token operator">&lt;=</span> S_Sub_T1_H<span class="token punctuation">;</span>
+		<span class="token keyword">else</span>
+			sub_next_state <span class="token operator">&lt;=</span> S_Sub_T0_L<span class="token punctuation">;</span>
+				
+	S_Sub_T1_H<span class="token operator">:</span>
+		<span class="token keyword">if</span><span class="token punctuation">(</span> t_cnt <span class="token operator">==</span> T1_H<span class="token punctuation">)</span>
+			sub_next_state <span class="token operator">&lt;=</span> S_Sub_T1_L<span class="token punctuation">;</span>
+		<span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> state <span class="token operator">==</span> S_ACK <span class="token punctuation">)</span>
+			sub_next_state <span class="token operator">&lt;=</span> S_Sub_IDLE<span class="token punctuation">;</span>
+		<span class="token keyword">else</span>
+			sub_next_state <span class="token operator">&lt;=</span> S_Sub_T1_H<span class="token punctuation">;</span>
+			
+	S_Sub_T1_L<span class="token operator">:</span>
+		<span class="token keyword">if</span><span class="token punctuation">(</span> t_cnt <span class="token operator">==</span> T1_L <span class="token operator">&amp;&amp;</span> color_rgb<span class="token punctuation">[</span><span class="token number">23</span><span class="token punctuation">]</span> <span class="token operator">==</span> <span class="token number">1'</span>b0<span class="token punctuation">)</span>
+			sub_next_state <span class="token operator">&lt;=</span> S_Sub_T0_H<span class="token punctuation">;</span>
+		<span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> t_cnt <span class="token operator">==</span> T1_L <span class="token operator">&amp;&amp;</span> color_rgb<span class="token punctuation">[</span><span class="token number">23</span><span class="token punctuation">]</span> <span class="token operator">==</span> <span class="token number">1'</span>b1<span class="token punctuation">)</span>
+			sub_next_state <span class="token operator">&lt;=</span> S_Sub_T1_H<span class="token punctuation">;</span>
+		<span class="token keyword">else</span>
+			sub_next_state <span class="token operator">&lt;=</span> S_Sub_T1_L<span class="token punctuation">;</span>
+		
+	<span class="token keyword">default</span><span class="token operator">:</span> sub_next_state <span class="token operator">&lt;=</span> S_Sub_IDLE<span class="token punctuation">;</span>
+	endcase
+
+end
+
+
+
+
+
+always@<span class="token punctuation">(</span>posedge sys_clk_50M <span class="token operator">or</span> negedge rst_n<span class="token punctuation">)</span>
+begin
+	<span class="token keyword">if</span><span class="token punctuation">(</span> rst_n <span class="token operator">==</span> <span class="token number">1'</span>b0<span class="token punctuation">)</span>
+		color_rgb <span class="token operator">&lt;=</span> <span class="token number">24'</span>d0<span class="token punctuation">;</span>
+	
+	<span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span>state <span class="token operator">==</span> S_DATA <span class="token operator">&amp;&amp;</span> sub_state <span class="token operator">==</span> S_Sub_IDLE<span class="token punctuation">)</span>
+		color_rgb <span class="token operator">&lt;=</span> color_rgb <span class="token operator">&lt;&lt;</span> <span class="token number">1</span><span class="token punctuation">;</span>
+	<span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> sub_state <span class="token operator">==</span> S_Sub_T0_L <span class="token operator">&amp;&amp;</span> t_cnt <span class="token operator">==</span> T0_L<span class="token punctuation">)</span>
+		color_rgb <span class="token operator">&lt;=</span> color_rgb <span class="token operator">&lt;&lt;</span> <span class="token number">1</span><span class="token punctuation">;</span>
+	<span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> sub_state <span class="token operator">==</span> S_Sub_T1_L <span class="token operator">&amp;&amp;</span> t_cnt <span class="token operator">==</span> T1_L<span class="token punctuation">)</span>
+		color_rgb <span class="token operator">&lt;=</span> color_rgb <span class="token operator">&lt;&lt;</span> <span class="token number">1</span><span class="token punctuation">;</span>
+	<span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> state <span class="token operator">==</span> S_DATA<span class="token punctuation">)</span>
+		color_rgb <span class="token operator">&lt;=</span> color_rgb<span class="token punctuation">;</span>
+	<span class="token keyword">else</span>
+		color_rgb <span class="token operator">&lt;=</span> <span class="token punctuation">{<!-- --></span>ws2812_g<span class="token punctuation">,</span>ws2812_r<span class="token punctuation">,</span>ws2812_b<span class="token punctuation">}</span><span class="token punctuation">;</span>
+end
+
+
+
+always@<span class="token punctuation">(</span>posedge sys_clk_50M <span class="token operator">or</span> negedge rst_n<span class="token punctuation">)</span>
+begin
+	<span class="token keyword">if</span><span class="token punctuation">(</span> rst_n <span class="token operator">==</span> <span class="token number">1'</span>b0 <span class="token punctuation">)</span>
+		bit_cnt <span class="token operator">&lt;=</span> <span class="token number">6'</span>d0<span class="token punctuation">;</span>
+	<span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> sub_state <span class="token operator">==</span> S_Sub_T0_L <span class="token operator">&amp;&amp;</span> t_cnt <span class="token operator">==</span> T0_L <span class="token punctuation">)</span>
+		bit_cnt <span class="token operator">&lt;=</span> bit_cnt <span class="token operator">+</span> <span class="token number">1'</span>b1<span class="token punctuation">;</span>
+	<span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> sub_state <span class="token operator">==</span> S_Sub_T1_L <span class="token operator">&amp;&amp;</span> t_cnt <span class="token operator">==</span> T1_L<span class="token punctuation">)</span>
+		bit_cnt <span class="token operator">&lt;=</span> bit_cnt <span class="token operator">+</span> <span class="token number">1'</span>b1<span class="token punctuation">;</span>
+	<span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> state <span class="token operator">==</span> S_ACK<span class="token punctuation">)</span>
+		bit_cnt <span class="token operator">&lt;=</span> <span class="token number">6'</span>d0<span class="token punctuation">;</span>
+	<span class="token keyword">else</span>
+		bit_cnt <span class="token operator">&lt;=</span> bit_cnt<span class="token punctuation">;</span>
+
+end
+
+
+endmodule 
+</code></pre>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/ad42137618bdaf7ddfa1b7736d7dd24b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">从欧洲旅游到买房移民希腊的考察全记录！</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/221d059262d18043a48dc24c55315f0d/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Windows Server 2016虚拟机从零开始安装（超详细）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

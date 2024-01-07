@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>巧用设计模式实现ETCD客户端自动重连方案 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="巧用设计模式实现ETCD客户端自动重连方案" />
+<meta property="og:description" content="一、背景介绍 之前在设计开发自动限流计数集群系统时，使用了ETCD来实现服务协调和集群选举。去年公司在做断网演练期间发现，ETCD客户端在和服务端断开连接之后，没有办法自动重新连接服务，恢复业务。具体表现如下图，机器心跳正常，但在ETCD上注册的服务离线。
+于是需要设计实现ETCD客户端与ETCD服务端的自动重连功能。确保在任何网络闪断或者网络临时中断的情况下，ETCD客户端能够在一定时间内自动注册到ETCD服务端，恢复服务。
+本文将和大家分享如何通过代理模式和观察者模式优雅的实现该自动重连方案。
+二、知识回顾 在介绍具体方案前，咱们先将本文中涉及到的知识点和大家一起做一个简单的回顾。这些知识点本文不会深入讲解，如果需要深入学习研究，请查询相关文档。
+1、ETCD客户端基本实现 首先咱们回顾下ETCD客户端的基本实现。
+如上ETC客户端常规使用类图，ETCD客户端持有实现了多个功能客户端，如KvClient、LeaseClient、WatchClient和ElectionClient等等。在实际业务开发过程中，这些客户端会被业务代码（如上图的ElectionBusinessClass和CacheBusinessClass）持有并使用。通常业务代码在初始化(上图中的init方法)的时候就会调用EtcdClient获取到自己需要的功能客户端，并保存到自己的私有域中。后续再执行相关操作时，直接使用自己持有的功能客户端类实现具体业务即可。
+2、相关设计模式 本文方案中将使用到的两个设计模式都是比较普通的设计模式，咱们在实际开发过程中应该也经常使用。这里咱们也一起做一个简单的回顾。
+A、代理模式（Proxy） 代理模式就是指咱们开发的Proxy代理人接管(代替)了实际功能类的工作。在具体方法执行的过程中，业务直接调用代理类实现业务。但代理类在执行方法时，是否会调用具体功能类的相应方法去实现业务，则由代理类根据自己的设计实现决定。下面，咱们从一个实际开发过程中常用的缓存开发设计的功能来回顾代理模式如何工作。
+假设咱们有个ClientInfoFetcher接口，其定义根据名称获取客户端信息的功能。咱们有个实现类ClientInfoFetcherImpl，它通过从数据库查询实现了ClientInfoFetcher接口的功能。另外咱们有个业务类BusinessClient，它需要根据ClientInfoFetcher接口提供的功能查询出客户端信息，并在界面打印出来。
+假设上述业务并发量大，咱们需要考虑缓存。为了能有良好的架构和优雅的设计，这里我们使用代理模式来实现该缓存功能。如上缓存功能类图。咱们定义一个代理类ClientInfoFetcherProxy。在业务类BusinessClient中，咱们构建出一个ClientInfoFetcherProxy来实现客户端信息获取功能。在业务执行时，代理类中如果有缓存，则不调用底层具体功能类ClientInfoFetcherImpl实现业务；反之如果没有缓存，则代理类则需要调用底层具体功能类来实现相应的业务。且执行成功之后会将结果缓存到代理类中。
+代理模式的回顾咱们就到这里，接下来咱们再一起回顾下一个设计模式：观察者模式。
+B、观察者模式（Observer） 观察者模式中，当被观察的对象状态变化时，其会通知所有的观察者执行相应的业务逻辑。这个模式应该是大家在实际开发过程中使用很多的一种设计模式。平时常用的listener就是一种观察者模式。下面咱们通过listener的设计一起来回顾下观察者模式。假设咱们有个客户管理系统。当系统启动成功后，我们要加载客户信息到系统中。加载完毕后，咱们需要通知商品模块，消息模块和权限模块做相应的业务处理。
+如上实现类图。咱们定义了一个监听器接口CustomerLoadedListener（观察着模式中的观察者），当客户信息(ClustomerInfo)加载完毕之后负责处理具体业务。由于咱们的商品模块、消息模块和授权模块都需要在客户端信息加载完毕之后处理消息，所以他们分别都是实现接口CustomerLoadedListener，以此来处理各自的业务。咱们得CustomerCacheLoader则负责所有的客户端信息加载和通知操作。所以咱们实例化时会将AuthorityModuleListener、MessageModuleListener和ProductModuleListener三个观察者都添加到CustomerCacheLoader实例中。当咱们系统启动后CustomerCacheLoader负责将客户信息加载到内存中，并调用所有观察者的loaded方法通知大家被观察事件发生变化。
+通过一个简单的例子和大家一起回顾了下观察者模式。接下里咱们回到本文的主题，一起看看在实际开发过程中会如何实现ETCD的自动重连功能。
+三、实现方案 1、普通方案实现 A、基本实现 其实要实现Etcd客户端自动重连很简单。只需要在调用客户端方法异常之后，重新创建Client(Etcd)实体类与ETCD Server端建立连接即可。但是由于Client客户端还有多个功能客户端(如：KvClient、LeaseClient等),所以我们重新创建Client(Etcd)实例之后，必须让所有的关联功能客户端全部重新通过Client(ETCD)实例化。大致流程如下图，当业务调用功能客户端kvClient.get异常后，其让EtcdClient销毁原有的客户端，然后与服务端重新建立连接并创建新的客户端。接着业务类再调用新的EtcdClient获取到新的功能客户端kvClient。最后业务类使用新的功能客户端进行相应的业务操作即可。
+PS：如何判断客户端需要重连，可以有很多实现手段。比如，咱们可以循环调用功能客户端功能（如kvClient.get）,超过三次失败，则认为客户端连接断开，需要重连。大家想想还有其他什么处理方法呢？
+B、进阶设计 上述基本方案中随意可以实现自动重连，但是却存在一个问题。当ETCD客户端重连成功后，业务类需要重新调用新的ETCD客户端创建自己需要的功能客户端。在上述方案中，咱们只考虑了一个业务类。如果有多个业务类，咱们又怎么实现呢？如下图当有多个业务类都使用了ETCD的功能客户端。由于业务类1主动发起了ETCD客户端重连，所以它肯定能够知道需要重新去获取最新的功能客户端。但业务类2和业务类3，它们对ETCD客户端已经重连完成无感知，所以他们持有的功能客户端仍然和旧的ETCD链接关联，此时已经无法使用(旧ETCD客户端连接已经销毁)。那么在这种情况下，咱们如何通知业务类2和业务类3客户端已经重连了呢？
+提到通知，咱们自然就能想到了观察者模式。所以这里我们可以定义一个观察者，让所有需要使用ETCD的业务类都实现该观察者。在实例化的之后，全部将自己注册到EtcdClient中。当EtcdClient重连完成后，它就可以一一通知这些观察者“ETCD客户端重连”这个事件。观察者在收到事件通知后，就能用新的EtcdClient去获取自己需要的新的功能客户端，比如业务类2会通过etcdClient.getElectionClient获取electionClient；业务类3会通过etcdClient.getWatchClient获取watchClient。这样所有的业务类在ETCD重连之后，都能够及时恢复业务。
+该实现方案的类图如下（图中只画了CacheBusinessClass业务类的完整类关系图，ElectionBusinessClass业务类似，大家对比理解即可）：
+C、存在的问题 通过上面的设计我们已经完全解决了ETCD客户端无法重连的问题。同时我们还巧妙的使用了观察者模式。这个方案看起来挺高级，但却存在如下一些问题。
+a、底层设计不够优雅，底层代码入侵业务代码
+业务在使用ETCD客户端的时候，需要自己实现观察者接口。以此来重新获取ETCD的功能客户端。这样就相当于底层代码入侵了业务代码。
+b、业务使用底层组件学习成本增加
+业务在使用ETCD客户的时，需要额外注入实现观察者接口。这对于业务来存在额外的学习成本，新业务开发需要学习为什么需要这个观察者接口、如何实现这个接口，以及如何注册该观察者接口。
+c、开发成本会随业务类的增加而增加
+每个使用到ETCD客户的业务类，都需要实现并注册该观察者接口。这个部分额外的工作就会随着使用业务类的增加而增加。
+D、底层设计基本原则 上述咱们说了那么多问题，那么一个良好的底层（组件、框架等）设计到底应该是怎样的呢？楼主认为一个良好的底层设计需要具备如下特点：
+a、对业务代码无侵入
+b、不额外增加业务开发的学习成本和开发工作量
+那么咱们要怎样设计实现，才能在满足上述基本原则基础上，实现ETCD客户端自动重连方案呢？接下来，咱们就一起看看吧。
+2、优雅方案实现(设计模式) A、方案介绍 其实在上述方案设计实现过程中，咱们已经理清楚了ETCD客户端自动重连方案的基本思路。首先，在使用功能客户端实现业务时，如果发生异常，需要触发ETCD客户端重新连接。接着重连成功之后，需要通知所有的功能客户端重新通过ETCD客户端创建实例。我们要做的不侵入业务代码，且不给业务开发增加额外的学习成本。那么咱们就必须要保证对于业务使用者来说，其使用ETCD的功能和原生ETCD没有任何区别。即其需要使用原始的接口来实现业务功能。但咱们又需要在方法底层做一些额外操作（重连），此时我们自然能够想到代理模式能帮助咱们实现这样的能力。因此我们需要暴露给业务使用者一个ETCD业务客户端的代理即可。这样对应业务来说，使用没有任何变化。但咱们可以在代理中执行咱们需要的操作。
+B、方案实现 PS：1、图中只缓存了KVClient的代理&#43;观察者实现，其他功能客户端（LeaseClient、WatchClient等）类似。2、类图中EtcdClientProxy和RestartedListener之间的关系使用的重数性关联。其实很多书籍都用的聚合（代理模式类图）。小伙伴们思考下，这里到底用怎么表示比较好呢?
+整体方案实现的类图如上。其中红色框中的类，则是咱们这个方案使用的设计模式涉及的关键类。
+RestartedListener观察者接口，定义了ETCD客户端重启之后的通知方法etcdRestarted。所有观察者实现类，需要注册到EtcdClientProxy（被观察者）中。
+EctdClientProxy代理类，其实现了EtcdClient因此其对外提供了和EtcdClient相同的功能。内部其代理了真实的Etcd客户端实现类ClientImp。同时其它内部持有了所有的观察者接口RestartedListener。即所有的观察者实例化之后，都需要注册(addListener)到其中。最后其提供了restart功能，让使用者可以调用该功能重启（重新连接）Etcd客户端连接。重启完成后，Proxy则会调用所有RestartedListener通知所有观察者。
+KvClientProxy代理类，其为KvClient功能客户端的代理。它和普通KvClientImpl实现类一样实现了KV接口，但其底层通过代理的方式实现了所有接口方法。最终都是调用KvClientImpl类的实例实现真实的KV功能。同时该Proxy本身实现了RestartedListener，即也是一个观察者。当ETCD客户端重启后，它可以获得通知，重新利用新的EtcdClient获取到最新的功能客户端KvClient。另外，该Proxy代理了所有的KV业务功能，在执行业务时，它会通过异常捕获来判断Etcd客户端是否断开连接，如果断开，则调用EtcdClientProxy.restart方法，让ETCD客户端重新连接。等ETCD客户端连接成功之后，且自己重新获取到新的功能客户端（KvClient）之后，再继续调用真实的KvClientImpl的实例执行真正的业务。
+为了方便大家理解，咱们再看看下面的流程图。其大致步骤如下：
+1、业务发起请求，业务类CacheBusinessClass承接业务，向KvClientProxy代理类请求获取Value。
+2、KvClientProxy代理尝试调用被代理类KvClientImpl获取Value。
+3、KvClientProxy代理执行异常之后，直接调用EtcdClientProxy代理重启客户端。
+4、EtcdClientProxy代理调用被代理类ClientImpl重启客户端（重新创建一个实例，关闭旧实例）。
+5、EtcdClientProxy代理重启客户端完成后，通知所有观察者。
+6、KvClientProxy观察者收到通知后，重新调用EtcdClientProxy获取KVClient。
+7、EtcdClientProxy代理会调用新的客户端获取KvClient功能客户端。
+8、KvClientProxy获取最新KVClient成功后，继续用新的KvClient执行业务get，并返回结果。
+9、CacheBusinessClass获取到返回结果，并返回给业务方。
+3、方案优劣势 A、优势 通过该方案咱们能比较尤雅的实现整个ETCD客户端自动重连（重启方案）。其优势主要如下：
+a、整个重启过程，对业务类（CacheBusinessClass）完成无感知。底层代码对业务类完全无侵入。
+b、业务使用方(CacheBusinessClass)没有任何额外学习成本。其只需要知道如何使用标准ETCD接口和功能即可。
+c、采用设计模式让整个代码设计变得更加优雅、简洁。
+B、劣势 上面说了很多优势，其实整个方案还是有它的不足之处。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/6db11ec8ed54005aa896975cfe58f138/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-03-07T21:25:29+08:00" />
+<meta property="article:modified_time" content="2023-03-07T21:25:29+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">巧用设计模式实现ETCD客户端自动重连方案</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div class="kdocs-document"> 
+ <h2 style="text-align:left;">一、背景介绍</h2> 
+ <p style="">之前在设计开发自动限流计数集群系统时，使用了ETCD来实现服务协调和集群选举。去年公司在做断网演练期间发现，ETCD客户端在和服务端断开连接之后，没有办法自动重新连接服务，恢复业务。具体表现如下图，机器心跳正常，但在ETCD上注册的服务离线。</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:658px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:50.0%;height:0;"> 
+    <img src="https://images2.imgbox.com/0c/18/go5hJrJf_o.png" style="margin-left:;display:block;width:658px;margin-top:-50.0%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">于是需要设计实现ETCD客户端与ETCD服务端的自动重连功能。确保在任何网络闪断或者网络临时中断的情况下，ETCD客户端能够在一定时间内自动注册到ETCD服务端，恢复服务。</p> 
+ <p style="">本文将和大家分享如何通过代理模式和观察者模式优雅的实现该自动重连方案。</p> 
+ <h2 style="text-align:left;">二、知识回顾</h2> 
+ <p style="">在介绍具体方案前，咱们先将本文中涉及到的知识点和大家一起做一个简单的回顾。这些知识点本文不会深入讲解，如果需要深入学习研究，请查询相关文档。</p> 
+ <h3 style="text-align:left;">1、ETCD客户端基本实现</h3> 
+ <p style="">首先咱们回顾下ETCD客户端的基本实现。</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:498px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:75.90362%;height:0;"> 
+    <img src="https://images2.imgbox.com/6c/37/2dPiaUbH_o.png" style="margin-left:;display:block;width:498px;margin-top:-75.90362%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">如上ETC客户端常规使用类图，ETCD客户端持有实现了多个功能客户端，如KvClient、LeaseClient、WatchClient和ElectionClient等等。在实际业务开发过程中，这些客户端会被业务代码（如上图的ElectionBusinessClass和CacheBusinessClass）持有并使用。通常业务代码在初始化(上图中的init方法)的时候就会调用EtcdClient获取到自己需要的功能客户端，并保存到自己的私有域中。后续再执行相关操作时，直接使用自己持有的功能客户端类实现具体业务即可。</p> 
+ <h3 style="text-align:left;">2、相关设计模式</h3> 
+ <p style="">本文方案中将使用到的两个设计模式都是比较普通的设计模式，咱们在实际开发过程中应该也经常使用。这里咱们也一起做一个简单的回顾。</p> 
+ <h4 style="text-align:left;">A、代理模式（Proxy）</h4> 
+ <p style="">代理模式就是指咱们开发的Proxy代理人接管(代替)了实际功能类的工作。在具体方法执行的过程中，业务直接调用代理类实现业务。但代理类在执行方法时，是否会调用具体功能类的相应方法去实现业务，则由代理类根据自己的设计实现决定。下面，咱们从一个实际开发过程中常用的缓存开发设计的功能来回顾代理模式如何工作。</p> 
+ <p style="">假设咱们有个ClientInfoFetcher接口，其定义根据名称获取客户端信息的功能。咱们有个实现类ClientInfoFetcherImpl，它通过从数据库查询实现了ClientInfoFetcher接口的功能。另外咱们有个业务类BusinessClient，它需要根据ClientInfoFetcher接口提供的功能查询出客户端信息，并在界面打印出来。</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:740px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:47.2973%;height:0;"> 
+    <img src="https://images2.imgbox.com/2c/29/inwpKGy6_o.png" style="margin-left:;display:block;width:740px;margin-top:-47.2973%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">假设上述业务并发量大，咱们需要考虑缓存。为了能有良好的架构和优雅的设计，这里我们使用代理模式来实现该缓存功能。如上缓存功能类图。咱们定义一个代理类ClientInfoFetcherProxy。在业务类BusinessClient中，咱们构建出一个ClientInfoFetcherProxy来实现客户端信息获取功能。在业务执行时，代理类中如果有缓存，则不调用底层具体功能类ClientInfoFetcherImpl实现业务；反之如果没有缓存，则代理类则需要调用底层具体功能类来实现相应的业务。且执行成功之后会将结果缓存到代理类中。</p> 
+ <p style="">代理模式的回顾咱们就到这里，接下来咱们再一起回顾下一个设计模式：观察者模式。</p> 
+ <h4 style="text-align:left;">B、观察者模式（Observer）</h4> 
+ <p style="">观察者模式中，当被观察的对象状态变化时，其会通知所有的观察者执行相应的业务逻辑。这个模式应该是大家在实际开发过程中使用很多的一种设计模式。平时常用的listener就是一种观察者模式。下面咱们通过listener的设计一起来回顾下观察者模式。假设咱们有个客户管理系统。当系统启动成功后，我们要加载客户信息到系统中。加载完毕后，咱们需要通知商品模块，消息模块和权限模块做相应的业务处理。</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:740px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:30.27027%;height:0;"> 
+    <img src="https://images2.imgbox.com/77/d6/FI23ZlpG_o.png" style="margin-left:;display:block;width:740px;margin-top:-30.27027%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">如上实现类图。咱们定义了一个监听器接口CustomerLoadedListener（观察着模式中的观察者），当客户信息(ClustomerInfo)加载完毕之后负责处理具体业务。由于咱们的商品模块、消息模块和授权模块都需要在客户端信息加载完毕之后处理消息，所以他们分别都是实现接口CustomerLoadedListener，以此来处理各自的业务。咱们得CustomerCacheLoader则负责所有的客户端信息加载和通知操作。所以咱们实例化时会将AuthorityModuleListener、MessageModuleListener和ProductModuleListener三个观察者都添加到CustomerCacheLoader实例中。当咱们系统启动后CustomerCacheLoader负责将客户信息加载到内存中，并调用所有观察者的loaded方法通知大家被观察事件发生变化。</p> 
+ <p style="">通过一个简单的例子和大家一起回顾了下观察者模式。接下里咱们回到本文的主题，一起看看在实际开发过程中会如何实现ETCD的自动重连功能。</p> 
+ <h2 style="text-align:left;">三、实现方案</h2> 
+ <h3 style="text-align:left;">1、普通方案实现</h3> 
+ <h4 style="text-align:left;">A、基本实现</h4> 
+ <p style="">其实要实现Etcd客户端自动重连很简单。只需要在调用客户端方法异常之后，重新创建Client(Etcd)实体类与ETCD Server端建立连接即可。但是由于Client客户端还有多个功能客户端(如：KvClient、LeaseClient等),所以我们重新创建Client(Etcd)实例之后，必须让所有的关联功能客户端全部重新通过Client(ETCD)实例化。大致流程如下图，当业务调用功能客户端kvClient.get异常后，其让EtcdClient销毁原有的客户端，然后与服务端重新建立连接并创建新的客户端。接着业务类再调用新的EtcdClient获取到新的功能客户端kvClient。最后业务类使用新的功能客户端进行相应的业务操作即可。</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:740px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:68.918915%;height:0;"> 
+    <img src="https://images2.imgbox.com/a3/69/DRcPdo5w_o.png" style="margin-left:;display:block;width:740px;margin-top:-68.918915%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">PS：如何判断客户端需要重连，可以有很多实现手段。比如，咱们可以循环调用功能客户端功能（如kvClient.get）,超过三次失败，则认为客户端连接断开，需要重连。大家想想还有其他什么处理方法呢？</p> 
+ <h4 style="text-align:left;">B、进阶设计</h4> 
+ <p style="">上述基本方案中随意可以实现自动重连，但是却存在一个问题。当ETCD客户端重连成功后，业务类需要重新调用新的ETCD客户端创建自己需要的功能客户端。在上述方案中，咱们只考虑了一个业务类。如果有多个业务类，咱们又怎么实现呢？如下图当有多个业务类都使用了ETCD的功能客户端。由于业务类1主动发起了ETCD客户端重连，所以它肯定能够知道需要重新去获取最新的功能客户端。但业务类2和业务类3，它们对ETCD客户端已经重连完成无感知，所以他们持有的功能客户端仍然和旧的ETCD链接关联，此时已经无法使用(旧ETCD客户端连接已经销毁)。那么在这种情况下，咱们如何通知业务类2和业务类3客户端已经重连了呢？</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:740px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:49.324326%;height:0;"> 
+    <img src="https://images2.imgbox.com/e5/24/AZtuSC6f_o.png" style="margin-left:;display:block;width:740px;margin-top:-49.324326%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">提到通知，咱们自然就能想到了观察者模式。所以这里我们可以定义一个观察者，让所有需要使用ETCD的业务类都实现该观察者。在实例化的之后，全部将自己注册到EtcdClient中。当EtcdClient重连完成后，它就可以一一通知这些观察者“ETCD客户端重连”这个事件。观察者在收到事件通知后，就能用新的EtcdClient去获取自己需要的新的功能客户端，比如业务类2会通过etcdClient.getElectionClient获取electionClient；业务类3会通过etcdClient.getWatchClient获取watchClient。这样所有的业务类在ETCD重连之后，都能够及时恢复业务。</p> 
+ <p style="">该实现方案的类图如下（图中只画了CacheBusinessClass业务类的完整类关系图，ElectionBusinessClass业务类似，大家对比理解即可）：</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:740px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:43.783783%;height:0;"> 
+    <img src="https://images2.imgbox.com/b9/6a/e53nlIQg_o.png" style="margin-left:;display:block;width:740px;margin-top:-43.783783%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <h4 style="text-align:left;">C、存在的问题</h4> 
+ <p style="">通过上面的设计我们已经完全解决了ETCD客户端无法重连的问题。同时我们还巧妙的使用了观察者模式。这个方案看起来挺高级，但却存在如下一些问题。</p> 
+ <p style="">a、底层设计不够优雅，底层代码入侵业务代码</p> 
+ <p style="">业务在使用ETCD客户端的时候，需要自己实现观察者接口。以此来重新获取ETCD的功能客户端。这样就相当于底层代码入侵了业务代码。</p> 
+ <p style="">b、业务使用底层组件学习成本增加</p> 
+ <p style="">业务在使用ETCD客户的时，需要额外注入实现观察者接口。这对于业务来存在额外的学习成本，新业务开发需要学习为什么需要这个观察者接口、如何实现这个接口，以及如何注册该观察者接口。</p> 
+ <p style="">c、开发成本会随业务类的增加而增加</p> 
+ <p style="">每个使用到ETCD客户的业务类，都需要实现并注册该观察者接口。这个部分额外的工作就会随着使用业务类的增加而增加。</p> 
+ <h4 style="text-align:left;">D、底层设计基本原则</h4> 
+ <p style="">上述咱们说了那么多问题，那么一个良好的底层（组件、框架等）设计到底应该是怎样的呢？楼主认为一个良好的底层设计需要具备如下特点：</p> 
+ <p style="">a、对业务代码无侵入</p> 
+ <p style="">b、不额外增加业务开发的学习成本和开发工作量</p> 
+ <p style="">那么咱们要怎样设计实现，才能在满足上述基本原则基础上，实现ETCD客户端自动重连方案呢？接下来，咱们就一起看看吧。</p> 
+ <h3 style="text-align:left;">2、优雅方案实现(设计模式)</h3> 
+ <h4 style="text-align:left;">A、方案介绍</h4> 
+ <p style="">其实在上述方案设计实现过程中，咱们已经理清楚了ETCD客户端自动重连方案的基本思路。首先，在使用功能客户端实现业务时，如果发生异常，需要触发ETCD客户端重新连接。接着重连成功之后，需要通知所有的功能客户端重新通过ETCD客户端创建实例。我们要做的不侵入业务代码，且不给业务开发增加额外的学习成本。那么咱们就必须要保证对于业务使用者来说，其使用ETCD的功能和原生ETCD没有任何区别。即其需要使用原始的接口来实现业务功能。但咱们又需要在方法底层做一些额外操作（重连），此时我们自然能够想到代理模式能帮助咱们实现这样的能力。因此我们需要暴露给业务使用者一个ETCD业务客户端的代理即可。这样对应业务来说，使用没有任何变化。但咱们可以在代理中执行咱们需要的操作。</p> 
+ <h4 style="text-align:left;">B、方案实现</h4> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:740px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:62.43243%;height:0;"> 
+    <img src="https://images2.imgbox.com/0a/cc/qvuMuvxP_o.png" style="margin-left:;display:block;width:740px;margin-top:-62.43243%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style=""></p> 
+ <p style="">PS：1、图中只缓存了KVClient的代理+观察者实现，其他功能客户端（LeaseClient、WatchClient等）类似。2、类图中EtcdClientProxy和RestartedListener之间的关系使用的重数性关联。其实很多书籍都用的聚合（代理模式类图）。小伙伴们思考下，这里到底用怎么表示比较好呢?</p> 
+ <p style="">整体方案实现的类图如上。其中红色框中的类，则是咱们这个方案使用的设计模式涉及的关键类。</p> 
+ <p style="">RestartedListener观察者接口，定义了ETCD客户端重启之后的通知方法etcdRestarted。所有观察者实现类，需要注册到EtcdClientProxy（被观察者）中。</p> 
+ <p style="">EctdClientProxy代理类，其实现了EtcdClient因此其对外提供了和EtcdClient相同的功能。内部其代理了真实的Etcd客户端实现类ClientImp。同时其它内部持有了所有的观察者接口RestartedListener。即所有的观察者实例化之后，都需要注册(addListener)到其中。最后其提供了restart功能，让使用者可以调用该功能重启（重新连接）Etcd客户端连接。重启完成后，Proxy则会调用所有RestartedListener通知所有观察者。</p> 
+ <p style="">KvClientProxy代理类，其为KvClient功能客户端的代理。它和普通KvClientImpl实现类一样实现了KV接口，但其底层通过代理的方式实现了所有接口方法。最终都是调用KvClientImpl类的实例实现真实的KV功能。同时该Proxy本身实现了RestartedListener，即也是一个观察者。当ETCD客户端重启后，它可以获得通知，重新利用新的EtcdClient获取到最新的功能客户端KvClient。另外，该Proxy代理了所有的KV业务功能，在执行业务时，它会通过异常捕获来判断Etcd客户端是否断开连接，如果断开，则调用EtcdClientProxy.restart方法，让ETCD客户端重新连接。等ETCD客户端连接成功之后，且自己重新获取到新的功能客户端（KvClient）之后，再继续调用真实的KvClientImpl的实例执行真正的业务。</p> 
+ <p style="">为了方便大家理解，咱们再看看下面的流程图。其大致步骤如下：</p> 
+ <p style="">1、业务发起请求，业务类CacheBusinessClass承接业务，向KvClientProxy代理类请求获取Value。</p> 
+ <p style="">2、KvClientProxy代理尝试调用被代理类KvClientImpl获取Value。</p> 
+ <p style="">3、KvClientProxy代理执行异常之后，直接调用EtcdClientProxy代理重启客户端。</p> 
+ <p style="">4、EtcdClientProxy代理调用被代理类ClientImpl重启客户端（重新创建一个实例，关闭旧实例）。</p> 
+ <p style="">5、EtcdClientProxy代理重启客户端完成后，通知所有观察者。</p> 
+ <p style="">6、KvClientProxy观察者收到通知后，重新调用EtcdClientProxy获取KVClient。</p> 
+ <p style="">7、EtcdClientProxy代理会调用新的客户端获取KvClient功能客户端。</p> 
+ <p style="">8、KvClientProxy获取最新KVClient成功后，继续用新的KvClient执行业务get，并返回结果。</p> 
+ <p style="">9、CacheBusinessClass获取到返回结果，并返回给业务方。</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:740px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:44.594593%;height:0;"> 
+    <img src="https://images2.imgbox.com/e7/7c/NUwLfQUt_o.png" style="margin-left:;display:block;width:740px;margin-top:-44.594593%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <h3 style="text-align:left;">3、方案优劣势</h3> 
+ <h4 style="text-align:left;">A、优势</h4> 
+ <p style="">通过该方案咱们能比较尤雅的实现整个ETCD客户端自动重连（重启方案）。其优势主要如下：</p> 
+ <p style="">a、整个重启过程，对业务类（CacheBusinessClass）完成无感知。底层代码对业务类完全无侵入。</p> 
+ <p style="">b、业务使用方(CacheBusinessClass)没有任何额外学习成本。其只需要知道如何使用标准ETCD接口和功能即可。</p> 
+ <p style="">c、采用设计模式让整个代码设计变得更加优雅、简洁。</p> 
+ <h4 style="text-align:left;">B、劣势</h4> 
+ <p style="">上面说了很多优势，其实整个方案还是有它的不足之处。</p> 
+ <p style="">a、整个实现的门槛相对较高。</p> 
+ <p style="">b、看起来，开发这套架构比直接实现普通方案会有更多的开发工作量。因为每个业务功能客户端都需要一个代理类和响应的异常处理逻辑。</p> 
+ <h2 style="text-align:left;">四、结语</h2> 
+ <p style="">其实基本来说，使用设计模式实现业务，前期都会比直接实现业务花费更多的工作量。但是随着业务的增长，其后期带来的价值（可维护性、可读性、可扩展性等），相对其额外的研发工作量来说确实非常值得的。因此在实际开发过程中，我们并不建议刚开始就设计的很完善，一上来就什么设计模式都用上。这样会耗费很多工作量，很可能后期又没有相应的业务逻辑增长。最好是刚开始直接普通实现，如果后续有需求之后，再来做对应的设计模式整改。当然整改也得找准时机，不能拖到代码架构都腐化的不行了再开始。</p> 
+ <p style="">比如，咱们在开发中都喜欢使用策略模式来解决if-else过多的问题。刚开始只有一个两个if-else分支的时候，确实没有太多必要使用策略模式。这样可以已更少的工作量快速支持业务。但随着后期if-else分支增加到3到4个且评估后续还可能存在新增，此时就可以考虑使用策略模式来重构该代码实现。防止后期业务新增带来的代码腐化和难以维护的问题。</p> 
+ <h2 style="text-align:left;">五、惯例</h2> 
+ <p style="">如果你喜欢本文或觉得本文对你有所帮助，欢迎<span class="kdocs-bold" style="font-weight:bold;">一键三连</span>支持，非常感谢。</p> 
+ <p style="">如果你对本文有任何疑问或者高见，欢迎添加公众号<span class="kdocs-bold" style="font-weight:bold;">lifeofcoder</span>共同交流探讨（添加公众号可以获得楼主最新博文推送以及”Java高级架构“上10G视频和图文资料哦）。</p> 
+ <div class="kdocs-line-container" style="display:flex;justify-content:center;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:284px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:103.521126%;height:0;"> 
+    <img src="https://images2.imgbox.com/42/f5/qyAe4lfP_o.png" style="margin-left:;display:block;width:284px;margin-top:-103.521126%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+</div>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/3e60678facfb91358f6ba7e302a00655/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">海康工业相机使用教程</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/40fd49688a39eba89dbe93e18a67aa6b/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Typora卡顿如何解决</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

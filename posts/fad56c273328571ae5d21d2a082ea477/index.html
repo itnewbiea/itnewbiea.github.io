@@ -1,0 +1,856 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>图形系统之Wayland基础 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="图形系统之Wayland基础" />
+<meta property="og:description" content="良好的人机交互是一个系统成功的基础，其中图形系统也人机交互的重中之重。openharmony的显示系统是在近些年比较热门的Wayland的基础开发的。Wayland一直被认为是XWindow的继承者，被寄予众望，不过这些年也没有想象的发展迅猛，不温不火的过了这么多年，好比做了多年了太子，但是老皇帝一直健在。希望openharmony可以帮它烧起来。
+一直想自己动手写一些文章，不过太懒了，拿着别人总结的整理了一下
+1、Wayland和X Window 其实，Wayland是一套C/S框架的通信协议，他被内定为X图形系统的接班人。在涉及框架上要有明显的优势，在X系统中X Server作为中心服务，服务Client Composer，和内核打交道，如下图所示为X系统一个输入事件从输入到展示出来的流程，
+1、内核从输入设备获取事件，并通过 evdev 输入驱动程序将其发送到 X 服务器。内核通过驱动设备并将不同的设备特定事件协议转换为 linux evdev 输入事件标准来完成所有繁重的工作。
+2、X 服务器确定事件影响哪个窗口，并将其发送到为该窗口上的相关事件选择的客户端。 X 服务器实际上并不知道如何正确执行此操作，因为屏幕上的窗口位置由合成器控制，并且可能以 X 服务器无法理解的多种方式进行转换（缩小、旋转、摆动、等等）。
+3、 客户端查看事件并决定要做什么。通常，UI 必须响应事件而更改 - 可能是单击了复选框或指针进入了必须突出显示的按钮。因此，客户端将渲染请求发送回 X 服务器。
+4、当 X 服务器收到渲染请求时，它会将它发送给驱动程序，让它编程硬件来进行渲染。 X 服务器还计算渲染的边界区域，并将其作为损坏事件发送到合成器。
+5、损坏事件告诉合成器窗口中的某些内容发生了变化，并且它必须重新合成该窗口可见的屏幕部分。合成器负责根据其场景图和 X 窗口的内容渲染整个屏幕内容。然而，它必须通过 X 服务器来呈现它。
+6、X 服务器接收来自合成器的渲染请求，并将合成器后台缓冲区复制到前台缓冲区或执行翻页。在一般情况下，X 服务器必须执行此步骤，以便它可以考虑重叠窗口，这可能需要裁剪并确定它是否可以翻页。但是，对于始终全屏显示的合成器，这是另一个不必要的上下文切换。
+如上所述，这种方法存在一些问题。 X 服务器没有信息来决定哪个窗口应该接收事件，也不能将屏幕坐标转换为窗口本地坐标。 即使 X 已将屏幕最终绘制的责任交给合成经理，但 X 仍控制前端缓冲区和模式设置。 X 服务器过去处理的大部分复杂性现在都可以在内核或自包含库（KMS、evdev、mesa、fontconfig、freetype、cairo、Qt 等）中使用。 总的来说，X 服务器现在只是一个中间人，它在应用程序和合成器之间引入了一个额外的步骤，在合成器和硬件之间引入了一个额外的步骤。
+在WayLand中 他去掉了X Server，在合成器拥有KMS和evdev的控制权，这种设计从逻辑上比不上X系统，不过确实效率提高了不少
+内核获取一个事件，并将其发送到合成器。这与X情况类似，这非常好，因为我们可以重用内核中的所有输入驱动程序。合成器通过其场景图进行查看，以确定应该接收该事件的窗口。场景图与屏幕上的内容相对应，并且合成器了解它可能已应用于场景图中的元素的转换。因此，合成器可以选择右窗口，并通过应用逆变换将屏幕坐标转换为窗口局部坐标。可以应用于窗口的转换类型仅限于合成器可以执行的操作，只要它可以计算输入事件的逆转换即可。与X情况一样，当客户端收到事件时，它会更新UI作为响应。但是在路途中，渲染发生在客户端中，并且客户端只是向合成器发送请求以指示已更新的区域。合成器从其客户端收集损坏请求，然后重新合成屏幕。然后，合成器可以直接发出ioctl来调度带有KMS的翻页。 从上面可以看出Wayland确实效率更高。
+2、架构 Wayland的系统体系架构如上文所示，官方给出了一个源码实现Weston。Weston从内部体系结构来看，主要分为窗口管理（shell），合成器（compositor）和输入管理几个部分。可见，如果拿Android作类比，从功能上看它约等同于InputManagerService，WindowManagerService和SurfaceFlinger。从大体的流程上来看，输入管理模块接受用户输入，然后一方面shell作出相应的窗口管理操作（如窗口堆栈的改变，focus的变化等），另一方面将该input event传给之前注册了相应输入事件的client。client收到后会在handler中做相应动作，如调整视图然后重绘。如有重绘发生，新buffer渲染完成后client将其handle传给server，接着server端生成z-order序的窗口列表，之后compositor用renderer进行合成，最后输出(比如到framebuffer)。
+Weston是主要服务进程，它的事件处理模型采用的是典型的Reactor模式。根据Linux中万物皆文件的原则，主循环通过epoll机制等待在一系列的文件fd上。这种模型与基于线程的binder不同，是一种串行的事件处理模型。在此模型上的过程调用在不加额外同步机制的情况下是异步的。好处是不会有竞争问题，数据同步开销较小。缺点是当有一个事件处理比较耗时或者在等待IO，则有可能使整个系统性能下降或响应不及时。
+主循环上等待的几个核心fd包括：
+• Server/Client通信：listener fd在Weston启动时建立，并一直监听新的client连接。一个client连接后会与Weston建立一对domain socket，Wayland就是基于它来通信的。
+• 输入处理：一方面通过udev monitor监听设备的添加删除事件。另一方面如有新设备添加时会将该设备打开并监听该fd来得到输入事件。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/fad56c273328571ae5d21d2a082ea477/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-02-14T15:14:04+08:00" />
+<meta property="article:modified_time" content="2023-02-14T15:14:04+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">图形系统之Wayland基础</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>        良好的人机交互是一个系统成功的基础，其中图形系统也人机交互的重中之重。openharmony的显示系统是在近些年比较热门的Wayland的基础开发的。Wayland一直被认为是XWindow的继承者，被寄予众望，不过这些年也没有想象的发展迅猛，不温不火的过了这么多年，好比做了多年了太子，但是老皇帝一直健在。希望openharmony可以帮它烧起来。</p> 
+<p>        一直想自己动手写一些文章，不过太懒了，拿着别人总结的整理了一下</p> 
+<p></p> 
+<h2>1、Wayland和X Window</h2> 
+<p>        其实，Wayland是一套C/S框架的通信协议，他被内定为X图形系统的接班人。在涉及框架上要有明显的优势，在X系统中X Server作为中心服务，服务Client Composer，和内核打交道，如下图所示为X系统一个输入事件从输入到展示出来的流程，</p> 
+<p style="text-align:center;"><img alt="X architecture diagram" src="https://images2.imgbox.com/37/84/SZm7YbpO_o.png"></p> 
+<p>        1、内核从输入设备获取事件，并通过 evdev 输入驱动程序将其发送到 X 服务器。内核通过驱动设备并将不同的设备特定事件协议转换为 linux evdev 输入事件标准来完成所有繁重的工作。</p> 
+<p>        2、X 服务器确定事件影响哪个窗口，并将其发送到为该窗口上的相关事件选择的客户端。 X 服务器实际上并不知道如何正确执行此操作，因为屏幕上的窗口位置由合成器控制，并且可能以 X 服务器无法理解的多种方式进行转换（缩小、旋转、摆动、等等）。</p> 
+<p>        3、 客户端查看事件并决定要做什么。通常，UI 必须响应事件而更改 - 可能是单击了复选框或指针进入了必须突出显示的按钮。因此，客户端将渲染请求发送回 X 服务器。</p> 
+<p>        4、当 X 服务器收到渲染请求时，它会将它发送给驱动程序，让它编程硬件来进行渲染。 X 服务器还计算渲染的边界区域，并将其作为损坏事件发送到合成器。</p> 
+<p>        5、损坏事件告诉合成器窗口中的某些内容发生了变化，并且它必须重新合成该窗口可见的屏幕部分。合成器负责根据其场景图和 X 窗口的内容渲染整个屏幕内容。然而，它必须通过 X 服务器来呈现它。</p> 
+<p>        6、X 服务器接收来自合成器的渲染请求，并将合成器后台缓冲区复制到前台缓冲区或执行翻页。在一般情况下，X 服务器必须执行此步骤，以便它可以考虑重叠窗口，这可能需要裁剪并确定它是否可以翻页。但是，对于始终全屏显示的合成器，这是另一个不必要的上下文切换。</p> 
+<p>        如上所述，这种方法存在一些问题。 X 服务器没有信息来决定哪个窗口应该接收事件，也不能将屏幕坐标转换为窗口本地坐标。 即使 X 已将屏幕最终绘制的责任交给合成经理，但 X 仍控制前端缓冲区和模式设置。 X 服务器过去处理的大部分复杂性现在都可以在内核或自包含库（KMS、evdev、mesa、fontconfig、freetype、cairo、Qt 等）中使用。 总的来说，X 服务器现在只是一个中间人，它在应用程序和合成器之间引入了一个额外的步骤，在合成器和硬件之间引入了一个额外的步骤。</p> 
+<p>        在WayLand中 他去掉了X Server，在合成器拥有KMS和evdev的控制权，这种设计从逻辑上比不上X系统，不过确实效率提高了不少</p> 
+<p style="text-align:center;"><img alt="Wayland architecture diagram" src="https://images2.imgbox.com/8e/3b/RMVbKz8r_o.png"></p> 
+<ol><li>内核获取一个事件，并将其发送到合成器。这与X情况类似，这非常好，因为我们可以重用内核中的所有输入驱动程序。</li><li>合成器通过其场景图进行查看，以确定应该接收该事件的窗口。场景图与屏幕上的内容相对应，并且合成器了解它可能已应用于场景图中的元素的转换。因此，合成器可以选择右窗口，并通过应用逆变换将屏幕坐标转换为窗口局部坐标。可以应用于窗口的转换类型仅限于合成器可以执行的操作，只要它可以计算输入事件的逆转换即可。</li><li>与X情况一样，当客户端收到事件时，它会更新UI作为响应。但是在路途中，渲染发生在客户端中，并且客户端只是向合成器发送请求以指示已更新的区域。</li><li>合成器从其客户端收集损坏请求，然后重新合成屏幕。然后，合成器可以直接发出ioctl来调度带有KMS的翻页。</li></ol> 
+<p>        从上面可以看出Wayland确实效率更高。</p> 
+<h2>2、架构</h2> 
+<p>        Wayland的系统体系架构如上文所示，官方给出了一个源码实现Weston。Weston从内部体系结构来看，主要分为窗口管理（shell），合成器（compositor）和输入管理几个部分。可见，如果拿Android作类比，从功能上看它约等同于InputManagerService，WindowManagerService和SurfaceFlinger。从大体的流程上来看，输入管理模块接受用户输入，然后一方面shell作出相应的窗口管理操作（如窗口堆栈的改变，focus的变化等），另一方面将该input event传给之前注册了相应输入事件的client。client收到后会在handler中做相应动作，如调整视图然后重绘。如有重绘发生，新buffer渲染完成后client将其handle传给server，接着server端生成z-order序的窗口列表，之后compositor用renderer进行合成，最后输出(比如到framebuffer)。</p> 
+<p><img alt="640?wx_fmt=png" src="https://images2.imgbox.com/00/4e/9Q6G28wp_o.png"></p> 
+<p>        Weston是主要服务进程，它的事件处理模型采用的是典型的Reactor模式。根据Linux中万物皆文件的原则，主循环通过epoll机制等待在一系列的文件fd上。这种模型与基于线程的binder不同，是一种串行的事件处理模型。在此模型上的过程调用在不加额外同步机制的情况下是异步的。好处是不会有竞争问题，数据同步开销较小。缺点是当有一个事件处理比较耗时或者在等待IO，则有可能使整个系统性能下降或响应不及时。</p> 
+<p><img alt="640?wx_fmt=png" src="https://images2.imgbox.com/df/a2/vXC2hUkQ_o.png"></p> 
+<p>主循环上等待的几个核心fd包括：</p> 
+<p>• Server/Client通信：listener fd在Weston启动时建立，并一直监听新的client连接。一个client连接后会与Weston建立一对domain socket，Wayland就是基于它来通信的。</p> 
+<p>• 输入处理：一方面通过udev monitor监听设备的添加删除事件。另一方面如有新设备添加时会将该设备打开并监听该fd来得到输入事件。</p> 
+<p>• 其它：监听如timer（用于如睡眠锁屏等场景）和signal（如收到SIGINT, SIGTERM, SIGQUIT时退出主循环）等事件。timer和signal可以分别用timerfd和signalfd来用fd来表示。另外还有logind的dbus连接等。</p> 
+<p>除这些外，在event loop中还会维护一个idle list。Weston中需要异步处理的操作可以放在其中。每轮循环都会检查其中是否有任务，有的话拿出来执行。</p> 
+<p>        下面看下Weston的运行时进程模型。Weston设计时是可以以一般用户运行的，但就需要用weston-launch来启动。当需要进行一些需要root权限的工作，比如关于DRM, TTY, input device的相关操作，就交由weston-launch去做。</p> 
+<p>        Weston会在启动时或按需起一些子进程，它们本质上是Weston的client，它们会通过专用的协议做一些系统应用的工作。如系统应用weston-desktop-shell负责一些系统全局的界面，比如panel, background, cursor, app launcher, lock screen等。它不作为Weston服务本身的一部分，而是作为一个client。其作用有点类似于Android中的SystemUI。这样便可方便地替换成定制的界面。weston-keyboard是软键盘面板。weston-screenshooter和weston-screensaver分别用于截屏和屏保，它们都是按需才由Weston启动的。前者在截屏快捷键按下时启动，后者在需要锁屏时启动。</p> 
+<p><img alt="640?wx_fmt=png" src="https://images2.imgbox.com/fb/f9/GUjTLaYJ_o.png"></p> 
+<p>另外，Weston启动时会读取weston.ini这个配置文件，其中可以配置桌面，动画和后端等等信息</p> 
+<p> Wayland主要依赖于两个库，一个expat用于protocol解析xml文件，另一个libffi用于在跨进程过程调用中根据函数描述生成相应calling convention的跳板代码。</p> 
+<p></p> 
+<p>Weston的主要实现在src目录下。与Wayland类似，protocol目录下放着Wayland协议定义。在clients目录下是一些client的例子，也包括了desktop-shell和keyboard等核心client的例子，也包含了如simple-egl, simple-shm, simple-touch等针对性的简单用例。Weston启动过程中会分别加载几个backend：shell backend， render backend和compositor backend。它们分别用于窗口管理，合成渲染和合成内容输出。</p> 
+<p><img alt="640?wx_fmt=png" src="https://images2.imgbox.com/10/05/bMOG0hJP_o.png"></p> 
+<p></p> 
+<p></p> 
+<p>由于这些后端都可有不同的实现，为了逻辑上的独立性和结构上的灵活性，他们都编译成动态链接库从而可以在Weston初始化时被加载进来。这种方式在Weston中被广泛采用，一些功能比如屏幕共享等都是以这种形式加载的。</p> 
+<p></p> 
+<p>举例来说，compositor backend主要决定了compositor合成完后的结果怎么处置。从数据结构上，weston_output是output设备的抽象，而下面的backend会实现具体的output设备。</p> 
+<p>• fbdev：直接输出至linux的framebuffer设备。接口通用。</p> 
+<p>• headless：和noop-renderer配合使用，可以在没有窗口系统的机子（比如server上）测试逻辑。</p> 
+<p>• RPI：用于Raspberry Pi平台。</p> 
+<p>• RDP：合成后通过RDP传输到RDP peer显示，用于远程桌面。</p> 
+<p>• DRM：Direct redering manager，桌面上一般用这个。</p> 
+<p>• x11：Wayland compositor作为X server的client。它可以让Wayland client运行在X11上。</p> 
+<p>• wayland：Wayland composiotr作为server同时，也作为另一个Wayland compositor的client。用于nested compositor。</p> 
+<p></p> 
+<p>Renderer backend主要用于compositor的合成之用，除去noop-renderer外，有gl-renderer和pixman-renderer两种。前者为GPU硬件渲染，后者为软件渲染。shell backend用于实现具体的窗口管理。相应的实现分别在desktop-shell，fullscreen-shell和ivi-shell目录中。</p> 
+<p></p> 
+<p>Wayland/Weston运行时依赖的库主要有下面几个，其相互关系大体如下。</p> 
+<p></p> 
+<p><img alt="640?wx_fmt=png" src="https://images2.imgbox.com/8c/e4/6UFHReE7_o.png"></p> 
+<p></p> 
+<p>• libEGL, libGLES：本地窗口系统与图形driver的glue layer，mesa提供了开源版本的实现。</p> 
+<p>• libdrm：封装KMS，GEM等图形相关接口。平台相关。</p> 
+<p>• libffi：用于在运行时根据调用接口描述生成函数跳板并调用。</p> 
+<p>• pixman：用于像素操作的库，包括region, box等计算。用了许多平台相关的优化。</p> 
+<p>• cairo：软件渲染库，类似于skia。也有OpenGL后端。</p> 
+<p>• libinput：输入处理，依赖于mtdev, libudev, libevdev等库。</p> 
+<p>• libxkbcommon：主要用于键盘处理。</p> 
+<p>• libjpeg, libpng, libwebp：用于加载各种图片文件，像壁纸，面板和鼠标等都需要。</p> 
+<p></p> 
+<h2><strong>3、初始化模块源码</strong></h2> 
+<p>         下面是openharmony启动代码</p> 
+<pre><code>Service启动脚本
+"/system/bin/weston", "-c", "/system/etc/weston.ini", "-B", "drm-backend.so", "--tty=1"
+
+//weston.ini
+
+[core]
+shell=libivi-shell.z.so
+modules=libivi-controller.z.so,libwmserver.z.so,libmmi-server.z.so
+
+[ivi-shell]
+ivi-input-module=libivi-input-controller.z.so
+ivi-id-agent-module=libivi-id-agent.z.so
+screen-info-module=libscreen-info-module.z.so
+transition-duration=30
+cursor-theme=default
+
+[keyboard]
+keymap_layout=de
+
+[input-method]
+path=
+</code></pre> 
+<p>下面开始分析主要的主流程wet_main</p> 
+<h3>3.1 参数初始化</h3> 
+<pre><code class="language-cpp">	wl_list_init(&amp;wet.layoutput_list);
+
+	os_fd_set_cloexec(fileno(stdin));
+
+	cmdline = copy_command_line(argc, argv);
+	parse_options(core_options, ARRAY_LENGTH(core_options), &amp;argc, argv);
+
+	if (help) {
+		free(cmdline);
+		usage(EXIT_SUCCESS);
+	}
+
+	if (version) {
+		printf(PACKAGE_STRING "\n");
+		free(cmdline);
+
+        LOG_EXITS("main");
+		return EXIT_SUCCESS;
+	}
+
+// OHOS remove logger
+//	log_ctx = weston_log_ctx_create();
+//	if (!log_ctx) {
+//		fprintf(stderr, "Failed to initialize weston debug framework.\n");
+//		return EXIT_FAILURE;
+//	}
+//
+//	log_scope = weston_log_ctx_add_log_scope(log_ctx, "log",
+//			"Weston and Wayland log\n", NULL, NULL, NULL);
+//
+//	if (!weston_log_file_open(log))
+//		return EXIT_FAILURE;
+//
+//	weston_log_set_handler(vlog, vlog_continue);
+//
+//	logger = weston_log_subscriber_create_log(weston_logfile);
+//	flight_rec = weston_log_subscriber_create_flight_rec(DEFAULT_FLIGHT_REC_SIZE);
+//
+//	weston_log_subscribe_to_scopes(log_ctx, logger, flight_rec,
+//				       log_scopes, flight_rec_scopes);
+
+	weston_log("%{public}s\n"
+		   STAMP_SPACE "%{public}s\n"
+		   STAMP_SPACE "Bug reports to: %{public}s\n"
+		   STAMP_SPACE "Build: %{public}s\n",
+		   PACKAGE_STRING, PACKAGE_URL, PACKAGE_BUGREPORT,
+		   BUILD_ID);
+	weston_log("Command line: %{public}s\n", cmdline);
+	free(cmdline);
+	log_uname();
+
+	verify_xdg_runtime_dir();
+</code></pre> 
+<p><strong>backend </strong>drm-backend.so</p> 
+<p><strong>config_file </strong>/system/etc/weston.ini</p> 
+<p>进行一些数据结构的初始化</p> 
+<p>确保XDG_RUNTIME_DIR相关权限和存在</p> 
+<h3>3.2 创建display</h3> 
+<pre><code class="language-cpp">	display = wl_display_create();
+	if (display == NULL) {
+		weston_log("fatal: failed to create display\n");
+		goto out_display;
+	}
+
+	loop = wl_display_get_event_loop(display);
+	signals[0] = wl_event_loop_add_signal(loop, SIGTERM, on_term_signal,
+					      display);
+	signals[1] = wl_event_loop_add_signal(loop, SIGINT, on_term_signal,
+					      display);
+	signals[2] = wl_event_loop_add_signal(loop, SIGQUIT, on_term_signal,
+					      display);
+
+	wl_list_init(&amp;child_process_list);
+	signals[3] = wl_event_loop_add_signal(loop, SIGCHLD, sigchld_handler,
+					      NULL);
+
+	if (!signals[0] || !signals[1] || !signals[2] || !signals[3])
+		goto out_signals;
+
+	/* Xwayland uses SIGUSR1 for communicating with weston. Since some
+	   weston plugins may create additional threads, set up any necessary
+	   signal blocking early so that these threads can inherit the settings
+	   when created. */
+	sigemptyset(&amp;mask);
+	sigaddset(&amp;mask, SIGUSR1);
+	pthread_sigmask(SIG_BLOCK, &amp;mask, NULL);
+</code></pre> 
+<p>        创建display对象，将一些信号监测和处理函数增加进event loop</p> 
+<h3>3.3 加载配置</h3> 
+<pre><code class="language-cpp">	if (load_configuration(&amp;config, noconfig, config_file) &lt; 0)
+		goto out_signals;
+	wet.config = config;
+	wet.parsed_options = NULL;
+
+	section = weston_config_get_section(config, "core", NULL, NULL);
+
+// OHOS remove debugger
+//	if (!wait_for_debugger) {
+//		weston_config_section_get_bool(section, "wait-for-debugger",
+//					       &amp;wait_for_debugger, false);
+//	}
+//	if (wait_for_debugger) {
+//		weston_log("Weston PID is %ld - "
+//			   "waiting for debugger, send SIGCONT to continue...\n",
+//			   (long)getpid());
+//		raise(SIGSTOP);
+//	}
+
+	if (!backend) {
+		weston_config_section_get_string(section, "backend", &amp;backend,
+						 NULL);
+		if (!backend)
+			backend = weston_choose_default_backend();
+	}</code></pre> 
+<p>         解析weston.ini 文件获取core ivi-shell keyboard input-method等section信息，</p> 
+<h3>3.4 创建compositor</h3> 
+<pre><code>	wet.compositor = weston_compositor_create(display, &amp;wet);
+	if (wet.compositor == NULL) {
+		weston_log("fatal: failed to create compositor\n");
+		goto out;
+	}
+	segv_compositor = wet.compositor;
+
+	if (weston_compositor_init_config(wet.compositor, config) &lt; 0)
+		goto out;</code></pre> 
+<p>创建compositor对象，注册大量信号消息；创建各种如的资源；创建图层layer，cursor_layer和fade_layer；函数在compositor.c实现;</p> 
+<p>weston_compositor_init_config解析weston.ini某些参数 </p> 
+<h3>3.5 vsync </h3> 
+<pre><code>	// OHOS vsync module
+	StartSoftVsyncThread();</code></pre> 
+<p>        软件同步，</p> 
+<h3> 3.6 load backend </h3> 
+<pre><code>	if (load_backend(wet.compositor, backend, &amp;argc, argv, config) &lt; 0) {
+		weston_log("fatal: failed to create compositor backend\n");
+		goto out;
+	}</code></pre> 
+<p>        根据配置文件可以看到 调用的是load_drm_backend(compositor, argc, argv, config);</p> 
+<h3>3.7 创建监听socket</h3> 
+<pre><code class="language-cpp">weston_create_listening_socket(display, socket_name)
+    |
+    |
+    wl_display_add_socket_auto</code></pre> 
+<p>         创建socket 把unix domain socket描述符加入event loop事件监听源; $XDG_RUNTIME_DIR文件夹下创建用于监听的socket;默认/run/user/0/wayland-0</p> 
+<pre><code class="language-cpp">socket_data(int fd, uint32_t mask, void *data)
+</code></pre> 
+<h3>3.8 shell 窗口管理</h3> 
+<pre><code class="language-cpp">	if (!shell)
+		weston_config_section_get_string(section, "shell", &amp;shell,
+						 "desktop-shell.so");
+
+	if (wet_load_shell(wet.compositor, shell, &amp;argc, argv) &lt; 0)
+		goto out;
+
+	weston_config_section_get_string(section, "modules", &amp;modules, "");
+	if (load_modules(wet.compositor, modules, &amp;argc, argv, &amp;xwayland) &lt; 0)
+		goto out;
+
+	if (load_modules(wet.compositor, option_modules, &amp;argc, argv, &amp;xwayland) &lt; 0)
+		goto out;</code></pre> 
+<p> 根据配置文件，可以看到主要加载这两个动态库</p> 
+<pre><code>shell=libivi-shell.z.so
+modules=libivi-controller.z.so,libwmserver.z.so,libmmi-server.z.so
+</code></pre> 
+<h2> 3.9 进入主循环</h2> 
+<pre><code class="language-cpp">wl_display_run(display);
+
+WL_EXPORT void
+wl_display_run(struct wl_display *display)
+{
+	display-&gt;run = 1;
+
+	while (display-&gt;run) {
+		wl_display_flush_clients(display);
+		wl_event_loop_dispatch(display-&gt;loop, -1);
+	}
+}</code></pre> 
+<p>        wl_display_flush_clients() // 将对应的out buffer通过socket发出去。</p> 
+<p>        wl_event_loop_dispatch() // 处理消息循环。</p> 
+<p>        wl_event_loop代表主消息循环，wl_event_loop_dispatch()的大多数时间会通过epoll_wait()等待在wl_event_loop的epoll_fd上。epoll是类似于select, poll的机制，可以让调用者等待在一坨fd上，直到其中有fd可读、可写或错误。这个event loop和其中的epoll_fd是Compositor在<strong>3.2 创建display </strong> wl_display_create() -&gt;  wl_event_loop_create()时创建的。</p> 
+<p>        wl_event_source代表wl_event_loop中等待的事件源。它有多种类型，比如wl_event_source_fd, wl_event_source_timer和wl_event_source_signal。它们分别代表由socket fd, timerfd和signalfd触发的事件源。wl_event_source_idle比较特殊，当消息循环处理完那些epoll_fd上等到的事件后，在下一次阻塞在epoll_wait()上前，会先处理这个idle list里的事件。比如有Client更新graphic buffer后会调用weston_output_schedule_repaint() -&gt; wl_event_loop_add_idle()，就是往这个idle list里加一个消息。wl_event_source_fd的创建为例，在Client连接到Server时，Server会调用wl_client_create() -&gt; wl_event_loop_add_fd()-&gt;add_source()将之加入到display的loop上，其处理回调函数为wl_client_connection_data()，意味着当主消息循环在这个Client对应的socket上读到数据时，就会调用wl_client_connection_data()进行处理。</p> 
+<h2>4、协议</h2> 
+<p>        wayland架构中，有多种协议存在，client和server之间有协议，EGL和server之间有协议，server和shell之间也有协议，等等。这里只列出几个常用的，它们之关间的系如图：</p> 
+<p>         <img alt="" height="397" src="https://images2.imgbox.com/ca/31/CH8011hQ_o.png" width="560"></p> 
+<p>        wayland 协议采用xml描述，结构化较好，在研究wayland代码之前看一下这个xml文件有助于理清思路。先了解wayland协议中的几个概念。</p> 
+<p>        <strong>客户端</strong>(client): 需要在屏幕上绘图的普通程序<br>         <strong>服务器</strong>(server, compositor): wayland协议的核心程序，负责多个客户端绘图的合成，并输出到显示器，下文中compositor和server含义相同。<br>         <strong>请求</strong>(request): 由客户端发起的wayland通讯<br>         <strong>事件</strong>(event): 服务器发起，客户端选择性接收的异步通知，本文有时用“通知”代替<br>         <strong>枚举</strong>(enum)：定义了一些常量<br>         <strong>接口</strong>(interface)：请求，事件，和枚举值的集合<br>         <strong>表面</strong>(surface): 显示在屏幕上的一副图画，具有位置，大小，和像素内容</p> 
+<p>        Wayland的协议定义在protocol目录，通信协议实现在src目录。它主要编译出三个库，libwayland-client，libwayland-server和libwayland-cursor。第一个为协议的client端实现，第二个为协议的server端实现。第三个是协议中鼠标相关处理实现。编译时会首先编译出wayland-scanner这个可执行文件，它利用expat这个库来解析xml文件，将wayland.xml生成相应的wayland-protocol.c，wayland-client-protocol.h和wayland-server-protocol.h。它们会被Wayland的client和server在编译时用到。同时wayland-scanner也需要在生成Weston中的Wayland扩展协议中起同样作用。</p> 
+<p><img alt="640?wx_fmt=png" src="https://images2.imgbox.com/0e/f0/A1k0E8lY_o.png"></p> 
+<p>下面我们以wl_display接口为例看一下</p> 
+<p></p> 
+<h3 id="2-1-client和server间的核心协议">4.1 client和server间的核心协议</h3> 
+<p>wayland核心协议wayland.xml，位于/wayland/protocol目录，协议名为”wayland”.</p> 
+<h4 id="2-1-1-wl-display接口"><a name="t3"></a>4.1.1 wl_display接口</h4> 
+<p>实现该接口的对象(下文省略“实现该接口的对象”)为核心的全局单件对象，wayland协议内部使用。<br> 请求：<br> bind: wl_display_bind(), 把client创建的对象绑定到服务器。<br> sync: wl_display_sync(), 要求服务器进行同步，返回wl_callback，在wl_callback对象上调用“done”请求。因为服务器是顺序执行各种请求的，sync保证以前的请求已经处理掉。<br> 事件：<br> error：严重的不可恢复的错误发生<br> global: 由服务器创建，并通知给客户端的全局对象。global在client初始连接时由server发布。比如：设备热插拔，断开链接，配置变更等。客户端可以使用”bind”请求绑定到一个global对象，随后获得一个global对象的句柄，客户端可以在这个句柄上调用相应请求<br> global_remove: global 对象被移除的通知<br> delete_id： 服务器确认删除了对象 id，client现在可以重用它了</p> 
+<h4 id="2-1-2-wl-callback接口"><a name="t4"></a>4.1.2 wl_callback接口</h4> 
+<p>对callback的一个抽象，这个接口只有一个事件：<br> done: 完成事件</p> 
+<h4 id="2-1-3-wl-compositor接口"><a name="t5"></a>4.1.3 wl_compositor接口</h4> 
+<p>单件compositor对象，负责把多个surface合成为一个可以在显示器上显示的输出格式。<br> 请求:<br> create_surface: 客户端请求compositor创建一个surface<br> create_region： 客户端请求compositor创建一个region</p> 
+<h4 id="2-1-4-wl-shm-pool接口"><a name="t6"></a>4.1.4 wl_shm_pool接口</h4> 
+<p>wl_shm_pool 对象封装了compositor和client之间共享的内存池。 通过 wl_shm_pool 对象，client 可以分配共享内存的wl_buffer对象。这些对象共享底层的映射内存。 重用映射内存可以避免不断初始化和销毁内存的开销，在改变surface大小和小缓冲区操作比较多的时候很有用。<br> 请求：<br> create_buffer： 从共享内存池里创建wl_buffer, 它从内存池的某个字节偏移开始，有高，宽，步长(stride，每行的字节数)等属性。<br> destroy： 销毁共享内存池</p> 
+<h4 id="2-1-5-wl-shm接口"><a name="t7"></a>4.1.5 wl_shm接口</h4> 
+<p>共享内存缓冲区的管理。<br> 请求：<br> create_pool：创建共享内存池，而共享内存池可以创建共享内存的wl_buffer对象。这个请求带一个文件描述副fd参数，把该文件的内存映射做为共享内存池的备份内存。<br> 事件:<br> format: 共享内存是什么格式的事件，允许两种格式， argb8888 和 xrgb8888</p> 
+<h4 id="2-1-6-wl-buffer接口"><a name="t8"></a>4.1.6 wl_buffer接口</h4> 
+<p>wl_buffer提供了wl_surface的内容，通过wl_drm， wl_shm 或类似的工厂接口创建。缓冲区具有高度和宽度，可以绑定到wl_surface，但是client创建和更新内容的方式由工厂接口定义。<br> 请求：<br> destroy: 销毁缓冲区，使对象id无效<br> 事件:<br> release: compositor释放缓冲区的事件，表明compositor不再使用该缓冲区</p> 
+<h4 id="2-1-7-wl-data-offer接口"><a name="t9"></a>4.1.7 wl_data_offer接口</h4> 
+<p>请求：<br> accept: 接受一种mime-type，说明client接受一种给定的mime-type，不接受用NULL表示。在drag and drop场景中作为反馈。<br> receive: 接收 mime_type<br> destroy: 销毁?<br> 事件：<br> offer: 创建 wl_data_offer 对象后立即发出的事件，每个 mime_type 对应一个offer事件</p> 
+<h4><br> 4.1.8 wl_data_source接口</h4> 
+<p>数据源。<br> 请求：<br> offer: 把一种 mime-type 添加到 mime-type 集合中，告诉目的地，可以多次调用提供多种 mime-type<br> destroy: 销毁数据源<br> 事件：<br> target: 目标接受了 mime-type. 在目标接受了 pointer_focus 或者 motion 时发出事件，如果目标不接受 mime-type, 类型为 NULL<br> send: 请求另外一个client的数据，通过传输的文件描述符fd发送指定的 mime-type，然后关闭 fd<br> cancelled: 另外一个选择激活后，现有的选择被取消</p> 
+<h4 id="2-1-9-wl-data-device接口"><a name="t10"></a>4.1.9 wl_data_device接口</h4> 
+<p>请求:<br> start_drag: 要求compositor代表本client开始一个 drag and drop 操作。source参数是提供数据传输的wl_data_source对象;origin参数是产生drag的wl_surface对象，client必须有激活的，匹配serial(另一个参数)的隐含grab;icon参数是可选的，是光标移动时的图标。最初，左上角的icon surface放置在光标的热点，往后的 surface.attach 请求可以移动相对位置。<br> set_selection: 选择区域<br> 事件：<br> data_offer: 引入新的 wl_data_offer 对象，用在以后的 data_device.enter 或 data_device.selection 事件中。这个事件之后，data_offer 对象立刻发出 data_offer.offer事件，描述它提供的 mime-types.<br> enter: 进入事件<br> leave: 离开事件<br> motion：移动事件<br> drop：放下事件<br> selection：选择事件，通知client有新的基于这个device和selection的wl_data_offer。data_device.data_offer 和 data_offer.offer 事件在本事件之前立即发出，以引入 data offer 对象。selection事件发送给client后，client立即收到键盘焦点，如果client有键盘焦点，那么设置新的selection</p> 
+<h4 id="2-1-10-wl-data-device-manager接口"><a name="t11"></a>4.1.10 wl_data_device_manager接口</h4> 
+<p>请求：<br> create_data_source: 创建数据源<br> get_data_device: 获取数据设备</p> 
+<h4 id="2-1-11-wl-shell接口"><a name="t12"></a>4.1.11 wl_shell接口</h4> 
+<p>请求：<br> get_shell_surface: 获得shell surface</p> 
+<h4 id="2-1-12-wl-shell-surface接口"><a name="t13"></a>4.1.12 wl_shell_surface接口</h4> 
+<p>桌面风格的元数据接口， wl_surface 实现了这个接口。服务器端，wl_shell_surface 对象随着 wl_surface 对象的销毁而自动销毁。客户端，必须先调用 wl_shell_surface_destroy，然后再销毁 wl_surface 对象。<br> 请求:<br> pong: 客户端回应server发来的ping事件，必须回应，否则server会认为client出问题了<br> move: 移动<br> resize: 重置大小<br> set_toplevel: 使surface最顶层<br> set_transient: 显示surface,和某个现存的surface相联系，这种surface称为transient surface<br> set_fullscreen： 使surface全屏。如果client指定了output参数，那么这个surface会全屏绘制到output上；如果client没有指定output参数，那么compositor有权根据某种策略作出决定 - 通常选择具有最大surface区域的output<br> set_popup: 弹出式surface<br> set_maximized ：最大化surface<br> set_title：设置surface的标题<br> set_class: surface class指出了应用的类型，class是*.desktop文件的文件名<br> 事件：<br> ping: 服务端ping客户端，确保客户端能够接收事件，发送请求，客户端应回应pong请求：<br> configure：要求client重置surface大小，参数中的大小仅仅为建议，client可以忽略。client可以忽略所有的configure事件，除了最后一个。<br> popup_done: 弹出交互已完成。用户点了一个surface，它不属与拥有弹出surface的client，这时候，server发出popup_done事件。说的直白一点，就是用户点击了和弹出窗口不相关的程序的窗口。</p> 
+<h4 id="2-1-13-wl-surface接口"><a name="t14"></a>4.1.13 wl_surface接口</h4> 
+<p>surface为显示在屏幕上的一副图画，具有位置，大小，和像素内容。<br> 请求：<br> destroy: 销毁surface，对象id无效<br> attach: 设置surface的缓冲区内容，x, y 参数是距离新缓冲区的左上角的位置<br> damage: 标记surface的某部分被破坏了。attach一个缓冲区后，damage请求用来描述一个新老缓冲区内容不同的区域，它需要重绘。坐标值是新缓冲区的位置。<br> frame: 请求下一帧显示时的通知回馈，每调用一次，通知只会发一次。这个请求可以用来调整重绘操作，驱动动画。<br> set_opaque_region: 设置surface的不透明区域，可以优化compositor重绘操作。这个操作不是必须的，但是把透明内容标记为不透明会导致重绘伪影(repainting artifacts)<br> set_input_region: 设置输入区域，接收鼠标，触摸事件<br> 事件：<br> enter：surface进去output。每当surface创建，移动，重置大小的操作导致某部分进入output的scanout区域时，都会发出这个事件<br> leave: 和 enter 相对</p> 
+<h4 id="2-1-14-wl-input-device接口"><a name="t15"></a>4.1.14 wl_input_device接口</h4> 
+<p>一组键盘、鼠标等设备，这个对象在启动时，或者被热插拔时发布，input_device组通常包括指针，键盘焦点和鼠标焦点。<br> 请求：<br> attach：设置鼠标图像。<br> 事件：<br> motion：鼠标移动事件<br> button：鼠标按键事件，包括点击，释放通知，点击的位置由最后的motion或pointer_focus事件决定<br> axis: 滚动和其他axis通知<br> key: 键盘事件<br> pointer_enter: 鼠标进入某个surface上的通知，client应响应这个事件，设置指针图像，因为默认情况是未定义的。<br> pointer_leave: 鼠标离开<br> keyboard_enter<br> keyboard_leave<br> touch_down<br> touch_up<br> touch_motion<br> touch_frame<br> touch_cancel: compositor 认为这个touch流其实是一个全局的 gesture，那么释放这个事件。</p> 
+<h4 id="2-1-15-wl-output接口"><a name="t16"></a>4.1.15 wl_output接口</h4> 
+<p>output是compositor的输出区域，描述compositor的一部分位置信息。compositor工作在自己的坐标系统中，output是该坐标系中的一部分可见的矩形区域。通常output就是显示器显示的那部分compositor空间。wl_output对象在启动时或者屏幕热插拔时发布。<br> 事件：<br> subpixel:<br> geometry:<br> mode</p> 
+<h4 id="2-1-16-wl-region接口"><a name="t17"></a>4.1.16 wl_region接口</h4> 
+<p>区域接口<br> 请求：<br> destroy<br> add<br> subtract</p> 
+<h3 id="2-2-EGL-和-compositor-间的DRM协议"><a name="t18"></a>4.2 EGL 和 compositor 间的DRM协议</h3> 
+<p>wayland client和server都需要使用EGL, client使用EGL创建wayland窗口和Rendering Context，而 server 和 EGL 需要对 DRM 缓冲区进行通讯。这个协议定义在 mesa 代码目录下的 wayland-drm.xml 文件中，协议名为 “drm”.</p> 
+<h4 id="2-2-1-wl-drm接口"><a name="t19"></a>4.2.1 wl_drm接口</h4> 
+<p>wl_drm由服务端创建，通过display的全局事件发布。<br> 请求：<br> authenticate: 先调用 drmGetMagic(), 得到 magic 后，以此作为参数调用此函数，接下来会调用 drmAuthMagic(), DRIAuthConnection(). 这个函数必须在 create_buffer() 之前调用。<br> create_buffer: 根据 DRM buffer 创建 wl_buffer, DRM surface 必须有能用 flink ioctl 的名字。<br> 事件：<br> device：DRM 设备路径的通知，客户端应根据这个DRM设备路径创建本地缓冲区。只有该设备创建的缓冲区才能通过 DRM 对象的 create_buffer 传给server<br> format：buffer的格式，xrgb8888, argb8888, rgb565…<br> authenticated: authenticate 请求通过后发出的事件</p> 
+<h3 id="2-3-server-weston-和-shell-tablet-shell-间的tablet协议"><a name="t20"></a>4.3 server(weston) 和 shell (tablet-shell) 间的tablet协议</h3> 
+<p>这个协议定义了shell(可以理解为桌面)和server之间如何交互，概念有点类似于X11的窗口协议ICCCM，但是架构完全不同。协议定义在weston源码目录下的 tablet-shell.xml 文件中，协议名为”tablet”. 协议的请求和事件的名字很直观。</p> 
+<h4 id="2-3-1-tablet-shell-接口"><a name="t21"></a>4.3.1 tablet_shell 接口</h4> 
+<p>请求：<br> set_lockscreen：<br> set_switcher：<br> set_homescreen：<br> show_grid：<br> show_panels：<br> create_client：<br> 事件：<br> show_lockscreen<br> show_switcher<br> hide_switcher</p> 
+<h4 id="2-3-2-tablet-client-接口"><a name="t22"></a>4.3.2 tablet_client 接口</h4> 
+<p>请求：<br> destroy<br> activate</p> 
+<p></p> 
+<h3><strong>5、窗口管理</strong></h3> 
+<p>        前面提到，buffer需要有surface为载体，这个surface可以理解为一个窗口的绘制表面。如果一个Wayland client的窗口要被窗口管理器（Shell）所管理，则需要为这个surface创建相应的shell surface。理一下这里相关的几个核心概念：surface，view，shell surface。首先，surface是Weston中的核心数据结构之一。Surface代表Wayland client的一个绘图表面。Client通过将画好的buffer attach到surface上来更新窗口，因此说surface是buffer的载体。在Weston中，shell是窗口管理器，因此一个surface要想被窗口管理器管理，需要创建相应的shell surface。同时shell surface对应的其实是surface的一个view。view是surface的一个视图。换句话说，同一个surface理论上可以有多个view，因此weston_surface结构中有view的列表。这里和我们逻辑上的窗口的概念最近似的是view，因为它对应用户所看到的一个窗口。而当surface与view是1:1关系时（绝大多数情况下），surface也可近似等同于窗口。在server端它们的数据结构是相互关联的。</p> 
+<p><img alt="640?wx_fmt=png" src="https://images2.imgbox.com/b0/7e/Rd4rE50X_o.png"></p> 
+<p>如果从Server/Client角度，它们的相互对应关系如下：</p> 
+<p><img alt="640?wx_fmt=png" src="https://images2.imgbox.com/8c/fc/VUmn3fal_o.png"></p> 
+<p>另外subsurface可以作为surface的附属绘图表面，它与父surface保持关联，但拥有独立的绘图surface，类似于Android中的SurfaceView，作用也是类似。主要用于Camera，Video等应用。</p> 
+<p></p> 
+<p>窗口管理不是直接管理view，而是分为两层进行管理。Layer是中间层，系统中的layer大体有下面几个，按从上到下顺序为：</p> 
+<p>• Fade layer</p> 
+<p>• Lock layer</p> 
+<p>• Cursor layer</p> 
+<p>• Input panel layer</p> 
+<p>• Fullscreen layer</p> 
+<p>• Panel layer</p> 
+<p>• Workspace layers</p> 
+<p>• Background layer</p> 
+<p></p> 
+<p>其中的workspace layer是一个数组，默认是一个，也可以有多个，其数量可以在weston.ini中指定。大部分的普通应用窗口就是在这个layer中。这些layer被串成list。每次在要做合成时，会首先将这些layer的view按顺序合并到一个view list中。这样，在composition过程中compositor只需访问这个view list。</p> 
+<p></p> 
+<p><img alt="640?wx_fmt=png" src="https://images2.imgbox.com/34/8d/0KjpxpBi_o.png"></p> 
+<p></p> 
+<p>        可以看到，这是一个二层有序列表合成一个有序列表的过程。这和Android中的WMS通过为每种类型的窗口定义一段z轴区域的原理类似。WMS中每个类型的窗口对定一个基数（定义在WindowManager.java），它会乘以乘数再加上偏移从而得到z轴上的区域边界。区别在于Weston中不是以数值而是有序列表表示z-order。结合具体的数据结构：</p> 
+<p></p> 
+<p><img alt="640?wx_fmt=png" src="https://images2.imgbox.com/e6/46/HyH1OWYt_o.png"></p> 
+<p>从Weston.ini 中可以看到openharmony使用的是ivi shell</p> 
+<pre><code>[core]
+shell=libivi-shell.z.so
+modules=libivi-controller.z.so,libwmserver.z.so,libmmi-server.z.so
+
+[ivi-shell]
+ivi-input-module=libivi-input-controller.z.so
+ivi-id-agent-module=libivi-id-agent.z.so
+screen-info-module=libscreen-info-module.z.so
+transition-duration=30
+cursor-theme=default</code></pre> 
+<p>我们一起看看它的代码</p> 
+<h3>5.1 ivi_shell初始化</h3> 
+<h4>       5.1.1 申请ivi_shell</h4> 
+<pre><code>	struct ivi_shell *shell;
+
+	shell = zalloc(sizeof *shell);
+	if (shell == NULL)
+		return -1;</code></pre> 
+<p>struct ivi_shell 是这个模块的主要结构，我们一起来看看</p> 
+<pre><code>struct ivi_shell
+{
+	struct wl_listener destroy_listener; //销毁时回调函数
+	struct wl_listener wake_listener; //唤醒时回调函数
+
+	struct weston_compositor *compositor; //对compositor的引用
+
+	struct weston_desktop *desktop; //桌面管理
+	struct wl_list ivi_surface_list; //surface 列表
+};</code></pre> 
+<h4> 5.1.2 注册销毁回调函数</h4> 
+<pre><code>	if (!weston_compositor_add_destroy_listener_once(compositor,
+							 &amp;shell-&gt;destroy_listener,
+							 shell_destroy)) {
+		free(shell);
+		return 0;
+	}</code></pre> 
+<h4>5.1.3 结构体初始化</h4> 
+<pre><code>	init_ivi_shell(compositor, shell);
+</code></pre> 
+<h4>5.1.4 注册wake 回调函数</h4> 
+<pre><code>
+	shell-&gt;wake_listener.notify = wake_handler;
+	wl_signal_add(&amp;compositor-&gt;wake_signal, &amp;shell-&gt;wake_listener);
+
+
+/*
+ * 在接收到compositor wake 信号时调用，主要作用是重绘函数
+ */
+static void
+wake_handler(struct wl_listener *listener, void *data)
+{
+	struct weston_compositor *compositor = data;
+
+	weston_compositor_damage_all(compositor);
+}
+</code></pre> 
+<h4>   5.1.5 desktop初始化</h4> 
+<pre><code>	shell-&gt;desktop = weston_desktop_create(compositor, &amp;shell_desktop_api, shell);
+	if (!shell-&gt;desktop)
+		goto err_shell;</code></pre> 
+<p>       对desktop就行回调注册</p> 
+<h4>5.1.6 创建global</h4> 
+<pre><code>    if (wl_global_create(compositor-&gt;wl_display,
+			     &amp;ivi_application_interface, 1,
+			     shell, bind_ivi_application) == NULL)
+		goto err_desktop;</code></pre> 
+<p>global: 由服务器创建，并通知给客户端的全局对象，Global对象在概念上类似于Service服务</p> 
+<p>客户端可以使用”bind”请求绑定到一个global对象，随后获得一个global对象的句柄，客户端可以在这个句柄上调用相应请求</p> 
+<p>bind_ivi_application 是bind回调函数 </p> 
+<h4> 5.1.7 layout 初始化</h4> 
+<pre><code>	ivi_layout_init_with_compositor(compositor);
+</code></pre> 
+<h4>5.1.8 bindings </h4> 
+<pre><code>	shell_add_bindings(compositor, shell);
+</code></pre> 
+<h4> 5.2 </h4> 
+<h3><strong> 6、渲染流水线</strong></h3> 
+<p><strong>        </strong>所谓渲染就是使用数学模型描述图形，如“DrawRectangle(x1,y1,x2,y2)”,转化为像素阵列，或者叫像素数组，像素数组中的每个都是一个颜色值或者索引，对应图像上的一个像素。</p> 
+<p>        渲染一般又分为两种，一种渲染过程是由CPU完成的，通常称为软件渲染，另外一种是由GPU完成的，通常称为硬件渲染。在嵌入式平台系统移植过程中开启硬件加速可以大大提高系统的性能。</p> 
+<p>        在Wayland中，一个Wayland client要将内存渲染到屏幕上，</p> 
+<p>                首先要申请一个graphic buffer，</p> 
+<p>                绘制完后传给Wayland compositor并通知其重绘。</p> 
+<p>                Wayland compositor收集所有Wayland client的请求，</p> 
+<p>                然后以一定周期把所有提交的graphic buffer进行合成。</p> 
+<p>                合成完后进行输出。</p> 
+<p>        本质上，client需要将窗口内容绘制到一个和compositor共享的buffer上。这个buffer可以是普通共享内存，也可以是DRM中的GBM或是gralloc提供的可供硬件（如GPU）操作的graphic buffer。在大多数嵌入式平台上，没有专门的显存，因此它们最终都来自系统内存，区别在于图形加速硬件一般会要求物理连续且符合对齐要求的内存。如果是普通共享内存，一般是物理不连续的，多数情况用于软件渲染。有些图形驱动也支持用物理不连续内存做硬件加速，但效率相对会低一些。根据buffer类型的不同，client可以选择自己绘制，或是通过Cairo，OpenGL绘制，或是更高层的如Qt，GTK+这些widget库等绘制。绘制完后client将buffer的handle传给server，以及需要重绘的区域。在server端，compositor将该buffer转为纹理（如果是共享内存使用glTexImage2D上传纹理，硬件加速buffer用GL_OES_EGL_image_external扩展生成外部纹理）。最后将其与其它的窗口内容进行合成。下面是抽象的流程图。</p> 
+<p></p> 
+<p><img alt="640?wx_fmt=png" src="https://images2.imgbox.com/a5/d6/e9HmrTlE_o.png"></p> 
+<p></p> 
+<p>        注意Wayland设计中默认buffer是从client端分配的。这和Android中在server端分配buffer的策略是不同的。这样，client可以自行设计buffer的管理策略。理论上，client可以始终只用一块buffer，但因为这块buffer在client和server同时访问会产生竞争，所以一般client端都会实现buffer queue。流水线上比较关键的一环是buffer跨进程的传输，也就是client和server间的有效传递。buffer当然不可能通过拷贝传输，因此这里只会传handle，本质上是传buffer的fd。我们知道fd是per-process的。而可以传递fd的主要IPC机制有binder, domain socket和pipe等。Wayland底层用的是domain socket，因此可以用于传fd。</p> 
+<p>        在这条流水线上，可以看到，client和server端都会发生绘制。client绘制本地的窗口内容，server端主要用于合成时渲染。注意两边都可独立选择用软件或者硬件渲染。现在的商用设备上，多是硬件加速渲染。和Android上的SurfaceFlinger和Ubuntu上的Mir一样，Wayland同样基于EGL接口。EGL用于将本地窗口系统与OpenGL关联起来，与WGL, GLX等作用类似，只是它是用于Embedded platform的。在Wayland/Weston系统中，Wayland定义了用于EGL的窗口抽象，来作为EGL stack（也就是厂商的图形驱动）和Wayland协议的glue layer。它对EGL进行了扩展，增加了比如eglBindWaylandDisplayWL, eglUnbindWaylandDisplayWL, eglQueryWaylandBufferWL等接口，对Wayland友好的EGL库应该提供它们的实现，也就是说要提供Wayland EGL platform，比如mesa（src/egl/main/eglapi.c中）。另一种做法是像libhybris中eglplatform一样通过EGL wrapper的方式加上这些支持（hybris/egl/platforms/common/eglplatformcommon.cpp）。同时，EGL stack需要提供厂商相关的协议扩展使client能与compositor共享buffer。wayland-egl库提供了Wayland中surface和EGL粘合的作用。一个要用硬件加速的EGL window可以基于Wayland的surface创建，即通过wayland-egl提供的接口创建wl_egl_window。wl_egl_window结构中包含了wl_surface，然后wl_egl_window就可以被传入EGL的eglCreateWindowSurface()接口。这样就将Wayland surface与EGL stack联系在一起了。</p> 
+<h2>7 客户端和服务端通信</h2> 
+<h3>7.1 链接链路</h3> 
+<h4> 7.1.1 Domain socket</h4> 
+<p>        socket API原本是为网络通讯设计的，但后来在socket的框架上发展出一种IPC机制，就是UNIX Domain Socket。虽然网络socket也可用于同一台主机的进程间通讯（通过loopback地址127.0.0.1），但是UNIX Domain Socket用于IPC更有效率：不需要经过网络协议栈，不需要打包拆包、计算校验和、维护序号和应答等，只是将应用层数据从一个进程拷贝到另一个进程。这是因为，IPC机制本质上是可靠的通讯，而网络协议是为不可靠的通讯设计的。UNIX Domain Socket也提供面向流和面向数据包两种API接口，类似于TCP和UDP，但是面向消息的UNIX Domain Socket也是可靠的，消息既不会丢失也不会顺序错乱。UNIX Domain Socket是全双工的，API接口语义丰富，相比其它IPC机制有明显的优越性，目前已成为使用最广泛的IPC机制，比如X Window服务器和GUI程序之间就是通过UNIX Domain Socket通讯的。<br> 使用UNIX Domain Socket的过程和网络socket十分相似，也要先调用socket()创建一个socket文件描述符，address family指定为AF_UNIX，type可以选择SOCK_DGRAM或SOCK_STREAM，protocol参数仍然指定为0即可。UNIX Domain Socket与网络socket编程最明显的不同在于地址格式不同，用结构体sockaddr_un表示，网络编程的socket地址是IP地址加端口号，而UNIX Domain Socket的地址是一个socket类型的文件在文件系统中的路径，这个socket文件由bind()调用创建，如果调用bind()时该文件已存在，则bind()错误返回。</p> 
+<p><img alt="" height="467" src="https://images2.imgbox.com/ab/5d/Uln7GYZT_o.png" width="1200"><br>         Wayland协议主要提供了Client端应用与Server端Compositor的通信机制，Weston是Server端Compositor的一个参考实现。Wayland协议中最基础的是提供了一种面向对象的跨进程过程调用的功能，在作用上类似于Android中的Binder。与Binder不同的是，在Wayland中Client和Server底层通过domain socket进行连接。和Binder一样，domain socket支持在进程间传递fd，这为传递graphic buffer和shared memory等提供了基础。Client和Server端一方面各自在消息循环中等待socket上的数据，拿到数据后经过反序列化处理生成本地的函数调用，然后进行调用；另一方面将本地的远端调用请求封装序列化后通过socket发出。另外，由于是基于消息循环的处理模型，意味着这种调用不是同步，但通过等待Server端处理完成后的事件再返回可以达到同步调用的效果。</p> 
+<h4>7.1.2 server端建立</h4> 
+<p>        首先Server端的Compositor在启动时会在$XDG_RUNTIME_DIR目录下创建用于监听的socket，默认为wayland-0。然后把该socket fd加入event loop等待的fd列表 </p> 
+<pre><code>wet_main 函数中
+
+======&gt;verify_xdg_runtime_dir(); //检测XDG_RUNTIME_DIR环境变量
+
+//创建epoll
+======&gt;display = wl_display_create(); 
+============&gt;&gt;	display-&gt;loop = wl_event_loop_create(); 
+
+//创建socket 加入epoll监听,有可读事件会调用 socket_data
+======&gt;weston_create_listening_socket(display, socket_name)
+============&gt;&gt;socket_name = wl_display_add_socket_auto(display)
+==================&gt;&gt;&gt;wl_display_add_socket_auto(struct wl_display *display)
+========================&gt;&gt;&gt;&gt;_wl_display_add_socket 
+==============================&gt;&gt;&gt;&gt;&gt;s-&gt;source = wl_event_loop_add_fd(display-&gt;loop, s-&gt;fd,
+					 WL_EVENT_READABLE,
+					 socket_data, display);
+</code></pre> 
+<h4> 7.1.3 客户端链接</h4> 
+<p><strong>Client端</strong></p> 
+<p>要连接Server端，是通过调用wl_display_connect()。其中会创建socket并且调用connect()连接Server端创建的监听端口。得到与Server端连接的socket fd后调用wl_display_connect_to_fd()创建wl_display。wl_display是Server端的display资源在Client端的代理对象，它的第一个元素wl_proxy，因此它可以与wl_proxy互转。和Server端一样，也会创建一个wl_connection包含读写缓冲区。</p> 
+<pre><code>wl_display_connect()
+    fd =connect_to_socket() // 尝试连接$XDG_RUNTIME_DIR/wayland-0，返回与Server端相连的socket fd。
+        wl_os_socket_cloexec() 
+        connect()
+
+    wl_display_connect_to_fd()// 创建和返回wl_display。
+        display-&gt;proxy.object_interface = &amp;wl_display_interface; // 设置wl_display的接口。
+        display-&gt;proxy.object.implementation = (void(**)(void)) &amp;display_listener // 对Server而言，Client端提供的接口实现是event部分。
+        display-&gt;connection = wl_connection_create() </code></pre> 
+<p><strong>Server端</strong></p> 
+<p><strong>        </strong>当有Client连接时，回调处理函数为socket_data()，其中会调用wl_os_accept_cloexec()得到与该Client相连的socket fd。然后调用wl_client_create()，创建wl_client。Server端会为每一个连接的Client创建wl_client，这些对象被串在display-&gt;client_list这个列表里。wl_client中的wl_connection代表这个与Client的连接，其中包含了in buffer和out buffer，分别作为输入和输出的缓冲区。注意这个in buffer和out buffer都是双份的，一份for普通数据，一份for fd，因为fd需要以out-of-band形式传输，要特殊处理。wl_event_loop_add_fd()会把这个与Client连接的socket fd加入到event loop等待的列表中，回调处理函数为wl_client_connection_data()。</p> 
+<pre><code>socket_data()
+    wl_os_accept_cloexec()
+    wl_client_create()
+        client-&gt;connection = wl_connection_create() 
+         wl_map_init(&amp;client-&gt;objects) // 初始化wl_map对象，用于映射Server和Client端的对象。
+        bind_display() // 绑定Client端的wl_display代理对象与Server端的display资源对象。
+            client-&gt;display_resource = wl_resource_create(.., &amp;wl_display_interface,...)
+ // display资源对象的接口就是wl_display_interface，request的实现在display_interface中。
+//这里创建wl_resource结构，其中resource-&gt;object是一个可供Client调用的远端对象的抽象，其中的成员interface和implementation分别代表其接口和实现。
+//然后用wl_map_insert_at()插入到client-&gt;objects的wl_map结构中供以后查询。
+            wl_resource_set_implementation(..., &amp;display_interface, ...)  // 对Client而言，Server端提供的接口实现是request部分。</code></pre> 
+<h3>7.2 跨进程调用</h3> 
+<p>术语上，Wayland中把Client发给Server的跨进程函数调用称为request，反方向的跨进程函数调用称为event。本质上，它们处理的方式是类似的。要让两个进程通过socket进行函数调用，首先需要将调用抽象成数据流的形式。函数的接口部分是同时链接到Client和Server端的库中的，其中包含了对象所支持的request和event的函数签名。因此这部分不用传输，只要传输目标对象id，方法id和参数列表这些信息就可以了。这些信息会通过wl_closure_marshal()写入wl_closure结构，再由serialize_closure()变成数据流。等到了目标进程后，会从数据流通过wl_connection_demarshal()转回wl_closure。 这个过程类似于Android中的Parcel机制。那么 问题来了，参数中的整形，字符串什么的都好搞，拷贝就行。但如果参数中包含对象，我们不能把整个对象拷贝过去，也不能传引用过去。那么需要一种机制来作同一对象在Server和Client端的映射，这是通过wl_map实现的。wl_map在Client和Server端各有一个，它们分别存了wl_proxy和wl_resource的数组，且是一一对应的。这些对象在这个数组中的索引作为它们的id。这样，参数中的对象只要传id，这个id被传到目的地后会通过查找这个wl_map表来得到本地相应的对象。在功能上类似于Android中的BpXXX和BnXXX。 wl_proxy和wl_resource都包含wl_object对象。这个wl_object和面向对象语言里的对象概念类似，它有interface成员描述了这个对象所实现的接口，implementation是这些接口的实现函数的函数指针数组，id就是在wl_map结构里数组中的索引。前面所说的Client绑定Server端资源的过程就是在Client端创建wl_proxy，在Server端创建wl_resource。然后Client就可以通过wl_proxy调用Server端对应wl_resource的request，Server端就可以通过wl_resource调用Client端对应wl_proxy的event。这个映射过程如下图所示(以wl_registry为例)：</p> 
+<p><img alt="" height="707" src="https://images2.imgbox.com/ef/d3/Mw9vrc8f_o.png" width="1110"></p> 
+<p>与Android不同的是，Android中请求到达Server端，调用时需要在目标对象中有一段Stub来生成调用的上下文。 而Wayland中，这是由libffi完成的。</p> 
+<p>Wayland核心协议是通过protocol/wayland.xml这个文件定义的。它通过wayland_scanner这个程序扫描后会生成wayland-protocol.c, wayland-client-protocol.h和wayland-server-protocol.h三个文件。wayland-client-protocol.h是给Client用的；wayland-server-protocol.h是给Server用的; wayland-protocol.c描述了接口，Client和Server都会用。 这里以wl_display的get_registry()这个request为例，分析下跨进程的过程调用是如何实现的。</p> 
+<p>首先在wayland.xml中申明wl_display有get_registry这个request：</p> 
+<pre><code class="language-XML">    &lt;request name="get_registry"&gt;
+      &lt;description summary="get global registry object"&gt;
+	This request creates a registry object that allows the client
+	to list and bind the global objects available from the
+	compositor.
+
+	It should be noted that the server side resources consumed in
+	response to a get_registry request can only be released when the
+	client disconnects, not when the client side proxy is destroyed.
+	Therefore, clients should invoke get_registry as infrequently as
+	possible to avoid wasting memory.
+      &lt;/description&gt;
+      &lt;arg name="registry" type="new_id" interface="wl_registry"
+	   summary="global registry object"/&gt;
+    &lt;/request&gt;</code></pre> 
+<p>这里的参数类型是new_id，说明需要新建一个代理对象。其它的如object代表一个对象，fd代表代表文件描述符等。</p> 
+<p></p> 
+<p>wayland-protocol.c中描述了wl_display这个对象的request和event信息，其中包含了它们的函数签名。get_registry是request中的一项。</p> 
+<pre><code class="language-cpp">static const struct wl_message wl_display_requests[] = {
+	{ "sync", "n", wayland_types + 8 },
+	{ "get_registry", "n", wayland_types + 9 },
+};
+
+static const struct wl_message wl_display_events[] = {
+	{ "error", "ous", wayland_types + 0 },
+	{ "delete_id", "u", wayland_types + 0 },
+};
+
+WL_PRIVATE const struct wl_interface wl_display_interface = {
+	"wl_display", 1,
+	2, wl_display_requests,
+	2, wl_display_events,
+};</code></pre> 
+<p>wayland-server-protocol.h中：</p> 
+<pre><code class="language-cpp">/**
+ * @ingroup iface_wl_display
+ * @struct wl_display_interface
+ */
+struct wl_display_interface {
+	/**
+	 * asynchronous roundtrip
+	 *
+	 * The sync request asks the server to emit the 'done' event on
+	 * the returned wl_callback object. Since requests are handled
+	 * in-order and events are delivered in-order, this can be used as
+	 * a barrier to ensure all previous requests and the resulting
+	 * events have been handled.
+	 *
+	 * The object returned by this request will be destroyed by the
+	 * compositor after the callback is fired and as such the client
+	 * must not attempt to use it after that point.
+	 *
+	 * The callback_data passed in the callback is the event serial.
+	 * @param callback callback object for the sync request
+	 */
+	void (*sync)(struct wl_client *client,
+		     struct wl_resource *resource,
+		     uint32_t callback);
+	/**
+	 * get global registry object
+	 *
+	 * This request creates a registry object that allows the client
+	 * to list and bind the global objects available from the
+	 * compositor.
+	 *
+	 * It should be noted that the server side resources consumed in
+	 * response to a get_registry request can only be released when the
+	 * client disconnects, not when the client side proxy is destroyed.
+	 * Therefore, clients should invoke get_registry as infrequently as
+	 * possible to avoid wasting memory.
+	 * @param registry global registry object
+	 */
+	void (*get_registry)(struct wl_client *client,
+			     struct wl_resource *resource,
+			     uint32_t registry);
+};
+
+这个声明是让Server端定义implementation中的实现函数列表用的，如：
+static const struct wl_display_interface display_interface = {
+	display_sync,
+	display_get_registry
+};</code></pre> 
+<p>wayland-client-protocol.h中：</p> 
+<pre><code>/**
+ * @ingroup iface_wl_display
+ *
+ * This request creates a registry object that allows the client
+ * to list and bind the global objects available from the
+ * compositor.
+ *
+ * It should be noted that the server side resources consumed in
+ * response to a get_registry request can only be released when the
+ * client disconnects, not when the client side proxy is destroyed.
+ * Therefore, clients should invoke get_registry as infrequently as
+ * possible to avoid wasting memory.
+ */
+static inline struct wl_registry *
+wl_display_get_registry(struct wl_display *wl_display)
+{
+	struct wl_proxy *registry;
+
+	registry = wl_proxy_marshal_constructor((struct wl_proxy *) wl_display,
+			 WL_DISPLAY_GET_REGISTRY, &amp;wl_registry_interface, NULL);
+
+	return (struct wl_registry *) registry;
+}</code></pre> 
+<p>这是给Client端用来发起request的。当客户端调用wl_display_get_registry()，由于要返回代理对象，所以调用wl_proxy_mashal_constructor()。 返回的wl_registry是一个代理对象。</p> 
+<p><u>wl_display_get_registry()</u></p> 
+<p>    <u>wl_proxy_marshal_constructor()</u></p> 
+<p>        <u>wl_argument_from_va_list()</u> // 将上面传来的参数按wl_display_interface-&gt;methods[WL_DISPLAY_GET_REGISTRY]中签名描述的类型放到wl_argument数组中。</p> 
+<p>        <u>wl_proxy_marshal_array_constructor()</u> </p> 
+<p>            <u>new_proxy = create_outgoing_proxy()</u>  // 因为get_registry()的request参数中有new_id类型，所以要创建一个代理对象。</p> 
+<p>                 <u>proxy_create()</u> //创建wl_proxy。设置interface等信息，然后将该wl_proxy插入到display-&gt;objects的wl_map中，返回值为id，其实就是在wl_map中数组中的索引值。这个值是会被发到Server端的，这样Server端就可以在Server端的wl_map数组的相同索引值的位置插入相应的wl_resource。这样逻辑上，就创建了wl_proxy和wl_resource的映射关系。以后，Client和Server间要相互引用对象只要传这个id就可以了。</p> 
+<p>            <u>closure = wl_closure_marshal() </u>//创建wl_closure并根据前面的参数列表初始化。先将前面生成的wl_argument数组拷贝到wl_closure的args成员中。然后根据类型做调整，如将wl_proxy的对象指针改为id，因为传个本地指针到另一个进程是没意义的。</p> 
+<p>            <u>wl_closure_send()</u> // 发送前面生成的wl_closure。</p> 
+<p>                <u>copy_fds_to_connection()</u> // 将参数中的fd放到专门的fd out buffer中。因为它们在发送时是要特殊处理的。</p> 
+<p>                <u>serialize_closure(</u>) //将wl_closure转化为byte stream。像类型为object的参数会转化为id。</p> 
+<p>                <u>wl_connection_write()</u> // 放到connection的out buffer，准备通过socket发送 。</p> 
+<p>到这里本地的wl_registry代理对象创建完成，并且准备向Server发出request。当下次执行到wl_display_dispatch_queue()时，会调用wl_connection_flush()把connection中out buffer的request通过socket发出去。当然，在往out buffer写时发现满了也会调用wl_connection_flush()往socket发数据。</p> 
+<p></p> 
+<p>到了Server端，前面提到会调用处理函数wl_client_connection_data()进行处理：</p> 
+<pre><code class="language-cpp">wl_client_connection_data()
+
+    wl_connection_flush() //向Client发送数据。
+
+    wl_connection_read() //从Client接收处理。
+
+    while (...) // 循环处理从socket中读到的数据。
+
+        wl_connection_copy() // 每次从缓冲中读入64字节。
+                            //它相当于一个request的header，后面会跟参数数据。
+                            //其中前4个字节代表是向哪个对象发出request的。
+                            //后面4个字节包含opcode（代表是这个object的哪个request），
+                            //及后面参数的长度。
+
+        wl_map_lookup() // 在wl_map中查找目标资源对象wl_resource。
+//其成员object中有该对象的接口和实现列表。
+//结合前面的opcode就可以得到相应的request的描述，用wl_message表示。
+//如 { "get_registry", "n", types + 9 }。
+
+        wl_connection_demarshal()   // 根据interface中的函数签名信息生成函数闭包wl_closure。
+//主要是通过wl_message中对参数的描述从缓冲区中把参数读到wl_closure的args成员中。
+//wl_closure的args成员是wl_argument的数组。
+//因为这里无法预先知道参数类型，所以wl_argument是个union。
+
+        wl_closure_lookup_objects() // wl_closure中的参数中如果有object的话，现在还只有id号。
+//这步会通过wl_map把id号转为wl_object。
+
+        wl_closure_invoke() //使用libffi库生成trampoline code，跳过去执行。</code></pre> 
+<p>在这个场景下，由于之前在bind_display()中把client-&gt;display_resource的implementation设为：</p> 
+<pre><code class="language-cpp">static const struct wl_display_interface display_interface = {
+	display_sync,
+	display_get_registry
+};</code></pre> 
+<p>所以接下来会调用到display_get_registry()。这个函数里会创建wl_registry对应的wl_resource对象。创建好后会放到display-&gt;registry_resource_list中。前面提到过，这个registry资源逻辑上的作用是Client放在Server端的Observer，它用于监听Server端有哪些Global对象（Service服务）。display_get_registry()函数接下去会对于每一个Global对象 向该Client新建的registry发送事件 。另外在有Global对象创建和销毁时（wl_global_create()和wl_global_destroy()），Server会向所有的registry发送事件进行通知。因此，Global对象可以理解为可动态加载的Service。</p> 
+<p>那么，这些Global对象具体都是些什么呢？为了故事的完整性，这里就插播段题外话。Server端的Compositor在启动时一般会注册一些Global对象，逻辑上其实就是一些服务。 通过Wayland提供的wl_global_create(）添加：</p> 
+<pre><code class="language-cpp">WL_EXPORT struct wl_global *
+wl_global_create(struct wl_display *display,
+		 const struct wl_interface *interface, int version,
+		 void *data, wl_global_bind_func_t bind)
+{
+	struct wl_global *global;
+	struct wl_resource *resource;
+
+	if (version &lt; 1) {
+		wl_log("wl_global_create: failing to create interface "
+		       "'%s' with version %d because it is less than 1\n",
+			interface-&gt;name, version);
+		return NULL;
+	}
+
+	if (version &gt; interface-&gt;version) {
+		wl_log("wl_global_create: implemented version for '%s' "
+		       "higher than interface version (%d &gt; %d)\n",
+		       interface-&gt;name, version, interface-&gt;version);
+		return NULL;
+	}
+
+	global = malloc(sizeof *global);
+	if (global == NULL)
+		return NULL;
+
+	global-&gt;display = display;
+	global-&gt;name = display-&gt;id++;
+	global-&gt;interface = interface;
+	global-&gt;version = version;
+	global-&gt;data = data;
+	global-&gt;bind = bind;
+	global-&gt;removed = false;
+    //  display-&gt;global_list保存了Global对象的列表。
+	wl_list_insert(display-&gt;global_list.prev, &amp;global-&gt;link);
+
+	wl_list_for_each(resource, &amp;display-&gt;registry_resource_list, link)
+		wl_resource_post_event(resource,
+				       WL_REGISTRY_GLOBAL,
+				       global-&gt;name,
+				       global-&gt;interface-&gt;name,
+				       global-&gt;version); // 向之前注册过的registry对象发送这个新创建Global对象的event。
+
+	return global;
+}</code></pre> 
+<p>以wl_compositor这个Global对象为例， Server端调用 wl_global_create(display, &amp; wl_compositor_interface , 3,  ec, compositor_bind)。然后当 Client端调用wl_display_get_registry()时，Server端的display_get_registry()会 对每个Global对象 向Client发送global事件，因此Server端有几个Global对象就会发几个event。Client收到event后调用先前注册的回调registry_handle_global()。根据interface name判断当前发来的是哪一个，然后调用wl_reigistry_bind(..., &amp;wl_compositor_interface,..)绑定资源，同时创建本地代理对象。接着S erver端相应地调用registry_bind()，其中会调用先前在wl_global_create()中注册的回调函数，即compositor_bind()。接着经过 wl_resource_create(), wl_resource_set_implementation()等创建wl_resource对象。也就是说，对于同一个Global对象，每有Client绑定一次，就会创建一个wl_resource对象。换句话说，对于Server来说，每一个Client有一个命名空间，同一个Global对象在每一个Client命名空间的wl_resource是不一样的。这样，对于一个Global对象（Service服务），在Client端创建了wl_proxy，在Server端创建了wl_resource，它们就这样绑定起来了。wl_proxy.object包含了event的处理函数，这是对Server端暴露的接口，而wl_resource.object包含了request的处理函数，这是对Client暴露的接口。</p> 
+<p></p> 
+<p>回到故事主线上，前面是从Client端调用Server端对象的request的流程，从Server端向Client端对象发送event并调用其回调函数的过程也是类似的。下面以display_get_registry()中向Client端发送global事件为例分析下流程。S erver端通过wl_resource_post_event()来向Client发送event。</p> 
+<pre><code class="language-cpp">wl_resource_post_event()
+
+    wl_resource_post_event_array()
+
+        wl_closure_marshal() // 封装成wl_closure，其中会转化object等对象。
+
+        wl_closure_send()
+
+            copy_fds_to_connection()
+
+            serialize_closure() // 将closure序列化成数据流，因为将要放到socket上传输。
+
+            wl_connection_write()</code></pre> 
+<p>这样event就被放到connection的out buffer中，等待从socket上发送。 那么，Client是怎么读取和处理这些event呢？ 首先Client端需要监听这个wl_proxy，这是通过调用wl_registry_add_listener()-&gt;wl_proxy_add_listener()设置的。该函数的参数中包含了这个event的处理函数列表registry_listener，它对应的接口在前面调用wl_display_get_registry()时已设置成wl_registry_interface。wl_registry_interface是在前面根据wayland.xml自动生成的一部分。这里体现了event与request的一点细微差别，request是Server端都要处理的，而event在Client可以选择不监听。</p> 
+<p>  </p> 
+<p>然后在Client的主循环中会调用wl_display_dispatch_queue()来处理收到的event和发出out buffer中的request：</p> 
+<pre><code class="language-cpp">wl_display_dispatch_queue()
+
+    dispatch_queue()
+
+    wl_connection_flush()
+
+    read_events() // 从connection的in buffer中读出数据，转为wl_closure，插入到queue-&gt;event_list，等待后续处理。
+
+        wl_connection_read()
+
+        queue_event() //这块处理有点像Server端的wl_client_connection_data()，区别在于这里用的是wl_reigstry_interface的events列表而不是methods列表。
+
+            wl_connection_copy()
+
+            wl_map_lookup() // 查找目标代理对象wl_proxy。
+
+            wl_connection_demarshal() // 从connection的缓冲区中读入数据，结合函数签名生成wl_closure。
+
+            create_proxies() 
+
+            wl_closure_lookup_objects() 
+
+    dispatch_queue() // 将前面插入到queue当中的event（wl_closure）依次拿出来处理。
+
+        dispatch_event(queue) //  display-&gt;display_queue-&gt;event_list的每一个元素是一个wl_closure，代表一个函数调用实例，最后通过wl_closure_invoke()进行调用。
+
+           wl_closure_invoke()</code></pre> 
+<p>这样该event的相应处理回调函数就被调用了，在这个场景中，即registry_handle_global()。下图简单地描绘了整个流程。 </p> 
+<p><img alt="" src="https://images2.imgbox.com/7a/7e/gARWlEHH_o.png"></p> 
+<p></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/46b68cdee0d00476f833f9a85f3b5388/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">个人笔记Openstack中的常用命令</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/4f0c386f0d8d32c7b1bd516dfcdee45d/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Centos7.x Python3.7和pip3 快速安装脚本</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

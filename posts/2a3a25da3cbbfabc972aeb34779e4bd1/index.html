@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>cilium host-routing模式流程分析 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="cilium host-routing模式流程分析" />
+<meta property="og:description" content="本文分析cilium host routing模式下的报文路径和涉及到的ebpf源码分析。
+使能host routing 在满足下面条件下会自动使能，进程启动时会进行判断，如果不满足会自动降级为legacy模式，也就是native routing模式
+Requirements: Kernel &gt;= 5.10 Direct-routing configuration or tunneling eBPF-based kube-proxy replacement eBPF-based masquerading 使能eBPF-based kube-proxy replacement 参考：https://docs.cilium.io/en/v1.12/gettingstarted/kubeproxy-free/
+上面的链接是通过kubeadm从头开始创建k8s集群时替换kube-proxy的流程，如果已经有了k8s集群，并且使用cilium cni时，可按如下
+步骤操作
+在master节点上删除kube-proxy的daemonset和configmap kubectl -n kube-system delete ds kube-proxy kubectl -n kube-system delete cm kube-proxy 删除所有节点上的KUBE相关的iptables规则 # Run on each node with root permissions: iptables-save | grep -v KUBE | iptables-restore 修改cilium的配置文件，增加如下两项配置 kubectl -n kube-system edit configmap cilium-config kube-proxy-replacement: strict k8s-api-server: https://192.168.56.2:6443 配置说明如下： kube-proxy-replacement有如下三个可选值，默认为partial，可参考函数initKubeProxyReplacementOptions partial: 只使能部分功能，比如使能--enable-node-port，--enable-host-port等 strict: 使能所有功能，如果有不支持的会panic disabled: 关闭replacement k8s-api-server：用来指定k8s apiserver。cilium启动时默认会通过kubernetes svc(cluster ip 10." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/2a3a25da3cbbfabc972aeb34779e4bd1/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-08-22T17:29:57+08:00" />
+<meta property="article:modified_time" content="2023-08-22T17:29:57+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">cilium host-routing模式流程分析</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>本文分析cilium host routing模式下的报文路径和涉及到的ebpf源码分析。</p> 
+<h4><a id="host_routing_1"></a>使能host routing</h4> 
+<p>在满足下面条件下会自动使能，进程启动时会进行判断，如果不满足会自动降级为legacy模式，也就是native routing模式</p> 
+<pre><code class="prism language-go">Requirements<span class="token punctuation">:</span>
+Kernel <span class="token operator">&gt;=</span> <span class="token number">5.10</span>
+Direct<span class="token operator">-</span>routing configuration or tunneling
+eBPF<span class="token operator">-</span>based kube<span class="token operator">-</span>proxy replacement
+eBPF<span class="token operator">-</span>based masquerading
+</code></pre> 
+<h5><a id="eBPFbased_kubeproxy_replacement_10"></a>使能eBPF-based kube-proxy replacement</h5> 
+<p>参考：https://docs.cilium.io/en/v1.12/gettingstarted/kubeproxy-free/<br> 上面的链接是通过kubeadm从头开始创建k8s集群时替换kube-proxy的流程，如果已经有了k8s集群，并且使用cilium cni时，可按如下<br> 步骤操作</p> 
+<ol><li>在master节点上删除kube-proxy的daemonset和configmap</li></ol> 
+<pre><code class="prism language-go">kubectl <span class="token operator">-</span>n kube<span class="token operator">-</span>system <span class="token builtin">delete</span> ds kube<span class="token operator">-</span>proxy
+kubectl <span class="token operator">-</span>n kube<span class="token operator">-</span>system <span class="token builtin">delete</span> cm kube<span class="token operator">-</span>proxy
+</code></pre> 
+<ol start="2"><li>删除所有节点上的KUBE相关的iptables规则</li></ol> 
+<pre><code class="prism language-go"># Run on each node with root permissions<span class="token punctuation">:</span>
+iptables<span class="token operator">-</span>save <span class="token operator">|</span> grep <span class="token operator">-</span>v KUBE <span class="token operator">|</span> iptables<span class="token operator">-</span>restore
+</code></pre> 
+<ol start="3"><li>修改cilium的配置文件，增加如下两项配置</li></ol> 
+<pre><code class="prism language-go">kubectl <span class="token operator">-</span>n kube<span class="token operator">-</span>system edit configmap cilium<span class="token operator">-</span>config
+	kube<span class="token operator">-</span>proxy<span class="token operator">-</span>replacement<span class="token punctuation">:</span> strict
+	k8s<span class="token operator">-</span>api<span class="token operator">-</span>server<span class="token punctuation">:</span> https<span class="token punctuation">:</span><span class="token operator">/</span><span class="token operator">/</span><span class="token number">192.168</span><span class="token number">.56</span><span class="token number">.2</span><span class="token punctuation">:</span><span class="token number">6443</span>
+
+配置说明如下：
+	kube<span class="token operator">-</span>proxy<span class="token operator">-</span>replacement有如下三个可选值，默认为partial，可参考函数initKubeProxyReplacementOptions
+		partial<span class="token punctuation">:</span> 只使能部分功能，比如使能<span class="token operator">--</span>enable<span class="token operator">-</span>node<span class="token operator">-</span>port，<span class="token operator">--</span>enable<span class="token operator">-</span>host<span class="token operator">-</span>port等
+		strict<span class="token punctuation">:</span> 使能所有功能，如果有不支持的会<span class="token builtin">panic</span>
+		disabled<span class="token punctuation">:</span> 关闭replacement
+
+	k8s<span class="token operator">-</span>api<span class="token operator">-</span>server：用来指定k8s apiserver。cilium启动时默认会通过kubernetes <span class="token function">svc</span><span class="token punctuation">(</span>cluster ip <span class="token number">10.96</span><span class="token number">.0</span><span class="token number">.1</span><span class="token punctuation">)</span>连接k8s，
+	前面已经把kube<span class="token operator">-</span>proxy相关的删除了，所以也连不上kubernetes svc，只能通过此参数显示指定，可参考函数createConfig
+</code></pre> 
+<ol start="4"><li>删除旧的cilium相关pod，等新pod起来后，可以查看替换情况</li></ol> 
+<pre><code class="prism language-go">root@master<span class="token punctuation">:</span>~# kubectl exec <span class="token operator">-</span>it <span class="token operator">-</span>n kube<span class="token operator">-</span>system cilium<span class="token operator">-</span>5rwsg <span class="token operator">--</span> cilium status <span class="token operator">--</span>verbose
+<span class="token operator">...</span>
+KubeProxyReplacement Details<span class="token punctuation">:</span>
+  Status<span class="token punctuation">:</span>                 Strict
+  Socket LB<span class="token punctuation">:</span>              Enabled
+  Socket LB Protocols<span class="token punctuation">:</span>    TCP<span class="token punctuation">,</span> UDP
+  Devices<span class="token punctuation">:</span>                enp0s8 <span class="token number">192.168</span><span class="token number">.56</span><span class="token number">.2</span> <span class="token punctuation">(</span>Direct Routing<span class="token punctuation">)</span>
+  Mode<span class="token punctuation">:</span>                   SNAT <span class="token operator">--</span><span class="token operator">&gt;</span>通过nodeport连接service时，会做snat，也支持dsr
+  Backend Selection<span class="token punctuation">:</span>      Random
+  Session Affinity<span class="token punctuation">:</span>       Enabled
+  Graceful Termination<span class="token punctuation">:</span>   Enabled
+  NAT46<span class="token operator">/</span><span class="token number">64</span> Support<span class="token punctuation">:</span>       Disabled
+  XDP Acceleration<span class="token punctuation">:</span>       Disabled
+  Services<span class="token punctuation">:</span>
+  <span class="token operator">-</span> ClusterIP<span class="token punctuation">:</span>      Enabled
+  <span class="token operator">-</span> NodePort<span class="token punctuation">:</span>       Enabled <span class="token punctuation">(</span>Range<span class="token punctuation">:</span> <span class="token number">30000</span><span class="token operator">-</span><span class="token number">32767</span><span class="token punctuation">)</span>
+  <span class="token operator">-</span> LoadBalancer<span class="token punctuation">:</span>   Enabled
+  <span class="token operator">-</span> externalIPs<span class="token punctuation">:</span>    Enabled
+  <span class="token operator">-</span> HostPort<span class="token punctuation">:</span>       Enabled
+</code></pre> 
+<h5><a id="_eBPFbased_masquerading_61"></a>使能 eBPF-based masquerading</h5> 
+<p>修改cilium的配置文件，增加如下配置，删除旧的cilium pod，等新pod起来</p> 
+<pre><code class="prism language-go">kubectl <span class="token operator">-</span>n kube<span class="token operator">-</span>system edit configmap cilium<span class="token operator">-</span>config
+    enable<span class="token operator">-</span>bpf<span class="token operator">-</span>masquerade<span class="token punctuation">:</span> <span class="token string">"true"</span>
+</code></pre> 
+<h5><a id="_67"></a>验证</h5> 
+<p>可使用cilium status --verbose查看是否使能host routing</p> 
+<pre><code class="prism language-go">host routing生效前
+Host Routing<span class="token punctuation">:</span>           Legacy
+Masquerading<span class="token punctuation">:</span>           IPTables <span class="token punctuation">[</span>IPv4<span class="token punctuation">:</span> Enabled<span class="token punctuation">,</span> IPv6<span class="token punctuation">:</span> Disabled<span class="token punctuation">]</span>
+
+host routing生效后
+Host Routing<span class="token punctuation">:</span>           BPF
+Masquerading<span class="token punctuation">:</span>           BPF   <span class="token punctuation">[</span>enp0s8<span class="token punctuation">]</span>   <span class="token number">10.0</span><span class="token number">.0</span><span class="token number">.0</span><span class="token operator">/</span><span class="token number">8</span> <span class="token punctuation">[</span>IPv4<span class="token punctuation">:</span> Enabled<span class="token punctuation">,</span> IPv6<span class="token punctuation">:</span> Disabled<span class="token punctuation">]</span>
+</code></pre> 
+<h4><a id="_78"></a>拓扑图如下</h4> 
+<p><img src="https://images2.imgbox.com/62/6f/FxtVo461_o.png" alt="在这里插入图片描述"><br> 这里主要分析一下，对比其他模式，host routing有什么优势，<br> master上发报文方向时，在lxc1的ebpf程序中执行路由(图中的路由表是在ebpf程序中被查找)和邻居查找，如果成功则调用bpf_redirect/bpf_redirect_neigh直接将报文从出接口enp0s8发出，跳过了host协议栈中netfilter的处理。<br> node1上收报文方向时，在enp0s8收到报文执行ebpf程序，查找podmap确认目的ip为本地pod后，则调用bpf_redirect_peer将报文直接发到pod内部的eth0，不仅跳过了host协议栈中netfilter的处理，也减少了一次软中断的处理</p> 
+<p>由此可见bpf_redirect_neigh和bpf_redirect_peer是实现host routing模式的关键。</p> 
+<h4><a id="_85"></a>流程分析</h4> 
+<p>本文只分析跨host两个pod之间的通信过程。</p> 
+<h5><a id="pod1ip_87"></a>从pod1发送的ip报文路径如下</h5> 
+<p><strong>报文路径</strong><br> eth0(pod1) -&gt; lxc1(tc ingress:from-container) -&gt; enp0s8(master，tc egress:to-netdev)</p> 
+<p>eth0(pod1):</p> 
+<pre><code class="prism language-go">	<span class="token comment">//pod内部发出的报文，最终会调用veth_xmit发出</span>
+	<span class="token comment">//根据veth原理，会将报文的dev改成对端dev(即lxc)后调用netif_rx走host协议栈</span>
+	static netdev_tx_t <span class="token function">veth_xmit</span><span class="token punctuation">(</span><span class="token keyword">struct</span> sk_buff <span class="token operator">*</span>skb<span class="token punctuation">,</span> <span class="token keyword">struct</span> net_device <span class="token operator">*</span>dev<span class="token punctuation">)</span>
+		<span class="token keyword">struct</span> veth_priv <span class="token operator">*</span>rcv_priv<span class="token punctuation">,</span> <span class="token operator">*</span>priv <span class="token operator">=</span> <span class="token function">netdev_priv</span><span class="token punctuation">(</span>dev<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">struct</span> net_device <span class="token operator">*</span>rcv<span class="token punctuation">;</span>
+		rcv <span class="token operator">=</span> <span class="token function">rcu_dereference</span><span class="token punctuation">(</span>priv<span class="token operator">-</span><span class="token operator">&gt;</span>peer<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token function">veth_forward_skb</span><span class="token punctuation">(</span>rcv<span class="token punctuation">,</span> skb<span class="token punctuation">,</span> rq<span class="token punctuation">,</span> rcv_xdp<span class="token punctuation">)</span>
+			<span class="token function">netif_rx</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span>
+</code></pre> 
+<p>lxc1(tc ingress:from-container):</p> 
+<pre><code class="prism language-go">	<span class="token comment">//在协议栈入口调用sch_handle_ingress执行ebpf程序，查路由表和邻居表，如果成功的互，会返回CTX_ACT_REDIRECT，</span>
+	<span class="token comment">//调用skb_do_redirect将报文重定向到出接口</span>
+	<span class="token comment">//ebpf程序处理流程后面会详细介绍</span>
+	__netif_receive_skb_core
+		<span class="token operator">...</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">static_branch_unlikely</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>ingress_needed_key<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token builtin">bool</span> another <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+			skb <span class="token operator">=</span> <span class="token function">sch_handle_ingress</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> <span class="token operator">&amp;</span>pt_prev<span class="token punctuation">,</span> <span class="token operator">&amp;</span>ret<span class="token punctuation">,</span> orig_dev<span class="token punctuation">,</span> <span class="token operator">&amp;</span>another<span class="token punctuation">)</span><span class="token punctuation">;</span>
+				<span class="token comment">//执行ebpf程序，如果返回值为TC_ACT_REDIRECT，将调用skb_do_redirect将报文重定向到其他接口</span>
+				<span class="token keyword">switch</span> <span class="token punctuation">(</span><span class="token function">tcf_classify_ingress</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> miniq<span class="token operator">-</span><span class="token operator">&gt;</span>block<span class="token punctuation">,</span> miniq<span class="token operator">-</span><span class="token operator">&gt;</span>filter_list<span class="token punctuation">,</span> <span class="token operator">&amp;</span>cl_res<span class="token punctuation">,</span> <span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+				<span class="token operator">...</span>
+				<span class="token keyword">case</span> TC_ACT_REDIRECT<span class="token punctuation">:</span>
+					<span class="token comment">/* skb_mac_header check was done by cls/act_bpf, so
+					 * we can safely push the L2 header back before
+					 * redirecting to another netdev
+					 */</span>
+					<span class="token function">__skb_push</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> skb<span class="token operator">-</span><span class="token operator">&gt;</span>mac_len<span class="token punctuation">)</span><span class="token punctuation">;</span>
+					<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">skb_do_redirect</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token operator">-</span>EAGAIN<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+						<span class="token function">__skb_pull</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> skb<span class="token operator">-</span><span class="token operator">&gt;</span>mac_len<span class="token punctuation">)</span><span class="token punctuation">;</span>
+						<span class="token comment">//如果返回值为-EAGAIN，则设置another为true，表示要goto到another重新走一遍协议栈</span>
+						<span class="token operator">*</span>another <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+						<span class="token keyword">break</span><span class="token punctuation">;</span>
+					<span class="token punctuation">}</span>
+					<span class="token keyword">return</span> NULL<span class="token punctuation">;</span>
+				<span class="token operator">...</span>
+				<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>ebpf程序分析</strong><br> lxc1(tc ingress:from-container)</p> 
+<pre><code class="prism language-go">handle_xgress
+	<span class="token function">send_trace_notify</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> TRACE_FROM_LXC<span class="token punctuation">,</span> SECLABEL<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span>
+			  TRACE_REASON_UNKNOWN<span class="token punctuation">,</span> TRACE_PAYLOAD_LEN<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token function">ep_tail_call</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> CILIUM_CALL_IPV4_FROM_LXC<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">//tail_handle_ipv4</span>
+		__tail_handle_ipv4
+			tail_handle_ipv4_cont
+				handle_ipv4_from_lxc
+					<span class="token comment">//根据目的ip到cilium_ipcache map中查找，cilium_ipcache中保存的是整个集群所有的pod信息</span>
+					info <span class="token operator">=</span> <span class="token function">lookup_ip4_remote_endpoint</span><span class="token punctuation">(</span>ip4<span class="token operator">-</span><span class="token operator">&gt;</span>daddr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+						<span class="token function">ipcache_lookup4</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>IPCACHE_MAP<span class="token punctuation">,</span> addr<span class="token punctuation">,</span> V4_CACHE_KEY_LEN<span class="token punctuation">)</span>
+					<span class="token keyword">if</span> <span class="token punctuation">(</span>info <span class="token operator">&amp;&amp;</span> info<span class="token operator">-</span><span class="token operator">&gt;</span>sec_label<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+						<span class="token comment">//主要用在egress policy中，检查是否允许访问此业务</span>
+						<span class="token operator">*</span>dst_id <span class="token operator">=</span> info<span class="token operator">-</span><span class="token operator">&gt;</span>sec_label<span class="token punctuation">;</span>
+						tunnel_endpoint <span class="token operator">=</span> info<span class="token operator">-</span><span class="token operator">&gt;</span>tunnel_endpoint<span class="token punctuation">;</span>
+						encrypt_key <span class="token operator">=</span> <span class="token function">get_min_encrypt_key</span><span class="token punctuation">(</span>info<span class="token operator">-</span><span class="token operator">&gt;</span>key<span class="token punctuation">)</span><span class="token punctuation">;</span>
+					<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+						<span class="token operator">*</span>dst_id <span class="token operator">=</span> WORLD_ID<span class="token punctuation">;</span>
+					<span class="token punctuation">}</span>
+					<span class="token comment">//执行egress policy</span>
+					verdict <span class="token operator">=</span> <span class="token function">policy_can_egress4</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> tuple<span class="token punctuation">,</span> SECLABEL<span class="token punctuation">,</span> <span class="token operator">*</span>dst_id<span class="token punctuation">,</span> <span class="token operator">&amp;</span>policy_match_type<span class="token punctuation">,</span> <span class="token operator">&amp;</span>audited<span class="token punctuation">)</span><span class="token punctuation">;</span>
+					<span class="token operator">...</span>
+					<span class="token comment">//在host routing模式下，直接在ebpf程序中查找路由，如果查找成功则直接重定向到出接口，</span>
+					<span class="token comment">//不用再返回host协议栈处理</span>
+					<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">is_defined</span><span class="token punctuation">(</span>ENABLE_HOST_ROUTING<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+						<span class="token builtin">int</span> oif<span class="token punctuation">;</span>
+
+						ret <span class="token operator">=</span> <span class="token function">redirect_direct_v4</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> ETH_HLEN<span class="token punctuation">,</span> ip4<span class="token punctuation">,</span> <span class="token operator">&amp;</span>oif<span class="token punctuation">)</span><span class="token punctuation">;</span>
+							<span class="token comment">//调用bpf helper函数 fib_lookup(bpf_ipv4_fib_lookup)，查找路由和邻居表</span>
+							<span class="token comment">//如果查找路由表成功，则将下一跳保存到 fib_params-&gt;ipv4_dst，将出接口保存到 params-&gt;ifindex</span>
+							<span class="token comment">//如果查找邻居表成功，则将出接口mac保存到params-&gt;smac，将下一跳mac保存到params-&gt;dmac</span>
+							ret <span class="token operator">=</span> <span class="token function">fib_lookup</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> <span class="token operator">&amp;</span>fib_params<span class="token punctuation">,</span> <span class="token function">sizeof</span><span class="token punctuation">(</span>fib_params<span class="token punctuation">)</span><span class="token punctuation">,</span> BPF_FIB_LOOKUP_DIRECT<span class="token punctuation">)</span><span class="token punctuation">;</span>
+							<span class="token keyword">switch</span> <span class="token punctuation">(</span>ret<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+							<span class="token comment">//路由表和邻居表都查到了，则更改报文源目的mac，调用bpf helper ctx_redirect将报文重定向到出接口</span>
+							<span class="token keyword">case</span> BPF_FIB_LKUP_RET_SUCCESS<span class="token punctuation">:</span>
+								<span class="token keyword">break</span><span class="token punctuation">;</span>
+							<span class="token comment">//只查到路由表，未查到邻居表，调用bpf helper redirect_neigh查找邻居表，</span>
+							<span class="token comment">//如果仍然查不到(大概率还是查不到)，则创建邻居表，发送arp学习对端mac</span>
+							<span class="token keyword">case</span> BPF_FIB_LKUP_RET_NO_NEIGH<span class="token punctuation">:</span>
+								<span class="token comment">/* GW could also be v6, so copy union. */</span>
+								nh_params<span class="token punctuation">.</span>nh_family <span class="token operator">=</span> fib_params<span class="token punctuation">.</span>family<span class="token punctuation">;</span>
+								<span class="token function">__bpf_memcpy_builtin</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>nh_params<span class="token punctuation">.</span>ipv6_nh<span class="token punctuation">,</span> <span class="token operator">&amp;</span>fib_params<span class="token punctuation">.</span>ipv6_dst<span class="token punctuation">,</span>
+											 <span class="token function">sizeof</span><span class="token punctuation">(</span>nh_params<span class="token punctuation">.</span>ipv6_nh<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+								no_neigh <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+								<span class="token comment">//下一跳</span>
+								nh <span class="token operator">=</span> <span class="token operator">&amp;</span>nh_params<span class="token punctuation">;</span>
+								<span class="token keyword">break</span><span class="token punctuation">;</span>
+							<span class="token keyword">default</span><span class="token punctuation">:</span>
+								<span class="token comment">//其他情况则返回DROP</span>
+								<span class="token keyword">return</span> CTX_ACT_DROP<span class="token punctuation">;</span>
+							<span class="token punctuation">}</span>
+
+							<span class="token comment">//ttl减一</span>
+							<span class="token function">ipv4_l3</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> l3_off<span class="token punctuation">,</span> NULL<span class="token punctuation">,</span> NULL<span class="token punctuation">,</span> ip4<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+							<span class="token keyword">if</span> <span class="token punctuation">(</span>no_neigh<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+								<span class="token keyword">if</span> <span class="token punctuation">(</span>nh<span class="token punctuation">)</span>
+									<span class="token comment">//已经有了下一跳，则调用redirect_neigh只需要查找邻居表</span>
+									<span class="token keyword">return</span> <span class="token function">redirect_neigh</span><span class="token punctuation">(</span><span class="token operator">*</span>oif<span class="token punctuation">,</span> nh<span class="token punctuation">,</span> <span class="token function">sizeof</span><span class="token punctuation">(</span><span class="token operator">*</span>nh<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+								<span class="token keyword">else</span>
+									<span class="token comment">//这个分支是定义了ENABLE_SKIP_FIB的情况，此时调用redirect_neigh会查找路由表和邻居表</span>
+									<span class="token keyword">return</span> <span class="token function">redirect_neigh</span><span class="token punctuation">(</span><span class="token operator">*</span>oif<span class="token punctuation">,</span> NULL<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+							<span class="token punctuation">}</span>
+
+							<span class="token comment">//更新源目的mac</span>
+							<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">eth_store_daddr</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> fib_params<span class="token punctuation">.</span>dmac<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+								<span class="token keyword">return</span> CTX_ACT_DROP<span class="token punctuation">;</span>
+							<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">eth_store_saddr</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> fib_params<span class="token punctuation">.</span>smac<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+								<span class="token keyword">return</span> CTX_ACT_DROP<span class="token punctuation">;</span>
+							<span class="token comment">//重定向到出接口(此时还未真正重定向，只是设置了标志位和出接口索引，</span>
+							<span class="token comment">//后面调用skb_do_redirect时才真正执行报文重定向)</span>
+							<span class="token keyword">return</span> <span class="token function">ctx_redirect</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> <span class="token operator">*</span>oif<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+						<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">likely</span><span class="token punctuation">(</span>ret <span class="token operator">==</span> CTX_ACT_REDIRECT<span class="token punctuation">)</span><span class="token punctuation">)</span>
+							<span class="token function">send_trace_notify</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> TRACE_TO_NETWORK<span class="token punctuation">,</span> SECLABEL<span class="token punctuation">,</span> <span class="token operator">*</span>dst_id<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> oif<span class="token punctuation">,</span> trace<span class="token punctuation">.</span>reason<span class="token punctuation">,</span> trace<span class="token punctuation">.</span>monitor<span class="token punctuation">)</span><span class="token punctuation">;</span>
+						<span class="token keyword">return</span> ret<span class="token punctuation">;</span>
+					<span class="token punctuation">}</span>
+</code></pre> 
+<p>enp0s8(master，tc egress:to-netdev) 这个场景下没具体的作用，只看个trace即可</p> 
+<pre><code class="prism language-go"><span class="token function">__section</span><span class="token punctuation">(</span><span class="token string">"to-netdev"</span><span class="token punctuation">)</span>
+<span class="token builtin">int</span> <span class="token function">to_netdev</span><span class="token punctuation">(</span><span class="token keyword">struct</span> __ctx_buff <span class="token operator">*</span>ctx __maybe_unused<span class="token punctuation">)</span>
+	<span class="token operator">...</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>traced<span class="token punctuation">)</span>
+		<span class="token function">send_trace_notify</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> TRACE_TO_NETWORK<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span>
+				  <span class="token number">0</span><span class="token punctuation">,</span> trace<span class="token punctuation">.</span>reason<span class="token punctuation">,</span> trace<span class="token punctuation">.</span>monitor<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">return</span> ret<span class="token punctuation">;</span>
+</code></pre> 
+<h5><a id="node1_224"></a>报文到达node1后的路径如下</h5> 
+<p><strong>报文路径</strong><br> enp0s8(node1)(tc ingress:from-netdev) -&gt; eth0(pod2)</p> 
+<p>enp0s8(node1)(tc ingress:from-netdev):</p> 
+<pre><code class="prism language-go">	<span class="token comment">//网卡接收到报文后，走host协议栈处理流程，执行enp0s8接口上挂载的ebpf程序</span>
+	<span class="token comment">//ebpf程序处理流程后面会详细介绍</span>
+	__netif_receive_skb_core
+		<span class="token operator">...</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">static_branch_unlikely</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>ingress_needed_key<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token builtin">bool</span> another <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+			skb <span class="token operator">=</span> <span class="token function">sch_handle_ingress</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> <span class="token operator">&amp;</span>pt_prev<span class="token punctuation">,</span> <span class="token operator">&amp;</span>ret<span class="token punctuation">,</span> orig_dev<span class="token punctuation">,</span> <span class="token operator">&amp;</span>another<span class="token punctuation">)</span><span class="token punctuation">;</span>
+				<span class="token comment">//执行ebpf程序，如果返回值为TC_ACT_REDIRECT，将调用skb_do_redirect将报文重定向到其他接口</span>
+				<span class="token keyword">switch</span> <span class="token punctuation">(</span><span class="token function">tcf_classify_ingress</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> miniq<span class="token operator">-</span><span class="token operator">&gt;</span>block<span class="token punctuation">,</span> miniq<span class="token operator">-</span><span class="token operator">&gt;</span>filter_list<span class="token punctuation">,</span> <span class="token operator">&amp;</span>cl_res<span class="token punctuation">,</span> <span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+				<span class="token operator">...</span>
+				<span class="token keyword">case</span> TC_ACT_REDIRECT<span class="token punctuation">:</span>
+					<span class="token comment">/* skb_mac_header check was done by cls/act_bpf, so
+					 * we can safely push the L2 header back before
+					 * redirecting to another netdev
+					 */</span>
+					<span class="token function">__skb_push</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> skb<span class="token operator">-</span><span class="token operator">&gt;</span>mac_len<span class="token punctuation">)</span><span class="token punctuation">;</span>
+					<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">skb_do_redirect</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token operator">-</span>EAGAIN<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+						<span class="token function">__skb_pull</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> skb<span class="token operator">-</span><span class="token operator">&gt;</span>mac_len<span class="token punctuation">)</span><span class="token punctuation">;</span>
+						<span class="token comment">//如果返回值为-EAGAIN，则设置another为true，表示要goto到another重新走一遍协议栈</span>
+						<span class="token operator">*</span>another <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+						<span class="token keyword">break</span><span class="token punctuation">;</span>
+					<span class="token punctuation">}</span>
+					<span class="token keyword">return</span> NULL<span class="token punctuation">;</span>
+				<span class="token operator">...</span>
+				<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>ebpf程序分析</strong></p> 
+<pre><code class="prism language-go"><span class="token function">__section</span><span class="token punctuation">(</span><span class="token string">"from-netdev"</span><span class="token punctuation">)</span>
+<span class="token builtin">int</span> <span class="token function">from_netdev</span><span class="token punctuation">(</span><span class="token keyword">struct</span> __ctx_buff <span class="token operator">*</span>ctx<span class="token punctuation">)</span>
+	<span class="token keyword">return</span> <span class="token function">handle_netdev</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> <span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">return</span> <span class="token function">do_netdev</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> proto<span class="token punctuation">,</span> from_host<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token function">ep_tail_call</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> CILIUM_CALL_IPV4_FROM_NETDEV<span class="token punctuation">)</span><span class="token punctuation">;</span>
+				tail_handle_ipv4_from_netdev
+					<span class="token function">tail_handle_ipv4</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+						<span class="token function">handle_ipv4</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> proxy_identity<span class="token punctuation">,</span> ipcache_srcid<span class="token punctuation">,</span> from_host<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+static __always_inline <span class="token builtin">int</span>
+<span class="token function">handle_ipv4</span><span class="token punctuation">(</span><span class="token keyword">struct</span> __ctx_buff <span class="token operator">*</span>ctx<span class="token punctuation">,</span> __u32 secctx<span class="token punctuation">,</span>
+	    __u32 ipcache_srcid __maybe_unused<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token builtin">bool</span> from_host<span class="token punctuation">)</span>
+	<span class="token comment">/* Lookup IPv4 address in list of local endpoints and host IPs */</span>
+	ep <span class="token operator">=</span> <span class="token function">lookup_ip4_endpoint</span><span class="token punctuation">(</span>ip4<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>ep<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">/* Let through packets to the node-ip so they are processed by
+		 * the local ip stack.
+		 */</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>ep<span class="token operator">-</span><span class="token operator">&gt;</span>flags <span class="token operator">&amp;</span> ENDPOINT_F_HOST<span class="token punctuation">)</span>
+			<span class="token keyword">return</span> CTX_ACT_OK<span class="token punctuation">;</span>
+
+		<span class="token keyword">return</span> <span class="token function">ipv4_local_delivery</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> ETH_HLEN<span class="token punctuation">,</span> secctx<span class="token punctuation">,</span> ip4<span class="token punctuation">,</span> ep<span class="token punctuation">,</span> METRIC_INGRESS<span class="token punctuation">,</span> from_host<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			mac_t router_mac <span class="token operator">=</span> ep<span class="token operator">-</span><span class="token operator">&gt;</span>node_mac<span class="token punctuation">;</span>
+			mac_t lxc_mac <span class="token operator">=</span> ep<span class="token operator">-</span><span class="token operator">&gt;</span>mac<span class="token punctuation">;</span>
+			<span class="token function">ipv4_l3</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> l3_off<span class="token punctuation">,</span> <span class="token punctuation">(</span>__u8 <span class="token operator">*</span><span class="token punctuation">)</span> <span class="token operator">&amp;</span>router_mac<span class="token punctuation">,</span> <span class="token punctuation">(</span>__u8 <span class="token operator">*</span><span class="token punctuation">)</span> <span class="token operator">&amp;</span>lxc_mac<span class="token punctuation">,</span> ip4<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+			<span class="token function">ctx_store_meta</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> CB_SRC_LABEL<span class="token punctuation">,</span> seclabel<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token function">ctx_store_meta</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> CB_IFINDEX<span class="token punctuation">,</span> ep<span class="token operator">-</span><span class="token operator">&gt;</span>ifindex<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token function">ctx_store_meta</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> CB_FROM_HOST<span class="token punctuation">,</span> from_host ? <span class="token number">1</span> <span class="token punctuation">:</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token comment">//跳转到处理policy的ebpf程序</span>
+			<span class="token function">tail_call_dynamic</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> <span class="token operator">&amp;</span>POLICY_CALL_MAP<span class="token punctuation">,</span> ep<span class="token operator">-</span><span class="token operator">&gt;</span>lxc_id<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+<span class="token function">__section_tail</span><span class="token punctuation">(</span>CILIUM_MAP_POLICY<span class="token punctuation">,</span> TEMPLATE_LXC_ID<span class="token punctuation">)</span>
+<span class="token builtin">int</span> <span class="token function">handle_policy</span><span class="token punctuation">(</span><span class="token keyword">struct</span> __ctx_buff <span class="token operator">*</span>ctx<span class="token punctuation">)</span>
+	handle_policy 最终调用到 tail_ipv4_policy
+
+<span class="token builtin">int</span> <span class="token function">tail_ipv4_policy</span><span class="token punctuation">(</span><span class="token keyword">struct</span> __ctx_buff <span class="token operator">*</span>ctx<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">struct</span> ipv4_ct_tuple tuple <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+	<span class="token builtin">int</span> ret<span class="token punctuation">,</span> ifindex <span class="token operator">=</span> <span class="token function">ctx_load_meta</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> CB_IFINDEX<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	__u32 src_label <span class="token operator">=</span> <span class="token function">ctx_load_meta</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> CB_SRC_LABEL<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token builtin">bool</span> from_host <span class="token operator">=</span> <span class="token function">ctx_load_meta</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> CB_FROM_HOST<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token builtin">bool</span> proxy_redirect __maybe_unused <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+	enum ct_status ct_status <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+	__u16 proxy_port <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+	<span class="token function">ctx_store_meta</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> CB_SRC_LABEL<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">ctx_store_meta</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> CB_FROM_HOST<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//执行ingress policy</span>
+	ret <span class="token operator">=</span> <span class="token function">ipv4_policy</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> ifindex<span class="token punctuation">,</span> src_label<span class="token punctuation">,</span> <span class="token operator">&amp;</span>ct_status<span class="token punctuation">,</span> <span class="token operator">&amp;</span>tuple<span class="token punctuation">,</span> <span class="token operator">&amp;</span>proxy_port<span class="token punctuation">,</span> from_host<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token comment">/* Store meta: essential for proxy ingress, see bpf_host.c */</span>
+	<span class="token function">ctx_store_meta</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> CB_PROXY_MAGIC<span class="token punctuation">,</span> ctx<span class="token operator">-</span><span class="token operator">&gt;</span>mark<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">return</span> ret<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>执行ingress policy，如果允许通过则将报文重定向到pod的lxc或者peer口</p> 
+<pre><code class="prism language-go">static __always_inline <span class="token builtin">int</span>
+<span class="token function">ipv4_policy</span><span class="token punctuation">(</span><span class="token keyword">struct</span> __ctx_buff <span class="token operator">*</span>ctx<span class="token punctuation">,</span> <span class="token builtin">int</span> ifindex<span class="token punctuation">,</span> __u32 src_label<span class="token punctuation">,</span> enum ct_status <span class="token operator">*</span>ct_status<span class="token punctuation">,</span>
+	    <span class="token keyword">struct</span> ipv4_ct_tuple <span class="token operator">*</span>tuple_out<span class="token punctuation">,</span> __u16 <span class="token operator">*</span>proxy_port<span class="token punctuation">,</span>
+	    <span class="token builtin">bool</span> from_host __maybe_unused<span class="token punctuation">)</span>
+	<span class="token comment">//执行ingress policy</span>
+	verdict <span class="token operator">=</span> <span class="token function">policy_can_access_ingress</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> src_label<span class="token punctuation">,</span> SECLABEL<span class="token punctuation">,</span>
+					    tuple<span class="token operator">-</span><span class="token operator">&gt;</span>dport<span class="token punctuation">,</span> tuple<span class="token operator">-</span><span class="token operator">&gt;</span>nexthdr<span class="token punctuation">,</span>
+					    is_untracked_fragment<span class="token punctuation">,</span>
+					    <span class="token operator">&amp;</span>policy_match_type<span class="token punctuation">,</span> <span class="token operator">&amp;</span>audited<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//取出endpoint的ifindex</span>
+	ifindex <span class="token operator">=</span> <span class="token function">ctx_load_meta</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> CB_IFINDEX<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>ifindex<span class="token punctuation">)</span>
+		<span class="token comment">//重定向到网卡</span>
+		<span class="token keyword">return</span> <span class="token function">redirect_ep</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> ifindex<span class="token punctuation">,</span> from_host<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>在host routing模式下，ENABLE_HOST_ROUTING会被定义，可将报文直接重定向到lxc的peer接口，即pod内部的eth0</p> 
+<pre><code class="prism language-go">static __always_inline <span class="token builtin">int</span> <span class="token function">redirect_ep</span><span class="token punctuation">(</span><span class="token keyword">struct</span> __ctx_buff <span class="token operator">*</span>ctx __maybe_unused<span class="token punctuation">,</span>
+				       <span class="token builtin">int</span> ifindex __maybe_unused<span class="token punctuation">,</span>
+				       <span class="token builtin">bool</span> needs_backlog __maybe_unused<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token comment">/* Going via CPU backlog queue (aka needs_backlog) is required
+	 * whenever we cannot do a fast ingress -&gt; ingress switch but
+	 * instead need an ingress -&gt; egress netns traversal or vice
+	 * versa.
+	 */</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>needs_backlog <span class="token operator">||</span> <span class="token operator">!</span><span class="token function">is_defined</span><span class="token punctuation">(</span>ENABLE_HOST_ROUTING<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> <span class="token function">ctx_redirect</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> ifindex<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token operator">...</span>
+		<span class="token keyword">return</span> <span class="token function">ctx_redirect_peer</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> ifindex<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/0538a7bf332aae25cdbfd4154198496b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">element 级联选择器同时获取label和value</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/dc4af645fe4097776194f54d46416e6d/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">十二. Kubernetes Pod 与 探针</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

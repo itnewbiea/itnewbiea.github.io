@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>解决Android开发中的痛点问题用Kotlin Flow - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="解决Android开发中的痛点问题用Kotlin Flow" />
+<meta property="og:description" content="前言 本文旨在通过实际业务场景阐述如何使用Kotlin Flow解决Android开发中的痛点问题，进而研究如何优雅地使用Flow以及纠正部分典型的使用误区。有关Flow的介绍及其操作符用法可以参考：异步流 - Kotlin 语言中文站，本文不做赘述。基于LiveData&#43;ViewModel的MVVM架构在某些场景下（以横竖屏为典型）存在局限性，本文会顺势介绍适合Android开发的基于Flow/Channel的MVI架构。
+背景 大力智能客户端团队在平板端大力一起学App上深度适配了横竖屏场景，将原先基于Rxjava的MVP架构重构成基于LiveData&#43;ViewModel&#43;Kotlin协程的MVVM架构。随着业务场景的复杂度提升，LiveData作为数据的唯一载体似乎渐渐无法担此重任，其中一个痛点就是由于模糊了“状态”和“事件”的界限。LiveData的粘性机制会带来副作用，但这本身并不是LiveData的设计缺陷，而是对它的过度使用。
+Kotlin Flow是基于kotlin协程的一套异步数据流框架，可以用于异步返回多个值。kotlin 1.4.0正式版发布时推出了StateFlow和SharedFlow，两者拥有Channel的很多特性，可以看作是将Flow推向台前，将Channel雪藏幕后的一手重要操作。对于新技术新框架，我们不会盲目接入，在经过调研试用一阶段后，发现Flow确实可以为业务开发止痛提效，下文分享这个探索的过程。
+痛点一：蹩脚地处理ViewModel和View层通信 发现问题 当屏幕可旋转后，LiveData不好用了？ 项目由MVP过渡到MVVM时，其中一个典型的重构手段就是将Presenter中的回调写法改写成在ViewModel中持有LiveData由View层订阅，比如以下场景：
+在大力自习室中，当老师切换至互动模式时，页面需要更改的同时还会弹出Toast提示模式已切换。
+RoomViewModel.kt class RoomViewModel : ViewModel() { private val _modeLiveData = MutableLiveData&lt;Int&gt;(-1) private val modeLiveData : LiveData&lt;Int&gt; = _mode fun switchMode(modeSpec : Int) { _modeLiveData.postValue(modeSpec) } } RoomActivity.kt class RoomActivity : BaseActivity() { ... override fun initObserver() { roomViewModel.modeLiveData.observe(this, Observer { updateUI() showToast(it) }) } } 这样的写法乍一看没有毛病，但没有考虑到横竖屏切换如果伴随页面销毁重建的话，会导致在当前页面每次屏幕旋转都会重新执行observe，也就导致了每次旋转后都会弹一遍Toast。
+LiveData会保证订阅者总能在值变化的时候观察到最新的值，并且每个初次订阅的观察者都会执行一次回调方法。这样的特性对于维持 UI 和数据的一致性没有任何问题，但想要观察LiveData来发射一次性的事件就超出了其能力范围。
+当然，有一种解法通过保证LiveData同一个值只会触发一次onChanged回调，封装了MutableLiveData的SingleLiveEvent。先不谈它有没有其他问题，但就其对LiveData的魔改包装给我的第一感受是强扭的瓜不甜，违背了LiveData的设计思想，其次它就没有别的问题了吗？
+ViewModel和View层的通信只依赖LiveData足够吗？ 在使用MVVM架构时，数据变化驱动UI更新。对于UI来说只需关心最终状态，但对于一些事件，并不全是希望按照LiveData的合并策略将最新一条之前的事件全部丢弃。绝大部分情况是希望每条事件都能被执行，而LiveData并非为此设计。
+在大力自习室中，老师会给表现好的同学点赞，收到点赞的同学会根据点赞类型弹出不同样式的点赞弹窗。为了防止横竖屏或者配置变化导致的重复弹窗，使用了上面提到的SingleLiveEvent" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/62861457c3cbc2ecf14f66d02f742a43/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-01-04T07:15:00+08:00" />
+<meta property="article:modified_time" content="2024-01-04T07:15:00+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">解决Android开发中的痛点问题用Kotlin Flow</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h4><a id="_2"></a>前言</h4> 
+<p>本文旨在通过实际业务场景阐述如何使用Kotlin Flow解决Android开发中的痛点问题，进而研究如何优雅地使用Flow以及纠正部分典型的使用误区。有关Flow的介绍及其操作符用法可以参考：<a href="https://cloud.tencent.com/developer/tools/blog-entry?target=https%3A%2F%2Flink.juejin.cn%2F%3Ftarget%3Dhttps%3A%2F%2Fwww.kotlincn.net%2Fdocs%2Freference%2Fcoroutines%2Fflow.html&amp;source=article&amp;objectId=1906330" rel="nofollow">异步流 - Kotlin 语言中文站</a>，本文不做赘述。基于LiveData+ViewModel的MVVM架构在某些场景下（以横竖屏为典型）存在局限性，本文会顺势介绍适合Android开发的基于Flow/Channel的MVI架构。</p> 
+<h4><a id="_6"></a>背景</h4> 
+<p>大力智能客户端团队在平板端大力一起学App上深度适配了横竖屏场景，将原先基于Rxjava的MVP架构重构成基于LiveData+ViewModel+Kotlin协程的MVVM架构。随着业务场景的复杂度提升，LiveData作为数据的唯一载体似乎渐渐无法担此重任，其中一个痛点就是由于模糊了“状态”和“事件”的界限。LiveData的粘性机制会带来副作用，但这本身并不是LiveData的设计缺陷，而是对它的过度使用。</p> 
+<p>Kotlin Flow是基于kotlin协程的一套异步数据流框架，可以用于异步返回多个值。kotlin 1.4.0正式版发布时推出了StateFlow和SharedFlow，两者拥有Channel的很多特性，可以看作是将Flow推向台前，将Channel雪藏幕后的一手重要操作。对于新技术新框架，我们不会盲目接入，在经过调研试用一阶段后，发现Flow确实可以为业务开发止痛提效，下文分享这个探索的过程。</p> 
+<h4><a id="ViewModelView_12"></a>痛点一：蹩脚地处理ViewModel和View层通信</h4> 
+<h5><a id="_14"></a>发现问题</h5> 
+<h6><a id="LiveData_16"></a>当屏幕可旋转后，LiveData不好用了？</h6> 
+<p>项目由MVP过渡到MVVM时，其中一个典型的重构手段就是将Presenter中的回调写法改写成在ViewModel中持有LiveData由View层订阅，比如以下场景：</p> 
+<p>在大力自习室中，当老师切换至互动模式时，页面需要更改的同时还会弹出Toast提示模式已切换。</p> 
+<pre><code class="prism language-javascript">RoomViewModel<span class="token punctuation">.</span>kt
+
+<span class="token keyword">class</span> <span class="token class-name">RoomViewModel</span> <span class="token operator">:</span> <span class="token function">ViewModel</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">private</span> val _modeLiveData <span class="token operator">=</span> MutableLiveData<span class="token operator">&lt;</span>Int<span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span>
+    <span class="token keyword">private</span> val modeLiveData <span class="token operator">:</span> LiveData<span class="token operator">&lt;</span>Int<span class="token operator">&gt;</span> <span class="token operator">=</span> _mode
+
+    fun <span class="token function">switchMode</span><span class="token punctuation">(</span><span class="token parameter"><span class="token literal-property property">modeSpec</span> <span class="token operator">:</span> Int</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        _modeLiveData<span class="token punctuation">.</span><span class="token function">postValue</span><span class="token punctuation">(</span>modeSpec<span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<pre><code class="prism language-javascript">RoomActivity<span class="token punctuation">.</span>kt
+
+<span class="token keyword">class</span> <span class="token class-name">RoomActivity</span> <span class="token operator">:</span> <span class="token function">BaseActivity</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token operator">...</span>
+
+    override fun <span class="token function">initObserver</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        roomViewModel<span class="token punctuation">.</span>modeLiveData<span class="token punctuation">.</span><span class="token function">observe</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">,</span> Observer <span class="token punctuation">{<!-- --></span>
+            <span class="token function">updateUI</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+            <span class="token function">showToast</span><span class="token punctuation">(</span>it<span class="token punctuation">)</span>
+        <span class="token punctuation">}</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>这样的写法乍一看没有毛病，但没有考虑到横竖屏切换如果伴随页面销毁重建的话，会导致在当前页面每次屏幕旋转都会重新执行observe，也就导致了每次旋转后都会弹一遍Toast。</p> 
+<p>LiveData会保证订阅者总能在值变化的时候观察到最新的值，并且每个初次订阅的观察者都会执行一次回调方法。这样的特性<strong>对于维持</strong> <strong>UI</strong> <strong>和数据的一致性没有任何问题</strong>，但想要观察LiveData来<strong>发射一次性的事件就超出了其能力范围</strong>。</p> 
+<p>当然，有一种解法通过保证LiveData同一个值只会触发一次onChanged回调，封装了MutableLiveData的<strong>SingleLiveEvent</strong>。先不谈它有没有其他问题，但就其对LiveData的魔改包装给我的第一感受是强扭的瓜不甜，违背了LiveData的设计思想，其次它就没有别的问题了吗？</p> 
+<h6><a id="ViewModelViewLiveData_62"></a>ViewModel和View层的通信只依赖LiveData足够吗？</h6> 
+<p>在使用MVVM架构时，数据变化驱动UI更新。对于UI来说只需关心最终状态，但对于一些事件，并不全是希望按照LiveData的合并策略将最新一条之前的事件全部丢弃。绝大部分情况是希望<strong>每条事件都能被执行</strong>，而LiveData并非为此设计。</p> 
+<p>在大力自习室中，老师会给表现好的同学点赞，收到点赞的同学会根据点赞类型弹出不同样式的点赞弹窗。为了防止横竖屏或者配置变化导致的重复弹窗，使用了上面提到的SingleLiveEvent</p> 
+<pre><code class="prism language-javascript">RoomViewModel<span class="token punctuation">.</span>kt
+
+<span class="token keyword">class</span> <span class="token class-name">RoomViewModel</span> <span class="token operator">:</span> <span class="token function">ViewModel</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">private</span> val praiseEvent <span class="token operator">=</span> SingleLiveEvent<span class="token operator">&lt;</span>Int<span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+    fun <span class="token function">recvPraise</span><span class="token punctuation">(</span><span class="token parameter"><span class="token literal-property property">praiseType</span> <span class="token operator">:</span> Int</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        praiseEvent<span class="token punctuation">.</span><span class="token function">postValue</span><span class="token punctuation">(</span>praiseType<span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<pre><code class="prism language-javascript">RoomActivity<span class="token punctuation">.</span>kt
+
+<span class="token keyword">class</span> <span class="token class-name">RoomActivity</span> <span class="token operator">:</span> <span class="token function">BaseActivity</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token operator">...</span>
+
+    override fun <span class="token function">initObserver</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        roomViewModel<span class="token punctuation">.</span>praiseEvent<span class="token punctuation">.</span><span class="token function">observe</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">,</span> Observer <span class="token punctuation">{<!-- --></span>
+            <span class="token function">showPraiseDialog</span><span class="token punctuation">(</span>it<span class="token punctuation">)</span>
+        <span class="token punctuation">}</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>考虑如下情况，老师同时给同学A“坐姿端正”和“互动积极”两种点赞，端上预期是要分别弹两次点赞弹窗。但根据上面的实现，如果两次recvPraise在一个UI刷新周期之内连续调用，即<strong>liveData在很短的时间内连续post两次</strong>，最终导致学生只会弹起第二个点赞的弹窗。</p> 
+<p>总的来说，上述两个问题根本都在于没有更好的手段去处理ViewModel和View层的通信，具体表现为对LiveData泛滥地使用以及没有对 <strong>“状态”</strong> 和 <strong>“事件”</strong> 进行区分</p> 
+<h5><a id="_104"></a>分析问题</h5> 
+<p>根据上述总结，LiveData的确适合用来表示“状态”，但“事件”不应该是由某单个值表示。想要让View层顺序地消费每条事件，与此同时又不影响事件的发送，我的第一反应是使用一个阻塞队列来承载事件。但选型时我们要考虑以下问题，也是LiveData被推荐使用的优势 ：</p> 
+<ol><li>是否会发生内存泄漏，观察者的生命周期遭到销毁后能否自我清理</li><li>是否支持线程切换，比如LiveData保证在主线程感知变化并更新UI</li><li>不会在观察者非活跃状态下消费事件，比如LiveData防止因Activity停止时消费导致crash</li></ol> 
+<h6><a id="_112"></a><strong>方案一：阻塞队列</strong></h6> 
+<p>ViewModel持有阻塞队列，View层在主线程死循环读取队列内容。需要手动添加lifecycleObserver来保证线程的挂起和恢复，并且不支持协程。考虑使用kotlin协程中的Channel替代。</p> 
+<h6><a id="_Kotlin_Channel_116"></a><strong>方案二：</strong> <strong>Kotlin</strong> <strong>Channel</strong></h6> 
+<p>Kotlin Channel和阻塞队列很类似，区别在于Channel用挂起的send操作代替了阻塞的put，用挂起的receive操作代替了阻塞的take。然后开启灵魂三问：</p> 
+<blockquote> 
+ <p>在生命周期组件中消费Channel是否会内存泄漏？</p> 
+</blockquote> 
+<p>不会，因为Channel并不会持有生命周期组件的引用，并不像LiveData传入Observer式的使用。</p> 
+<blockquote> 
+ <p>是否支持线程切换？</p> 
+</blockquote> 
+<p>支持，对Channel的收集需要开启协程，协程中可以切换协程上下文从而实现线程切换。</p> 
+<blockquote> 
+ <p>观察者非活跃状态下是否还会消费事件？</p> 
+</blockquote> 
+<p>使用lifecycle-runtime-ktx库中的<strong>launchWhenX</strong>方法，对Channel的收集协程会在组件生命周期 &lt; X时<strong>挂起</strong>，从而避免异常。也可以使用<strong>repeatOnLifecycle(State)</strong> 来在UI层收集，当生命周期 &lt; State时，会<strong>取消</strong>协程，恢复时再重新启动协程。</p> 
+<p>看起来使用Channel承载事件是个不错的选择，并且一般来说事件分发都是一对一，因此并不需要支持一对多的BroadcastChannel（后者已经逐渐被废弃，被SharedFlow替代）</p> 
+<p>如何创建Channel？看一下Channel对外暴露可供使用的构造方法，考虑传入合适的参数。</p> 
+<pre><code class="prism language-javascript"><span class="token keyword">public</span> fun <span class="token operator">&lt;</span><span class="token constant">E</span><span class="token operator">&gt;</span> <span class="token function">Channel</span><span class="token punctuation">(</span>
+
+    <span class="token comment">// 缓冲区容量，当超出容量时会触发onBufferOverflow指定的策略</span>
+    <span class="token literal-property property">capacity</span><span class="token operator">:</span> Int <span class="token operator">=</span> <span class="token constant">RENDEZVOUS</span><span class="token punctuation">,</span>  
+
+    <span class="token comment">// 缓冲区溢出策略，默认为挂起，还有DROP_OLDEST和DROP_LATEST</span>
+    <span class="token literal-property property">onBufferOverflow</span><span class="token operator">:</span> BufferOverflow <span class="token operator">=</span> BufferOverflow<span class="token punctuation">.</span><span class="token constant">SUSPEND</span><span class="token punctuation">,</span>
+
+    <span class="token comment">// 处理元素未能成功送达处理的情况，如订阅者被取消或者抛异常</span>
+    <span class="token literal-property property">onUndeliveredElement</span><span class="token operator">:</span> <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token constant">E</span><span class="token punctuation">)</span> <span class="token operator">-</span><span class="token operator">&gt;</span> Unit<span class="token punctuation">)</span><span class="token operator">?</span> <span class="token operator">=</span> <span class="token keyword">null</span>
+
+<span class="token punctuation">)</span><span class="token operator">:</span> Channel<span class="token operator">&lt;</span><span class="token constant">E</span><span class="token operator">&gt;</span>
+</code></pre> 
+<p>首先Channel是热的，即任意时刻发送元素到Channel即使没有订阅者也会执行。所以考虑到存在订阅者协程被取消时发送事件的情况，即存在Channel处在无订阅者时的空档期收到事件情况。例如当Activity使用repeatOnLifecycle方法启动协程去消费ViewModel持有的Channel里的事件消息，当前Activity因为处于STOPED状态而取消了协程。</p> 
+<p>根据之前分析的诉求，空档期的事件不能丢弃，而应该在Activity回到活跃状态时依次消费。所以考虑当缓冲区溢出时策略为挂起，容量默认0即可，即<strong>默认构造方法即符合我们的需求</strong>。</p> 
+<p>之前我们提到，BroadcastChannel已经被SharedFlow替代，那我们用Flow代替Channel是否可行呢？</p> 
+<h6><a id="Flow_159"></a><strong>方案三：普通Flow（冷流）</strong></h6> 
+<p>Flow is cold, Channel is hot。所谓流是冷的即流的构造器中的代码直到流被收集时才会执行，下面是个非常经典的例子：</p> 
+<pre><code class="prism language-javascript">fun <span class="token function">fibonacci</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">:</span> Flow<span class="token operator">&lt;</span>BigInteger<span class="token operator">&gt;</span> <span class="token operator">=</span> flow <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">var</span> x <span class="token operator">=</span> BigInteger<span class="token punctuation">.</span><span class="token constant">ZERO</span>
+    <span class="token keyword">var</span> y <span class="token operator">=</span> BigInteger<span class="token punctuation">.</span><span class="token constant">ONE</span>
+    <span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">emit</span><span class="token punctuation">(</span>x<span class="token punctuation">)</span>
+        x <span class="token operator">=</span> y<span class="token punctuation">.</span>also <span class="token punctuation">{<!-- --></span>
+            y <span class="token operator">+=</span> x
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token function">fibonacci</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">take</span><span class="token punctuation">(</span><span class="token number">100</span><span class="token punctuation">)</span><span class="token punctuation">.</span>collect <span class="token punctuation">{<!-- --></span> <span class="token function">println</span><span class="token punctuation">(</span>it<span class="token punctuation">)</span> <span class="token punctuation">}</span> 
+</code></pre> 
+<p>如果flow构造器里的代码不依赖订阅者独立执行，上面则会直接死循环，而实际运行发现是正常输出。</p> 
+<p>那么回到我们的问题，这里用冷流是否可行？显然并不合适，因为首先直观上冷流就无法在构造器以外发射数据。</p> 
+<p>但实际上答案并不绝对，通过在flow构造器内部使用channel，同样可以实现动态发射，如channelFlow。但是channelFlow本身不支持在构造器以外发射值，通过<strong>Channel.receiveAsFlow</strong>操作符可以将Channel转换成channelFlow。这样产生的Flow“外冷内热”，使用效果<strong>和直接收集Channel几乎没有区别</strong>。</p> 
+<pre><code class="prism language-javascript"><span class="token keyword">private</span> val testChannel<span class="token operator">:</span> Channel<span class="token operator">&lt;</span>Int<span class="token operator">&gt;</span> <span class="token operator">=</span> <span class="token function">Channel</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+<span class="token keyword">private</span> val testChannelFlow <span class="token operator">=</span> testChannel<span class="token punctuation">.</span><span class="token function">receiveAsFlow</span> <span class="token punctuation">(</span><span class="token punctuation">)</span>
+复制代码
+</code></pre> 
+<h6><a id="SharedFlowStateFlow_195"></a><strong>方案四：SharedFlow/StateFlow</strong></h6> 
+<p>首先二者都是热流，并支持在构造器外发射数据。简单看下它们的构造方法</p> 
+<pre><code class="prism language-javascript"><span class="token keyword">public</span> fun <span class="token operator">&lt;</span><span class="token constant">T</span><span class="token operator">&gt;</span> <span class="token function">MutableSharedFlow</span><span class="token punctuation">(</span>
+
+    <span class="token comment">// 每个新的订阅者订阅时收到的回放的数目，默认0</span>
+    <span class="token literal-property property">replay</span><span class="token operator">:</span> Int <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">,</span>
+
+    <span class="token comment">// 除了replay数目之外，缓存的容量，默认0</span>
+    <span class="token literal-property property">extraBufferCapacity</span><span class="token operator">:</span> Int <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">,</span>
+
+    <span class="token comment">// 缓存区溢出时的策略，默认为挂起。只有当至少有一个订阅者时，onBufferOverflow才会生效。当无订阅者时，只有最近replay数目的值会保存，并且onBufferOverflow无效。 </span>
+    <span class="token literal-property property">onBufferOverflow</span><span class="token operator">:</span> BufferOverflow <span class="token operator">=</span> BufferOverflow<span class="token punctuation">.</span><span class="token constant">SUSPEND</span>
+<span class="token punctuation">)</span>
+复制代码
+</code></pre> 
+<pre><code class="prism language-javascript"><span class="token comment">//MutableStateFlow等价于使用如下构造参数的SharedFlow</span>
+
+<span class="token function">MutableSharedFlow</span><span class="token punctuation">(</span>
+    replay <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">,</span>
+    onBufferOverflow <span class="token operator">=</span> BufferOverflow<span class="token punctuation">.</span><span class="token constant">DROP_OLDEST</span>
+<span class="token punctuation">)</span>
+
+</code></pre> 
+<p>SharedFlow被Pass的原因主要有两个：</p> 
+<ol><li>SharedFlow支持被多个订阅者订阅，导致同一个事件会被多次消费，并不符合预期。</li><li>如果认为1还可以通过开发规范控制，SharedFlow的在<strong>无订阅者时会丢弃数据</strong>的特性则让其彻底无缘被选用承载必须被执行的事件</li></ol> 
+<p>而StateFlow可以理解成特殊的SharedFlow，也就无论如何都会有上面两点问题。</p> 
+<p>当然，适合使用SharedFlow/StateFlow的场景也有很多，下文还会重点研究。</p> 
+<h6><a id="_237"></a>总结</h6> 
+<p>对于想要在ViewModel层发射<strong>必须执行且只能执行一次的事件</strong>让View层执行时，不要再通过向LiveData postValue让View层监听实现。推荐使用Channel或者是通过Channel.receiveAsFlow方法创建的ChannelFlow来实现ViewModel层的事件发送。</p> 
+<h5><a id="_241"></a>解决问题</h5> 
+<pre><code class="prism language-javascript">RoomViewModel<span class="token punctuation">.</span>kt
+
+<span class="token keyword">class</span> <span class="token class-name">RoomViewModel</span> <span class="token operator">:</span> <span class="token function">ViewModel</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">private</span> val _effect <span class="token operator">=</span> Channel<span class="token operator">&lt;</span>Effect<span class="token operator">&gt;</span> <span class="token operator">=</span> <span class="token function">Channel</span> <span class="token punctuation">(</span><span class="token punctuation">)</span>
+    val effect <span class="token operator">=</span> _effect<span class="token punctuation">.</span> <span class="token function">receiveAsFlow</span> <span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+    <span class="token keyword">private</span> fun <span class="token function">setEffect</span><span class="token punctuation">(</span><span class="token parameter"><span class="token literal-property property">builder</span><span class="token operator">:</span> <span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span><span class="token operator">&gt;</span> Effect</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        val newEffect <span class="token operator">=</span> <span class="token function">builder</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+        viewModelScope<span class="token punctuation">.</span>launch <span class="token punctuation">{<!-- --></span>
+            _effect<span class="token punctuation">.</span><span class="token function">send</span><span class="token punctuation">(</span>newEffect<span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    fun <span class="token function">showToast</span><span class="token punctuation">(</span><span class="token parameter"><span class="token literal-property property">text</span> <span class="token operator">:</span> String</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        setEffect <span class="token punctuation">{<!-- --></span>
+            Effect<span class="token punctuation">.</span><span class="token function">ShowToastEffect</span><span class="token punctuation">(</span>text<span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+sealed <span class="token keyword">class</span> <span class="token class-name">Effect</span> <span class="token punctuation">{<!-- --></span>
+    data <span class="token keyword">class</span> <span class="token class-name">ShowToastEffect</span><span class="token punctuation">(</span>val text<span class="token operator">:</span> String<span class="token punctuation">)</span> <span class="token operator">:</span> <span class="token function">Effect</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<pre><code class="prism language-javascript">RoomActivity<span class="token punctuation">.</span>kt
+
+<span class="token keyword">class</span> <span class="token class-name">RoomActivity</span> <span class="token operator">:</span> <span class="token function">BaseActivity</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token operator">...</span>
+
+    override fun <span class="token function">initObserver</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        lifecycleScope<span class="token punctuation">.</span>launchWhenStarted <span class="token punctuation">{<!-- --></span>
+            viewModel<span class="token punctuation">.</span>effect<span class="token punctuation">.</span>collect <span class="token punctuation">{<!-- --></span>
+                <span class="token function">when</span> <span class="token punctuation">(</span><span class="token parameter">it</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    is Effect<span class="token punctuation">.</span>ShowToastEffect <span class="token operator">-</span><span class="token operator">&gt;</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token function">showToast</span><span class="token punctuation">(</span>it<span class="token punctuation">.</span>text<span class="token punctuation">)</span>
+                    <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span>
+       <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="ActivityFragmentViewModel_295"></a>痛点二：Activity/Fragment通过共享ViewModel通信的问题</h4> 
+<p>我们经常让Activity和其中的Fragment共同持有由Acitivity作为ViewModelStoreOwner构造的ViewModel，来实现Activity和Fragment、以及Fragment之间的通信。典型场景如下：</p> 
+<pre><code class="prism language-javascript"><span class="token keyword">class</span> <span class="token class-name">MyActivity</span> <span class="token operator">:</span> <span class="token function">BaseActivity</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">private</span> val viewModel <span class="token operator">:</span> MyViewModel by <span class="token function">viewModels</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+    <span class="token keyword">private</span> fun <span class="token function">initObserver</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        viewModel<span class="token punctuation">.</span>countLiveData<span class="token punctuation">.</span>observe <span class="token punctuation">{<!-- --></span> it<span class="token operator">-</span><span class="token operator">&gt;</span>
+            <span class="token function">updateUI</span><span class="token punctuation">(</span>it<span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">private</span> fun <span class="token function">initListener</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        button<span class="token punctuation">.</span>setOnClickListener <span class="token punctuation">{<!-- --></span>
+            viewModel<span class="token punctuation">.</span><span class="token function">increaseCount</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">class</span> <span class="token class-name">MyFragment</span> <span class="token operator">:</span> <span class="token function">BaseFragment</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">private</span> val activityVM <span class="token operator">:</span> MyViewModel by <span class="token function">activityViewModels</span><span class="token punctuation">(</span><span class="token punctuation">)</span>  
+
+    <span class="token keyword">private</span> fun <span class="token function">initObserver</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        activityVM<span class="token punctuation">.</span>countLiveData<span class="token punctuation">.</span>observe <span class="token punctuation">{<!-- --></span> it<span class="token operator">-</span><span class="token operator">&gt;</span>
+            <span class="token function">updateUI</span><span class="token punctuation">(</span>it<span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">class</span> <span class="token class-name">MyViewModel</span> <span class="token operator">:</span> <span class="token function">ViewModel</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>   
+
+    <span class="token keyword">private</span> val _countLiveData <span class="token operator">=</span> MutableLiveData<span class="token operator">&lt;</span>Int<span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span>
+
+    <span class="token keyword">private</span> val countLiveData <span class="token operator">:</span> LiveData<span class="token operator">&lt;</span>Int<span class="token operator">&gt;</span> <span class="token operator">=</span> _countLiveData
+
+    fun <span class="token function">increaseCount</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        _countLiveData<span class="token punctuation">.</span>value <span class="token operator">=</span> <span class="token number">1</span> <span class="token operator">+</span> _countLiveData<span class="token punctuation">.</span>value <span class="token operator">?</span><span class="token operator">:</span> <span class="token number">0</span>
+    <span class="token punctuation">}</span>
+
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>简单来说就是通过让Activity和Fragment观察同一个liveData，实现一致性。</p> 
+<p>那如果是要在Fragment中调用Activity的方法，通过共享ViewModel可行吗？</p> 
+<h5><a id="_347"></a>发现问题</h5> 
+<h6><a id="DialogFragmentActivity_349"></a>DialogFragment和Activity的通信</h6> 
+<p>我们通常使用DialogFragment来实现弹窗，在其宿主Activity中设置弹窗的点击事件时，如果回调函数中引用了Activity对象，则很容易产生由横竖屏页面重建引发的引用错误。所以我们建议让Activity实现接口，在弹窗每次Attach时都会将当前附着的Activity强转成接口对象来设置回调方法。</p> 
+<pre><code class="prism language-javascript"><span class="token keyword">class</span> <span class="token class-name">NoticeDialogFragment</span> <span class="token operator">:</span> <span class="token function">DialogFragment</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+    internal lateinit <span class="token keyword">var</span> <span class="token literal-property property">listener</span><span class="token operator">:</span> NoticeDialogListener    
+
+    <span class="token keyword">interface</span> <span class="token class-name">NoticeDialogListener</span> <span class="token punctuation">{<!-- --></span>
+        fun <span class="token function">onDialogPositiveClick</span><span class="token punctuation">(</span>dialog<span class="token operator">:</span> DialogFragment<span class="token punctuation">)</span>
+        fun <span class="token function">onDialogNegativeClick</span><span class="token punctuation">(</span>dialog<span class="token operator">:</span> DialogFragment<span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+
+    override fun <span class="token function">onAttach</span><span class="token punctuation">(</span><span class="token parameter"><span class="token literal-property property">context</span><span class="token operator">:</span> Context</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">super</span><span class="token punctuation">.</span><span class="token function">onAttach</span><span class="token punctuation">(</span>context<span class="token punctuation">)</span>
+        <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+            listener <span class="token operator">=</span> context <span class="token keyword">as</span> NoticeDialogListener
+        <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span>e<span class="token operator">:</span> ClassCastException<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">throw</span> <span class="token function">ClassCastException</span><span class="token punctuation">(</span><span class="token punctuation">(</span>context<span class="token punctuation">.</span><span class="token function">toString</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">+</span>
+                    <span class="token string">" must implement NoticeDialogListener"</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<pre><code class="prism language-javascript"><span class="token keyword">class</span> <span class="token class-name">MainActivity</span> <span class="token operator">:</span> <span class="token function">FragmentActivity</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> NoticeDialogFragment<span class="token punctuation">.</span>NoticeDialogListener <span class="token punctuation">{<!-- --></span>
+
+    fun <span class="token function">showNoticeDialog</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        val dialog <span class="token operator">=</span> <span class="token function">NoticeDialogFragment</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+        dialog<span class="token punctuation">.</span><span class="token function">show</span><span class="token punctuation">(</span>supportFragmentManager<span class="token punctuation">,</span> <span class="token string">"NoticeDialogFragment"</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+
+    override fun <span class="token function">onDialogPositiveClick</span><span class="token punctuation">(</span><span class="token parameter"><span class="token literal-property property">dialog</span><span class="token operator">:</span> DialogFragment</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// User touched the dialog's positive button</span>
+    <span class="token punctuation">}</span>
+
+    override fun <span class="token function">onDialogNegativeClick</span><span class="token punctuation">(</span><span class="token parameter"><span class="token literal-property property">dialog</span><span class="token operator">:</span> DialogFragment</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// User touched the dialog's negative button</span>
+    <span class="token punctuation">}</span>
+
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>这样的写法不会有上述问题，但是随着页面上支持的弹窗变多，Activity需要实现的接口也越来越多，无论是对编码还是阅读代码都不是很友好。那有没有机会借用共享的ViewModel做点文章？</p> 
+<h5><a id="_400"></a>分析问题</h5> 
+<p>我们想要向ViewModel发送事件，并让所有依赖它的组件接收到事件。比如在FragmentA点击按键触发事件A，其宿主Activity、相同宿主的FragmentB和FragmentA其本身都需要响应该事件。</p> 
+<p>有点像广播，且具有两个特性：</p> 
+<ol><li>支持一对多，即一条消息支持被多个订阅者消费</li><li>具有时效性，过期的消息没有意义且不应该被延迟消费。</li></ol> 
+<p>看起来EventBus是一种实现方法，但是已经有了ViewModel作为媒介再使用显然有些浪费，EventBus还是更适合跨页面、跨组件的通信。对比前面分析的几种模型的使用，发现SharedFlow在这个场景下非常有用武之地。</p> 
+<ol><li>SharedFlow类似BroadcastChannel，支持多个订阅者，一次发送多处消费。</li><li>SharedFlow配置灵活，如默认配置 capacity = 0， replay = 0，意味着新订阅者不会收到类似LiveData的回放。无订阅者时会直接丢弃，正符合上述时效性事件的特点。</li></ol> 
+<h5><a id="_414"></a>解决问题</h5> 
+<pre><code class="prism language-javascript"><span class="token keyword">class</span> <span class="token class-name">NoticeDialogFragment</span> <span class="token operator">:</span> <span class="token function">DialogFragment</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">private</span> val activityVM <span class="token operator">:</span> MyViewModel by <span class="token function">activityViewModels</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+    fun <span class="token function">initListener</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        posBtn<span class="token punctuation">.</span>setOnClickListener <span class="token punctuation">{<!-- --></span>
+            activityVM<span class="token punctuation">.</span><span class="token function">sendEvent</span><span class="token punctuation">(</span><span class="token function">NoticeDialogPosClickEvent</span><span class="token punctuation">(</span>textField<span class="token punctuation">.</span>text<span class="token punctuation">)</span><span class="token punctuation">)</span>
+            <span class="token function">dismiss</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+
+        negBtn<span class="token punctuation">.</span>setOnClickListener <span class="token punctuation">{<!-- --></span>
+            activityVM<span class="token punctuation">.</span><span class="token function">sendEvent</span><span class="token punctuation">(</span>NoticeDialogNegClickEvent<span class="token punctuation">)</span>
+            <span class="token function">dismiss</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">class</span> <span class="token class-name">MainActivity</span> <span class="token operator">:</span> <span class="token function">FragmentActivity</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">private</span> val viewModel <span class="token operator">:</span> MyViewModel by <span class="token function">viewModels</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+    fun <span class="token function">showNoticeDialog</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        val dialog <span class="token operator">=</span> <span class="token function">NoticeDialogFragment</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+        dialog<span class="token punctuation">.</span><span class="token function">show</span><span class="token punctuation">(</span>supportFragmentManager<span class="token punctuation">,</span> <span class="token string">"NoticeDialogFragment"</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+
+    fun <span class="token function">initObserver</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        lifecycleScope<span class="token punctuation">.</span>launchWhenStarted <span class="token punctuation">{<!-- --></span>
+           viewModel<span class="token punctuation">.</span>event<span class="token punctuation">.</span>collect <span class="token punctuation">{<!-- --></span>
+                <span class="token function">when</span><span class="token punctuation">(</span><span class="token parameter">it</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    is NoticeDialogPosClickEvent <span class="token operator">-</span><span class="token operator">&gt;</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token function">handleNoticePosClicked</span><span class="token punctuation">(</span>it<span class="token punctuation">.</span>text<span class="token punctuation">)</span>
+                    <span class="token punctuation">}</span>
+
+                    NoticeDialogNegClickEvent <span class="token operator">-</span><span class="token operator">&gt;</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token function">handleNoticeNegClicked</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+                    <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">class</span> <span class="token class-name">MyViewModel</span> <span class="token operator">:</span> <span class="token function">ViewModel</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">private</span> val _event<span class="token operator">:</span> MutableSharedFlow<span class="token operator">&lt;</span>Event<span class="token operator">&gt;</span> <span class="token operator">=</span> <span class="token function">MutableSharedFlow</span> <span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+    val event <span class="token operator">=</span> _event<span class="token punctuation">.</span> <span class="token function">asSharedFlow</span> <span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+    fun <span class="token function">sendEvent</span><span class="token punctuation">(</span><span class="token parameter"><span class="token literal-property property">event</span><span class="token operator">:</span> Event</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        viewModelScope<span class="token punctuation">.</span>launch <span class="token punctuation">{<!-- --></span>
+            _event<span class="token punctuation">.</span><span class="token function">emit</span><span class="token punctuation">(</span>event<span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>这里通过<em>lifecycleScope.launchWhenX</em>启动协程其实并不是最佳实践，如果想要Activity在非活跃状态下直接丢弃收到的事件，应该使用repeatOnLifecycle来控制协程的开启和取消而非挂起。但考虑到DialogFragment的存活周期是宿主Activity的子集，所以这里没有大问题。</p> 
+<h4><a id="FlowChannelMVI_477"></a>基于Flow/Channel的MVI架构</h4> 
+<p>前面讲的痛点问题，实际上是为了接下来要介绍的MVI架构抛砖引玉。而MVI架构的具体实现，也就是将上述解决方案融合到模版代码中，最大程度发挥架构的优势。</p> 
+<h5><a id="MVI_481"></a>MVI是什么</h5> 
+<p>所谓MVI，对应的分别是Model、View、Intent</p> 
+<p>Model： 不是MVC、MVP里M所代指的数据层，而是指<strong>表征</strong> <strong>UI</strong> <strong>状态的聚合对象</strong>。Model是不可变的，Model与呈现出的UI是一一对应的关系。</p> 
+<p>View：和MVC、MVP里做代指的V一样，指渲染UI的单元，可以是Activity或者View。可以接收用户的交互意图，会根据新的Model响应式地绘制UI。</p> 
+<p>Intent：不是传统的Android设计里的Intent，一般指用户与UI交互的意图，如按钮点击。<strong>Intent是改变Model的唯一来源</strong>。</p> 
+<p>对比MVVM的区别主要在哪？</p> 
+<ol><li>MVVM并没有约束View层与ViewModel的交互方式，具体来说就是View层可以随意调用ViewModel中的方法，而MVI架构下ViewModel的实现对View层屏蔽，只能通过发送Intent来驱动事件。</li><li>MVVM架构并不强调对表征UI状态的Model值收敛，并且对能影响UI的值的修改可以散布在各个可被直接调用的方法内部。而MVI架构下，Intent是驱动UI变化的唯一来源，并且表征UI状态的值收敛在一个变量里。</li></ol> 
+<h5><a id="FlowChannelMVI_496"></a>基于Flow/Channel的MVI如何实现</h5> 
+<p>抽象出基类BaseViewModel</p> 
+<p>UiState是可以表征UI的Model，用StateFlow承载（也可以使用LiveData）</p> 
+<p>UiEvent是表示交互事件的Intent，用SharedFlow承载</p> 
+<p>UiEffect是事件带来除了改变UI以外的副作用，用channelFlow承载</p> 
+<pre><code class="prism language-javascript">BaseViewModel<span class="token punctuation">.</span>kt
+
+abstract <span class="token keyword">class</span> <span class="token class-name">BaseViewModel</span><span class="token operator">&lt;</span>State <span class="token operator">:</span> UiState<span class="token punctuation">,</span> <span class="token literal-property property">Event</span> <span class="token operator">:</span> UiEvent<span class="token punctuation">,</span> <span class="token literal-property property">Effect</span> <span class="token operator">:</span> UiEffect<span class="token operator">&gt;</span> <span class="token operator">:</span> <span class="token function">ViewModel</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token comment">/**
+     * 初始状态
+     * stateFlow区别于LiveData必须有初始值
+     */</span>
+    <span class="token keyword">private</span> val initialState<span class="token operator">:</span> State by lazy <span class="token punctuation">{<!-- --></span> <span class="token function">createInitialState</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">}</span>
+
+    abstract fun <span class="token function">createInitialState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">:</span> State
+
+    <span class="token comment">/**
+     * uiState聚合页面的全部UI 状态
+     */</span>
+    <span class="token keyword">private</span> val _uiState<span class="token operator">:</span> MutableStateFlow<span class="token operator">&lt;</span>State<span class="token operator">&gt;</span> <span class="token operator">=</span> <span class="token function">MutableStateFlow</span><span class="token punctuation">(</span>initialState<span class="token punctuation">)</span>
+
+    val uiState <span class="token operator">=</span> _uiState<span class="token punctuation">.</span><span class="token function">asStateFlow</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+    <span class="token comment">/**
+     * event包含用户与ui的交互（如点击操作），也有来自后台的消息（如切换自习模式）
+     */</span>
+     <span class="token keyword">private</span> val _event<span class="token operator">:</span> MutableSharedFlow<span class="token operator">&lt;</span>Event<span class="token operator">&gt;</span> <span class="token operator">=</span> <span class="token function">MutableSharedFlow</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+     val event <span class="token operator">=</span> _event<span class="token punctuation">.</span><span class="token function">asSharedFlow</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+    <span class="token comment">/**
+     * effect用作 事件带来的副作用，通常是 一次性事件 且 一对一的订阅关系
+     * 例如：弹Toast、导航Fragment等
+     */</span>
+     <span class="token keyword">private</span> val _effect<span class="token operator">:</span> Channel<span class="token operator">&lt;</span>Effect<span class="token operator">&gt;</span> <span class="token operator">=</span> <span class="token function">Channel</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+     val effect <span class="token operator">=</span> _effect<span class="token punctuation">.</span><span class="token function">receiveAsFlow</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+    init <span class="token punctuation">{<!-- --></span>
+        <span class="token function">subscribeEvents</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">private</span> fun <span class="token function">subscribeEvents</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        viewModelScope<span class="token punctuation">.</span>launch <span class="token punctuation">{<!-- --></span>
+            event<span class="token punctuation">.</span>collect <span class="token punctuation">{<!-- --></span>
+                <span class="token function">handleEvent</span><span class="token punctuation">(</span>it<span class="token punctuation">)</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">protected</span> abstract fun <span class="token function">handleEvent</span><span class="token punctuation">(</span>event<span class="token operator">:</span> Event<span class="token punctuation">)</span>
+
+    fun <span class="token function">sendEvent</span><span class="token punctuation">(</span><span class="token parameter"><span class="token literal-property property">event</span><span class="token operator">:</span> Event</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        viewModelScope<span class="token punctuation">.</span>launch <span class="token punctuation">{<!-- --></span>
+            _event<span class="token punctuation">.</span><span class="token function">emit</span><span class="token punctuation">(</span>event<span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+     <span class="token punctuation">}</span>
+
+    <span class="token keyword">protected</span> fun <span class="token function">setState</span><span class="token punctuation">(</span><span class="token parameter"><span class="token literal-property property">reduce</span><span class="token operator">:</span> State<span class="token punctuation">.</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span><span class="token operator">&gt;</span> State</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        val newState <span class="token operator">=</span> currentState<span class="token punctuation">.</span><span class="token function">reduce</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+        _uiState<span class="token punctuation">.</span>value <span class="token operator">=</span> newState
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">protected</span> fun <span class="token function">setEffect</span><span class="token punctuation">(</span><span class="token parameter"><span class="token literal-property property">builder</span><span class="token operator">:</span> <span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span><span class="token operator">&gt;</span> Effect</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        val newEffect <span class="token operator">=</span> <span class="token function">builder</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+        viewModelScope<span class="token punctuation">.</span>launch <span class="token punctuation">{<!-- --></span>
+            _effect<span class="token punctuation">.</span><span class="token function">send</span><span class="token punctuation">(</span>newEffect<span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+     <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">interface</span> <span class="token class-name">UiState</span>
+
+<span class="token keyword">interface</span> <span class="token class-name">UiEvent</span>
+
+<span class="token keyword">interface</span> <span class="token class-name">UiEffect</span>
+</code></pre> 
+<p>StateFlow基本等同于LiveData，区别在于StateFlow必须有初值，这也更符合页面必须有初始状态的逻辑。一般使用data class实现UiState，页面所有元素的状态用成员变量表示。</p> 
+<p>用户交互事件用SharedFlow，具有时效性且支持一对多订阅，使用它可以解决上文提到的痛点二问题。</p> 
+<p>消费事件带来的副作用影响用ChannelFlow承载，不会丢失且一对一订阅，只执行一次。使用它可以解决上文提到的痛点一问题。</p> 
+<p>协议类，定义具体业务需要的State、Event、Effect类</p> 
+<pre><code class="prism language-javascript"><span class="token keyword">class</span> <span class="token class-name">NoteContract</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token comment">/**
+    * pageTitle: 页面标题
+    * loadStatus: 上拉加载的状态
+    * refreshStatus: 下拉刷新的状态
+    * noteList : 备忘录列表
+    */</span>
+    data <span class="token keyword">class</span> <span class="token class-name">State</span><span class="token punctuation">(</span>
+        val pageTitle<span class="token operator">:</span> String<span class="token punctuation">,</span>
+        val loadStatus<span class="token operator">:</span> LoadStatus<span class="token punctuation">,</span>
+        val refreshStatus<span class="token operator">:</span> RefreshStatus<span class="token punctuation">,</span>
+        val noteList<span class="token operator">:</span> MutableList<span class="token operator">&lt;</span>NoteItem<span class="token operator">&gt;</span>
+    <span class="token punctuation">)</span> <span class="token operator">:</span> UiState
+
+    sealed <span class="token keyword">class</span> <span class="token class-name">Event</span> <span class="token operator">:</span> UiEvent <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// 下拉刷新事件</span>
+        object RefreshNoteListEvent <span class="token operator">:</span> <span class="token function">Event</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+        <span class="token comment">// 上拉加载事件</span>
+        object LoadMoreNoteListEvent<span class="token operator">:</span> <span class="token function">Event</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+        <span class="token comment">// 添加按键点击事件</span>
+        object AddingButtonClickEvent <span class="token operator">:</span> <span class="token function">Event</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+        <span class="token comment">// 列表item点击事件</span>
+        data <span class="token keyword">class</span> <span class="token class-name">ListItemClickEvent</span><span class="token punctuation">(</span>val item<span class="token operator">:</span> NoteItem<span class="token punctuation">)</span> <span class="token operator">:</span> <span class="token function">Event</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+        <span class="token comment">// 添加项弹窗消失事件</span>
+        object AddingNoteDialogDismiss <span class="token operator">:</span> <span class="token function">Event</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+        <span class="token comment">// 添加项弹窗添加确认点击事件</span>
+        data <span class="token keyword">class</span> <span class="token class-name">AddingNoteDialogConfirm</span><span class="token punctuation">(</span>val title<span class="token operator">:</span> String<span class="token punctuation">,</span> val desc<span class="token operator">:</span> String<span class="token punctuation">)</span> <span class="token operator">:</span> <span class="token function">Event</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+        <span class="token comment">// 添加项弹窗取消确认点击事件</span>
+        object AddingNoteDialogCanceled <span class="token operator">:</span> <span class="token function">Event</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+
+    sealed <span class="token keyword">class</span> <span class="token class-name">Effect</span> <span class="token operator">:</span> UiEffect <span class="token punctuation">{<!-- --></span>
+
+        <span class="token comment">// 弹出数据加载错误Toast</span>
+        data <span class="token keyword">class</span> <span class="token class-name">ShowErrorToastEffect</span><span class="token punctuation">(</span>val text<span class="token operator">:</span> String<span class="token punctuation">)</span> <span class="token operator">:</span> <span class="token function">Effect</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+        <span class="token comment">// 弹出添加项弹窗</span>
+        object ShowAddNoteDialog <span class="token operator">:</span> <span class="token function">Effect</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+
+    sealed <span class="token keyword">class</span> <span class="token class-name">LoadStatus</span> <span class="token punctuation">{<!-- --></span>
+
+        object LoadMoreInit <span class="token operator">:</span> <span class="token function">LoadStatus</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+        object LoadMoreLoading <span class="token operator">:</span> <span class="token function">LoadStatus</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+        data <span class="token keyword">class</span> <span class="token class-name">LoadMoreSuccess</span><span class="token punctuation">(</span>val hasMore<span class="token operator">:</span> Boolean<span class="token punctuation">)</span> <span class="token operator">:</span> <span class="token function">LoadStatus</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+        data <span class="token keyword">class</span> <span class="token class-name">LoadMoreError</span><span class="token punctuation">(</span>val exception<span class="token operator">:</span> Throwable<span class="token punctuation">)</span> <span class="token operator">:</span> <span class="token function">LoadStatus</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+        data <span class="token keyword">class</span> <span class="token class-name">LoadMoreFailed</span><span class="token punctuation">(</span>val errCode<span class="token operator">:</span> Int<span class="token punctuation">)</span> <span class="token operator">:</span> <span class="token function">LoadStatus</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+    <span class="token punctuation">}</span>
+
+    sealed <span class="token keyword">class</span> <span class="token class-name">RefreshStatus</span> <span class="token punctuation">{<!-- --></span>
+
+        object RefreshInit <span class="token operator">:</span> <span class="token function">RefreshStatus</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+        object RefreshLoading <span class="token operator">:</span> <span class="token function">RefreshStatus</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+        data <span class="token keyword">class</span> <span class="token class-name">RefreshSuccess</span><span class="token punctuation">(</span>val hasMore<span class="token operator">:</span> Boolean<span class="token punctuation">)</span> <span class="token operator">:</span> <span class="token function">RefreshStatus</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+        data <span class="token keyword">class</span> <span class="token class-name">RefreshError</span><span class="token punctuation">(</span>val exception<span class="token operator">:</span> Throwable<span class="token punctuation">)</span> <span class="token operator">:</span> <span class="token function">RefreshStatus</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+        data <span class="token keyword">class</span> <span class="token class-name">RefreshFailed</span><span class="token punctuation">(</span>val errCode<span class="token operator">:</span> Int<span class="token punctuation">)</span> <span class="token operator">:</span> <span class="token function">RefreshStatus</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+    <span class="token punctuation">}</span>
+
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>在生命周期组件中收集状态变化流和一次性事件流，发送用户交互事件</p> 
+<pre><code class="prism language-javascript"><span class="token keyword">class</span> <span class="token class-name">NotePadActivity</span> <span class="token operator">:</span> <span class="token function">BaseActivity</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+      <span class="token operator">...</span>
+
+    override fun <span class="token function">initObserver</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">super</span><span class="token punctuation">.</span><span class="token function">initObserver</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+        lifecycleScope<span class="token punctuation">.</span>launchWhenStarted <span class="token punctuation">{<!-- --></span>
+            viewModel<span class="token punctuation">.</span>uiState<span class="token punctuation">.</span>collect <span class="token punctuation">{<!-- --></span>
+                <span class="token function">when</span> <span class="token punctuation">(</span><span class="token parameter">it<span class="token punctuation">.</span>loadStatus</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    is NoteContract<span class="token punctuation">.</span>LoadStatus<span class="token punctuation">.</span>LoadMoreLoading <span class="token operator">-</span><span class="token operator">&gt;</span> <span class="token punctuation">{<!-- --></span>
+                        adapter<span class="token punctuation">.</span>loadMoreModule<span class="token punctuation">.</span><span class="token function">loadMoreToLoading</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+                    <span class="token punctuation">}</span>
+                    <span class="token operator">...</span>
+                <span class="token punctuation">}</span>
+
+                <span class="token function">when</span> <span class="token punctuation">(</span><span class="token parameter">it<span class="token punctuation">.</span>refreshStatus</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    is NoteContract<span class="token punctuation">.</span>RefreshStatus<span class="token punctuation">.</span>RefreshSuccess <span class="token operator">-</span><span class="token operator">&gt;</span> <span class="token punctuation">{<!-- --></span>
+                        adapter<span class="token punctuation">.</span><span class="token function">setDiffNewData</span><span class="token punctuation">(</span>it<span class="token punctuation">.</span>noteList<span class="token punctuation">)</span>
+                        refresh_layout<span class="token punctuation">.</span><span class="token function">finishRefresh</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+                        <span class="token keyword">if</span> <span class="token punctuation">(</span>it<span class="token punctuation">.</span>refreshStatus<span class="token punctuation">.</span>hasMore<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                            adapter<span class="token punctuation">.</span>loadMoreModule<span class="token punctuation">.</span><span class="token function">loadMoreComplete</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+                        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                            adapter<span class="token punctuation">.</span>loadMoreModule<span class="token punctuation">.</span><span class="token function">loadMoreEnd</span><span class="token punctuation">(</span><span class="token boolean">false</span><span class="token punctuation">)</span>
+                        <span class="token punctuation">}</span>
+                    <span class="token punctuation">}</span>
+                    <span class="token operator">...</span>
+                <span class="token punctuation">}</span>
+
+                txv_title<span class="token punctuation">.</span>text <span class="token operator">=</span> it<span class="token punctuation">.</span>pageTitle
+                txv_desc<span class="token punctuation">.</span>text <span class="token operator">=</span> <span class="token string">"${it.noteList.size}条记录"</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+
+        lifecycleScope<span class="token punctuation">.</span>launchWhenStarted <span class="token punctuation">{<!-- --></span>
+            viewModel<span class="token punctuation">.</span>effect<span class="token punctuation">.</span>collect <span class="token punctuation">{<!-- --></span>
+                <span class="token function">when</span> <span class="token punctuation">(</span><span class="token parameter">it</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+                    is NoteContract<span class="token punctuation">.</span>Effect<span class="token punctuation">.</span>ShowErrorToastEffect <span class="token operator">-</span><span class="token operator">&gt;</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token function">showToast</span><span class="token punctuation">(</span>it<span class="token punctuation">.</span>text<span class="token punctuation">)</span>
+                    <span class="token punctuation">}</span>
+
+                    is NoteContract<span class="token punctuation">.</span>Effect<span class="token punctuation">.</span>ShowAddNoteDialog <span class="token operator">-</span><span class="token operator">&gt;</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token function">showAddNoteDialog</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+                    <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">private</span> fun <span class="token function">initListener</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        btn_floating<span class="token punctuation">.</span>setOnClickListener <span class="token punctuation">{<!-- --></span>
+            viewModel<span class="token punctuation">.</span><span class="token function">sendEvent</span><span class="token punctuation">(</span>NoteContract<span class="token punctuation">.</span>Event<span class="token punctuation">.</span>AddingButtonClickEvent<span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+<span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="MVI_735"></a>使用MVI有哪些好处</h5> 
+<ol><li>解决了上文的两个痛点。这也是我花很长的篇幅去介绍解决两个问题过程的原因。只有真的痛过才会感受到选择合适架构的优势。</li><li>单向数据流，任何状态的变化都来自事件，因此更容易定位出问题。</li><li>理想情况下对View层和ViewModel层做了接口隔离，更加解耦。</li><li>状态、事件从架构层面上就明确划分，便于约束开发者写出漂亮的代码。</li></ol> 
+<h5><a id="_742"></a>实际使用下来的问题</h5> 
+<ol><li>膨胀的UiState，当页面复杂度提高，表示UiState的data class会严重膨胀，并且由于其牵一发而动全身的特点，想要局部更新的代价很大。因此对于复杂页面，可以通过拆分模块，让各个Fragment/View分别持有各自的ViewModel来拆解复杂度。</li><li>对于大部分的事件处理都只是调用方法，相比直接调用额外多了定义事件类型和中转部分的编码。</li></ol> 
+<h5><a id="_747"></a>结论</h5> 
+<p>架构中对SharedFlow和channelFlow的使用绝对值得保留，就算不使用MVI架构，参考这里的实现也可以帮助解决很多开发中的难题，尤其是涉及横竖屏的问题。</p> 
+<p>可以选择使用StateFlow/LiveData收敛页面全部状态，也可以拆分成多个。但更加建议按UI组件模块拆分收敛。</p> 
+<p>跳过使用Intent，直接调用ViewModel方法也可以接受。</p> 
+<h4><a id="Flow_755"></a>使用Flow还能给我们带来什么</h4> 
+<p><strong>比Rxjava更简单，比LiveData更多的操作符</strong></p> 
+<p>如使用flowOn操作符切换协程上下文、使用buffer、conflate操作符处理背压、使用debounce操作符实现防抖、使用combine操作符实现flow的组合等等。</p> 
+<p><strong>比直接使用协程更简单地将基于回调的api改写成像同步代码一样的调用</strong></p> 
+<p>使用callbackFlow，将异步操作结果以同步挂起的形式发射出去。</p> 
+<p>最后分享一套由阿里高级架构师编写的《Android八大模块进阶资料》，帮助大家将杂乱、零散、碎片化的知识进行体系化的整理，让大家系统而高效地掌握Android开发的各个知识点。</p> 
+<p>由于文章内容比较多，篇幅有限，资料已经被整理成了PDF文档，有需要《Android八大模块进阶资料》完整文档的可以加微信 即可免费领取!</p> 
+<p>PS:（文末还有使用ChatGPT机器人小福利哦！！大家不要错过）</p> 
+<img src="https://images2.imgbox.com/94/b0/RZQnqmCN_o.png"> 
+<h4><a id="Android_779"></a><strong>《Android八大模块进阶笔记》</strong></h4> 
+<p><img src="https://images2.imgbox.com/1e/58/jtvtXJj1_o.png" alt="在这里插入图片描述"></p> 
+<p>相对于我们平时看的碎片化内容，这份笔记的知识点更系统化，更容易理解和记忆，是严格按照知识体系编排的。</p> 
+<h4><a id="_803"></a>一、源码解析合集</h4> 
+<p><img src="https://images2.imgbox.com/a6/5c/6gdMeYpQ_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="_808"></a>二、开源框架合集</h4> 
+<p><img src="https://images2.imgbox.com/f0/2f/H1RxGnbO_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>同时这里还搭建了一个基于chatGPT的微信群聊机器人，24小时为大家解答疑难技术问题</strong>。</p> 
+<img src="https://images2.imgbox.com/8d/0f/XEcD2li7_o.png"> 
+<p><img src="https://images2.imgbox.com/20/36/QCjV1Lyl_o.gif" alt="图片"></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/e029bf98a80dda014f977d60266a2716/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">8~15W | 项目需求：开发7自由度机械臂高效、精准的控制器</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a5493ea471ee4e70bf06299c073244ed/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【Android】分层架构设计</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

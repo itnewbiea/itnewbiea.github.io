@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>IMX6ULL以太网卡移植与驱动分析 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="IMX6ULL以太网卡移植与驱动分析" />
+<meta property="og:description" content="一、嵌入式以太网硬件基础知识 一般如果说一款SOC支持以太网，那么就是说SOC里集成了MAC芯片。而要想完成网络的通信不仅需要MAC还需要PHY芯片。
+MAC与PHY的区别: PHY（物理层）芯片负责将网络数据在物理层面上转换为电子信号或光信号，以便在网络中传输。它处理数据的物理传输，包括电气、光学和无线形式，并且可以处理一些基本的信号调制和解调任务。例如，以太网中的PHY芯片将数字数据转换为模拟信号以进行电气传输，或将数字数据转换为光信号以进行光纤传输。
+MAC（媒体访问控制）芯片负责管理数据在网络中的传输和访问。它处理数据的逻辑传输，决定哪个设备可以发送数据、何时发送数据、如何发送数据等。例如，以太网中的MAC芯片负责实现CSMA/CD协议来协调设备之间的传输，防止数据碰撞。
+简单的说就是MAC芯片是用于控制数据传输的(它的作用其实与I2C，SPI控制器差不多)，而PHY的作用主要是将数据转化成物理的形式传输出去。
+内置MAC与不内置MAC的区别: 内置MAC: ①、内部 MAC 外设会有专用的加速模块，比如专用的 DMA，加速网速数据的处理。
+②、网速快，可以支持 10/100/1000M 网速。
+③、外接 PHY 可选择性多，成本低。
+硬件连接图：
+不内置MAC:(如三星平台一般都是不内置的) 它们使用的芯片是MAC&#43;PHY一体的（如：DM9000）
+缺点：速度慢，成本高
+硬件连接图：
+由于我们是IMX6ULL的平台，内部支持了MAC，所以我们现在讨论内置MAC的连接图。
+MII(Media Independent Interface) 作用：用于MAC与PHY芯片之间传输数据。
+RMII（Reduced Media Independent Interface） 精简的MII(比MII少了9根线)
+TX_EN**：**发送使能信号。
+**TXD[1:0]****：**发送数据信号线，一共 2 根。
+RXD[1:0]：接收数据信号线，一共 2 根。
+CRS_DV**：**相当于 MII 接口中的 RX_DV 和 CRS 这两个信号的混合。
+REF_CLK**：**参考时钟，由外部时钟源提供， 频率为 50MHz。
+现在一般都不使用MII了。（IMX使用的就是RMII）
+MDIO(管理数据输入输出接口) 一个简单的两线串行接口，一根 MDIO 数据线，一根 MDC 时钟线。驱动程序可以通过 MDIO 和
+MDC 这两根线访问 PHY 芯片的任意一个寄存器。MDIO 接口支持多达 32 个 PHY。同一时刻
+内只能对一个 PHY 进行操作，那么如何区分这 32 个 PHY 芯片呢？和 IIC 一样，使用器件地址" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/898e06f574ae5a2b2275451a4586868c/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-04-07T17:35:22+08:00" />
+<meta property="article:modified_time" content="2023-04-07T17:35:22+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">IMX6ULL以太网卡移植与驱动分析</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h3><a id="_0"></a>一、嵌入式以太网硬件基础知识</h3> 
+<p>一般如果说一款SOC支持以太网，那么就是说SOC里集成了MAC芯片。而要想完成网络的通信不仅需要MAC还需要PHY芯片。</p> 
+<h5><a id="MACPHY_4"></a>MAC与PHY的区别:</h5> 
+<p>PHY（物理层）芯片负责将网络数据在物理层面上转换为电子信号或光信号，以便在网络中传输。它处理数据的物理传输，包括电气、光学和无线形式，并且可以处理一些基本的信号调制和解调任务。例如，以太网中的PHY芯片将数字数据转换为模拟信号以进行电气传输，或将数字数据转换为光信号以进行光纤传输。</p> 
+<p>MAC（媒体访问控制）芯片负责管理数据在网络中的传输和访问。它处理数据的逻辑传输，决定哪个设备可以发送数据、何时发送数据、如何发送数据等。例如，以太网中的MAC芯片负责实现CSMA/CD协议来协调设备之间的传输，防止数据碰撞。</p> 
+<p><strong>简单的说就是MAC芯片是用于控制数据传输的(它的作用其实与I2C，SPI控制器差不多)，而PHY的作用主要是将数据转化成物理的形式传输出去。</strong></p> 
+<h5><a id="MACMAC_12"></a>内置MAC与不内置MAC的区别:</h5> 
+<h6><a id="MAC_14"></a>内置MAC:</h6> 
+<p>①、内部 MAC 外设会有专用的加速模块，比如专用的 DMA，加速网速数据的处理。</p> 
+<p>②、网速快，可以支持 10/100/1000M 网速。</p> 
+<p>③、外接 PHY 可选择性多，成本低。</p> 
+<p>硬件连接图：</p> 
+<p><img src="https://images2.imgbox.com/3c/08/TwhjfC6C_o.png" alt=""></p> 
+<h6><a id="MAC_27"></a>不内置MAC:(如三星平台一般都是不内置的)</h6> 
+<p>它们使用的芯片是MAC+PHY一体的（如：DM9000）</p> 
+<p>缺点：速度慢，成本高</p> 
+<p>硬件连接图：<br> <img src="https://images2.imgbox.com/36/b3/m1dYIm7e_o.png" alt="在这里插入图片描述"></p> 
+<hr> 
+<p>由于我们是IMX6ULL的平台，内部支持了MAC，所以我们现在讨论内置MAC的连接图。</p> 
+<h5><a id="MIIMedia_Independent_Interface_41"></a>MII(Media Independent Interface)</h5> 
+<p>作用：用于MAC与PHY芯片之间传输数据。</p> 
+<h5><a id="RMIIReduced_Media_Independent_Interface_45"></a>RMII（Reduced Media Independent Interface）</h5> 
+<p>精简的MII(比MII少了9根线)</p> 
+<p><strong>TX_EN</strong>**：**发送使能信号。</p> 
+<p>**TXD[1:0]****：**发送数据信号线，一共 2 根。</p> 
+<p><strong>RXD[1:0]</strong>：接收数据信号线，一共 2 根。</p> 
+<p><strong>CRS_DV</strong>**：**相当于 MII 接口中的 RX_DV 和 CRS 这两个信号的混合。</p> 
+<p><strong>REF_CLK</strong>**：**参考时钟，由外部时钟源提供， 频率为 50MHz。</p> 
+<p>现在一般都不使用MII了。（IMX使用的就是RMII）</p> 
+<h5><a id="MDIO_61"></a>MDIO(管理数据输入输出接口)</h5> 
+<p>一个简单的两线串行接口，一根 MDIO 数据线，一根 MDC 时钟线。驱动程序可以通过 MDIO 和</p> 
+<p>MDC 这两根线访问 PHY 芯片的任意一个寄存器。MDIO 接口支持多达 32 个 PHY。同一时刻</p> 
+<p>内只能对一个 PHY 进行操作，那么如何区分这 32 个 PHY 芯片呢？和 IIC 一样，使用器件地址</p> 
+<p>即可。同一 MDIO 接口下的所有 PHY 芯片，其器件地址不能冲突，必须保证唯一，具体器件</p> 
+<p>地址值要查阅相应的 PHY 数据手册。</p> 
+<hr> 
+<h4><a id="RJ45_75"></a>RJ45接口</h4> 
+<p>RJ45接口的作用是用于供网线插入的，一般RJ45接口与PHY芯片连接在一起，但是中间需要一个网络变压器，网络变压器用于隔离</p> 
+<p>以及滤波等，网络变压器也是一个芯片。（<strong>现在一般RJ45接口内部集成了变压器，但是我们还是得确定一下是否集成了</strong>）</p> 
+<hr> 
+<h4><a id="MAC_83"></a>最终内部集成MAC得以太网接口：</h4> 
+<p><img src="https://images2.imgbox.com/63/4c/v0uaaUos_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="IMX6ULL_88"></a>二、清楚IMX6ULL的硬件信息</h3> 
+<h5><a id="MAC_90"></a>MAC：</h5> 
+<p>I.MX6ULL 内部自</p> 
+<p>带的 ENET 外设其实就是一个网络 MAC，支持 10/100M。实现了三层网络加速，用于加速那些</p> 
+<p>通用的网络协议，比如 IP、TCP、UDP 和 ICMP 等，为客户端应用程序提供加速服务。</p> 
+<h5><a id="PHY_98"></a>PHY：</h5> 
+<p>其实对于我们来说PHY才是重点，正如I2C控制器的控制器不是我们重点，而从设备才是，PHY就是MAC的从设备。</p> 
+<p>PHY 是 IEEE 802.3 规定的一个标准模块，它的前16位寄存器是指定好的，可以提供查看IEEE 802.3英文文档查看，而后16位可以由不同厂家自定义，但是前16位已经包含了基本的通信信息。所以在内核中有一种通用的PHY驱动，它虽然不能驱动厂家的特殊功能，但是基本上的通信功能是能胜任的。(不一定会成功，需要我们调试)</p> 
+<h5><a id="SR8201F_104"></a><strong>SR8201F</strong></h5> 
+<p>正点原子使用的就是这款PHY</p> 
+<p><strong>PHY</strong> <strong>地址设置</strong>：</p> 
+<p><img src="https://images2.imgbox.com/87/c7/sICZjdla_o.png" alt="在这里插入图片描述"></p> 
+<p>正点原子 ALPHA 开发板 ENET1 网络的 SR8201F 上的 LED1/PHYAD1 引脚上拉，LED0/PHYDAD0 引脚下来下拉，因此 ENET1 上的 SR8201F 地址为 0X02。ENET2 网络上的SR8201F 的 LED1/PHYAD1 引脚下拉，LED0/PHYAD0 引脚上拉，因此 ENET2 上的 SR8201F</p> 
+<p>地址为 1。</p> 
+<p><strong>SR8021F</strong> <strong>内部寄存器</strong>：</p> 
+<p><img src="https://images2.imgbox.com/a1/88/ZI8JOaSX_o.png" alt="在这里插入图片描述"></p> 
+<p>我们说的配置 PHY 芯片，重点就是配置 BCR 寄存器</p> 
+<hr> 
+<h3><a id="IMX6ULL212_125"></a>三、IMX6ULL的网卡驱动（我们默认是大概清楚了内核网络驱动框架的，可以通过看书了解）我们以驱动网卡2为例（1/2都一样）</h3> 
+<h4><a id="1_127"></a>1.确定设备树：</h4> 
+<h6><a id="1imx6ulldtsi_129"></a>1.控制器驱动(imx6ull.dtsi)</h6> 
+<p>此节点可以参考Documentation/devicetree/bindings/net/fsl-fec.txt</p> 
+<pre><code class="prism language-c">            fec2<span class="token operator">:</span> ethernet@<span class="token number">020</span>b4000 <span class="token punctuation">{<!-- --></span>
+                compatible <span class="token operator">=</span> <span class="token string">"fsl,imx6ul-fec"</span><span class="token punctuation">,</span> <span class="token string">"fsl,imx6q-fec"</span><span class="token punctuation">;</span>
+                reg <span class="token operator">=</span> <span class="token operator">&lt;</span><span class="token number">0x020b4000</span> <span class="token number">0x4000</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+                interrupts <span class="token operator">=</span> <span class="token operator">&lt;</span>GIC_SPI <span class="token number">120</span> IRQ_TYPE_LEVEL_HIGH<span class="token operator">&gt;</span><span class="token punctuation">,</span>
+                         <span class="token operator">&lt;</span>GIC_SPI <span class="token number">121</span> IRQ_TYPE_LEVEL_HIGH<span class="token operator">&gt;</span><span class="token punctuation">;</span>
+                clocks <span class="token operator">=</span> <span class="token operator">&lt;</span><span class="token operator">&amp;</span>clks IMX6UL_CLK_ENET<span class="token operator">&gt;</span><span class="token punctuation">,</span>
+                     <span class="token operator">&lt;</span><span class="token operator">&amp;</span>clks IMX6UL_CLK_ENET_AHB<span class="token operator">&gt;</span><span class="token punctuation">,</span>
+                     <span class="token operator">&lt;</span><span class="token operator">&amp;</span>clks IMX6UL_CLK_ENET_PTP<span class="token operator">&gt;</span><span class="token punctuation">,</span>
+                     <span class="token operator">&lt;</span><span class="token operator">&amp;</span>clks IMX6UL_CLK_ENET2_REF_125M<span class="token operator">&gt;</span><span class="token punctuation">,</span>
+                     <span class="token operator">&lt;</span><span class="token operator">&amp;</span>clks IMX6UL_CLK_ENET2_REF_125M<span class="token operator">&gt;</span><span class="token punctuation">;</span>
+                clock<span class="token operator">-</span>names <span class="token operator">=</span> <span class="token string">"ipg"</span><span class="token punctuation">,</span> <span class="token string">"ahb"</span><span class="token punctuation">,</span> <span class="token string">"ptp"</span><span class="token punctuation">,</span>
+                          <span class="token string">"enet_clk_ref"</span><span class="token punctuation">,</span> <span class="token string">"enet_out"</span><span class="token punctuation">;</span>
+                stop<span class="token operator">-</span>mode <span class="token operator">=</span> <span class="token operator">&lt;</span><span class="token operator">&amp;</span>gpr <span class="token number">0x10</span> <span class="token number">4</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+                fsl<span class="token punctuation">,</span>num<span class="token operator">-</span>tx<span class="token operator">-</span>queues<span class="token operator">=</span><span class="token operator">&lt;</span><span class="token number">1</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+                fsl<span class="token punctuation">,</span>num<span class="token operator">-</span>rx<span class="token operator">-</span>queues<span class="token operator">=</span><span class="token operator">&lt;</span><span class="token number">1</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+                fsl<span class="token punctuation">,</span>magic<span class="token operator">-</span>packet<span class="token punctuation">;</span>
+                fsl<span class="token punctuation">,</span>wakeup_irq <span class="token operator">=</span> <span class="token operator">&lt;</span><span class="token number">0</span><span class="token operator">&gt;</span><span class="token punctuation">;</span> 
+                status <span class="token operator">=</span> <span class="token string">"disabled"</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h6><a id="2_155"></a>2.自己的设备树中补充控制器节点</h6> 
+<p>其中phy相关节点部分可以参考:Documentation/devicetree/bindings/net/phy.txt</p> 
+<pre><code class="prism language-c"><span class="token operator">&amp;</span>fec2 <span class="token punctuation">{<!-- --></span>
+    pinctrl<span class="token operator">-</span>names <span class="token operator">=</span> <span class="token string">"default"</span><span class="token punctuation">;</span>
+    pinctrl<span class="token operator">-</span><span class="token number">0</span> <span class="token operator">=</span> <span class="token operator">&lt;</span><span class="token operator">&amp;</span>pinctrl_enet2<span class="token comment">//MDIO与MDC两个引脚的IO复用</span>
+                <span class="token operator">&amp;</span>pinctrl_enet2_reset<span class="token operator">&gt;</span><span class="token punctuation">;</span><span class="token comment">//PHY中Reset引脚的IO复用为普通GPIO</span>
+    phy<span class="token operator">-</span>mode <span class="token operator">=</span> <span class="token string">"rmii"</span><span class="token punctuation">;</span><span class="token comment">//我们使用的是rmii与PHY通信</span>
+    phy<span class="token operator">-</span>handle <span class="token operator">=</span> <span class="token operator">&lt;</span><span class="token operator">&amp;</span>ethphy1<span class="token operator">&gt;</span><span class="token punctuation">;</span><span class="token comment">//子节点</span>
+    phy<span class="token operator">-</span>reset<span class="token operator">-</span>gpios <span class="token operator">=</span> <span class="token operator">&lt;</span><span class="token operator">&amp;</span>gpio5 <span class="token number">8</span> GPIO_ACTIVE_LOW<span class="token operator">&gt;</span><span class="token punctuation">;</span><span class="token comment">//配置GPIO</span>
+    phy<span class="token operator">-</span>reset<span class="token operator">-</span>duration <span class="token operator">=</span> <span class="token operator">&lt;</span><span class="token number">200</span><span class="token operator">&gt;</span><span class="token punctuation">;</span><span class="token comment">//复位时间</span>
+    status <span class="token operator">=</span> <span class="token string">"okay"</span><span class="token punctuation">;</span>
+
+    mdio <span class="token punctuation">{<!-- --></span>
+        <span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">address</span><span class="token expression"><span class="token operator">-</span>cells <span class="token operator">=</span> <span class="token operator">&lt;</span><span class="token number">1</span><span class="token operator">&gt;</span><span class="token punctuation">;</span></span></span>
+        <span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">size</span><span class="token expression"><span class="token operator">-</span>cells <span class="token operator">=</span> <span class="token operator">&lt;</span><span class="token number">0</span><span class="token operator">&gt;</span><span class="token punctuation">;</span></span></span>
+<span class="token comment">/*
+        ethphy0: ethernet-phy@2 {
+            compatible = "ethernet-phy-ieee802.3-c22";
+            smsc,disable-energy-detect;
+            reg = &lt;2&gt;;
+        };
+*/</span>
+        ethphy1<span class="token operator">:</span> ethernet<span class="token operator">-</span>phy@<span class="token number">1</span> <span class="token punctuation">{<!-- --></span>
+            compatible <span class="token operator">=</span> <span class="token string">"ethernet-phy-ieee802.3-c22"</span><span class="token punctuation">;</span>
+            smsc<span class="token punctuation">,</span>disable<span class="token operator">-</span>energy<span class="token operator">-</span>detect<span class="token punctuation">;</span>
+            reg <span class="token operator">=</span> <span class="token operator">&lt;</span><span class="token number">1</span><span class="token operator">&gt;</span><span class="token punctuation">;</span><span class="token comment">//芯片地址</span>
+        <span class="token punctuation">}</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span><span class="token punctuation">;</span>  
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<pre><code class="prism language-c">        pinctrl_enet2<span class="token operator">:</span> enet2grp <span class="token punctuation">{<!-- --></span>
+            fsl<span class="token punctuation">,</span>pins <span class="token operator">=</span> <span class="token operator">&lt;</span>
+                MX6UL_PAD_GPIO1_IO07__ENET2_MDC     <span class="token number">0x1b0b0</span>
+                MX6UL_PAD_GPIO1_IO06__ENET2_MDIO    <span class="token number">0x1b0b0</span>
+                MX6UL_PAD_ENET2_RX_EN__ENET2_RX_EN  <span class="token number">0x1b0b0</span>
+                MX6UL_PAD_ENET2_RX_ER__ENET2_RX_ER  <span class="token number">0x1b0b0</span>
+                MX6UL_PAD_ENET2_RX_DATA0__ENET2_RDATA00 <span class="token number">0x1b0b0</span>
+                MX6UL_PAD_ENET2_RX_DATA1__ENET2_RDATA01 <span class="token number">0x1b0b0</span>
+                MX6UL_PAD_ENET2_TX_EN__ENET2_TX_EN  <span class="token number">0x1b0b0</span>
+                MX6UL_PAD_ENET2_TX_DATA0__ENET2_TDATA00 <span class="token number">0x1b0b0</span>
+                MX6UL_PAD_ENET2_TX_DATA1__ENET2_TDATA01 <span class="token number">0x1b0b0</span>
+                MX6UL_PAD_ENET2_TX_CLK__ENET2_REF_CLK2  <span class="token number">0x4001b031</span>
+            <span class="token operator">&gt;</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span><span class="token punctuation">;</span>
+        
+         pinctrl_enet2_reset<span class="token operator">:</span> enet2resetgrp <span class="token punctuation">{<!-- --></span>
+            fsl<span class="token punctuation">,</span>pins <span class="token operator">=</span> <span class="token operator">&lt;</span>
+                MX6ULL_PAD_SNVS_TAMPER8__GPIO5_IO08 <span class="token number">0x10B0</span>
+                <span class="token operator">&gt;</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>注意：其中pinctrl_enet2_reset要放在&amp;iomuxc_snvs节点下，因为MX6ULL_PAD_SNVS_TAMPER8__GPIO5_IO0中有SNVS，而pinctrl_enet2放在普通的&amp;iomuxc节点下。</p> 
+<h4><a id="2_214"></a>2.分析驱动</h4> 
+<h4><a id="MAC_216"></a>一、MAC控制器驱动</h4> 
+<p>如何查找到控制器驱动所在文件呢？可以根据设备树控制器节点的compatible在内核源码中搜索。</p> 
+<p>grep -r “fsl,imx6ul-fec” .</p> 
+<p>最终找到：linux-imx-rel_imx_4.1.15_2.1.0_ga_alientek\drivers\net\ethernet\freescale\fec_main.c</p> 
+<hr> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">struct</span> <span class="token class-name">platform_driver</span> fec_driver <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token punctuation">.</span>driver	<span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token punctuation">.</span>name	<span class="token operator">=</span> DRIVER_NAME<span class="token punctuation">,</span>
+		<span class="token punctuation">.</span>pm	<span class="token operator">=</span> <span class="token operator">&amp;</span>fec_pm_ops<span class="token punctuation">,</span>
+		<span class="token punctuation">.</span>of_match_table <span class="token operator">=</span> fec_dt_ids<span class="token punctuation">,</span>
+	<span class="token punctuation">}</span><span class="token punctuation">,</span>
+	<span class="token punctuation">.</span>id_table <span class="token operator">=</span> fec_devtype<span class="token punctuation">,</span>
+	<span class="token punctuation">.</span>probe	<span class="token operator">=</span> fec_probe<span class="token punctuation">,</span>
+	<span class="token punctuation">.</span>remove	<span class="token operator">=</span> fec_drv_remove<span class="token punctuation">,</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token function">module_platform_driver</span><span class="token punctuation">(</span>fec_driver<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token function">MODULE_ALIAS</span><span class="token punctuation">(</span><span class="token string">"platform:"</span>DRIVER_NAME<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">MODULE_LICENSE</span><span class="token punctuation">(</span><span class="token string">"GPL"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>可以发现像i2c控制器驱动一样，它也是注册进platform总线里。</p> 
+<p>主要看看probe：fec_probe</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">int</span>
+<span class="token function">fec_probe</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">platform_device</span> <span class="token operator">*</span>pdev<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">struct</span> <span class="token class-name">fec_enet_private</span> <span class="token operator">*</span>fep<span class="token punctuation">;</span><span class="token comment">//定义私有数据对象</span>
+	<span class="token keyword">struct</span> <span class="token class-name">fec_platform_data</span> <span class="token operator">*</span>pdata<span class="token punctuation">;</span>
+	<span class="token keyword">struct</span> <span class="token class-name">net_device</span> <span class="token operator">*</span>ndev<span class="token punctuation">;</span><span class="token comment">// 定义net_device对象，网络驱动框架的核心对象</span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+	<span class="token keyword">int</span> num_tx_qs<span class="token punctuation">;</span>
+	<span class="token keyword">int</span> num_rx_qs<span class="token punctuation">;</span>
+
+   	<span class="token comment">/* zuozhongkai 2019/2/20 设置MX6UL_PAD_ENET1_TX_CLK和
+     * MX6UL_PAD_ENET2_TX_CLK这两个IO的复用寄存器的SION位
+     * 为1。
+     */</span>
+    <span class="token keyword">void</span> __iomem <span class="token operator">*</span>IMX6U_ENET1_TX_CLK<span class="token punctuation">;</span>
+    <span class="token keyword">void</span> __iomem <span class="token operator">*</span>IMX6U_ENET2_TX_CLK<span class="token punctuation">;</span>
+
+    IMX6U_ENET1_TX_CLK <span class="token operator">=</span> <span class="token function">ioremap</span><span class="token punctuation">(</span><span class="token number">0X020E00DC</span><span class="token punctuation">,</span> <span class="token number">4</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">writel</span><span class="token punctuation">(</span><span class="token number">0X14</span><span class="token punctuation">,</span> IMX6U_ENET1_TX_CLK<span class="token punctuation">)</span><span class="token punctuation">;</span>
+ 
+    IMX6U_ENET2_TX_CLK <span class="token operator">=</span> <span class="token function">ioremap</span><span class="token punctuation">(</span><span class="token number">0X020E00FC</span><span class="token punctuation">,</span> <span class="token number">4</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">writel</span><span class="token punctuation">(</span><span class="token number">0X14</span><span class="token punctuation">,</span> IMX6U_ENET2_TX_CLK<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token function">fec_enet_get_queue_num</span><span class="token punctuation">(</span>pdev<span class="token punctuation">,</span> <span class="token operator">&amp;</span>num_tx_qs<span class="token punctuation">,</span> <span class="token operator">&amp;</span>num_rx_qs<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token comment">/* Init network device */</span>
+	ndev <span class="token operator">=</span> <span class="token function">alloc_etherdev_mqs</span><span class="token punctuation">(</span><span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">fec_enet_private</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+				  num_tx_qs<span class="token punctuation">,</span> num_rx_qs<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//分配并初始化net_device</span>
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+
+	phy_node <span class="token operator">=</span> <span class="token function">of_parse_phandle</span><span class="token punctuation">(</span>np<span class="token punctuation">,</span> <span class="token string">"phy-handle"</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//获取phy节点</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>phy_node <span class="token operator">&amp;&amp;</span> <span class="token function">of_phy_is_fixed_link</span><span class="token punctuation">(</span>np<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		ret <span class="token operator">=</span> <span class="token function">of_phy_register_fixed_link</span><span class="token punctuation">(</span>np<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>ret <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token function">dev_err</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>pdev<span class="token operator">-&gt;</span>dev<span class="token punctuation">,</span>
+				<span class="token string">"broken fixed-link specification\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token keyword">goto</span> failed_phy<span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+		phy_node <span class="token operator">=</span> <span class="token function">of_node_get</span><span class="token punctuation">(</span>np<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	fep<span class="token operator">-&gt;</span>phy_node <span class="token operator">=</span> phy_node<span class="token punctuation">;</span>
+
+	ret <span class="token operator">=</span> <span class="token function">of_get_phy_mode</span><span class="token punctuation">(</span>pdev<span class="token operator">-&gt;</span>dev<span class="token punctuation">.</span>of_node<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//获取phy的传输描述(使用mii、rmii，..)</span>
+	
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+
+	<span class="token function">fec_reset_phy</span><span class="token punctuation">(</span>pdev<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//复位phy</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>fep<span class="token operator">-&gt;</span>bufdesc_ex<span class="token punctuation">)</span>
+		<span class="token function">fec_ptp_init</span><span class="token punctuation">(</span>pdev<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	ret <span class="token operator">=</span> <span class="token function">fec_enet_init</span><span class="token punctuation">(</span>ndev<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//初始化net_device（包括两个ops变量的赋值），以及设置NAPI的POLL</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>ret<span class="token punctuation">)</span>
+		<span class="token keyword">goto</span> failed_init<span class="token punctuation">;</span>
+
+	<span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> FEC_IRQ_NUM<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		irq <span class="token operator">=</span> <span class="token function">platform_get_irq</span><span class="token punctuation">(</span>pdev<span class="token punctuation">,</span> i<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>irq <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span>i<span class="token punctuation">)</span>
+				<span class="token keyword">break</span><span class="token punctuation">;</span>
+			ret <span class="token operator">=</span> irq<span class="token punctuation">;</span>
+			<span class="token keyword">goto</span> failed_irq<span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+		ret <span class="token operator">=</span> <span class="token function">devm_request_irq</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>pdev<span class="token operator">-&gt;</span>dev<span class="token punctuation">,</span> irq<span class="token punctuation">,</span> fec_enet_interrupt<span class="token punctuation">,</span>
+				       <span class="token number">0</span><span class="token punctuation">,</span> pdev<span class="token operator">-&gt;</span>name<span class="token punctuation">,</span> ndev<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//设置fec_enet_interrupt很重要，发送与接收数据包都要次中断</span>
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+
+	ret <span class="token operator">=</span> <span class="token function">of_property_read_u32</span><span class="token punctuation">(</span>np<span class="token punctuation">,</span> <span class="token string">"fsl,wakeup_irq"</span><span class="token punctuation">,</span> <span class="token operator">&amp;</span>irq<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>ret <span class="token operator">&amp;&amp;</span> irq <span class="token operator">&lt;</span> FEC_IRQ_NUM<span class="token punctuation">)</span>
+		fep<span class="token operator">-&gt;</span>wake_irq <span class="token operator">=</span> fep<span class="token operator">-&gt;</span>irq<span class="token punctuation">[</span>irq<span class="token punctuation">]</span><span class="token punctuation">;</span>
+	<span class="token keyword">else</span>
+		fep<span class="token operator">-&gt;</span>wake_irq <span class="token operator">=</span> fep<span class="token operator">-&gt;</span>irq<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+
+	<span class="token function">init_completion</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>fep<span class="token operator">-&gt;</span>mdio_done<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	ret <span class="token operator">=</span> <span class="token function">fec_enet_mii_init</span><span class="token punctuation">(</span>pdev<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//完成 MII/RMII 接口的初始化，主要是配置SOC 读写 PHY 内部寄存器的函数,这里面除了注册mii_bus还注册了phy设备</span>
+        
+    ret <span class="token operator">=</span> <span class="token function">register_netdev</span><span class="token punctuation">(</span>ndev<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//注册net_device</span>
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+
+	<span class="token keyword">return</span> ret<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>我们先分析一下fec_enet_init：</p> 
+<h5><a id="1fec_enet_initnet_deviceNAPI_337"></a>1.fec_enet_init：(主要作用：初始化net_device，注册NAPI)</h5> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">fec_enet_init</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">net_device</span> <span class="token operator">*</span>ndev<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">struct</span> <span class="token class-name">fec_enet_private</span> <span class="token operator">*</span>fep <span class="token operator">=</span> <span class="token function">netdev_priv</span><span class="token punctuation">(</span>ndev<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//获取私有数据</span>
+	<span class="token keyword">struct</span> <span class="token class-name">fec_enet_priv_tx_q</span> <span class="token operator">*</span>txq<span class="token punctuation">;</span>
+	<span class="token keyword">struct</span> <span class="token class-name">fec_enet_priv_rx_q</span> <span class="token operator">*</span>rxq<span class="token punctuation">;</span>
+	<span class="token keyword">struct</span> <span class="token class-name">bufdesc</span> <span class="token operator">*</span>cbd_base<span class="token punctuation">;</span>
+	<span class="token class-name">dma_addr_t</span> bd_dma<span class="token punctuation">;</span>
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+
+	<span class="token function">fec_enet_alloc_queue</span><span class="token punctuation">(</span>ndev<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//分配请求队列</span>
+
+
+	<span class="token comment">/* Allocate memory for buffer descriptors. */</span>
+	cbd_base <span class="token operator">=</span> <span class="token function">dma_alloc_coherent</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">,</span> bd_size<span class="token punctuation">,</span> <span class="token operator">&amp;</span>bd_dma<span class="token punctuation">,</span>
+				      GFP_KERNEL<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//分配dma缓冲区</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>cbd_base<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> <span class="token operator">-</span>ENOMEM<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token function">memset</span><span class="token punctuation">(</span>cbd_base<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> bd_size<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//清空缓冲区</span>
+
+	<span class="token comment">/* Get the Ethernet address */</span>
+	<span class="token function">fec_get_mac</span><span class="token punctuation">(</span>ndev<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//得到mac控制器地址</span>
+	<span class="token comment">/* make sure MAC we just acquired is programmed into the hw */</span>
+	<span class="token function">fec_set_mac_address</span><span class="token punctuation">(</span>ndev<span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token comment">/* Set receive and transmit descriptor base. */</span>
+	<span class="token comment">//设置发送与接收描述符地址</span>
+	<span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> fep<span class="token operator">-&gt;</span>num_rx_queues<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		rxq <span class="token operator">=</span> fep<span class="token operator">-&gt;</span>rx_queue<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">;</span>
+		rxq<span class="token operator">-&gt;</span>index <span class="token operator">=</span> i<span class="token punctuation">;</span>
+		rxq<span class="token operator">-&gt;</span>rx_bd_base <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">bufdesc</span> <span class="token operator">*</span><span class="token punctuation">)</span>cbd_base<span class="token punctuation">;</span>
+		rxq<span class="token operator">-&gt;</span>bd_dma <span class="token operator">=</span> bd_dma<span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>fep<span class="token operator">-&gt;</span>bufdesc_ex<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			bd_dma <span class="token operator">+=</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">bufdesc_ex</span><span class="token punctuation">)</span> <span class="token operator">*</span> rxq<span class="token operator">-&gt;</span>rx_ring_size<span class="token punctuation">;</span>
+			cbd_base <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">bufdesc</span> <span class="token operator">*</span><span class="token punctuation">)</span>
+				<span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">bufdesc_ex</span> <span class="token operator">*</span><span class="token punctuation">)</span>cbd_base<span class="token punctuation">)</span> <span class="token operator">+</span> rxq<span class="token operator">-&gt;</span>rx_ring_size<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+			bd_dma <span class="token operator">+=</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">bufdesc</span><span class="token punctuation">)</span> <span class="token operator">*</span> rxq<span class="token operator">-&gt;</span>rx_ring_size<span class="token punctuation">;</span>
+			cbd_base <span class="token operator">+=</span> rxq<span class="token operator">-&gt;</span>rx_ring_size<span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> fep<span class="token operator">-&gt;</span>num_tx_queues<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		txq <span class="token operator">=</span> fep<span class="token operator">-&gt;</span>tx_queue<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">;</span>
+		txq<span class="token operator">-&gt;</span>index <span class="token operator">=</span> i<span class="token punctuation">;</span>
+		txq<span class="token operator">-&gt;</span>tx_bd_base <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">bufdesc</span> <span class="token operator">*</span><span class="token punctuation">)</span>cbd_base<span class="token punctuation">;</span>
+		txq<span class="token operator">-&gt;</span>bd_dma <span class="token operator">=</span> bd_dma<span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>fep<span class="token operator">-&gt;</span>bufdesc_ex<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			bd_dma <span class="token operator">+=</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">bufdesc_ex</span><span class="token punctuation">)</span> <span class="token operator">*</span> txq<span class="token operator">-&gt;</span>tx_ring_size<span class="token punctuation">;</span>
+			cbd_base <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">bufdesc</span> <span class="token operator">*</span><span class="token punctuation">)</span>
+			 <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">bufdesc_ex</span> <span class="token operator">*</span><span class="token punctuation">)</span>cbd_base<span class="token punctuation">)</span> <span class="token operator">+</span> txq<span class="token operator">-&gt;</span>tx_ring_size<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+			bd_dma <span class="token operator">+=</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">bufdesc</span><span class="token punctuation">)</span> <span class="token operator">*</span> txq<span class="token operator">-&gt;</span>tx_ring_size<span class="token punctuation">;</span>
+			cbd_base <span class="token operator">+=</span> txq<span class="token operator">-&gt;</span>tx_ring_size<span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+
+
+	<span class="token comment">/* The FEC Ethernet specific entries in the device structure */</span>
+	ndev<span class="token operator">-&gt;</span>watchdog_timeo <span class="token operator">=</span> TX_TIMEOUT<span class="token punctuation">;</span>
+	<span class="token comment">//实习网络设备操作函数，并赋值</span>
+	ndev<span class="token operator">-&gt;</span>netdev_ops <span class="token operator">=</span> <span class="token operator">&amp;</span>fec_netdev_ops<span class="token punctuation">;</span><span class="token comment">//这些都是在这个文件中实习的</span>
+	ndev<span class="token operator">-&gt;</span>ethtool_ops <span class="token operator">=</span> <span class="token operator">&amp;</span>fec_enet_ethtool_ops<span class="token punctuation">;</span>
+
+	<span class="token function">netif_napi_add</span><span class="token punctuation">(</span>ndev<span class="token punctuation">,</span> <span class="token operator">&amp;</span>fep<span class="token operator">-&gt;</span>napi<span class="token punctuation">,</span> fec_enet_rx_napi<span class="token punctuation">,</span> NAPI_POLL_WEIGHT<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//启用NAPI</span>
+
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+
+	<span class="token function">fec_restart</span><span class="token punctuation">(</span>ndev<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//重启网络传输</span>
+
+	<span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h6><a id="NAPI_417"></a>如何使用NAPI实现收发数据？</h6> 
+<p>首先我们知道网络设备中收发数据都会在底层产生中断传输给上层。而这时就会执行到我们前面注册的中断fec_enet_interrupt</p> 
+<p>fec_enet_interrupt：</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token class-name">irqreturn_t</span>
+<span class="token function">fec_enet_interrupt</span><span class="token punctuation">(</span><span class="token keyword">int</span> irq<span class="token punctuation">,</span> <span class="token keyword">void</span> <span class="token operator">*</span>dev_id<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">struct</span> <span class="token class-name">net_device</span> <span class="token operator">*</span>ndev <span class="token operator">=</span> dev_id<span class="token punctuation">;</span>
+	<span class="token keyword">struct</span> <span class="token class-name">fec_enet_private</span> <span class="token operator">*</span>fep <span class="token operator">=</span> <span class="token function">netdev_priv</span><span class="token punctuation">(</span>ndev<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">napi_schedule_prep</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>fep<span class="token operator">-&gt;</span>napi<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token comment">/* Disable the NAPI interrupts */</span>
+			<span class="token function">writel</span><span class="token punctuation">(</span>FEC_ENET_MII<span class="token punctuation">,</span> fep<span class="token operator">-&gt;</span>hwp <span class="token operator">+</span> FEC_IMASK<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token function">__napi_schedule</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>fep<span class="token operator">-&gt;</span>napi<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//调用napi</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+
+	<span class="token keyword">return</span> ret<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>__napi_schedule：</p> 
+<pre><code class="prism language-c"><span class="token keyword">void</span> <span class="token function">__napi_schedule</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">napi_struct</span> <span class="token operator">*</span>n<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">unsigned</span> <span class="token keyword">long</span> flags<span class="token punctuation">;</span>
+
+	<span class="token function">local_irq_save</span><span class="token punctuation">(</span>flags<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">____napi_schedule</span><span class="token punctuation">(</span><span class="token function">this_cpu_ptr</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>softnet_data<span class="token punctuation">)</span><span class="token punctuation">,</span> n<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">local_irq_restore</span><span class="token punctuation">(</span>flags<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>____napi_schedule：</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">inline</span> <span class="token keyword">void</span> <span class="token function">____napi_schedule</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">softnet_data</span> <span class="token operator">*</span>sd<span class="token punctuation">,</span>
+				     <span class="token keyword">struct</span> <span class="token class-name">napi_struct</span> <span class="token operator">*</span>napi<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token function">list_add_tail</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>napi<span class="token operator">-&gt;</span>poll_list<span class="token punctuation">,</span> <span class="token operator">&amp;</span>sd<span class="token operator">-&gt;</span>poll_list<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">__raise_softirq_irqoff</span><span class="token punctuation">(</span>NET_RX_SOFTIRQ<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//触发中断下半部，也就是NAPI的执行</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>这时就会调用到netif_napi_add(ndev, &amp;fep-&gt;napi, fec_enet_rx_napi, NAPI_POLL_WEIGHT);//启用NAPI中的fec_enet_rx_napi</p> 
+<p>fec_enet_rx_napi:</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">fec_enet_rx_napi</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">napi_struct</span> <span class="token operator">*</span>napi<span class="token punctuation">,</span> <span class="token keyword">int</span> budget<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">struct</span> <span class="token class-name">net_device</span> <span class="token operator">*</span>ndev <span class="token operator">=</span> napi<span class="token operator">-&gt;</span>dev<span class="token punctuation">;</span>
+	<span class="token keyword">struct</span> <span class="token class-name">fec_enet_private</span> <span class="token operator">*</span>fep <span class="token operator">=</span> <span class="token function">netdev_priv</span><span class="token punctuation">(</span>ndev<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">int</span> pkts<span class="token punctuation">;</span>
+
+	pkts <span class="token operator">=</span> <span class="token function">fec_enet_rx</span><span class="token punctuation">(</span>ndev<span class="token punctuation">,</span> budget<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//读</span>
+
+	<span class="token function">fec_enet_tx</span><span class="token punctuation">(</span>ndev<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//写</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>pkts <span class="token operator">&lt;</span> budget<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">napi_complete</span><span class="token punctuation">(</span>napi<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token function">writel</span><span class="token punctuation">(</span>FEC_DEFAULT_IMASK<span class="token punctuation">,</span> fep<span class="token operator">-&gt;</span>hwp <span class="token operator">+</span> FEC_IMASK<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//打开中断</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">return</span> pkts<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>napi的作用其实就是为了避免频繁的进入中断而浪费性能，它采用的是轮询的方式，一旦有中断到来，先关中断，然后在轮询中不断主动检测，直到没有数据收发，于是退出轮询，开启中断。</p> 
+<h5><a id="2fec_enet_mii_initPHYMII_BUSPHY_491"></a>2.fec_enet_mii_init:(主要作用：注册PHY设备与MII_BUS设备，实现PHY总线中驱动与设备的匹配)</h5> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">fec_enet_mii_init</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">platform_device</span> <span class="token operator">*</span>pdev<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">static</span> <span class="token keyword">struct</span> <span class="token class-name">mii_bus</span> <span class="token operator">*</span>fec0_mii_bus<span class="token punctuation">;</span><span class="token comment">//定义mii_bus对象，(mii_bus并不是总线模型里的总线，而是包含这device的对象，而且它里面还有很多与PHY设备相关的信息)</span>
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+
+	fep<span class="token operator">-&gt;</span>mii_bus <span class="token operator">=</span> <span class="token function">mdiobus_alloc</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//申请mdiobus</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>fep<span class="token operator">-&gt;</span>mii_bus <span class="token operator">==</span> <span class="token constant">NULL</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		err <span class="token operator">=</span> <span class="token operator">-</span>ENOMEM<span class="token punctuation">;</span>
+		<span class="token keyword">goto</span> err_out<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	fep<span class="token operator">-&gt;</span>mii_bus<span class="token operator">-&gt;</span>name <span class="token operator">=</span> <span class="token string">"fec_enet_mii_bus"</span><span class="token punctuation">;</span>
+	<span class="token comment">//实现读写函数,并赋值，这里的读写主要是读写phy的寄存器</span>
+	fep<span class="token operator">-&gt;</span>mii_bus<span class="token operator">-&gt;</span>read <span class="token operator">=</span> fec_enet_mdio_read<span class="token punctuation">;</span>
+	fep<span class="token operator">-&gt;</span>mii_bus<span class="token operator">-&gt;</span>write <span class="token operator">=</span> fec_enet_mdio_write<span class="token punctuation">;</span>
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+
+	node <span class="token operator">=</span> <span class="token function">of_get_child_by_name</span><span class="token punctuation">(</span>pdev<span class="token operator">-&gt;</span>dev<span class="token punctuation">.</span>of_node<span class="token punctuation">,</span> <span class="token string">"mdio"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>node<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		err <span class="token operator">=</span> <span class="token function">of_mdiobus_register</span><span class="token punctuation">(</span>fep<span class="token operator">-&gt;</span>mii_bus<span class="token punctuation">,</span> node<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//在里面既注册了mii_bus的device也注册了PHY的device</span>
+		<span class="token function">of_node_put</span><span class="token punctuation">(</span>node<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+		err <span class="token operator">=</span> <span class="token function">mdiobus_register</span><span class="token punctuation">(</span>fep<span class="token operator">-&gt;</span>mii_bus<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//在of_mdiobus_register中也调用了它</span>
+	<span class="token punctuation">}</span>
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+	<span class="token keyword">return</span> err<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>of_mdiobus_register:</p> 
+<pre><code class="prism language-c"><span class="token keyword">int</span> <span class="token function">of_mdiobus_register</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">mii_bus</span> <span class="token operator">*</span>mdio<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">device_node</span> <span class="token operator">*</span>np<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+
+	<span class="token comment">/* Register the MDIO bus */</span>
+	rc <span class="token operator">=</span> <span class="token function">mdiobus_register</span><span class="token punctuation">(</span>mdio<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//注册mii_bus的device</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>rc<span class="token punctuation">)</span>
+		<span class="token keyword">return</span> rc<span class="token punctuation">;</span>
+
+	<span class="token comment">/* Loop over the child nodes and register a phy_device for each one */</span>
+	<span class="token function">for_each_available_child_of_node</span><span class="token punctuation">(</span>np<span class="token punctuation">,</span> child<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		addr <span class="token operator">=</span> <span class="token function">of_mdio_parse_addr</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>mdio<span class="token operator">-&gt;</span>dev<span class="token punctuation">,</span> child<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>addr <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			scanphys <span class="token operator">=</span> true<span class="token punctuation">;</span>
+			<span class="token keyword">continue</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+
+		rc <span class="token operator">=</span> <span class="token function">of_mdiobus_register_phy</span><span class="token punctuation">(</span>mdio<span class="token punctuation">,</span> child<span class="token punctuation">,</span> addr<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//注册PHY设备</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>rc<span class="token punctuation">)</span>
+			<span class="token keyword">continue</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+
+	<span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>of_mdiobus_register_phy:</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">of_mdiobus_register_phy</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">mii_bus</span> <span class="token operator">*</span>mdio<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">device_node</span> <span class="token operator">*</span>child<span class="token punctuation">,</span>
+				   u32 addr<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">struct</span> <span class="token class-name">phy_device</span> <span class="token operator">*</span>phy<span class="token punctuation">;</span>
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+	is_c45 <span class="token operator">=</span> <span class="token function">of_device_is_compatible</span><span class="token punctuation">(</span>child<span class="token punctuation">,</span>
+					 <span class="token string">"ethernet-phy-ieee802.3-c45"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>is_c45 <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span><span class="token function">of_get_phy_id</span><span class="token punctuation">(</span>child<span class="token punctuation">,</span> <span class="token operator">&amp;</span>phy_id<span class="token punctuation">)</span><span class="token punctuation">)</span>
+		phy <span class="token operator">=</span> <span class="token function">phy_device_create</span><span class="token punctuation">(</span>mdio<span class="token punctuation">,</span> addr<span class="token punctuation">,</span> phy_id<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//创建phy_device</span>
+	<span class="token keyword">else</span>
+		phy <span class="token operator">=</span> <span class="token function">get_phy_device</span><span class="token punctuation">(</span>mdio<span class="token punctuation">,</span> addr<span class="token punctuation">,</span> is_c45<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//获取phy_device</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>phy <span class="token operator">||</span> <span class="token function">IS_ERR</span><span class="token punctuation">(</span>phy<span class="token punctuation">)</span><span class="token punctuation">)</span>
+		<span class="token keyword">return</span> <span class="token number">1</span><span class="token punctuation">;</span>
+
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+
+	<span class="token comment">/* All data is now stored in the phy struct;
+	 * register it */</span>
+	rc <span class="token operator">=</span> <span class="token function">phy_device_register</span><span class="token punctuation">(</span>phy<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//注册phy_device</span>
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+
+	<span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="PHY_588"></a>二、PHY总线驱动</h4> 
+<p>首先看phy总线是在哪里注册的。</p> 
+<p>在linux-imx-rel_imx_4.1.15_2.1.0_ga_alientek\drivers\net\phy\mdio_bus.c中</p> 
+<pre><code class="prism language-c"><span class="token keyword">struct</span> <span class="token class-name">bus_type</span> mdio_bus_type <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token punctuation">.</span>name		<span class="token operator">=</span> <span class="token string">"mdio_bus"</span><span class="token punctuation">,</span>
+	<span class="token punctuation">.</span>match		<span class="token operator">=</span> mdio_bus_match<span class="token punctuation">,</span>
+	<span class="token punctuation">.</span>pm		<span class="token operator">=</span> MDIO_BUS_PM_OPS<span class="token punctuation">,</span>
+	<span class="token punctuation">.</span>dev_groups	<span class="token operator">=</span> mdio_dev_groups<span class="token punctuation">,</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+<span class="token function">EXPORT_SYMBOL</span><span class="token punctuation">(</span>mdio_bus_type<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token keyword">int</span> __init <span class="token function">mdio_bus_init</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">int</span> ret<span class="token punctuation">;</span>
+
+	ret <span class="token operator">=</span> <span class="token function">class_register</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>mdio_bus_class<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>ret<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		ret <span class="token operator">=</span> <span class="token function">bus_register</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>mdio_bus_type<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>ret<span class="token punctuation">)</span>
+			<span class="token function">class_unregister</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>mdio_bus_class<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token keyword">return</span> ret<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token function">mdio_bus_exit</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token function">class_unregister</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>mdio_bus_class<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">bus_unregister</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>mdio_bus_type<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>看来这个总线是内核启动会自动注册的，那么phy_driver是在哪里注册的？</p> 
+<p>在linux-imx-rel_imx_4.1.15_2.1.0_ga_alientek\drivers\net\phy\device.c中</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">int</span> __init <span class="token function">phy_init</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">int</span> rc<span class="token punctuation">;</span>
+
+	rc <span class="token operator">=</span> <span class="token function">mdio_bus_init</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>rc<span class="token punctuation">)</span>
+		<span class="token keyword">return</span> rc<span class="token punctuation">;</span>
+
+	rc <span class="token operator">=</span> <span class="token function">phy_drivers_register</span><span class="token punctuation">(</span>genphy_driver<span class="token punctuation">,</span>
+				  <span class="token function">ARRAY_SIZE</span><span class="token punctuation">(</span>genphy_driver<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>rc<span class="token punctuation">)</span>
+		<span class="token function">mdio_bus_exit</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">return</span> rc<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">static</span> <span class="token keyword">void</span> __exit <span class="token function">phy_exit</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token function">phy_drivers_unregister</span><span class="token punctuation">(</span>genphy_driver<span class="token punctuation">,</span>
+			       <span class="token function">ARRAY_SIZE</span><span class="token punctuation">(</span>genphy_driver<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">mdio_bus_exit</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token function">subsys_initcall</span><span class="token punctuation">(</span>phy_init<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">module_exit</span><span class="token punctuation">(</span>phy_exit<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>这个driver是通用的phy驱动。</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">struct</span> <span class="token class-name">phy_driver</span> genphy_driver<span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token punctuation">.</span>phy_id		<span class="token operator">=</span> <span class="token number">0xffffffff</span><span class="token punctuation">,</span>
+	<span class="token punctuation">.</span>phy_id_mask	<span class="token operator">=</span> <span class="token number">0xffffffff</span><span class="token punctuation">,</span>
+	<span class="token punctuation">.</span>name		<span class="token operator">=</span> <span class="token string">"Generic PHY"</span><span class="token punctuation">,</span><span class="token comment">//从名字就可以看出这是通用的phy驱动</span>
+	<span class="token punctuation">.</span>soft_reset	<span class="token operator">=</span> genphy_soft_reset<span class="token punctuation">,</span>
+	<span class="token punctuation">.</span>config_init	<span class="token operator">=</span> genphy_config_init<span class="token punctuation">,</span>
+	<span class="token punctuation">.</span>features	<span class="token operator">=</span> PHY_GBIT_FEATURES <span class="token operator">|</span> SUPPORTED_MII <span class="token operator">|</span>
+			  SUPPORTED_AUI <span class="token operator">|</span> SUPPORTED_FIBRE <span class="token operator">|</span>
+			  SUPPORTED_BNC<span class="token punctuation">,</span>
+	<span class="token punctuation">.</span>config_aneg	<span class="token operator">=</span> genphy_config_aneg<span class="token punctuation">,</span>
+	<span class="token punctuation">.</span>aneg_done	<span class="token operator">=</span> genphy_aneg_done<span class="token punctuation">,</span>
+	<span class="token punctuation">.</span>read_status	<span class="token operator">=</span> genphy_read_status<span class="token punctuation">,</span>
+	<span class="token punctuation">.</span>suspend	<span class="token operator">=</span> genphy_suspend<span class="token punctuation">,</span>
+	<span class="token punctuation">.</span>resume		<span class="token operator">=</span> genphy_resume<span class="token punctuation">,</span>
+	<span class="token punctuation">.</span>driver		<span class="token operator">=</span> <span class="token punctuation">{<!-- --></span> <span class="token punctuation">.</span>owner <span class="token operator">=</span> THIS_MODULE<span class="token punctuation">,</span> <span class="token punctuation">}</span><span class="token punctuation">,</span>
+<span class="token punctuation">}</span><span class="token punctuation">,</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token punctuation">.</span>phy_id         <span class="token operator">=</span> <span class="token number">0xffffffff</span><span class="token punctuation">,</span>
+	<span class="token punctuation">.</span>phy_id_mask    <span class="token operator">=</span> <span class="token number">0xffffffff</span><span class="token punctuation">,</span>
+	<span class="token punctuation">.</span>name           <span class="token operator">=</span> <span class="token string">"Generic 10G PHY"</span><span class="token punctuation">,</span>
+	<span class="token punctuation">.</span>soft_reset	<span class="token operator">=</span> gen10g_soft_reset<span class="token punctuation">,</span>
+	<span class="token punctuation">.</span>config_init    <span class="token operator">=</span> gen10g_config_init<span class="token punctuation">,</span>
+	<span class="token punctuation">.</span>features       <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">,</span>
+	<span class="token punctuation">.</span>config_aneg    <span class="token operator">=</span> gen10g_config_aneg<span class="token punctuation">,</span>
+	<span class="token punctuation">.</span>read_status    <span class="token operator">=</span> gen10g_read_status<span class="token punctuation">,</span>
+	<span class="token punctuation">.</span>suspend        <span class="token operator">=</span> gen10g_suspend<span class="token punctuation">,</span>
+	<span class="token punctuation">.</span>resume         <span class="token operator">=</span> gen10g_resume<span class="token punctuation">,</span>
+	<span class="token punctuation">.</span>driver         <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">.</span>owner <span class="token operator">=</span> THIS_MODULE<span class="token punctuation">,</span> <span class="token punctuation">}</span><span class="token punctuation">,</span>
+<span class="token punctuation">}</span> <span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>这里面没有.compatible属性，那是如何匹配的呢？</p> 
+<p>看mdio_bus_match：</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">mdio_bus_match</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">device</span> <span class="token operator">*</span>dev<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">device_driver</span> <span class="token operator">*</span>drv<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">struct</span> <span class="token class-name">phy_device</span> <span class="token operator">*</span>phydev <span class="token operator">=</span> <span class="token function">to_phy_device</span><span class="token punctuation">(</span>dev<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">struct</span> <span class="token class-name">phy_driver</span> <span class="token operator">*</span>phydrv <span class="token operator">=</span> <span class="token function">to_phy_driver</span><span class="token punctuation">(</span>drv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">of_driver_match_device</span><span class="token punctuation">(</span>dev<span class="token punctuation">,</span> drv<span class="token punctuation">)</span><span class="token punctuation">)</span>
+		<span class="token keyword">return</span> <span class="token number">1</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>phydrv<span class="token operator">-&gt;</span>match_phy_device<span class="token punctuation">)</span>
+		<span class="token keyword">return</span> phydrv<span class="token operator">-&gt;</span><span class="token function">match_phy_device</span><span class="token punctuation">(</span>phydev<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">return</span> <span class="token punctuation">(</span>phydrv<span class="token operator">-&gt;</span>phy_id <span class="token operator">&amp;</span> phydrv<span class="token operator">-&gt;</span>phy_id_mask<span class="token punctuation">)</span> <span class="token operator">==</span>
+		<span class="token punctuation">(</span>phydev<span class="token operator">-&gt;</span>phy_id <span class="token operator">&amp;</span> phydrv<span class="token operator">-&gt;</span>phy_id_mask<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//最后通过phy的id与phy的mask_id来比较</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>至此驱动的分析就差不多了。</p> 
+<p>如果想用厂家自己的phy_driver那么可以在内核中配置。</p> 
+<p>[外链图片转存失败,源站可能有防盗链机制,建议将图片保存下来直接上传(img-du4JViZp-1680859809927)(C:\Users\cww\AppData\Roaming\Typora\typora-user-images\image-20230406205447986.png)]</p> 
+<hr> 
+<p>总结：</p> 
+<p>其实网络设备驱动很想I2C或者SPI驱动，它分为MAC与PHY，MAC驱动叫做控制器驱动，是一个platform,内核实现，而PHY驱动是有自己的phy_bus，内核实现了一个通用的phy驱动，但是一般厂家自己也会提供驱动。<br> .compatible属性，那是如何匹配的呢？</p> 
+<p>看mdio_bus_match：</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">mdio_bus_match</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">device</span> <span class="token operator">*</span>dev<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">device_driver</span> <span class="token operator">*</span>drv<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">struct</span> <span class="token class-name">phy_device</span> <span class="token operator">*</span>phydev <span class="token operator">=</span> <span class="token function">to_phy_device</span><span class="token punctuation">(</span>dev<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">struct</span> <span class="token class-name">phy_driver</span> <span class="token operator">*</span>phydrv <span class="token operator">=</span> <span class="token function">to_phy_driver</span><span class="token punctuation">(</span>drv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">of_driver_match_device</span><span class="token punctuation">(</span>dev<span class="token punctuation">,</span> drv<span class="token punctuation">)</span><span class="token punctuation">)</span>
+		<span class="token keyword">return</span> <span class="token number">1</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>phydrv<span class="token operator">-&gt;</span>match_phy_device<span class="token punctuation">)</span>
+		<span class="token keyword">return</span> phydrv<span class="token operator">-&gt;</span><span class="token function">match_phy_device</span><span class="token punctuation">(</span>phydev<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">return</span> <span class="token punctuation">(</span>phydrv<span class="token operator">-&gt;</span>phy_id <span class="token operator">&amp;</span> phydrv<span class="token operator">-&gt;</span>phy_id_mask<span class="token punctuation">)</span> <span class="token operator">==</span>
+		<span class="token punctuation">(</span>phydev<span class="token operator">-&gt;</span>phy_id <span class="token operator">&amp;</span> phydrv<span class="token operator">-&gt;</span>phy_id_mask<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//最后通过phy的id与phy的mask_id来比较</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>至此驱动的分析就差不多了。</p> 
+<p>如果想用厂家自己的phy_driver那么可以在内核中配置。</p> 
+<p><img src="https://images2.imgbox.com/14/5b/lWTRTKVD_o.png" alt="在这里插入图片描述"></p> 
+<hr> 
+<p>总结：</p> 
+<p>其实网络设备驱动很想I2C或者SPI驱动，它分为MAC与PHY，MAC驱动叫做控制器驱动，是一个platform,内核实现，而PHY驱动是有自己的phy_bus，内核实现了一个通用的phy驱动，但是一般厂家自己也会提供驱动。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/910d0a3b36805b2f07517e882982ef78/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">深度学习练习1-excel/csv文件数据转成pytorch张量导入代码</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/fd54647360ba6650672deff24abbd5ef/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">生产稳定：JVM调优- java进程，JVM频繁GC，导致CPU占用、内存占用过高过高定位和排查</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

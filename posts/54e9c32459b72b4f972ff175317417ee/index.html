@@ -1,0 +1,790 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>IMX6ULL-Linux6.3.5版本网卡调试深入讲解 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="IMX6ULL-Linux6.3.5版本网卡调试深入讲解" />
+<meta property="og:description" content="目录
+一、先来了解一下imx6ull的网络节点的如何定义的
+二、使用默认网卡配置
+三、查找eth1对应FEC1复位失败原因
+1.修改smsc_phy_reset函数
+2.ENET1和ENET2的TX_CLK引脚复位寄存器的SION位为1
+3.读取phy寄存器
+4.使用正点原子给的内核和设备树文件
+5.使用linux-5.19版本测试
+6.上NXP论坛查资料
+接着上一章移植Linux 6.3.5系统到imx6ull开发板 ，现在我们来讲解一下Linux下网卡调试
+一、先来了解一下imx6ull的网络节点的如何定义的 首先找到 imx6ull 开发板设备树文件 imx6ull-toto.dts，打开文件内容如下：
+#include &#34;imx6ull.dtsi&#34; #include &#34;imx6ul-14x14-evk.dtsi&#34; / { model = &#34;Freescale i.MX6 UltraLiteLite 14x14 EVK Board&#34;; compatible = &#34;fsl,imx6ull-14x14-evk&#34;, &#34;fsl,imx6ull&#34;; }; &amp;clks { assigned-clocks = &lt;&amp;clks IMX6UL_CLK_PLL3_PFD2&gt;; assigned-clock-rates = &lt;320000000&gt;; }; 从上面可以看出，包含两个.dtsi文件，下面我就从这两个dtsi文件中找到fec节点的定义。
+最终在imx6ul.dtsi文件找到关于fec节点的定义，如下：
+fec1: ethernet@2188000 { compatible = &#34;fsl,imx6ul-fec&#34;, &#34;fsl,imx6q-fec&#34;; reg = &lt;0x02188000 0x4000&gt;; interrupt-names = &#34;int0&#34;, &#34;pps&#34;; interrupts = &lt;GIC_SPI 118 IRQ_TYPE_LEVEL_HIGH&gt;, &lt;GIC_SPI 119 IRQ_TYPE_LEVEL_HIGH&gt;; clocks = &lt;&amp;clks IMX6UL_CLK_ENET&gt;, &lt;&amp;clks IMX6UL_CLK_ENET_AHB&gt;, &lt;&amp;clks IMX6UL_CLK_ENET_PTP&gt;, &lt;&amp;clks IMX6UL_CLK_ENET_REF&gt;, &lt;&amp;clks IMX6UL_CLK_ENET_REF&gt;; clock-names = &#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/54e9c32459b72b4f972ff175317417ee/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-07-12T07:55:34+08:00" />
+<meta property="article:modified_time" content="2023-07-12T07:55:34+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">IMX6ULL-Linux6.3.5版本网卡调试深入讲解</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p><strong>目录</strong></p> 
+<p style="margin-left:40px;"><a href="#%E4%B8%80%E3%80%81%E5%85%88%E6%9D%A5%E4%BA%86%E8%A7%A3%E4%B8%80%E4%B8%8Bimx6ull%E7%9A%84%E7%BD%91%E7%BB%9C%E8%8A%82%E7%82%B9%E7%9A%84%E5%A6%82%E4%BD%95%E5%AE%9A%E4%B9%89%E7%9A%84" rel="nofollow">一、先来了解一下imx6ull的网络节点的如何定义的</a></p> 
+<p style="margin-left:40px;"><a href="#%E4%BA%8C%E3%80%81%E4%BD%BF%E7%94%A8%E9%BB%98%E8%AE%A4%E7%BD%91%E5%8D%A1%E9%85%8D%E7%BD%AE" rel="nofollow">二、使用默认网卡配置</a></p> 
+<p style="margin-left:40px;"><a href="#%E4%B8%89%E3%80%81%E6%9F%A5%E6%89%BEeth1%E5%AF%B9%E5%BA%94FEC1%E5%A4%8D%E4%BD%8D%E5%A4%B1%E8%B4%A5%E5%8E%9F%E5%9B%A0" rel="nofollow">三、查找eth1对应FEC1复位失败原因</a></p> 
+<p style="margin-left:80px;"><a href="#1.%E4%BF%AE%E6%94%B9smsc_phy_reset%E5%87%BD%E6%95%B0" rel="nofollow">1.修改smsc_phy_reset函数</a></p> 
+<p style="margin-left:80px;"><a href="#2.ENET1%E5%92%8CENET2%E7%9A%84TX_CLK%E5%BC%95%E8%84%9A%E5%A4%8D%E4%BD%8D%E5%AF%84%E5%AD%98%E5%99%A8%E7%9A%84SION%E4%BD%8D%E4%B8%BA1" rel="nofollow">2.ENET1和ENET2的TX_CLK引脚复位寄存器的SION位为1</a></p> 
+<p style="margin-left:80px;"><a href="#3.%E8%AF%BB%E5%8F%96phy%E5%AF%84%E5%AD%98%E5%99%A8" rel="nofollow">3.读取phy寄存器</a></p> 
+<p style="margin-left:80px;"><a href="#4.%E4%BD%BF%E7%94%A8%E6%AD%A3%E7%82%B9%E5%8E%9F%E5%AD%90%E7%BB%99%E7%9A%84%E5%86%85%E6%A0%B8%E5%92%8C%E8%AE%BE%E5%A4%87%E6%A0%91%E6%96%87%E4%BB%B6" rel="nofollow">4.使用正点原子给的内核和设备树文件</a></p> 
+<p style="margin-left:80px;"><a href="#5.%E4%BD%BF%E7%94%A8linux-5.19%E7%89%88%E6%9C%AC%E6%B5%8B%E8%AF%95" rel="nofollow">5.使用linux-5.19版本测试</a></p> 
+<p style="margin-left:80px;"><a href="#6.%E4%B8%8ANXP%E8%AE%BA%E5%9D%9B%E6%9F%A5%E8%B5%84%E6%96%99" rel="nofollow">6.上NXP论坛查资料</a></p> 
+<hr> 
+<p>        接着上一章<a class="link-info" href="http://t.csdn.cn/WkFGH" rel="nofollow" title="移植Linux 6.3.5系统到imx6ull开发板">移植Linux 6.3.5系统到imx6ull开发板</a> ，现在我们来讲解一下Linux下网卡调试</p> 
+<h3>一、先来了解一下imx6ull的网络节点的如何定义的</h3> 
+<p>        首先找到 imx6ull 开发板设备树文件 <strong>imx6ull-toto.dts</strong>，打开文件内容如下：</p> 
+<pre><code>#include "imx6ull.dtsi"
+#include "imx6ul-14x14-evk.dtsi"
+
+/ {
+    model = "Freescale i.MX6 UltraLiteLite 14x14 EVK Board";
+    compatible = "fsl,imx6ull-14x14-evk", "fsl,imx6ull";
+};
+
+&amp;clks {
+    assigned-clocks = &lt;&amp;clks IMX6UL_CLK_PLL3_PFD2&gt;;
+    assigned-clock-rates = &lt;320000000&gt;;
+};
+</code></pre> 
+<p>        从上面可以看出，包含两个<strong>.dtsi</strong>文件，下面我就从这两个dtsi文件中找到fec节点的定义。</p> 
+<p>        最终在<strong>imx6ul.dtsi</strong>文件找到关于fec节点的定义，如下：</p> 
+<pre><code>fec1: ethernet@2188000 {
+                compatible = "fsl,imx6ul-fec", "fsl,imx6q-fec";
+                reg = &lt;0x02188000 0x4000&gt;;
+                interrupt-names = "int0", "pps";
+                interrupts = &lt;GIC_SPI 118 IRQ_TYPE_LEVEL_HIGH&gt;,
+                         &lt;GIC_SPI 119 IRQ_TYPE_LEVEL_HIGH&gt;;
+                clocks = &lt;&amp;clks IMX6UL_CLK_ENET&gt;,
+                     &lt;&amp;clks IMX6UL_CLK_ENET_AHB&gt;,
+                     &lt;&amp;clks IMX6UL_CLK_ENET_PTP&gt;,
+                     &lt;&amp;clks IMX6UL_CLK_ENET_REF&gt;,
+                     &lt;&amp;clks IMX6UL_CLK_ENET_REF&gt;;
+                clock-names = "ipg", "ahb", "ptp",
+                          "enet_clk_ref", "enet_out";
+                fsl,num-tx-queues = &lt;1&gt;;
+                fsl,num-rx-queues = &lt;1&gt;;
+                fsl,stop-mode = &lt;&amp;gpr 0x10 3&gt;;
+                fsl,magic-packet;
+                status = "disabled";
+            };
+fec2: ethernet@20b4000 {
+                compatible = "fsl,imx6ul-fec", "fsl,imx6q-fec";
+                reg = &lt;0x020b4000 0x4000&gt;;
+                interrupt-names = "int0", "pps";
+                interrupts = &lt;GIC_SPI 120 IRQ_TYPE_LEVEL_HIGH&gt;,
+                         &lt;GIC_SPI 121 IRQ_TYPE_LEVEL_HIGH&gt;;
+                clocks = &lt;&amp;clks IMX6UL_CLK_ENET&gt;,
+                     &lt;&amp;clks IMX6UL_CLK_ENET_AHB&gt;,
+                     &lt;&amp;clks IMX6UL_CLK_ENET_PTP&gt;,
+                     &lt;&amp;clks IMX6UL_CLK_ENET2_REF_125M&gt;,
+                     &lt;&amp;clks IMX6UL_CLK_ENET2_REF_125M&gt;;
+                clock-names = "ipg", "ahb", "ptp",
+                          "enet_clk_ref", "enet_out";
+                fsl,num-tx-queues = &lt;1&gt;;
+                fsl,num-rx-queues = &lt;1&gt;;
+                fsl,stop-mode = &lt;&amp;gpr 0x10 4&gt;;
+                fsl,magic-packet;
+                status = "disabled";
+            };
+</code></pre> 
+<p>        在imx6ull-14x14-evk.dtsi文件中看到fec节点其他属性的定义，如下：</p> 
+<pre><code>&amp;fec1 {
+    pinctrl-names = "default";
+    pinctrl-0 = &lt;&amp;pinctrl_enet1&gt;;
+    phy-mode = "rmii";
+    phy-handle = &lt;&amp;ethphy0&gt;;
+    phy-supply = &lt;&amp;reg_peri_3v3&gt;;
+    status = "okay";
+};
+
+&amp;fec2 {
+    pinctrl-names = "default";
+    pinctrl-0 = &lt;&amp;pinctrl_enet2&gt;;
+    phy-mode = "rmii";
+    phy-handle = &lt;&amp;ethphy1&gt;;
+    phy-supply = &lt;&amp;reg_peri_3v3&gt;;
+    status = "okay";
+
+    mdio {
+        #address-cells = &lt;1&gt;;
+        #size-cells = &lt;0&gt;;
+
+        ethphy0: ethernet-phy@2 {
+            compatible = "ethernet-phy-id0022.1560";
+            reg = &lt;2&gt;;
+            micrel,led-mode = &lt;1&gt;;
+            clocks = &lt;&amp;clks IMX6UL_CLK_ENET_REF&gt;;
+            clock-names = "rmii-ref";
+
+        };
+
+        ethphy1: ethernet-phy@1 {
+            compatible = "ethernet-phy-id0022.1560";
+            reg = &lt;1&gt;;
+            micrel,led-mode = &lt;1&gt;;
+            clocks = &lt;&amp;clks IMX6UL_CLK_ENET2_REF&gt;;
+            clock-names = "rmii-ref";
+        };
+    };
+};
+</code></pre> 
+<h3>二、使用默认网卡配置</h3> 
+<p>        首先我们使用默认配置编译出来的zImage和dtb文件启动后，查看一下网络是怎么样的；</p> 
+<p>1.启动以后使用“ifconfig”命令查看一下当前活动的网卡有哪些，串口打印信息如下：</p> 
+<pre><code>/ # ifconfig 
+/ # 
+</code></pre> 
+<p>可以看出，当前没有活动的网卡。</p> 
+<p>2.输入命令“ifconfig -a”来查看一下开发板中存在的所有网卡，串口打印信息如下：</p> 
+<pre><code>/ # ifconfig -a
+can0      Link encap:UNSPEC  HWaddr 00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00  
+          NOARP  MTU:16  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:10 
+          RX bytes:0 (0.0 B)  TX bytes:0 (0.0 B)
+          Interrupt:220 
+
+can1      Link encap:UNSPEC  HWaddr 00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00  
+          NOARP  MTU:16  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:10 
+          RX bytes:0 (0.0 B)  TX bytes:0 (0.0 B)
+          Interrupt:221 
+
+eth0      Link encap:Ethernet  HWaddr A2:CB:A7:D7:6A:FC  
+          BROADCAST MULTICAST  MTU:1500  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:1000 
+          RX bytes:0 (0.0 B)  TX bytes:0 (0.0 B)
+
+eth1      Link encap:Ethernet  HWaddr 32:34:46:78:9A:DC  
+          BROADCAST MULTICAST  MTU:1500  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:1000 
+          RX bytes:0 (0.0 B)  TX bytes:0 (0.0 B)
+
+lo        Link encap:Local Loopback  
+          LOOPBACK  MTU:65536  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:1000 
+          RX bytes:0 (0.0 B)  TX bytes:0 (0.0 B)
+
+sit0      Link encap:IPv6-in-IPv4  
+          NOARP  MTU:1480  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:1000 
+          RX bytes:0 (0.0 B)  TX bytes:0 (0.0 B)
+
+/ #
+</code></pre> 
+<p>        其中 can0 和 can1 为 CAN 接口的网卡， eth0 和 eth1 才是网络接口的网卡，其中eth0 对应于 ENET2， eth1 对应于 ENET1。</p> 
+<p>        使用如下命令依次打开 eth0 和 eth1 这两个网卡：</p> 
+<pre><code>/ # ifconfig eth0 up
+[  234.350880] Micrel KSZ8081 or KSZ8091 20b4000.ethernet-1:01: phy_poll_reset failed: -110
+[  234.359299] fec 20b4000.ethernet eth0: Unable to connect to phy
+ifconfig: SIOCSIFFLAGS: No such device
+
+/ # ifconfig eth1 up
+[  247.631114] Micrel KSZ8081 or KSZ8091 20b4000.ethernet-1:02: phy_poll_reset failed: -110
+[  247.639560] fec 2188000.ethernet eth1: Unable to connect to phy
+ifconfig: SIOCSIFFLAGS: No such device
+</code></pre> 
+<p>        从上面可以看到eth0和eth1当前<strong>默认使用</strong>的是<strong>Micrel KSZ8081类型的phy</strong>，而我们的开发板imx6ull使用的是<strong>SMSC的LAN8720</strong>，因此修改使用phy类型为SMSC。</p> 
+<pre><code>        ethphy0: ethernet-phy@2 {
+            compatible = "ethernet-phy-id0022.1560";
+            reg = &lt;2&gt;;
+            micrel,led-mode = &lt;1&gt;;
+            ...
+        };
+
+        ethphy1: ethernet-phy@1 {
+            compatible = "ethernet-phy-id0022.1560";
+            reg = &lt;1&gt;;
+            micrel,led-mode = &lt;1&gt;;
+            ...
+        };
+</code></pre> 
+<p>其中，</p> 
+<p>compatible： 兼容性列表，一般为“<strong>ethernet-phy-ieee802.3-c22</strong>”或“<strong>ethernet-phy-ieee802.3-c45</strong>”，分别对应 IEEE802.3 的 22 簇和 45 簇，默认是 22 簇。</p> 
+<p>也可以设置为其他值，如果 PHY的 ID 不知道的话可以 compatible 属性可以设置为“ethernet-phy-idAAAA.BBBB”， AAAA 和BBBB 的含义如下：</p> 
+<ul><li>AAAA： PHY 的 16 位 ID 寄存器 1 值，也就是 OUI 的 bit3~18， 16 进制格式。</li><li>BBBB： PHY 的 16 位 ID 寄存器 2 值，也就是 OUI 的 bit19~24， 16 进制格式。</li></ul> 
+<p><strong>compatible </strong>= "<strong>ethernet-phy-id0022.1560</strong>"; 表明对应phy-id为0x00221560</p> 
+<p>“<strong>micrel,led-mode = &lt;1&gt;;</strong>”表明 PHY 芯片是 MICREL 公司的。</p> 
+<p>        结合，上面的 "compatible" 属性中的phy-id和 "micrel"，可以得出 Linux内核默认使用的是 MICREL 公司的 PHY 芯片 KSZ8081。</p> 
+<p>在driver/net/phy/micrel.c再次验证PHY 芯片 KSZ8081。</p> 
+<pre><code>{
+    .phy_id     = PHY_ID_KSZ8081,
+    .name       = "Micrel KSZ8081 or KSZ8091",
+    .phy_id_mask    = MICREL_PHY_ID_MASK,
+    .flags      = PHY_POLL_CABLE_TEST,
+    /* PHY_BASIC_FEATURES */
+    .driver_data    = &amp;ksz8081_type,
+    .probe      = kszphy_probe,
+    .config_init    = ksz8081_config_init,
+    .soft_reset = genphy_soft_reset,
+    .config_aneg    = ksz8081_config_aneg,
+    .read_status    = ksz8081_read_status,
+    .config_intr    = kszphy_config_intr,
+    .handle_interrupt = kszphy_handle_interrupt,
+    .get_sset_count = kszphy_get_sset_count,
+    .get_strings    = kszphy_get_strings,
+    .get_stats  = kszphy_get_stats,
+    .suspend    = kszphy_suspend,
+    .resume     = kszphy_resume,
+    .cable_test_start   = ksz886x_cable_test_start,
+    .cable_test_get_status  = ksz886x_cable_test_get_status,
+}, 
+</code></pre> 
+<p>其中宏PHY_ID_KSZ8081，定义如下：</p> 
+<pre><code>/* same id: KS8081, KS8091 */
+#define PHY_ID_KSZ8081      0x00221560
+</code></pre> 
+<p>        这个数字是不是很熟悉？没错他就是上面"compatible" 属性中的phy-id。说明我们上面的推理是完全正确的。</p> 
+<p>        那么修改为我们自己开发板的SMSC的LAN8720，具体修改如下：</p> 
+<pre><code>ethphy0: ethernet-phy@2 {
+            compatible = "ethernet-phy-id0007.c0f0";
+            reg = &lt;2&gt;;
+            smsc,led-mode = &lt;1&gt;;
+            clocks = &lt;&amp;clks IMX6UL_CLK_ENET_REF&gt;;
+            clock-names = "rmii-ref";
+
+        };
+
+        ethphy1: ethernet-phy@1 {
+            compatible = "ethernet-phy-id0007.c0f0";
+            reg = &lt;1&gt;;
+            smsc,led-mode = &lt;1&gt;;
+            clocks = &lt;&amp;clks IMX6UL_CLK_ENET2_REF&gt;;
+            clock-names = "rmii-ref";
+        };
+</code></pre> 
+<p>        其中phy-id的具体数值0007.c0f0，可以在driver/net/phy/smsc.c文件中查看到，如下：</p> 
+<pre><code>{
+    /* This covers internal PHY (phy_id: 0x0007C0F0) for
+     * LAN9500A (PID: 0x9E00), LAN9505A (PID: 0x9E01)
+     */
+    .phy_id     = 0x0007c0f0, /* OUI=0x00800f, Model#=0x0f */
+    .phy_id_mask    = 0xfffffff0,
+    .name       = "SMSC LAN8710/LAN8720",
+
+    /* PHY_BASIC_FEATURES */
+
+    .probe      = smsc_phy_probe,
+
+    /* basic functions */
+    .read_status    = lan87xx_read_status,
+    .config_init    = smsc_phy_config_init,
+    .soft_reset = smsc_phy_reset,
+    .config_aneg    = lan95xx_config_aneg_ext,
+
+    /* IRQ related */
+    .config_intr    = smsc_phy_config_intr,
+    .handle_interrupt = smsc_phy_handle_interrupt,
+
+    /* Statistics */
+    .get_sset_count = smsc_get_sset_count,
+    .get_strings    = smsc_get_strings,
+    .get_stats  = smsc_get_stats,
+
+    .suspend    = genphy_suspend,
+    .resume     = genphy_resume,
+}, {
+</code></pre> 
+<p>修改后，编译，下载验证，打印信息如下：</p> 
+<pre><code>/ # ifconfig eth0 192.168.0.122 up
+[   89.870922] SMSC LAN8710/LAN8720 20b4000.ethernet-1:01: phy_poll_reset failed: -110
+[   89.878889] fec 20b4000.ethernet eth0: Unable to connect to phy
+ifconfig: SIOCSIFFLAGS: No such device
+/ #
+/ # ifconfig eth1 192.168.0.123 up
+[   92.355687] SMSC LAN8710/LAN8720 20b4000.ethernet-1:02: phy_poll_reset failed: -110
+[   92.363699] fec 2188000.ethernet eth1: Unable to connect to phy
+ifconfig: SIOCSIFFLAGS: No such device
+</code></pre> 
+<p>        现在，网络使用的是SMSC LAN8720phy芯片了，但是phy_poll_reset failed，现在首先查一下phy复位管脚定义。</p> 
+<pre><code>&amp;fec1 {
+    pinctrl-names = "default";
+    pinctrl-0 = &lt;&amp;pinctrl_enet1&gt;;
+    phy-mode = "rmii";
+    phy-handle = &lt;&amp;ethphy0&gt;;
+    phy-supply = &lt;&amp;reg_peri_3v3&gt;;
+    status = "okay";
+};
+
+&amp;fec2 {
+    pinctrl-names = "default";
+    pinctrl-0 = &lt;&amp;pinctrl_enet2&gt;;
+    phy-mode = "rmii";
+    phy-handle = &lt;&amp;ethphy1&gt;;
+    phy-supply = &lt;&amp;reg_peri_3v3&gt;;
+    status = "okay";
+}
+</code></pre> 
+<p>        从上面可以看到，fec1和fec2两个节点都没有定义phy复位管脚，但是在linux内核源码中driver/net/ethernet/freescale/fec_main.c文件中fec_probe函数中调用了fec_reset_phy，而fec_reset_phy中会要求到<strong>phy reset管脚</strong>，fec_reset_phy具体内容如下：</p> 
+<pre><code>static int fec_reset_phy(struct platform_device *pdev)
+{
+    struct gpio_desc *phy_reset;
+    int msec = 1, phy_post_delay = 0;
+    struct device_node *np = pdev-&gt;dev.of_node;
+    int err;
+
+    if (!np)
+        return 0;
+
+    err = of_property_read_u32(np, "phy-reset-duration", &amp;msec);
+    /* A sane reset duration should not be longer than 1s */
+    if (!err &amp;&amp; msec &gt; 1000)
+        msec = 1;
+
+    err = of_property_read_u32(np, "phy-reset-post-delay", &amp;phy_post_delay);
+    /* valid reset duration should be less than 1s */
+    if (!err &amp;&amp; phy_post_delay &gt; 1000)
+        return -EINVAL;
+
+    phy_reset = devm_gpiod_get_optional(&amp;pdev-&gt;dev, "phy-reset",
+                        GPIOD_OUT_HIGH);
+    if (IS_ERR(phy_reset))
+        return dev_err_probe(&amp;pdev-&gt;dev, PTR_ERR(phy_reset),
+                     "failed to get phy-reset-gpios\n");
+
+    if (!phy_reset)
+        return 0;
+
+    if (msec &gt; 20)
+        msleep(msec);
+    else
+        usleep_range(msec * 1000, msec * 1000 + 1000);
+
+    gpiod_set_value_cansleep(phy_reset, 0);
+
+    if (!phy_post_delay)
+        return 0;
+
+    if (phy_post_delay &gt; 20)
+        msleep(phy_post_delay);
+    else
+        usleep_range(phy_post_delay * 1000,
+                 phy_post_delay * 1000 + 1000);
+
+    return 0;
+}
+</code></pre> 
+<p>        其中，复位时间从设备树中“phy-reset-duration”属性信息获取。复位管脚 IO 从设备树中“phy-reset-gpios”属性信息获取。</p> 
+<p>        下面，设备树fec节点中添加 “phy-reset-gpios” 和 “phy-reset-duration” 属性：</p> 
+<pre><code>&amp;fec1 {
+    pinctrl-names = "default";
+    pinctrl-0 = &lt;&amp;pinctrl_enet1&gt;;
+    phy-mode = "rmii";
+    phy-handle = &lt;&amp;ethphy0&gt;;
+    phy-supply = &lt;&amp;reg_peri_3v3&gt;;
+    phy-reset-duration = &lt;200&gt;;
+    phy-reset-gpios = &lt;&amp;gpio5 7 GPIO_ACTIVE_LOW&gt;;
+    status = "okay";
+};
+
+&amp;fec2 {
+    pinctrl-names = "default";
+    pinctrl-0 = &lt;&amp;pinctrl_enet2&gt;;
+    phy-mode = "rmii";
+    phy-handle = &lt;&amp;ethphy1&gt;;
+    phy-supply = &lt;&amp;reg_peri_3v3&gt;;
+    phy-reset-duration = &lt;200&gt;;
+    phy-reset-gpios = &lt;&amp;gpio5 8 GPIO_ACTIVE_LOW&gt;;
+    status = "okay";
+}
+</code></pre> 
+<p>继续，编译，烧写，验证，具体打印信息如下：</p> 
+<pre><code>[    1.550883] spi-nor spi4.0: unrecognized JEDEC id bytes: ff ff ff ff ff ff
+[    1.559110] spi-4 uses legacy gpio name 'gpio-mosi' instead of 'mosi-gpios'
+[    1.566319] spi-4 uses legacy gpio name 'gpio-sck' instead of 'sck-gpios'
+[    1.575705] gpio-161 (eth0-phy): hogged as output/high
+[    1.581127] gpio-162 (eth1-phy): hogged as output/high
+[    1.592443] CAN device driver interface
+[    1.600173] fec 20b4000.ethernet: error -EBUSY: failed to get phy-reset-gpios
+[    1.607445] fec: probe of 20b4000.ethernet failed with error -16
+[    1.616543] fec 2188000.ethernet: error -EBUSY: failed to get phy-reset-gpios
+[    1.624008] fec: probe of 2188000.ethernet failed with error -16
+</code></pre> 
+<p>        可以看到"gpio-161 (eth0-phy): hogged as output/high"，"fec 20b4000.ethernet: error -EBUSY: failed to get phy-reset-gpios",说明这个复位管脚被其他外设复用为其他功能了。接下来，在设备树文件中查找gpio5的7和8管脚复用情况。</p> 
+<p>        查看fec1、2的复位管脚是否存在复位为其他设备的，在imx6ull-14x14-evk.dtsi文件中spi-4节点有使用，下面屏蔽该节点下的管脚。</p> 
+<pre><code>spi-4 {
+        compatible = "spi-gpio";
+        pinctrl-names = "default";
+        pinctrl-0 = &lt;&amp;pinctrl_spi4&gt;;
+        status = "okay";
+        gpio-sck = &lt;&amp;gpio5 11 0&gt;;
+        gpio-mosi = &lt;&amp;gpio5 10 0&gt;;
+        /*
+        cs-gpios = &lt;&amp;gpio5 7 GPIO_ACTIVE_LOW&gt;;
+        */
+        num-chipselects = &lt;1&gt;;
+        #address-cells = &lt;1&gt;;
+        #size-cells = &lt;0&gt;;
+
+        gpio_spi: gpio@0 {
+            compatible = "fairchild,74hc595";
+            gpio-controller;
+            #gpio-cells = &lt;2&gt;;
+            reg = &lt;0&gt;;
+            registers-number = &lt;1&gt;;
+            spi-max-frequency = &lt;100000&gt;;
+            /*
+            enable-gpios = &lt;&amp;gpio5 8 GPIO_ACTIVE_LOW&gt;;
+            */
+        };
+    };
+    pinctrl_spi4: spi4grp {
+        fsl,pins = &lt;
+            MX6UL_PAD_BOOT_MODE0__GPIO5_IO10    0x70a1
+            MX6UL_PAD_BOOT_MODE1__GPIO5_IO11    0x70a1
+            /*
+            MX6UL_PAD_SNVS_TAMPER7__GPIO5_IO07  0x70a1
+            MX6UL_PAD_SNVS_TAMPER8__GPIO5_IO08  0x80000000
+            */
+        &gt;;
+    };
+</code></pre> 
+<p>编译，烧写，验证，串口启动打印信息如下：</p> 
+<pre><code>[    1.784350] fec 20b4000.ethernet: Invalid MAC address: 00:00:00:00:00:00
+[    1.791232] fec 20b4000.ethernet: Using random MAC address: ea:69:9c:3a:f5:4c
+[    1.805714] fec 20b4000.ethernet eth0: registered PHC device 0
+[    2.028968] pps pps1: new PPS source ptp1
+[    2.165778] fec 2188000.ethernet eth1: registered PHC device 1
+</code></pre> 
+<p>使用"<strong>ifconfig eth0 192.168.0.122 up</strong>",查看能否网卡ip设置成功，打印如下：</p> 
+<pre><code>/ # ifconfig eth0 192.168.0.122 up
+[  210.770925] SMSC LAN8710/LAN8720 20b4000.ethernet-1:01: attached PHY driver (mii_bus:phy_addr=20b4000.ethernet-1:01, irq=POLL)
+/ # [  213.931275] fec 20b4000.ethernet eth0: Link is Up - 100Mbps/Full - flow control rx/tx
+[  213.939492] IPv6: ADDRCONF(NETDEV_CHANGE): eth0: link becomes ready
+/ #
+/ # ping 192.168.0.106
+PING 192.168.0.106 (192.168.0.106): 56 data bytes
+64 bytes from 192.168.0.106: seq=0 ttl=64 time=5.396 ms
+64 bytes from 192.168.0.106: seq=1 ttl=64 time=4.194 ms
+^C
+--- 192.168.0.106 ping statistics ---
+2 packets transmitted, 2 packets received, 0% packet loss
+round-trip min/avg/max = 4.194/4.795/5.396 ms
+
+
+/ # ifconfig eth1 192.168.0.123 up
+[  292.900810] SMSC LAN8710/LAN8720 20b4000.ethernet-1:02: phy_poll_reset failed: -110
+[  292.909579] fec 2188000.ethernet eth1: Unable to connect to phy
+</code></pre> 
+<p>        从上面可以看到，eth0对应FEC2已经设置网卡成功，并且能成功ping通PC电脑。而eth1对应FEC1复位还是失败。但是我们一眼可发现ethernet-1:02的phy地址为2，这里与我们开发板原理图上fec1的phy地址为0给的不一致，因此修改fec1节点对应的phy地址，修改如下：</p> 
+<pre><code>ethphy0: ethernet-phy@0 {
+    compatible = "ethernet-phy-id0022.1560";
+    reg = &lt;0&gt;;
+    micrel,led-mode = &lt;1&gt;;
+    clocks = &lt;&amp;clks IMX6UL_CLK_ENET_REF&gt;;
+    clock-names = "rmii-ref";
+
+};
+</code></pre> 
+<p>修改后，下载验证，串口打印如下：</p> 
+<pre><code>/ # ifconfig eth1 192.168.0.123 up
+[  292.900810] SMSC LAN8710/LAN8720 20b4000.ethernet-1:02: phy_poll_reset failed: -110
+[  292.909579] fec 2188000.ethernet eth1: Unable to connect to phy
+</code></pre> 
+<p>eth1对应FEC1复位还是失败。</p> 
+<h3>三、查找eth1对应FEC1复位失败原因</h3> 
+<p>尝试方法</p> 
+<h4>1.修改smsc_phy_reset函数</h4> 
+<p>        查找资料，看到正点原子的一篇文章里有说“LAN8720A的驱动文件是drivers/net/phy/smsc.c，<strong>smsc_phy_reset</strong>的函数只有PHY处于<strong>powerdown</strong>模式的时候第70~83行的代码段才会执行。</p> 
+<p>        向LAN872A0的BMCR寄存器写入<strong>BMCR_RESET</strong>，也就是对LAN8720A进行软件初始化，所以smsc_phy_reset函数会对LAN8720A进行软件初始化。</p> 
+<p>        看到没，只有LAN8720A处于powerdown模式的时候才会对LAN8720A进行软复位，但是我们在uboot中已经“唤醒”了LAN8720A，LAN8720A也已经工作了，因此它不可能处于powerdown模式，进而就没法对LAN8720A进行软复位。</p> 
+<p>        因此，我们要对smsc_phy_reset函数函数进行修改，将复位相关的代码从条件语句中提出来，不管LAN8720A有没有工作在powerdown模式下，只要调用smsc_phy_reset函数就对LAN8720A进行软复位”。</p> 
+<p>修改后的smsc_phy_reset函数内容如下：</p> 
+<pre><code>static int smsc_phy_reset(struct phy_device *phydev)
+{
+
+    int rc = phy_read(phydev, MII_LAN83C185_SPECIAL_MODES);
+    if (rc &lt; 0)
+        return rc;
+
+    /* If the SMSC PHY is in power down mode, then set it
+     * in all capable mode before using it.
+     */
+    if ((rc &amp; MII_LAN83C185_MODE_MASK) == MII_LAN83C185_MODE_POWERDOWN) {
+        /* set "all capable" mode */
+        rc |= MII_LAN83C185_MODE_ALL;
+        phy_write(phydev, MII_LAN83C185_SPECIAL_MODES, rc);
+    }
+
+    /*add line*/
+    phy_write(phydev, MII_BMCR, BMCR_RESET);
+
+    /* reset the phy */
+    return genphy_soft_reset(phydev);
+}
+</code></pre> 
+<p>修改后编译下载，串口打印如下：</p> 
+<pre><code>/ # ifconfig eth1 192.168.0.123 up
+[  292.900810] SMSC LAN8710/LAN8720 20b4000.ethernet-1:02: phy_poll_reset failed: -110
+[  292.909579] fec 2188000.ethernet eth1: Unable to connect to phy
+</code></pre> 
+<h4>2.ENET1和ENET2的TX_CLK引脚复位寄存器的SION位为1</h4> 
+<p>        还要资料说“如果要在I.MX6ULL上使用LAN8720A就需要设置<strong>ENET1</strong>和<strong>ENET2</strong>的<strong>TX_CLK</strong>引脚复位寄存器的<strong>SION</strong>位为1。”</p> 
+<p>        要在I.MX6ULL上使用LAN8720A，需要修改一下Linux内核源码，打开drivers/net/ethernet/freescale/fec_main.c，找到函数fec_probe，在fec_probe中加入如下代码：</p> 
+<pre><code>static int
+fec_probe(struct platform_device *pdev)
+{
+    struct fec_enet_private *fep;
+    struct fec_platform_data *pdata;
+    phy_interface_t interface;
+    struct net_device *ndev;
+    int i, irq, ret = 0;
+    const struct of_device_id *of_id;
+    static int dev_id;
+    struct device_node *np = pdev-&gt;dev.of_node, *phy_node;
+    int num_tx_qs;
+    int num_rx_qs;
+    char irq_name[8];
+    int irq_cnt;
+    struct fec_devinfo *dev_info;
+
+    /* 设置 MX6UL_PAD_ENET1_TX_CLK 和 MX6UL_PAD_ENET2_TX_CLK
+    * 这两个 IO 的复用寄存器的 SION 位为 1。
+    */
+    void __iomem *IMX6U_ENET1_TX_CLK;
+    void __iomem *IMX6U_ENET2_TX_CLK;
+
+    IMX6U_ENET1_TX_CLK = ioremap(0X020E00DC, 4);
+    writel(0X14, IMX6U_ENET1_TX_CLK);
+    IMX6U_ENET2_TX_CLK = ioremap(0X020E00FC, 4);
+    writel(0X14, IMX6U_ENET2_TX_CLK);
+
+     ......
+</code></pre> 
+<p>修改验证，串口打印如下：</p> 
+<pre><code>/ # ifconfig eth1 192.168.0.123 up
+[  292.900810] SMSC LAN8710/LAN8720 20b4000.ethernet-1:02: phy_poll_reset failed: -110
+[  292.909579] fec 2188000.ethernet eth1: Unable to connect to phy
+</code></pre> 
+<h4>3.读取phy寄存器</h4> 
+<p>        现在没有什么方法，就只有采用最原始也是最有效的方法，那就是添加打印定位法。</p> 
+<p>        首先我们来在phy复位之前读一下phy寄存器1，2，3，看能不能读取phy寄存器1，2，3正确的值，添加如下代码：</p> 
+<pre><code>static int smsc_phy_reset(struct phy_device *phydev)
+{
+    int rv = 0;
+
+    int rc = phy_read(phydev, MII_LAN83C185_SPECIAL_MODES);
+    if (rc &lt; 0)
+        return rc;
+
+    printk("smsc_phy_reset\n");
+
+    rv = phy_read(phydev, 1);
+    printk("rv 1:0x%x\n", rv);
+
+    rv = phy_read(phydev, 2);
+    printk("rv 2:0x%x\n", rv);
+
+    rv = phy_read(phydev, 3);
+    printk("rv 3:0x%x\n", rv);
+
+    /* If the SMSC PHY is in power down mode, then set it
+     * in all capable mode before using it.
+     */
+    if ((rc &amp; MII_LAN83C185_MODE_MASK) == MII_LAN83C185_MODE_POWERDOWN) {
+        /* set "all capable" mode */
+        rc |= MII_LAN83C185_MODE_ALL;
+        phy_write(phydev, MII_LAN83C185_SPECIAL_MODES, rc);
+    }
+
+    phy_write(phydev, MII_BMCR, BMCR_RESET);
+
+    /* reset the phy */
+    return genphy_soft_reset(phydev);
+}
+</code></pre> 
+<p>编译后，串口打印如下：</p> 
+<pre><code>/ # ifconfig eth1 192.168.0.123 up
+[    9.559735] fec_enet_open
+[    9.562395] netdev.name:eth0
+[    9.565285] netdev.ifindex:2
+[    9.568344] mii_bus.name:fec_enet_mii_bus
+[    9.573303] fec_restart
+[    9.576094] fec_enet_mii_probe
+[    9.579167] fec_enet_mii_probe dev_id:0
+[    9.583012] phy_connect_direct
+[    9.586115] phy_attach_direct
+[    9.589091] phy_attach_direct start
+[    9.592584] phy_sysfs_create_links
+[    9.596195] phy_init_hw
+
+[    9.609465] phy_device_reset
+[    9.612384] smsc_phy_reset
+[    9.615127] rv 1:0xffff
+[    9.617694] rv 2:0xffff
+[    9.620186] rv 3:0xffff
+[    9.622742] phy_poll_reset
+[   10.242662] SMSC LAN8710/LAN8720 2188000.ethernet-1:00: phy_poll_reset failed: -110
+[   10.250766] fec 2188000.ethernet eth0: Unable to connect to phy
+</code></pre> 
+<p>        可以看出，读取寄存器的值全部未0xffff。大概猜测是mdio出问题了，但是没有什么手段来证明。</p> 
+<h4>4.使用正点原子给的内核和设备树文件</h4> 
+<p>下载，串口打印如下：</p> 
+<pre><code>root@ATK-IMX6U:~# ifconfig eth0 192.168.0.123 up
+root@ATK-IMX6U:~# ping 192.168.0.106
+PING 192.168.0.106 (192.168.0.106) 56(84) bytes of data.
+64 bytes from 192.168.0.106: icmp_seq=1 ttl=64 time=0.996 ms
+^V^C
+--- 192.168.0.106 ping statistics ---
+1 packets transmitted, 1 received, 0% packet loss, time 0ms
+rtt min/avg/max/mdev = 0.996/0.996/0.996/0.000 ms
+root@ATK-IMX6U:~# ifconfig eth0 192.168.0.123 down
+root@ATK-IMX6U:~# [   47.794601] IPv6: ADDRCONF(NETDEV_UP): eth0: link is not ready
+ifconfig eth0 192.ifconfig eth0 192.168.0.123[   54.903020] fec 2188000.ethernet eth1: Link is Up - 100Mbps/Full - flow control rx/tx
+[   54.911214] IPv6: ADDRCONF(NETDEV_CHANGE): eth1: link becomes ready
+ifconfig eth0 192.
+root@ATK-IMX6U:~# 
+root@ATK-IMX6U:~# ifconfig eth1 192.168.0.124 up   
+root@ATK-IMX6U:~# ping 192.168.0.106              
+PING 192.168.0.106 (192.168.0.106) 56(84) bytes of data.
+64 bytes from 192.168.0.106: icmp_seq=1 ttl=64 time=1.41 ms
+64 bytes from 192.168.0.106: icmp_seq=2 ttl=64 time=0.918 ms
+^C
+--- 192.168.0.106 ping statistics ---
+2 packets transmitted, 2 received, 0% packet loss, time 1001ms
+rtt min/avg/max/mdev = 0.918/1.166/1.415/0.250 ms
+root@ATK-IMX6U:~# 
+</code></pre> 
+<p>        从上面可以看出，正点原子给内核和设备树，双网口是都可以正常使用的。到这里可以说明硬件肯定没问题，问题一定出在软件配置上，与想下载一个低版本且稳定的Linux版本，编译测试一下。</p> 
+<h4>5.使用linux-5.19版本测试</h4> 
+<p>        使用低版本和稳定版本的Linux-5.19版本进行测试一下。下载源码，修改设备树和fec_probe函数，编译，下载。</p> 
+<p>下载，串口打印如下：</p> 
+<pre><code>root@ATK-IMX6U:~# ifconfig eth0 192.168.0.123 up  
+root@ATK-IMX6U:~# ping 192.168.0.106              
+PING 192.168.0.106 (192.168.0.106) 56(84) bytes of data.
+64 bytes from 192.168.0.106: icmp_seq=1 ttl=64 time=3.95 ms
+64 bytes from 192.168.0.106: icmp_seq=2 ttl=64 time=1.61 ms
+^[[A64 bytes from 192.168.0.106: icmp_seq=3 ttl=64 time=1.31 ms
+[   47.430219] icm20608: disagrees about version of symbol module_layout
+
+--- 192.168.0.106 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2002ms
+rtt min/avg/max/mdev = 1.316/2.296/3.955/1.179 ms
+^Croot@ATK-IMX6U:~# ifconfig eth0 192.168.0.123 down
+root@ATK-IMX6U:~# [   57.655875] fec 2188000.ethernet eth1: Link is Up - 100Mbps/Full - flow control rx/tx
+[   57.663991] IPv6: ADDRCONF(NETDEV_CHANGE): eth1: link becomes ready
+ifconfig eth0 192.ifconfig eth1 192.168.0.124 up  
+root@ATK-IMX6U:~# ping 192.168.0.106              
+PING 192.168.0.106 (192.168.0.106) 56(84) bytes of data.
+64 bytes from 192.168.0.106: icmp_seq=1 ttl=64 time=2.67 ms
+64 bytes from 192.168.0.106: icmp_seq=2 ttl=64 time=1.33 ms
+64 bytes from 192.168.0.106: icmp_seq=3 ttl=64 time=1.32 ms
+^C
+--- 192.168.0.106 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2002ms
+rtt min/avg/max/mdev = 1.327/1.779/2.677/0.634 ms
+root@ATK-IMX6U:~# 
+</code></pre> 
+<p>        从上面可以看出，linux-5.19版本编译出的内核和设备树，双网口是都可以正常使用的。</p> 
+<p>        那么问题来了，就是linux-6.3.5版本内核编译出的内核和设备树，只能使用fec2网卡，fec1网卡是由问题。为啥呢？</p> 
+<p>        通过对比<strong>Linux-6.3.5</strong>和<strong>Linux-5.19</strong>版本的drivers/net下的代码，发现存在很大差异，如下图使用Beyong Compare软件对比结果如下：</p> 
+<p><img src="https://images2.imgbox.com/84/17/lI7OxLZX_o.png" alt="2007edd64abbed48726c36e8ef126769.png"></p> 
+<h4>6.上NXP论坛查资料</h4> 
+<p>                在NXP论坛上找到几个关于IMX6ULL linux下fec1不能使用的问题。但是详细看完后，发现只有一个人的问题与我当前是一样，但看到最后也没有看到解决方案。</p> 
+<p>于是，就在后面回复楼主的一封邮件，询问一下，他最后有没有解决该问题。NXP论坛该问题链接：https://community.nxp.com/t5/i-MX-Processors/imx6ull-lan8720A/m-p/1296584，感兴趣的可以去看一看该论坛上的问题。</p> 
+<p><img src="https://images2.imgbox.com/2f/7c/ddxgLU6V_o.png" alt="c97d1a9687e7106b5b29b9147b9d77b0.png"></p> 
+<p>        唉，该问题困扰了我一周时间，花费了一周的每天晚上来定位，但到最后还是没解决。该问题先暂时放一放，后面有时间再来看怎么解决！如果大家知道是什么原因，或者有解决办法，可以后台告诉我一下。大家一起学习，交流！有兴趣的朋友，欢迎进群讨论嵌入式相关技术知识。</p> 
+<p>        今天的内容到此就完了，感谢大家的收看，如有不正之处，欢迎批评指正，下期再见！</p> 
+<hr> 
+<p><strong><strong>        关于更多嵌入式C语言、FreeRTOS、RT-Thread、Linux应用编程、linux驱动等相关知识，关注公众号【嵌入式Linux知识共享】，后续精彩内容及时收看了解。</strong></strong></p> 
+<p> </p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/da83b32898d67b6151e0eed1454a8d8e/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">java.lang.IllegalArgumentException: object is not an instance of declaring class] with root cause</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/1135ad702016e58a575d99b70344a2a7/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Vue3添加高德地图、Vue3添加省市区三级联动</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

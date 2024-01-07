@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>JVM对象创建、内存分配以及回收机制深度刨析 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="JVM对象创建、内存分配以及回收机制深度刨析" />
+<meta property="og:description" content="JVM对象创建、内存分配以及回收机制深度刨析 1、对象的创建(new)2、对象的内存分配3、判断进入老年代的方法3.1、发生gc回收3.2、大对象直接进入老年代3.3、长期存活的对象进入老年代3.4、动态年龄判断机制3.5、老年代空间分配担保机制 4、对象的回收机制4.1、判断是否是垃圾对象的算法4.1.1、引用计数法4.1.2、可达性分析算法 4.2、常见的引用类型4.3、finalize()的自救 5、辅助知识5.1、对象分配内存时并发问题的解决5.2、使用jol‐core查看对象头信息5.3、为什么要有指针压缩5.4、如何判断一个类是无用的类 1、对象的创建(new) 由上图我们可以看出，对象的创建分为以下几个步骤：
+1、类加载检查：当虚拟机遇到一条new命令时，首先会检查这个符号是否能引用到具体的堆中的对象，或者说这个符号所代表的对象是否有被加载、初始化过，如果没有，则执行类的加载过程，new，对象克隆、对象序列化。
+2、分配内存：在类加载完成之后，一个类的大小就已经被确定出来了，这时候就需要从堆里面划分一块内存给对象，划分内存有以下两个方法。
+2.1、指针碰撞：在内存的已分配和未分配空间的中间有一个指针，指针的一边是都已经存放完整，另一边全是空闲内存，当我们需要给一个对象分配堆内存时，仅仅是将指针向后挪一个对象大小的空间而已，详情如下图所示：
+2.2、空闲列表：这种的堆内存空闲空间是不规整的，所有的空闲空间会有一个空闲列表所记录，那一块有空闲，空闲多大，当需要为一个对象分配堆内存时，会根据空闲列表找到一块合适的区域，为新对象分配内存区域，并更新空闲列表，详情如下图所示：
+3、初始化：给程序的静态变量赋初始值。
+4、设置对象头：java对象由三大部分组成，对象头、实例数据，对齐填充字节，而对象头又分为Mark Word(一个标记)、Klass Pointer(类型指针)、数组长度(只有数组对象才有)，图解关系如下图：
+4.1、对象头：下图是一副对象头的详细数据，这里我们着重说一下无锁态的对象头。
+4.1.1、Mark Word：在32位操作系统下占32bit，在64位操作系统占64bit，这里面存储的就是下图中的对象运行中的hashcode值，分代年龄、线程ID、偏向锁标志位等等。
+4.1.2、Klass Pointer：我们在运行程序的时候，栈中存放的变量指针会指向堆，而堆中的这个对象就会有我们对象的这三大组成部分，它的这个Klass Pointer(类型指针)将会指向我们元空间里面存放的我们的代码二进制文件的类元信息，详情请看下图
+//代码示例 Object1 object1 = new Object1(); Class&lt;? extends Object1&gt; object1Class = object1.getClass(); 4.1.3、数组长度：只有当对象是数组时，才会有这个标志位。
+4.2、实例数据：我们类中存放的一些静态变量所占的空间。
+4.3、对齐填充字节：我们的操作系统目前应用最多的应该就是32bit和64bit了吧，32bit是4字节，64bit是8字节，所以，当一个东西是4字节或者8字节的整数倍的时候，计算机的寻址效率是最高的，所以在每一个对象在生成自己的所有信息之后，如果不是4或者8的倍数的时候，我们就会产生一个对齐填充字节，将不足的字节部分补上。(我这里说的4或者8要根据计算机的操作位数来看)
+5、执行init：设置完对象头之后，JVM底层会调用init方法，这个方法有两大作用，细节如下：
+5.1、赋值：根据程序中写的初始值给对象的属性赋上真正的初始值。
+5.2、执行构造方法：执行对象的构造方法，生成对象的实例。
+2、对象的内存分配 对象在内存分配的时候，首先会做一个操作，叫做对象逃逸分析(前提是对象逃逸分析参数开启，JDK7之后默认开启逃逸分析)，如果对象没有逃逸，将会进行一系列的判断，是否分配在栈内存，如果逃逸或者逃逸分析参数位开启，对象将直接分配到堆内存。
+对象逃逸分析：可根据下面的代码分析
+public Person function1() { Person person = new person(); person.setId(1); person.setName(&#34;XiaoLeLe&#34;); return person; } public void function2() { Person person = new person(); person.setId(2); person.setName(&#34;XiaoLeLe&#34;); } 根据上面这段代码，在function1中有一个Person的实例化对象，它被返回出了方法外，所以说明方法外还有变量引用着它，所以这个对象就逃逸出了方法，而在function2中实例化的Person的实例只在方法内部有效，方法结束后，person将销毁掉，所以，对于这种未逃逸出方法的对象，Java在为其分配内存的时候，会有一系列的判断，(开启逃逸分析参数-XX:-DoEscapeAnalysis，JDK7之后默认开启)如下图所示：" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/8b95446b8b3c56929325dc42473a7fc7/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-01-21T15:35:58+08:00" />
+<meta property="article:modified_time" content="2022-01-21T15:35:58+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">JVM对象创建、内存分配以及回收机制深度刨析</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>JVM对象创建、内存分配以及回收机制深度刨析</h4> 
+ <ul><li><a href="#1new_1" rel="nofollow">1、对象的创建(new)</a></li><li><a href="#2_37" rel="nofollow">2、对象的内存分配</a></li><li><a href="#3_61" rel="nofollow">3、判断进入老年代的方法</a></li><li><ul><li><a href="#31gc_62" rel="nofollow">3.1、发生gc回收</a></li><li><a href="#32_65" rel="nofollow">3.2、大对象直接进入老年代</a></li><li><a href="#33_70" rel="nofollow">3.3、长期存活的对象进入老年代</a></li><li><a href="#34_75" rel="nofollow">3.4、动态年龄判断机制</a></li><li><a href="#35_79" rel="nofollow">3.5、老年代空间分配担保机制</a></li></ul> 
+  </li><li><a href="#4_85" rel="nofollow">4、对象的回收机制</a></li><li><ul><li><a href="#41_86" rel="nofollow">4.1、判断是否是垃圾对象的算法</a></li><li><ul><li><a href="#411_87" rel="nofollow">4.1.1、引用计数法</a></li><li><a href="#412_91" rel="nofollow">4.1.2、可达性分析算法</a></li></ul> 
+   </li><li><a href="#42_94" rel="nofollow">4.2、常见的引用类型</a></li><li><a href="#43finalize_111" rel="nofollow">4.3、finalize()的自救</a></li></ul> 
+  </li><li><a href="#5_115" rel="nofollow">5、辅助知识</a></li><li><ul><li><a href="#51_116" rel="nofollow">5.1、对象分配内存时并发问题的解决</a></li><li><a href="#52jolcore_121" rel="nofollow">5.2、使用jol‐core查看对象头信息</a></li><li><a href="#53_225" rel="nofollow">5.3、为什么要有指针压缩</a></li><li><a href="#54_234" rel="nofollow">5.4、如何判断一个类是无用的类</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="1new_1"></a>1、对象的创建(new)</h2> 
+<blockquote> 
+ <p>由上图我们可以看出，对象的创建分为以下几个步骤：<br> <font color="red">1、类加载检查：</font>当虚拟机遇到一条new命令时，首先会检查这个符号是否能引用到具体的堆中的对象，或者说这个符号所代表的对象是否有被加载、初始化过，如果没有，则执行类的加载过程，new，对象克隆、对象序列化。<br> <font color="red">2、分配内存：</font>在类加载完成之后，一个类的大小就已经被确定出来了，这时候就需要从堆里面划分一块内存给对象，划分内存有以下两个方法。<br>      <font color="blue">2.1、指针碰撞：</font>在内存的已分配和未分配空间的中间有一个指针，指针的一边是都已经存放完整，另一边全是空闲内存，当我们需要给一个对象分配堆内存时，仅仅是将指针向后挪一个对象大小的空间而已，详情如下图所示：</p> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/ab/a8/BdFkD2KK_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/56/e3/3Ps9Ku3t_o.png" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p>     <font color="blue">2.2、空闲列表：</font>这种的堆内存空闲空间是不规整的，所有的空闲空间会有一个空闲列表所记录，那一块有空闲，空闲多大，当需要为一个对象分配堆内存时，会根据空闲列表找到一块合适的区域，为新对象分配内存区域，并更新空闲列表，详情如下图所示：</p> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/99/5d/FphVfl9H_o.png" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p><font color="red">3、初始化：</font>给程序的静态变量赋初始值。<br> <font color="red">4、设置对象头：</font>java对象由三大部分组成，对象头、实例数据，对齐填充字节，而对象头又分为Mark Word(一个标记)、Klass Pointer(类型指针)、数组长度(只有数组对象才有)，图解关系如下图：</p> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/94/32/XCrejjXC_o.png" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p>     <font color="blue">4.1、对象头：</font>下图是一副对象头的详细数据，这里我们着重说一下无锁态的对象头。<br>           <font color="blue">4.1.1、Mark Word：</font>在32位操作系统下占32bit，在64位操作系统占64bit，这里面存储的就是下图中的对象运行中的hashcode值，分代年龄、线程ID、偏向锁标志位等等。</p> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/64/4a/R9PQNTNw_o.png" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p>          <font color="blue">4.1.2、Klass Pointer：</font>我们在运行程序的时候，栈中存放的变量指针会指向堆，而堆中的这个对象就会有我们对象的这三大组成部分，它的这个Klass Pointer(类型指针)将会指向我们元空间里面存放的我们的代码二进制文件的类元信息，详情请看下图</p> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/d3/87/Ft7CnjiU_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-java"><span class="token comment">//代码示例</span>
+<span class="token class-name">Object1</span> object1 <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Object1</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token class-name">Class</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token operator">?</span> <span class="token keyword">extends</span> <span class="token class-name">Object1</span><span class="token punctuation">&gt;</span></span> object1Class <span class="token operator">=</span> object1<span class="token punctuation">.</span><span class="token function">getClass</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<blockquote> 
+ <p>          <font color="blue">4.1.3、数组长度：</font>只有当对象是数组时，才会有这个标志位。<br>      <font color="blue">4.2、实例数据：</font>我们类中存放的一些静态变量所占的空间。<br>      <font color="blue">4.3、对齐填充字节：</font>我们的操作系统目前应用最多的应该就是32bit和64bit了吧，32bit是4字节，64bit是8字节，所以，当一个东西是4字节或者8字节的整数倍的时候，计算机的寻址效率是最高的，所以在每一个对象在生成自己的所有信息之后，如果不是4或者8的倍数的时候，我们就会产生一个对齐填充字节，将不足的字节部分补上。<mark>(我这里说的4或者8要根据计算机的操作位数来看)</mark><br> <font color="red">5、执行init：</font>设置完对象头之后，JVM底层会调用init方法，这个方法有两大作用，细节如下：<br>      <font color="blue">5.1、赋值：</font>根据程序中写的初始值给对象的属性赋上真正的初始值。<br>      <font color="blue">5.2、执行构造方法：</font>执行对象的构造方法，生成对象的实例。</p> 
+</blockquote> 
+<h2><a id="2_37"></a>2、对象的内存分配</h2> 
+<blockquote> 
+ <p>对象在内存分配的时候，首先会做一个操作，叫做对象逃逸分析(前提是对象逃逸分析参数开启，JDK7之后默认开启逃逸分析)，如果对象没有逃逸，将会进行一系列的判断，是否分配在栈内存，如果逃逸或者逃逸分析参数位开启，对象将直接分配到堆内存。<br> <font color="red">对象逃逸分析：</font>可根据下面的代码分析</p> 
+</blockquote> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token class-name">Person</span> <span class="token function">function1</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   <span class="token class-name">Person</span> person <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token function">person</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   person<span class="token punctuation">.</span><span class="token function">setId</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   person<span class="token punctuation">.</span><span class="token function">setName</span><span class="token punctuation">(</span><span class="token string">"XiaoLeLe"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">return</span> person<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">function2</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   <span class="token class-name">Person</span> person <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token function">person</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   person<span class="token punctuation">.</span><span class="token function">setId</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   person<span class="token punctuation">.</span><span class="token function">setName</span><span class="token punctuation">(</span><span class="token string">"XiaoLeLe"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<blockquote> 
+ <p>根据上面这段代码，在function1中有一个Person的实例化对象，它被返回出了方法外，所以说明方法外还有变量引用着它，所以这个对象就逃逸出了方法，而在function2中实例化的Person的实例只在方法内部有效，方法结束后，person将销毁掉，所以，对于这种未逃逸出方法的对象，Java在为其分配内存的时候，会有一系列的判断，(开启逃逸分析参数-XX:-DoEscapeAnalysis，JDK7之后默认开启)如下图所示：</p> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/df/08/kqmlmZaF_o.png" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p>TLAB和CAS在本文辅助知识里面有，在这里我们解释两个名词：<br>      <font color="blue">1、标量替换：</font>在对象逃逸分析之后，发现我们这个对象可以分配在栈帧上面，但是有一个问题，栈帧所剩余的空间都是碎片化的，总共加起来可以放的下这个对象，但是现在没有一块连续的空间将对象存在里面，这个时候就可以使用标量替换的方法将对象拆分成一个个成员变量碎片化的存在这个栈帧中，当然它肯定会有一个标志位标明这是哪个对象的成员变量。也有一个参数开启标量替换的参数(-XX:+EliminateAllocations，JDK7之后默认开启)。<br>      <font color="blue">2、标量与聚合量：</font>标量即不可被进一步分解的量，而JAVA的基本数据类型就是标量（如：int，long等基本数据类型以及reference类型等），标量的对立就是可以被进一步分解的量，而这种量称之为聚合量。而在JAVA中对象就是可以被进一步分解的聚合量。</p> 
+</blockquote> 
+<h2><a id="3_61"></a>3、判断进入老年代的方法</h2> 
+<h3><a id="31gc_62"></a>3.1、发生gc回收</h3> 
+<blockquote> 
+ <p><a href="https://blog.csdn.net/qq_41931364/article/details/106795022">详情请查看这篇博客的堆模型详解</a></p> 
+</blockquote> 
+<h3><a id="32_65"></a>3.2、大对象直接进入老年代</h3> 
+<blockquote> 
+ <p><font color="Red">何为大对象：</font>这里有一个参数可以设置(XX:PretenureSizeThreshold=1000000 (单位是字节))，当大于这个参数所指定的size时，则为大对象。<br> <font color="Red">注：</font>这个参数只能在Serial 和ParNew两个收集器下有效，比如说指定Serial收集器参数(-XX:+UseSerialGC)。<br> <font color="Red">为什么要这样设置：</font>防止一些大的对象明知道是不可能被gc清除掉，且一直在发生minor gc时在年轻代复制来复制去，占用资源，影响程序性能。</p> 
+</blockquote> 
+<h3><a id="33_70"></a>3.3、长期存活的对象进入老年代</h3> 
+<blockquote> 
+ <p>这就是那个当对象的分代年龄达到15时，进入老年代，这里有一个参数可以设置分代年龄的值(-XX:MaxTenuringThreshold)<br> <a href="https://blog.csdn.net/qq_41931364/article/details/106795022">详情请查看这篇博客的堆模型详解</a><br> <font color="Red">为什么要这样设置：</font>当大致能推测到系统中大致85%以上要被销毁的对象分代年龄都不会超过8(这个数字根据实际情况来)，那么我就可以设置分代年龄最大值为8，当达到8时就直接进入老年代，以节约年轻代的空间。</p> 
+</blockquote> 
+<h3><a id="34_75"></a>3.4、动态年龄判断机制</h3> 
+<blockquote> 
+ <p>当发生minor gc时，Eden存活下来的所有对象的总和空间(年龄1+年龄2+…+年龄n)如果大于s0或者s1的50%的空间的时候，此时就会把年龄n(含)以上的对象都挪入老年代。</p> 
+</blockquote> 
+<h3><a id="35_79"></a>3.5、老年代空间分配担保机制</h3> 
+<blockquote> 
+ <p>在每一次触发minor gc之前，会先判断以下老年代的剩余空间是否&gt;=年轻代里面的所有对象容量总和，如果成立，直接执行minor gc(原因是害怕执行完一次minor gc之后，所有的对象都存活了下来，老年代不够放，又得做full gc，这样就是先执行了minor gc，然后才执行了full gc，记住这个顺序)，如果不成立，说明老年代的空间已经不够了，这会儿会先检查有没有配置一个参数叫老年代担保参数(-XX:-HandlePromotionFailure，jdk1.8就已经默认设置了)，如果没有配置，则直接执行full gc，再执行minor gc，如果有，则证明已经开启了老年代担保机制，将会去判断老年代的剩余空间是否&gt;=每一次minor gc之后剩余存活对象的平均容量大小，如果成立，则执行minor gc(说明担保机制担保了可以放下)，如果不成立，说明有极大可能放不下，就先执行full gc，在执行minor gc。将文字转换为图的方式表达如下：</p> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/d3/58/cL9US1ar_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="4_85"></a>4、对象的回收机制</h2> 
+<h3><a id="41_86"></a>4.1、判断是否是垃圾对象的算法</h3> 
+<h4><a id="411_87"></a>4.1.1、引用计数法</h4> 
+<blockquote> 
+ <p>给对象添加一个引用计数器，如果有一个地方引用它，它的值就会加1，当引用失效，值就减1，当值为0的时候就会被gc所回收掉。<br> <font color="Red">缺点：</font>万一两个变量互相引用，那么这两个变量就永远不会被gc掉。</p> 
+</blockquote> 
+<h4><a id="412_91"></a>4.1.2、可达性分析算法</h4> 
+<blockquote> 
+ <p>将“gc root”对象作为起点，从这些节点向下搜索，找到的对象都标记为非垃圾对象，其余未标记的对象都是垃圾对象。<br> <font color="Red">常见的“gc root”：</font>线程栈的本地变量、静态变量、本地方法栈的变量等等。</p> 
+</blockquote> 
+<h3><a id="42_94"></a>4.2、常见的引用类型</h3> 
+<blockquote> 
+ <p>Java的引用类型一般分为4种：强引用、软引用、弱引用、虚引用<br> <font color="Red">强引用：</font>普通的变量引用，不会被gc回收。<br> <font color="Red">软引用：</font>将对象用SoftReference软引用类型的对象包裹，正常情况不会被回收，但是GC做完后发现释放不出空间存放新的对象，则会把这些软引用的对象回收掉。软引用可用来实现内存敏感的高速缓存。<br>      <font color="blue">软引用举例：</font>比如在浏览一个网页1时，然后在同页面又打开了网页2，这时候点击浏览器左上角的回退箭头会回到上一个网页，而上一个网页的内容就使用的是这种软引用在内存中缓存着，这种引用对程序不会有什么影响，所以，当gc不出空间，就会销毁这些软引用，程序举例如下：</p> 
+</blockquote> 
+<pre><code class="prism language-java"><span class="token comment">//软引用举例</span>
+<span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token class-name">SoftReference</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">User</span><span class="token punctuation">&gt;</span></span> user <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">SoftReference</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">User</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">User</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<blockquote> 
+ <p><font color="Red">弱引用：</font>将对象用WeakReference软引用类型的对象包裹，弱引用跟没引用差不多，GC会直接回收掉，很少用，代码举例如下：</p> 
+</blockquote> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token class-name">WeakReference</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">User</span><span class="token punctuation">&gt;</span></span> user <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">WeakReference</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">User</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">User</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<blockquote> 
+ <p><font color="Red">虚引用：</font>虚引用也称为幽灵引用或者幻影引用，它是最弱的一种引用关系，几乎不用。</p> 
+</blockquote> 
+<h3><a id="43finalize_111"></a>4.3、finalize()的自救</h3> 
+<blockquote> 
+ <p>如果一个对象要被回收，gc会去看这个对象中有没有重写finalize()方法，如果有，则执行一下，如果finalize()执行完之后，这时候有变量引用了这个对象，则这个对象将不会被gc回收，如果还是没有引用，则被回收。<br> <font color="Red">注意：finalize()方法只会执行一次，如果此类(class)的实例化对象再次被回收，则不会执行finalize()方法自救，会被直接回收。</font></p> 
+</blockquote> 
+<h2><a id="5_115"></a>5、辅助知识</h2> 
+<h3><a id="51_116"></a>5.1、对象分配内存时并发问题的解决</h3> 
+<p>1、CAS（Compare and Swap）<br>      这里简单说一下CAS，后续会有详细的会将博客链接贴上，就是很多线程去争抢，抢到了就去分配，没有抢到的会接着重试争抢。<br> 2、TLAB（Thread Local Allocation Buffer本地线程分配缓存）<br>      每一个线程都会有自己专属的一块堆内存，在为新对象分配内存时只会在自己的专属内存去给对象分配，解决了并发冲突问题，JVM默认开启这种解决方案(­XX:+UseTLAB)，可以使用这个­XX:TLABSize参数指定TLAB大小。</p> 
+<h3><a id="52jolcore_121"></a>5.2、使用jol‐core查看对象头信息</h3> 
+<p>1、首先导入一个名称为jol-core-0.9.jar的jar包。<br> 2、代码示例</p> 
+<pre><code class="prism language-java"><span class="token keyword">package</span> JVM<span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> <span class="token namespace">org<span class="token punctuation">.</span>openjdk<span class="token punctuation">.</span>jol<span class="token punctuation">.</span>info<span class="token punctuation">.</span></span><span class="token class-name">ClassLayout</span><span class="token punctuation">;</span>
+
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">ObjectHead</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">ClassLayout</span> layout <span class="token operator">=</span> <span class="token class-name">ClassLayout</span><span class="token punctuation">.</span><span class="token function">parseInstance</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">Object</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span>layout<span class="token punctuation">.</span><span class="token function">toPrintable</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">ClassLayout</span> layout1 <span class="token operator">=</span> <span class="token class-name">ClassLayout</span><span class="token punctuation">.</span><span class="token function">parseInstance</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token keyword">int</span><span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span>layout1<span class="token punctuation">.</span><span class="token function">toPrintable</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">ClassLayout</span> layout2 <span class="token operator">=</span> <span class="token class-name">ClassLayout</span><span class="token punctuation">.</span><span class="token function">parseInstance</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">ObjectHead<span class="token punctuation">.</span>SimpleObject</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span>layout2<span class="token punctuation">.</span><span class="token function">toPrintable</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// -XX:+UseCompressedOops           默认开启的压缩所有指针</span>
+    <span class="token comment">// -XX:+UseCompressedClassPointers  默认开启的压缩对象头里的类型指针Klass Pointer</span>
+    <span class="token comment">// Oops : Ordinary Object Pointers</span>
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">class</span> <span class="token class-name">SimpleObject</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">//8B mark word</span>
+        <span class="token comment">//4B Klass Pointer   如果关闭压缩-XX:-UseCompressedClassPointers或-XX:-UseCompressedOops，则占用8B</span>
+        <span class="token keyword">int</span> id<span class="token punctuation">;</span>        <span class="token comment">//4B</span>
+        <span class="token class-name">String</span> name<span class="token punctuation">;</span>   <span class="token comment">//4B  如果关闭压缩-XX:-UseCompressedOops，则占用8B</span>
+        <span class="token keyword">byte</span> b<span class="token punctuation">;</span>        <span class="token comment">//1B</span>
+        <span class="token class-name">Object</span> o<span class="token punctuation">;</span>      <span class="token comment">//4B  如果关闭压缩-XX:-UseCompressedOops，则占用8B</span>
+        <span class="token keyword">public</span> <span class="token keyword">int</span> <span class="token function">help</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">int</span> a <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+            <span class="token keyword">int</span> b <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+            <span class="token keyword">return</span> a<span class="token operator">+</span>b<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>3、运行结果</p> 
+<pre><code class="prism language-java"><span class="token class-name">JVM<span class="token punctuation">.</span>ObjectHead</span>
+<span class="token class-name"><span class="token namespace">java<span class="token punctuation">.</span>lang<span class="token punctuation">.</span></span>Object</span> object internals<span class="token operator">:</span>
+<span class="token comment">//OFFSET  			偏移量</span>
+<span class="token comment">//SIZE   			大小</span>
+<span class="token comment">//TYPE DESCRIPTION  类型描述</span>
+<span class="token comment">//object header		对象头</span>
+ OFFSET  SIZE   TYPE DESCRIPTION                               VALUE
+ 	  <span class="token comment">//对象头的mark word</span>
+      <span class="token number">0</span>     <span class="token number">4</span>        <span class="token punctuation">(</span>object header<span class="token punctuation">)</span>                           <span class="token number">01</span> <span class="token number">00</span> <span class="token number">00</span> <span class="token number">00</span> <span class="token punctuation">(</span><span class="token number">00000001</span> <span class="token number">00000000</span> <span class="token number">00000000</span> <span class="token number">00000000</span><span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span>
+      <span class="token comment">//对象头的mark word</span>
+      <span class="token number">4</span>     <span class="token number">4</span>        <span class="token punctuation">(</span>object header<span class="token punctuation">)</span>                           <span class="token number">00</span> <span class="token number">00</span> <span class="token number">00</span> <span class="token number">00</span> <span class="token punctuation">(</span><span class="token number">00000000</span> <span class="token number">00000000</span> <span class="token number">00000000</span> <span class="token number">00000000</span><span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span>
+      <span class="token comment">//对象头的Klass Pointer，本来是8字节，这里经过了指针压缩	</span>
+      <span class="token number">8</span>     <span class="token number">4</span>        <span class="token punctuation">(</span>object header<span class="token punctuation">)</span>                           e5 <span class="token number">01</span> <span class="token number">00</span> f8 <span class="token punctuation">(</span><span class="token number">11100101</span> <span class="token number">00000001</span> <span class="token number">00000000</span> <span class="token number">11111000</span><span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">134217243</span><span class="token punctuation">)</span>
+     <span class="token comment">//看到下面这一行了吗，由于前面的对象头只占了12字节，我的操作系统是64bit的，必须是8个字节的整数倍，所以对齐填充字节增加了四个字节</span>
+     <span class="token number">12</span>     <span class="token number">4</span>        <span class="token punctuation">(</span>loss due <span class="token keyword">to</span> <span class="token namespace">the</span> next object alignment<span class="token punctuation">)</span>
+<span class="token class-name">Instance</span> size<span class="token operator">:</span> <span class="token number">16</span> bytes
+<span class="token class-name">Space</span> losses<span class="token operator">:</span> <span class="token number">0</span> bytes internal <span class="token operator">+</span> <span class="token number">4</span> bytes external <span class="token operator">=</span> <span class="token number">4</span> bytes total
+
+
+<span class="token punctuation">[</span><span class="token class-name">I</span> object internals<span class="token operator">:</span>
+ OFFSET  SIZE   TYPE DESCRIPTION                               VALUE
+      <span class="token comment">//对象头的mark word</span>
+      <span class="token number">0</span>     <span class="token number">4</span>        <span class="token punctuation">(</span>object header<span class="token punctuation">)</span>                           <span class="token number">01</span> <span class="token number">00</span> <span class="token number">00</span> <span class="token number">00</span> <span class="token punctuation">(</span><span class="token number">00000001</span> <span class="token number">00000000</span> <span class="token number">00000000</span> <span class="token number">00000000</span><span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span>
+      <span class="token comment">//对象头的mark word</span>
+      <span class="token number">4</span>     <span class="token number">4</span>        <span class="token punctuation">(</span>object header<span class="token punctuation">)</span>                           <span class="token number">00</span> <span class="token number">00</span> <span class="token number">00</span> <span class="token number">00</span> <span class="token punctuation">(</span><span class="token number">00000000</span> <span class="token number">00000000</span> <span class="token number">00000000</span> <span class="token number">00000000</span><span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span>
+      <span class="token comment">//对象头的Klass Pointer，本来是8字节，这里经过了指针压缩	</span>
+      <span class="token number">8</span>     <span class="token number">4</span>        <span class="token punctuation">(</span>object header<span class="token punctuation">)</span>                           <span class="token number">6d</span> <span class="token number">01</span> <span class="token number">00</span> f8 <span class="token punctuation">(</span><span class="token number">01101101</span> <span class="token number">00000001</span> <span class="token number">00000000</span> <span class="token number">11111000</span><span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">134217363</span><span class="token punctuation">)</span>
+      <span class="token comment">//数组对象专有的数组长度</span>
+     <span class="token number">12</span>     <span class="token number">4</span>        <span class="token punctuation">(</span>object header<span class="token punctuation">)</span>                           <span class="token number">00</span> <span class="token number">00</span> <span class="token number">00</span> <span class="token number">00</span> <span class="token punctuation">(</span><span class="token number">00000000</span> <span class="token number">00000000</span> <span class="token number">00000000</span> <span class="token number">00000000</span><span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span>
+     <span class="token number">16</span>     <span class="token number">0</span>    <span class="token keyword">int</span> <span class="token punctuation">[</span><span class="token class-name">I</span><span class="token punctuation">.</span><span class="token generics"><span class="token punctuation">&lt;</span>elements<span class="token punctuation">&gt;</span></span>                             <span class="token class-name">N</span><span class="token operator">/</span><span class="token class-name">A</span>
+<span class="token class-name">Instance</span> size<span class="token operator">:</span> <span class="token number">16</span> bytes
+<span class="token class-name">Space</span> losses<span class="token operator">:</span> <span class="token number">0</span> bytes internal <span class="token operator">+</span> <span class="token number">0</span> bytes external <span class="token operator">=</span> <span class="token number">0</span> bytes total
+
+
+<span class="token class-name">JVM<span class="token punctuation">.</span>ObjectHead</span>$<span class="token class-name">SimpleObject</span> object internals<span class="token operator">:</span>
+ OFFSET  SIZE               TYPE DESCRIPTION                               VALUE
+ 	  <span class="token comment">//对象头的mark word</span>
+      <span class="token number">0</span>     <span class="token number">4</span>                    <span class="token punctuation">(</span>object header<span class="token punctuation">)</span>                           <span class="token number">05</span> <span class="token number">00</span> <span class="token number">00</span> <span class="token number">00</span> <span class="token punctuation">(</span><span class="token number">00000101</span> <span class="token number">00000000</span> <span class="token number">00000000</span> <span class="token number">00000000</span><span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token number">5</span><span class="token punctuation">)</span>
+      <span class="token comment">//对象头的mark word</span>
+      <span class="token number">4</span>     <span class="token number">4</span>                    <span class="token punctuation">(</span>object header<span class="token punctuation">)</span>                           <span class="token number">00</span> <span class="token number">00</span> <span class="token number">00</span> <span class="token number">00</span> <span class="token punctuation">(</span><span class="token number">00000000</span> <span class="token number">00000000</span> <span class="token number">00000000</span> <span class="token number">00000000</span><span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span>
+      <span class="token comment">//对象头的Klass Pointer，本来是8字节，这里经过了指针压缩	</span>
+      <span class="token number">8</span>     <span class="token number">4</span>                    <span class="token punctuation">(</span>object header<span class="token punctuation">)</span>                           <span class="token number">63</span> cc <span class="token number">00</span> f8 <span class="token punctuation">(</span><span class="token number">01100011</span> <span class="token number">11001100</span> <span class="token number">00000000</span> <span class="token number">11111000</span><span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">134165405</span><span class="token punctuation">)</span>
+      <span class="token comment">//int类型，占4个字节</span>
+     <span class="token number">12</span>     <span class="token number">4</span>                <span class="token keyword">int</span> <span class="token class-name">SimpleObject</span><span class="token punctuation">.</span>id                           <span class="token number">0</span>
+     <span class="token comment">//byte类型，占1个字节</span>
+     <span class="token number">16</span>     <span class="token number">1</span>               <span class="token keyword">byte</span> <span class="token class-name">SimpleObject</span><span class="token punctuation">.</span>b                            <span class="token number">0</span>
+     <span class="token comment">//byte类型的专用对齐，对齐填充了3个字节</span>
+     <span class="token number">17</span>     <span class="token number">3</span>                    <span class="token punctuation">(</span>alignment<span class="token operator">/</span>padding gap<span class="token punctuation">)</span> 
+     <span class="token comment">//String类型，占四个字节，本来占8个，经过了指针压缩                 </span>
+     <span class="token number">20</span>     <span class="token number">4</span>   <span class="token class-name"><span class="token namespace">java<span class="token punctuation">.</span>lang<span class="token punctuation">.</span></span>String</span> <span class="token class-name">SimpleObject</span><span class="token punctuation">.</span>name                         <span class="token keyword">null</span>
+     <span class="token comment">//Object类型，占四个字节，本来占8个，经过了指针压缩</span>
+     <span class="token number">24</span>     <span class="token number">4</span>   <span class="token class-name"><span class="token namespace">java<span class="token punctuation">.</span>lang<span class="token punctuation">.</span></span>Object</span> <span class="token class-name">SimpleObject</span><span class="token punctuation">.</span>o                            <span class="token keyword">null</span>
+     <span class="token comment">//对齐填充字节，填充了4个字节，为了凑成8的整数倍</span>
+     <span class="token number">28</span>     <span class="token number">4</span>                    <span class="token punctuation">(</span>loss due <span class="token keyword">to</span> <span class="token namespace">the</span> next object alignment<span class="token punctuation">)</span>
+<span class="token class-name">Instance</span> size<span class="token operator">:</span> <span class="token number">32</span> bytes
+<span class="token class-name">Space</span> losses<span class="token operator">:</span> <span class="token number">3</span> bytes internal <span class="token operator">+</span> <span class="token number">4</span> bytes external <span class="token operator">=</span> <span class="token number">7</span> bytes total
+
+
+<span class="token class-name">Process</span> finished <span class="token keyword">with</span> <span class="token namespace">exit</span> code <span class="token number">0</span>
+</code></pre> 
+<h3><a id="53_225"></a>5.3、为什么要有指针压缩</h3> 
+<blockquote> 
+ <p>指针压缩参数：<br> 启用指针压缩:­XX:+UseCompressedOops(jdk1.6之后默认开启)，禁止指针压缩:­XX:­UseCompressedOops</p> 
+</blockquote> 
+<p><font color="red">答：</font>在64位平台的HotSpot中使用32位指针，内存使用会多出1.5倍左右，这样，将对象从堆中(电脑内存中)和主存(CPU)之间移动的指针也就相对较大，会占用较大宽带，同时GC也会承受较大压力，所以很影响性能。<br> <font color="red">采取措施：</font>在jvm中，32位地址最大支持4G内存(2的32次方)，我们现在所使用的是64bit的计算机，如果一个电脑的物理内存为16G，那个他需要(2的34次方)，也就是34bit的机器就可以，在这里，JVM底层通过一定的算法，将他们压缩成32bit存放在堆中，要拿到CPU寄存器运算时，再解压回原来的34bit，这样既节省了堆的空间，减少了gc，也在传输的过程中更加高效。<br> <font color="red">建议：</font><br>      <font color="blue">堆内存小于4G时，不需要启用指针压缩，jvm会直接去除高32位地址，即使用低虚拟地址空间，堆内存大于32G时，压缩指针会失效，会强制使用64位(即8字节)来对java对象寻址，所以堆内存不要大于32G为好。</font></p> 
+<h3><a id="54_234"></a>5.4、如何判断一个类是无用的类</h3> 
+<p>这里面主要回收的区域是元空间的类元信息。<br> 1、该类所有的对象实例都已经被回收，也就是 Java 堆中不存在该类的任何实例。<br> 2、加载该类的 ClassLoader 已经被回收(对于一般的类加载器加载的方法，几乎不可能回收类加载器，就比如说ExtClassLoader和AppClassLoader都是JVM所创建，基本不可能被回收，但是对于自定义类加载器加载的类，比如说jsp文件，就可以被回收，这也就是热加载可以实现的原因，<a href="https://blog.csdn.net/qq_41931364/article/details/106733207">jsp热加载可以看这篇文章的为什么改变Jsp文件不需要重启系统</a>)。<br> 3、该类对应的 java.lang.Class 对象没有在任何地方被引用。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/54e25df31722b936de425024f3ee62cd/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">mysql show processlist命令详解</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/ffc18422d14445e3d585dfaa5b9abd13/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">colmap 已知pose 重建 kitti数据尝试</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

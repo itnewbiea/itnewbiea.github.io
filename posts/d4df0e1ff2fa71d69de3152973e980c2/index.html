@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Docker系列05—Docker 存储卷详解 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Docker系列05—Docker 存储卷详解" />
+<meta property="og:description" content="1.1 背景
+（1）docker 的 AFUS 分层文件系统
+docker镜像由多个只读层叠加面成，启动容器时，docker会加载只读镜像层并在镜像栈顶部加一个读写层；
+如果运行中的容器修改了现有的一个已经存在的文件，那该文件将会从读写层下面的只读层复制到读写层，该文件版本仍然存在，只是已经被读写层中该文件的副本所隐藏，此即“写时复制(COW)”机制。
+（2）示意图
+描述：如果一个文件在最底层是可见的，如果在layer1上标记为删除，最高的层是用户看到的Layer2的层，在layer0上的文件，在layer2上可以删除，但是只是标记删除，用户是不可见的，总之在到达最顶层之前，把它标记来删除，对于最上层的用户是不可见的，当标记一删除，只有用户在最上层建一个同名一样的文件，才是可见的。
+1.2 为什么要使用存储卷
+对于这类的操作，修改删除等，一般效率非常低，如果对一于I/O要求比较高的应用，如redis在实现持化存储时，是在底层存储时的性能要求比较高。
+假设底层运行一个存储库mysql,mysql本来对于I/O的要求就比较高，如果mysql又是运行在容器中自己的文件系统之上时，也就是容器在停止时，就意味着删除，其实现数据存取时效率比较低，要避免这个限制要使用存储卷来实现。
+存在的问题：
+存储于联合文件系统中，不易于宿主机访问；
+容器间数据共享不便
+删除容器其数据会丢失
+1.3 存储卷
+（1）介绍
+“卷”是容器上的一个或多个“目录”，此类目录可绕过联合文件系统，与宿主机上的某个目录“绑定（关联）”；
+类似于挂载一样，宿主机的/data/web目录与容器中的/container/data/web目录绑定关系，然后容器中的进程向这个目录中写数据时，是直接写在宿主机的目录上的，绕过容器文件系统与宿主机的文件系统建立关联关系，使得可以在宿主机和容器内共享数据库内容，让容器直接访问宿主机中的内容，也可以宿主机向容器供集内容，两者是同步的。
+mount名称空间本来是隔离的，可以让两个本来是隔离的文件系统，在某个子路径上建立一定程度的绑定关系，从而使得在两个容器之间的文件系统的某个子路径上不再是隔离的，实现一定程度上共享的效果。
+在宿主机上能够被共享的目录(可以是文件)就被称为volume。
+（2）存储卷作用
+优点是容器中进程所生成的数据，都保存在存储卷上，从而脱离容器文件系统自身后，当容器被关闭甚至被删除时，都不用担心数据被丢失，实现数据可以脱离容器生命周期而持久，当再次重建容器时，如果可以让它使用到或者关联到同一个存储卷上时，再创建容器，虽然不是之前的容器，但是数据还是那个数据，特别类似于进程的运行逻辑，进程本身不保存任何的数据，数据都在进程之外的文件系统上，或者是专业的存储服务之上，所以进程每次停止，只是保存程序文件，对于容器也是一样；容器就是一个有生命周期的动态对象来使用，容器关闭就是容器删除的时候，但是它底层的镜像文件还是存在的，可以基于镜像再重新启动容器。
+但是容器有一个问题，一般与进程的启动不太一样，就是容器启动时选项比较多，如果下次再启动时，很容器会忘记它启动时的选项，所以最好有一个文件来保存容器的启动，这就是容器编排工具的作用。一般情况下，是使用命令来启动操作docker,但是可以通过文件来读，也就读文件来启动，读所需要的存储卷等，但是它也只是操作一个容器，这也是需要专业的容器编排工具的原因。
+另一个优势就是容器就可以不置于启动在那台主机之上了，如几台主机后面挂载一个NFS，在各自主机上创建容器，而容器上通过关联到宿主机的某个目录上，而这个目录也是NFS所挂载的目录中，这样容器如果停止或者是删除都可以不限制于只能在原先的宿主机上启动才可以，可以实现全集群范围内调试容器的使用，当再分配存储、计算资源时，就不会再局限于单机之上，可以在集群范围内建立起来，基本各种docker的编排工具都能实现此功能，但是后面严重依赖于共享存储的使用。
+（3）配合各服务应用状态分析
+考虑到容器应用是需要持久存储数据的，可能是有状态的，如果考虑使用NFS做反向代理是没必要存储数据的，应用可以分为有状态和无状态，有状态是当前这次连接请求处理一定此前的处理是有关联的，无状态是前后处理是没有关联关系的，大多数有状态应用都是数据持久存储的，如mysql,redis有状态应用，在持久存储，如nginx作为反向代理是无状态应用，tomcat可以是有状态的，但是它有可能不需要持久存储数据，因为它的session都是保存在内存中就可以的，会导致节点宕机而丢失session，如果有必要应该让它持久，这也算是有状态的。
+应用状态象限：是否有状态或无状态，是否需要持久存储，可以定立一个正轴坐标系，第一象限中是那些有状态需要存储的，像mysql,redis等服务，有些有有状态但是无需进行存储的，像tomcat把会话保存在内存中时，无状态也无需要存储的数据，如各种反向代理服务器nginx,lvs请求连接都是当作一个独立的连接来调度，本地也不需要保存数据，第四象限是无状态，但是需要存储数据是比较少见。
+运维起来比较难的是有状态且需要持久的，需要大量的运维经验和大量的操作步骤才能操作起来的，如做一个Mysql主从需要运维知识、经验整合进去才能实现所谓的部署，扩展或缩容，出现问题后修复，必须要了解集群的规模有多大，有多少个主节点，有多少个从节点，主节点上有多少个库，这些都要一清二楚，才能修复故障，这些就强依赖于运维经验，无状态的如nginx一安装就可以了，并不复杂，对于无状态的应用可以迅速的实现复制，在运维上实现自动化是很容易的，对于有状态的现状比较难脱离运维人员来管理，即使是k8s在使用上也暂时没有成熟的工具来实现。
+总之：对于有状态的应用的数据，不使用存储卷，只能放在容器本地，效率比较低，而导致一个很严重问题就是无法迁移使用，而且随着容器生命周期的停止，还不能把它删除，只能等待下次再启动状态才可以，如果删除了数据就可能没了，因为它的可写层是随着容器的生命周期而存在的，所以只要持久存储数据，存储卷就是必需的。
+docker存储卷难度：对于docker存储卷运行起来并不太麻烦，如果不自己借助额外的体系来维护，它本身并没有这么强大，因为docker存储卷是使用其所在的宿主机上的本地文件系统目录，也就是宿主机有一块磁盘，这块磁盘并没有共享给其他的docker主要，然后容器所使用的目录，只是关联到宿主机磁盘上的某个目录而已，也就是容器在这宿主机上停止或删除，是可以重新再创建的，但是不能调度到其他的主机上，这也是docker本身没有解决的问题，所以docker存储卷默认就是docker所在主机的本地，但是自己搭建一个共享的NFS来存储docker存储的数据，也可以实现，但是这个过程强依赖于运维人员的能力。
+1.4 存储卷原理
+volume于容器初始化之时会创建，由base image提供的卷中的数据会于此期间完成复制
+volume的初意是独立于容器的生命周期实现数据持久化，因此删除容器之时既不会删除卷，也不会对哪怕未被引用的卷做垃圾回收操作
+卷为docker提供了独立于容器的数据管理机制
+可以把“镜像”想像成静态文件，例如“程序”，把卷类比为动态内容，例如“数据”，于是，镜像可以重用，而卷可以共享
+卷实现了“程序(镜像)&#34;和”数据(卷)“分离，以及”程序(镜像)“和&#34;制作镜像的主机”分离，用记制作镜像时无须考虑镜像运行在容器所在的主机的环境
+1.5 存储卷分类
+Docker有两种类型的卷，每种类型都在容器中存在一个挂载点，但其在宿主机上位置有所不同;
+Bind mount volume（绑定挂载卷）：在宿主机上的路径要人工的指定一个特定的路径，在容器中也需要指定一个特定的路径，两个已知的路径建立关联关系
+Docker-managed volume（docker管理卷）： 只需要在容器内指定容器的挂载点是什么，而被绑定宿主机下的那个目录，是由容器引擎daemon自行创建一个空的目录，或者使用一个已经存在的目录，与存储卷建立存储关系，这种方式极大解脱用户在使用卷时的耦合关系，缺陷是用户无法指定那些使用目录，临时存储比较适合;
+2、使用存储卷
+为docker run 命令使用-v 选项即可使用volume
+docker-managed volume
+docker run -it -name rbox1 -v /data busybox #/data指定docker的目录
+docker inspect -f {{." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/d4df0e1ff2fa71d69de3152973e980c2/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2019-01-08T10:22:38+08:00" />
+<meta property="article:modified_time" content="2019-01-08T10:22:38+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Docker系列05—Docker 存储卷详解</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>　　1.1 背景<br> 　　<br> 　　（1）docker 的 AFUS 分层文件系统<br> 　　<br> 　　docker镜像由多个只读层叠加面成，启动容器时，docker会加载只读镜像层并在镜像栈顶部加一个读写层；<br> 　　<br> 　　如果运行中的容器修改了现有的一个已经存在的文件，那该文件将会从读写层下面的只读层复制到读写层，该文件版本仍然存在，只是已经被读写层中该文件的副本所隐藏，此即“写时复制(COW)”机制。<br> 　　<br> 　　（2）示意图<br> 　　<br> 　　描述：如果一个文件在最底层是可见的，如果在layer1上标记为删除，最高的层是用户看到的Layer2的层，在layer0上的文件，在layer2上可以删除，但是只是标记删除，用户是不可见的，总之在到达最顶层之前，把它标记来删除，对于最上层的用户是不可见的，当标记一删除，只有用户在最上层建一个同名一样的文件，才是可见的。<br> 　　<br> 　　1.2 为什么要使用存储卷<br> 　　<br> 　　对于这类的操作，修改删除等，一般效率非常低，如果对一于I/O要求比较高的应用，如redis在实现持化存储时，是在底层存储时的性能要求比较高。<br> 　　<br> 　　假设底层运行一个存储库mysql,mysql本来对于I/O的要求就比较高，如果mysql又是运行在容器中自己的文件系统之上时，也就是容器在停止时，就意味着删除，其实现数据存取时效率比较低，要避免这个限制要使用存储卷来实现。<br> 　　<br> 　　存在的问题：<br> 　　<br> 　　存储于联合文件系统中，不易于宿主机访问；<br> 　　<br> 　　容器间数据共享不便<br> 　　<br> 　　删除容器其数据会丢失<br> 　　<br> 　　1.3 存储卷<br> 　　<br> 　　（1）介绍<br> 　　<br> 　　“卷”是容器上的一个或多个“目录”，此类目录可绕过联合文件系统，与宿主机上的某个目录“绑定（关联）”；<br> 　　<br> 　　类似于挂载一样，宿主机的/data/web目录与容器中的/container/data/web目录绑定关系，然后容器中的进程向这个目录中写数据时，是直接写在宿主机的目录上的，绕过容器文件系统与宿主机的文件系统建立关联关系，使得可以在宿主机和容器内共享数据库内容，让容器直接访问宿主机中的内容，也可以宿主机向容器供集内容，两者是同步的。<br> 　　<br> 　　mount名称空间本来是隔离的，可以让两个本来是隔离的文件系统，在某个子路径上建立一定程度的绑定关系，从而使得在两个容器之间的文件系统的某个子路径上不再是隔离的，实现一定程度上共享的效果。<br> 　　<br> 　　在宿主机上能够被共享的目录(可以是文件)就被称为volume。<br> 　　<br> 　　（2）存储卷作用<br> 　　<br> 　　优点是容器中进程所生成的数据，都保存在存储卷上，从而脱离容器文件系统自身后，当容器被关闭甚至被删除时，都不用担心数据被丢失，实现数据可以脱离容器生命周期而持久，当再次重建容器时，如果可以让它使用到或者关联到同一个存储卷上时，再创建容器，虽然不是之前的容器，但是数据还是那个数据，特别类似于进程的运行逻辑，进程本身不保存任何的数据，数据都在进程之外的文件系统上，或者是专业的存储服务之上，所以进程每次停止，只是保存程序文件，对于容器也是一样；容器就是一个有生命周期的动态对象来使用，容器关闭就是容器删除的时候，但是它底层的镜像文件还是存在的，可以基于镜像再重新启动容器。<br> 　　<br> 　　但是容器有一个问题，一般与进程的启动不太一样，就是容器启动时选项比较多，如果下次再启动时，很容器会忘记它启动时的选项，所以最好有一个文件来保存容器的启动，这就是容器编排工具的作用。一般情况下，是使用命令来启动操作docker,但是可以通过文件来读，也就读文件来启动，读所需要的存储卷等，但是它也只是操作一个容器，这也是需要专业的容器编排工具的原因。<br> 　　<br> 　　另一个优势就是容器就可以不置于启动在那台主机之上了，如几台主机后面挂载一个NFS，在各自主机上创建容器，而容器上通过关联到宿主机的某个目录上，而这个目录也是NFS所挂载的目录中，这样容器如果停止或者是删除都可以不限制于只能在原先的宿主机上启动才可以，可以实现全集群范围内调试容器的使用，当再分配存储、计算资源时，就不会再局限于单机之上，可以在集群范围内建立起来，基本各种docker的编排工具都能实现此功能，但是后面严重依赖于共享存储的使用。<br> 　　<br> 　　（3）配合各服务应用状态分析<br> 　　<br> 　　考虑到容器应用是需要持久存储数据的，可能是有状态的，如果考虑使用NFS做反向代理是没必要存储数据的，应用可以分为有状态和无状态，有状态是当前这次连接请求处理一定此前的处理是有关联的，无状态是前后处理是没有关联关系的，大多数有状态应用都是数据持久存储的，如mysql,redis有状态应用，在持久存储，如nginx作为反向代理是无状态应用，tomcat可以是有状态的，但是它有可能不需要持久存储数据，因为它的session都是保存在内存中就可以的，会导致节点宕机而丢失session，如果有必要应该让它持久，这也算是有状态的。<br> 　　<br> 　　应用状态象限：是否有状态或无状态，是否需要持久存储，可以定立一个正轴坐标系，第一象限中是那些有状态需要存储的，像mysql,redis等服务，有些有有状态但是无需进行存储的，像tomcat把会话保存在内存中时，无状态也无需要存储的数据，如各种反向代理服务器nginx,lvs请求连接都是当作一个独立的连接来调度，本地也不需要保存数据，第四象限是无状态，但是需要存储数据是比较少见。<br> 　　<br> 　　运维起来比较难的是有状态且需要持久的，需要大量的运维经验和大量的操作步骤才能操作起来的，如做一个Mysql主从需要运维知识、经验整合进去才能实现所谓的部署，扩展或缩容，出现问题后修复，必须要了解集群的规模有多大，有多少个主节点，有多少个从节点，主节点上有多少个库，这些都要一清二楚，才能修复故障，这些就强依赖于运维经验，无状态的如nginx一安装就可以了，并不复杂，对于无状态的应用可以迅速的实现复制，在运维上实现自动化是很容易的，对于有状态的现状比较难脱离运维人员来管理，即使是k8s在使用上也暂时没有成熟的工具来实现。<br> 　　<br> 　　总之：对于有状态的应用的数据，不使用存储卷，只能放在容器本地，效率比较低，而导致一个很严重问题就是无法迁移使用，而且随着容器生命周期的停止，还不能把它删除，只能等待下次再启动状态才可以，如果删除了数据就可能没了，因为它的可写层是随着容器的生命周期而存在的，所以只要持久存储数据，存储卷就是必需的。<br> 　　<br> 　　docker存储卷难度：对于docker存储卷运行起来并不太麻烦，如果不自己借助额外的体系来维护，它本身并没有这么强大，因为docker存储卷是使用其所在的宿主机上的本地文件系统目录，也就是宿主机有一块磁盘，这块磁盘并没有共享给其他的docker主要，然后容器所使用的目录，只是关联到宿主机磁盘上的某个目录而已，也就是容器在这宿主机上停止或删除，是可以重新再创建的，但是不能调度到其他的主机上，这也是docker本身没有解决的问题，所以docker存储卷默认就是docker所在主机的本地，但是自己搭建一个共享的NFS来存储docker存储的数据，也可以实现，但是这个过程强依赖于运维人员的能力。<br> 　　<br> 　　1.4 存储卷原理<br> 　　<br> 　　volume于容器初始化之时会创建，由base image提供的卷中的数据会于此期间完成复制<br> 　　<br> 　　volume的初意是独立于容器的生命周期实现数据持久化，因此删除容器之时既不会删除卷，也不会对哪怕未被引用的卷做垃圾回收操作<br> 　　<br> 　　卷为docker提供了独立于容器的数据管理机制<br> 　　<br> 　　可以把“镜像”想像成静态文件，例如“程序”，把卷类比为动态内容，例如“数据”，于是，镜像可以重用，而卷可以共享<br> 　　<br> 　　卷实现了“程序(镜像)"和”数据(卷)“分离，以及”程序(镜像)“和"制作镜像的主机”分离，用记制作镜像时无须考虑镜像运行在容器所在的主机的环境<br> 　　<br> 　　1.5 存储卷分类<br> 　　<br> 　　Docker有两种类型的卷，每种类型都在容器中存在一个挂载点，但其在宿主机上位置有所不同;<br> 　　<br> 　　Bind mount volume（绑定挂载卷）：在宿主机上的路径要人工的指定一个特定的路径，在容器中也需要指定一个特定的路径，两个已知的路径建立关联关系<br> 　　<br> 　　Docker-managed volume（docker管理卷）： 只需要在容器内指定容器的挂载点是什么，而被绑定宿主机下的那个目录，是由容器引擎daemon自行创建一个空的目录，或者使用一个已经存在的目录，与存储卷建立存储关系，这种方式极大解脱用户在使用卷时的耦合关系，缺陷是用户无法指定那些使用目录，临时存储比较适合;<br> 　　<br> 　　2、使用存储卷<br> 　　<br> 　　为docker run 命令使用-v 选项即可使用volume<br> 　　<br> 　　docker-managed volume<br> 　　<br> 　　docker run -it -name rbox1 -v /data busybox   #/data指定docker的目录<br> 　　<br> 　　docker inspect -f {<!-- -->{.Mounts}} rbox1   查看rbox1容器的卷，卷标识符及挂载的主机目录<br> 　　<br> 　　bind-mount volume<br> 　　<br> 　　docker run -it -v HOSTDIR:VOLUMEDIR --name rbox2 busybox  #宿主机目录:容器目录<br> 　　<br> 　　docker inspect -f {<!-- -->{.Mounts}} rbox2<br> 　　<br> 　　2.1 使用 docker-managed volume<br> 　　<br> 　　（1）创建容器b1<br> 　　<br> 　　[root@along ~]# docker run -www.ysyl157.com  -name b1 -it -v /data --rm busybox<br> 　　<br> 　　/ # ls /data/<br> 　　<br> 　　/ #<br> 　　<br> 　　注意：不要关闭此终端，另起一个终端进行一下操作；因为--rm 选项：一旦容器关闭，立即删除容器<br> 　　<br> 　　（2）查询存储卷信息<br> 　　<br> 　　[root@along ~]# docker inspect b1<br> 　　<br> 　　... ...<br> 　　<br> 　　"Mounts": [<br> 　　<br> 　　{<!-- --><br> 　　<br> 　　"Type": "volume",<br> 　　<br> 　　"Name": "ca18526588ba7cbe3934086807a95415644aec17119c811338efb1db2c5f5201",<br> 　　<br> 　　"Source": "/var/lib/docker/volumes/ca18526588ba7cbe3934086807a95415644aec17119c811338efb1db2c5f5201/_data",<br> 　　<br> 　　"Destination": "/data",<br> 　　<br> 　　"Driver": "local",<br> 　　<br> 　　"Mode": "",<br> 　　<br> 　　"RW": true,<br> 　　<br> 　　"Propagation": ""<br> 　　<br> 　　}<br> 　　<br> 　　],<br> 　　<br> 　　... ...<br> 　　<br> 　　（3）因为inspect查询的结果是列表的形式、所以可以精确查询结果<br> 　　<br> 　　[root@along ~]# docker inspect -f {<!-- -->{.Mounts}} b1<br> 　　<br> 　　[{volume ca18526588ba7cbe3934086807a95415644aec17119c811338efb1db2c5f5201 /var/lib/docker/volumes/ca18526588ba7cbe3934086807a95415644aec17119c811338efb1db2c5f5201/_data /data local  true }]<br> 　　<br> 　　（4）在宿主机的存储卷目录添加任意东西<br> 　　<br> 　　[root@along ~]# cd /var/lib/docker/volumes/ca18526588ba7cbe3934086807a95415644aec17119c811338efb1db2c5f5201/_data<br> 　　<br> 　　[root@along _data]# echo www.gouyiflb.cn "hello" &gt; test.html<br> 　　<br> 　　（5）在容器b1中查看，并在容器中任意修改存储卷<br> 　　<br> 　　/ # cat /data/test.html<br> 　　<br> 　　hello<br> 　　<br> 　　/ # echo "world" &gt;&gt; /data/test.html<br> 　　<br> 　　（6）在宿主机上查看认证<br> 　　<br> 　　[root@along _data]# cat test.html<br> 　　<br> 　　hello<br> 　　<br> 　　world<br> 　　<br> 　　2.2 使用 docker mount volume<br> 　　<br> 　　（1）创建容器b2<br> 　　<br> 　　[root@along ~]# docker run www.qinlinyu.cn--name b2 -it -v /data/volumes/b2:/data --rm busybox<br> 　　<br> 　　/ # ls /data/<br> 　　<br> 　　/ #<br> 　　<br> 　　注：如果设置存储卷的目录不存在，会自动创建<br> 　　<br> 　　（2）查询存储卷信息<br> 　　<br> 　　[root@along ~]# docker inspect -f {<!-- -->{.Mounts}} b2<br> 　　<br> 　　[{bind  /data/volumes/b2 /data/web/html   true rprivate}]<br> 　　<br> 　　（3）在宿主机的存储卷上进行简单操作<br> 　　<br> 　　[root@along ~]# cd /data/volumes/b2/<br> 　　<br> 　　[root@along b2]# echo "&lt;h1&gt;Bustbox httpd server&lt;/h1&gt;" &gt; index.html<br> 　　<br> 　　（4）在容器中验证<br> 　　<br> 　　/ # cat /data/index.html<br> 　　<br> 　　&lt;h1&gt;Bustbox httpd server&lt;/h1&gt;<br> 　　<br> 　　（5）即使容器被删除，再新创建容器b3，修改存储卷路径，存储卷也不会改变，证明持久功能<br> 　　<br> 　　[root@along ~]# docker run --name b3 -it -v /data/volumes/b2:/data/web/html --rm busybox<br> 　　<br> 　　/ # cat /data/web/html/index.html<br> 　　<br> 　　&lt;h1&gt;Bustbox httpd server&lt;/h1&gt;<br> 　　<br> 　　（6）多个docker容器同时关联到同一个宿主机的目录中<br> 　　<br> 　　实现共享使用同一个存储卷，容器之间的数据共享<br> 　　<br> 　　[root@along ~]# docker run --name b4 -it -v /data/volumes/b2:/data/ --rm busybox<br> 　　<br> 　　/ # cat /data/index.html<br> 　　<br> 　　&lt;h1&gt;Bustbox httpd server&lt;/h1&gt;<br> 　　<br> 　　2.3 volumes-from 基于已有容器的存储器，创建容器<br> 　　<br> 　　（1）先创建一个 infracon container<br> 　　<br> 　　[root@along ~]# docker run --name infracon -it -v /data/infracon/volume/:/data/web/html busybox:latest<br> 　　<br> 　　/ # echo "&lt;h1&gt;Nginx server&lt;/h1&gt;" &gt; /data/web/html/index<br> 　　<br> 　　宿主机的存储卷可以查询<br> 　　<br> 　　[root@along ~]# cat /data/infracon/volume/index.html<br> 　　<br> 　　&lt;h1&gt;Nginx server&lt;/h1&gt;<br> 　　<br> 　　（2）基于infracon container 的存储器，启动一个 nginx container：<br> 　　<br> 　　[root@along ~]# docker run --name nginx --network container:infracon --volumes-from infracon -it --rm busybox:latest<br> 　　<br> 　　/ # cat /data/web/html/index.html<br> 　　<br> 　　&lt;h1&gt;Nginx server&lt;/h1&gt;<br> 　　<br> 　　其实，对nginx 这个容器来说，volume 的本质没变，它只是将infracon 容器的/data/web/html 目录映射的主机上的目录映射到自身的/data/web/html 目录。<br> 　　<br> 　　[root@along ~]# docker inspect -f {<!-- -->{.Mounts}} nginx<br> 　　<br> 　　[{bind  /data/infracon/volume /data/web/html   true rprivate}]<br> 　　<br> 　　但是，其好处是，可以不管其目录的临时性而不断地重复使用它。<br> 　　<br> 　　3、Volume 删除和孤单 volume 清理<br> 　　<br> 　　3.1 在删除容器时删除 volume<br> 　　<br> 　　可以使用 docker rm -v 命令在删除容器时删除该容器的卷。<br> 　　<br> 　　[root@along ~]#  docker run --name web2 -v /data/ -d nginx:1.14-alpine<br> 　　<br> 　　59a3db695835a9f1a8be97c0ca0f70bc792f5303302264dba913c7c1b6d81ebd<br> 　　<br> 　　[root@along ~]# docker volume ls<br> 　　<br> 　　DRIVER              VOLUME NAME<br> 　　<br> 　　local               17ac2071805d1609cf5501f81bec81d3d19467ea5a0c3428d2e77b414607775b<br> 　　<br> 　　local               1e28bac2454d8c92ba39e8e22b9d88004284310a776e50dc379282de63c0e149<br> 　　<br> 　　[root@along ~]# docker kill web2<br> 　　<br> 　　web2<br> 　　<br> 　　[root@along ~]# docker rm -v web2<br> 　　<br> 　　web2<br> 　　<br> 　　[root@along ~]# docker volume ls<br> 　　<br> 　　DRIVER              VOLUME NAME<br> 　　<br> 　　local               1e28bac2454d8c92ba39e8e22b9d88004284310a776e50dc379282de63c0e149<br> 　　<br> 　　3.2 批量删除孤单 volumes<br> 　　<br> 　　从上面的介绍可以看出，使用 docker run -v 启动的容器被删除以后，在主机上会遗留下来孤单的卷。可以使用下面的简单方法来做清理：<br> 　　<br> 　　[root@along ~]# docker volume ls -qf dangling=true<br> 　　<br> 　　1e28bac2454d8c92ba39e8e22b9d88004284310a776e50dc379282de63c0e149<br> 　　<br> 　　[root@along ~]# docker volume rm $(docker volume ls -qf dangling=true)<br> 　　<br> 　　1e28bac2454d8c92ba39e8e22b9d88004284310a776e50dc379282de63c0e149<br> 　　<br> 　　[root@along ~]# docker volume ls<br> 　　<br> 　　DRIVER              VOLUME NAME</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/9667e89fcfab88d4645bda14aa59cfa2/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">QT: 样式表（stylesheet）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f71db65d0a8a275cded7deefbc522ad7/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">怎样通过历史数据预测未来？</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

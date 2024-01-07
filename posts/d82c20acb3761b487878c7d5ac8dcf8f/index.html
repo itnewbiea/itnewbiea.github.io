@@ -1,0 +1,1639 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>深度学习_用LSTM&#43;Attention与Self-Attention - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="深度学习_用LSTM&#43;Attention与Self-Attention" />
+<meta property="og:description" content="笔者在重新尝试用深度学习的各个模型对序列进行预测，就LSTM进行一些使用记录
+一、一些优化 和keras一样的权重初始化 有时候我们torch训练的LSTM， 没有keras好，可以将权重按keras的方式进行初始化 增加attention 捕捉序列的周期与相似性尝试用self-attention 二、网络结构LSTM&#43;Attention import torch from torch import nn import torch.nn.functional as F from torch.utils.data import DataLoader, TensorDataset import typing as typ import numpy as np from tqdm import tqdm from sklearn.model_selection import KFold from collections import OrderedDict class LSTMRegressor(nn.Module): def __init__(self, input_size, hidden_size=128): super(LSTMRegressor, self).__init__() self.lstm = nn.LSTM(input_size, hidden_size, batch_first=True, bidirectional=False) self.header = nn.Sequential(OrderedDict([ (&#39;fc1&#39;, nn.Linear(hidden_size, 32)), (&#39;relu1&#39;, nn.ReLU(inplace=True)), (&#39;dropout&#39;, nn.Dropout(0.01)), (&#39;fc2&#39;, nn.Linear(32, 1)), (&#39;relu2&#39;, nn." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/d82c20acb3761b487878c7d5ac8dcf8f/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-11-21T01:19:14+08:00" />
+<meta property="article:modified_time" content="2022-11-21T01:19:14+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">深度学习_用LSTM&#43;Attention与Self-Attention</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-github-gist">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>笔者在重新尝试用深度学习的各个模型对序列进行预测，就LSTM进行一些使用记录</p> 
+<h2><a id="_2"></a>一、一些优化</h2> 
+<ol><li>和keras一样的权重初始化 
+  <ul><li>有时候我们torch训练的LSTM， 没有keras好，可以将权重按keras的方式进行初始化</li></ul> </li><li>增加attention 捕捉序列的周期与相似性</li><li>尝试用self-attention</li></ol> 
+<h2><a id="LSTMAttention_9"></a>二、网络结构LSTM+Attention</h2> 
+<pre><code class="prism language-python"><span class="token keyword">import</span> torch
+<span class="token keyword">from</span> torch <span class="token keyword">import</span> nn
+<span class="token keyword">import</span> torch<span class="token punctuation">.</span>nn<span class="token punctuation">.</span>functional <span class="token keyword">as</span> F
+<span class="token keyword">from</span> torch<span class="token punctuation">.</span>utils<span class="token punctuation">.</span>data <span class="token keyword">import</span> DataLoader<span class="token punctuation">,</span> TensorDataset
+<span class="token keyword">import</span> typing <span class="token keyword">as</span> typ
+<span class="token keyword">import</span> numpy <span class="token keyword">as</span> np
+<span class="token keyword">from</span> tqdm <span class="token keyword">import</span> tqdm
+<span class="token keyword">from</span> sklearn<span class="token punctuation">.</span>model_selection <span class="token keyword">import</span> KFold
+<span class="token keyword">from</span> collections <span class="token keyword">import</span> OrderedDict
+
+
+<span class="token keyword">class</span> <span class="token class-name">LSTMRegressor</span><span class="token punctuation">(</span>nn<span class="token punctuation">.</span>Module<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token keyword">def</span> <span class="token function">__init__</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> input_size<span class="token punctuation">,</span> hidden_size<span class="token operator">=</span><span class="token number">128</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+        <span class="token builtin">super</span><span class="token punctuation">(</span>LSTMRegressor<span class="token punctuation">,</span> self<span class="token punctuation">)</span><span class="token punctuation">.</span>__init__<span class="token punctuation">(</span><span class="token punctuation">)</span>
+        self<span class="token punctuation">.</span>lstm <span class="token operator">=</span> nn<span class="token punctuation">.</span>LSTM<span class="token punctuation">(</span>input_size<span class="token punctuation">,</span> hidden_size<span class="token punctuation">,</span> batch_first<span class="token operator">=</span><span class="token boolean">True</span><span class="token punctuation">,</span> bidirectional<span class="token operator">=</span><span class="token boolean">False</span><span class="token punctuation">)</span>
+        self<span class="token punctuation">.</span>header <span class="token operator">=</span> nn<span class="token punctuation">.</span>Sequential<span class="token punctuation">(</span>OrderedDict<span class="token punctuation">(</span><span class="token punctuation">[</span>
+            <span class="token punctuation">(</span><span class="token string">'fc1'</span><span class="token punctuation">,</span> nn<span class="token punctuation">.</span>Linear<span class="token punctuation">(</span>hidden_size<span class="token punctuation">,</span> <span class="token number">32</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+            <span class="token punctuation">(</span><span class="token string">'relu1'</span><span class="token punctuation">,</span> nn<span class="token punctuation">.</span>ReLU<span class="token punctuation">(</span>inplace<span class="token operator">=</span><span class="token boolean">True</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+            <span class="token punctuation">(</span><span class="token string">'dropout'</span><span class="token punctuation">,</span> nn<span class="token punctuation">.</span>Dropout<span class="token punctuation">(</span><span class="token number">0.01</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+            <span class="token punctuation">(</span><span class="token string">'fc2'</span><span class="token punctuation">,</span> nn<span class="token punctuation">.</span>Linear<span class="token punctuation">(</span><span class="token number">32</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+            <span class="token punctuation">(</span><span class="token string">'relu2'</span><span class="token punctuation">,</span> nn<span class="token punctuation">.</span>ReLU<span class="token punctuation">(</span>inplace<span class="token operator">=</span><span class="token boolean">True</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+        <span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+        self<span class="token punctuation">.</span>__weight_init<span class="token punctuation">(</span><span class="token punctuation">)</span>
+        <span class="token comment"># attention</span>
+        self<span class="token punctuation">.</span>attn_ly <span class="token operator">=</span> nn<span class="token punctuation">.</span>Linear<span class="token punctuation">(</span>hidden_size<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span>
+        self<span class="token punctuation">.</span>sft <span class="token operator">=</span> nn<span class="token punctuation">.</span>Softmax<span class="token punctuation">(</span>dim<span class="token operator">=</span><span class="token number">1</span><span class="token punctuation">)</span>
+
+    <span class="token keyword">def</span> <span class="token function">attention_net</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> lstm_output<span class="token punctuation">)</span><span class="token punctuation">:</span>   
+        <span class="token comment"># print('lstm_output', lstm_output.shape) # batch_size, time_step, hidden_size * layer_size</span>
+        attn_tanh <span class="token operator">=</span> torch<span class="token punctuation">.</span>tanh<span class="token punctuation">(</span>self<span class="token punctuation">.</span>attn_ly<span class="token punctuation">(</span>lstm_output<span class="token punctuation">)</span><span class="token punctuation">)</span>  <span class="token comment"># batch_size, time_step, 1</span>
+        sft_res <span class="token operator">=</span> self<span class="token punctuation">.</span>sft<span class="token punctuation">(</span>attn_tanh<span class="token punctuation">)</span> <span class="token comment"># batch_size, time_step, 1</span>
+        attn_output <span class="token operator">=</span> torch<span class="token punctuation">.</span><span class="token builtin">sum</span><span class="token punctuation">(</span>sft_res <span class="token operator">*</span> lstm_output<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token comment"># batch_size, hidden_size</span>
+        <span class="token keyword">return</span> attn_output
+
+    <span class="token keyword">def</span> <span class="token function">forward</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> x<span class="token punctuation">)</span><span class="token punctuation">:</span>
+        x_out<span class="token punctuation">,</span> <span class="token punctuation">(</span>hn<span class="token punctuation">,</span> cn<span class="token punctuation">)</span> <span class="token operator">=</span> self<span class="token punctuation">.</span>lstm<span class="token punctuation">(</span>x<span class="token punctuation">)</span>
+        x_out <span class="token operator">=</span> self<span class="token punctuation">.</span>attention_net<span class="token punctuation">(</span>x_out<span class="token punctuation">)</span>
+        x_out <span class="token operator">=</span> self<span class="token punctuation">.</span>header<span class="token punctuation">(</span>x_out<span class="token punctuation">)</span>
+        <span class="token keyword">return</span> x_out
+
+    <span class="token keyword">def</span> <span class="token function">__weight_init</span><span class="token punctuation">(</span>self<span class="token punctuation">)</span><span class="token punctuation">:</span>
+        <span class="token triple-quoted-string string">"""
+        Tensorflow/Keras-like initialization
+        """</span>
+        <span class="token keyword">for</span> name<span class="token punctuation">,</span> p <span class="token keyword">in</span> self<span class="token punctuation">.</span>named_parameters<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+            <span class="token keyword">if</span> <span class="token string">'lstm'</span> <span class="token keyword">in</span> name<span class="token punctuation">:</span>
+                <span class="token keyword">if</span> <span class="token string">'weight_ih'</span> <span class="token keyword">in</span> name<span class="token punctuation">:</span>
+                    nn<span class="token punctuation">.</span>init<span class="token punctuation">.</span>xavier_uniform_<span class="token punctuation">(</span>p<span class="token punctuation">.</span>data<span class="token punctuation">)</span>
+                <span class="token keyword">elif</span> <span class="token string">'weight_hh'</span> <span class="token keyword">in</span> name<span class="token punctuation">:</span>
+                    nn<span class="token punctuation">.</span>init<span class="token punctuation">.</span>orthogonal_<span class="token punctuation">(</span>p<span class="token punctuation">.</span>data<span class="token punctuation">)</span>
+                <span class="token keyword">elif</span> <span class="token string">'bias_ih'</span> <span class="token keyword">in</span> name<span class="token punctuation">:</span>
+                    p<span class="token punctuation">.</span>data<span class="token punctuation">.</span>fill_<span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span>
+                    <span class="token comment"># Set forget-gate bias to 1</span>
+                    n <span class="token operator">=</span> p<span class="token punctuation">.</span>size<span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span>
+                    p<span class="token punctuation">.</span>data<span class="token punctuation">[</span><span class="token punctuation">(</span>n <span class="token operator">//</span> <span class="token number">4</span><span class="token punctuation">)</span><span class="token punctuation">:</span><span class="token punctuation">(</span>n <span class="token operator">//</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">]</span><span class="token punctuation">.</span>fill_<span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span>
+                <span class="token keyword">elif</span> <span class="token string">'bias_hh'</span> <span class="token keyword">in</span> name<span class="token punctuation">:</span>
+                    p<span class="token punctuation">.</span>data<span class="token punctuation">.</span>fill_<span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span>
+            <span class="token keyword">elif</span> <span class="token string">'fc'</span> <span class="token keyword">in</span> name<span class="token punctuation">:</span>
+                <span class="token keyword">if</span> <span class="token string">'weight'</span> <span class="token keyword">in</span> name<span class="token punctuation">:</span>
+                    nn<span class="token punctuation">.</span>init<span class="token punctuation">.</span>xavier_uniform_<span class="token punctuation">(</span>p<span class="token punctuation">.</span>data<span class="token punctuation">)</span>
+                <span class="token keyword">elif</span> <span class="token string">'bias'</span> <span class="token keyword">in</span> name<span class="token punctuation">:</span>
+                    p<span class="token punctuation">.</span>data<span class="token punctuation">.</span>fill_<span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span>
+
+</code></pre> 
+<h2><a id="Selfattention_75"></a>三、Self-attention</h2> 
+<h3><a id="31__76"></a>3.1 原理</h3> 
+<p>考虑全部序列<br> <img src="https://images2.imgbox.com/63/4b/shDCWyXy_o.png" alt="在这里插入图片描述"><br> 计算序列中元素之间的关系<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         α 
+        
+       
+      
+        \alpha 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.0037em;">α</span></span></span></span></span>， 存在较多的方法进行计算，一种是直接进行乘积<code>Dot-product</code>，一种是concat后做一个激活函数。<font color="darkred">在self-attention中使用的是左边的进行乘积<code>Dot-product</code>的方法。<br> <img src="https://images2.imgbox.com/53/59/7cODtwcM_o.png" alt="在这里插入图片描述"><br> <strong>以序列第一个值为例，输入<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+       
+        
+         
+          
+          
+            q 
+           
+          
+            1 
+           
+          
+         
+           = 
+          
+          
+           
+           
+             W 
+            
+           
+             q 
+            
+           
+           
+           
+             a 
+            
+           
+             1 
+            
+           
+          
+         
+        
+          q_1=\bf W^q\bf a^1 
+         
+        
+      </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.625em; vertical-align: -0.19444em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.03588em;">q</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.301108em;"><span class="" style="top: -2.55em; margin-left: -0.03588em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">1</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.814108em; vertical-align: 0em;"></span><span class="mord"><span class="mord"><span class="mord mathbf" style="margin-right: 0.01597em;">W</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.674108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathbf mtight">q</span></span></span></span></span></span></span></span><span class="mord"><span class="mord"><span class="mord mathbf">a</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathbf mtight">1</span></span></span></span></span></span></span></span></span></span></span></span></span></span>， 计算每个值和第一个值之间的相关性（用k矩阵抽取核心<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+       
+        
+         
+          
+          
+            K 
+           
+          
+            2 
+           
+          
+         
+           = 
+          
+          
+           
+           
+             W 
+            
+           
+             2 
+            
+           
+           
+            
+            
+              a 
+             
+            
+              2 
+             
+            
+           
+             ; 
+            
+           
+          
+         
+        
+          \bf K^2=\bf W^2 \bf a^2; 
+         
+        
+      </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.00855em; vertical-align: -0.19444em;"></span><span class="mord"><span class="mord"><span class="mord mathbf">K</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathbf mtight">2</span></span></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mord"><span class="mord"><span class="mord mathbf" style="margin-right: 0.01597em;">W</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathbf mtight">2</span></span></span></span></span></span></span></span><span class="mord"><span class="mord"><span class="mord mathbf">a</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathbf mtight">2</span></span></span></span></span></span></span></span><span class="mpunct">;</span></span></span></span></span></span></span></span> 然后与q矩阵相乘<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+       
+        
+         
+          
+          
+            α 
+           
+           
+           
+             1 
+            
+           
+             , 
+            
+           
+             2 
+            
+           
+          
+         
+           = 
+          
+          
+           
+           
+             K 
+            
+           
+             2 
+            
+           
+           
+           
+             q 
+            
+           
+             1 
+            
+           
+          
+         
+        
+          \alpha _{1, 2}=\bf K^2 q_1 
+         
+        
+      </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.716668em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.0037em;">α</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.301108em;"><span class="" style="top: -2.55em; margin-left: -0.0037em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">1</span><span class="mpunct mtight">,</span><span class="mord mtight">2</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.00855em; vertical-align: -0.19444em;"></span><span class="mord"><span class="mord"><span class="mord mathbf">K</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathbf mtight">2</span></span></span></span></span></span></span></span><span class="mord"><span class="mord mathbf">q</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.301108em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathbf mtight">1</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span></span>），抽取出相关性后，用soft-max进行归一化，增大值之间的距离。</strong><br> <img src="https://images2.imgbox.com/77/20/SHykWIJI_o.png" alt="在这里插入图片描述"><br> <strong>有了相关性之后对每个值(<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+       
+        
+         
+          
+          
+            v 
+           
+          
+            2 
+           
+          
+         
+           = 
+          
+          
+          
+            W 
+           
+          
+            v 
+           
+          
+          
+          
+            a 
+           
+          
+            2 
+           
+          
+          
+         
+        
+          \bf v^2=W^va^2\bf 
+         
+        
+      </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.814108em; vertical-align: 0em;"></span><span class="mord"><span class="mord"><span class="mord mathbf" style="margin-right: 0.01597em;">v</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathbf mtight">2</span></span></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mord"><span class="mord mathbf" style="margin-right: 0.01597em;">W</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.674108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathbf mtight" style="margin-right: 0.01597em;">v</span></span></span></span></span></span></span></span><span class="mord"><span class="mord mathbf">a</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathbf mtight">2</span></span></span></span></span></span></span></span><span class="mord"></span></span></span></span></span></span>)都取相应相关性(<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+       
+        
+         
+          
+          
+            v 
+           
+          
+            2 
+           
+          
+          
+          
+            α 
+           
+           
+           
+             1 
+            
+           
+             , 
+            
+           
+             2 
+            
+           
+          
+            / 
+           
+          
+         
+        
+          \bf v^2 \alpha^/_{1, 2} 
+         
+        
+      </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.44722em; vertical-align: -0.402416em;"></span><span class="mord"><span class="mord"><span class="mord mathbf" style="margin-right: 0.01597em;">v</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathbf mtight">2</span></span></span></span></span></span></span></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.0037em;">α</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.0448em;"><span class="" style="top: -2.43369em; margin-left: -0.0037em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathbf mtight">1</span><span class="mpunct mtight">,</span><span class="mord mathbf mtight">2</span></span></span></span><span class="" style="top: -3.2198em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathbf mtight">/</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.402416em;"><span class=""></span></span></span></span></span></span></span></span></span></span></span>)的特征做累和<br> (<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+       
+        
+         
+          
+          
+            b 
+           
+          
+            1 
+           
+          
+         
+           = 
+          
+          
+          
+            ∑ 
+           
+          
+            i 
+           
+          
+          
+           
+           
+             α 
+            
+            
+            
+              1 
+             
+            
+              , 
+             
+            
+              i 
+             
+            
+           
+             / 
+            
+           
+           
+           
+             v 
+            
+           
+             i 
+            
+           
+          
+         
+        
+          b^1=\sum_i{\alpha^/_{1,i}\bf v^i} 
+         
+        
+      </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.814108em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault">b</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">1</span></span></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.45777em; vertical-align: -0.412972em;"></span><span class="mop"><span class="mop op-symbol small-op" style="position: relative; top: -5e-06em;">∑</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.161954em;"><span class="" style="top: -2.40029em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.29971em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord"><span class="mord mathdefault" style="margin-right: 0.0037em;">α</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.0448em;"><span class="" style="top: -2.42314em; margin-left: -0.0037em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">1</span><span class="mpunct mtight">,</span><span class="mord mathdefault mtight">i</span></span></span></span><span class="" style="top: -3.2198em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">/</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.412972em;"><span class=""></span></span></span></span></span></span><span class="mord"><span class="mord"><span class="mord mathbf" style="margin-right: 0.01597em;">v</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.849108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathbf mtight">i</span></span></span></span></span></span></span></span></span></span></span></span></span></span>)</strong><br> 然后依次的获取<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           b 
+          
+         
+           2 
+          
+         
+        
+            
+         
+         
+         
+           b 
+          
+         
+           3 
+          
+         
+        
+            
+         
+         
+         
+           b 
+          
+         
+           4 
+          
+         
+        
+       
+         b^2\ b^3\ b^4 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.814108em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault">b</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span></span></span></span></span><span class="mspace"> </span><span class="mord"><span class="mord mathdefault">b</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">3</span></span></span></span></span></span></span></span><span class="mspace"> </span><span class="mord"><span class="mord mathdefault">b</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">4</span></span></span></span></span></span></span></span></span></span></span></span></font></p> 
+<p><img src="https://images2.imgbox.com/3b/7c/TrcqlLqk_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="32__88"></a>3.2 原理转矩阵乘法</h3> 
+<p><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          a 
+         
+        
+          i 
+         
+        
+       
+      
+        a^i 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.824664em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault">a</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.824664em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">i</span></span></span></span></span></span></span></span></span></span></span></span>合并成矩阵<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         I 
+        
+       
+      
+        I 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.07847em;">I</span></span></span></span></span>，所以</p> 
+<ul><li><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           K 
+          
+         
+           i 
+          
+         
+        
+       
+         K^i 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.824664em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.07153em;">K</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.824664em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">i</span></span></span></span></span></span></span></span></span></span></span></span> 可以合并成 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          K 
+         
+        
+          = 
+         
+         
+         
+           W 
+          
+         
+           k 
+          
+         
+        
+          I 
+         
+        
+       
+         K=W^kI 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.07153em;">K</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.849108em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.849108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03148em;">k</span></span></span></span></span></span></span></span><span class="mord mathdefault" style="margin-right: 0.07847em;">I</span></span></span></span></span></li><li><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           q 
+          
+         
+           i 
+          
+         
+        
+       
+         q^i 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.0191em; vertical-align: -0.19444em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.03588em;">q</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.824664em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">i</span></span></span></span></span></span></span></span></span></span></span></span> 可以合并成 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          Q 
+         
+        
+          = 
+         
+         
+         
+           W 
+          
+         
+           q 
+          
+         
+        
+          I 
+         
+        
+       
+         Q=W^qI 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.87777em; vertical-align: -0.19444em;"></span><span class="mord mathdefault">Q</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.664392em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">q</span></span></span></span></span></span></span></span><span class="mord mathdefault" style="margin-right: 0.07847em;">I</span></span></span></span></span></li><li><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           v 
+          
+         
+           i 
+          
+         
+        
+       
+         v^i 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.824664em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.03588em;">v</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.824664em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">i</span></span></span></span></span></span></span></span></span></span></span></span> 可以合并成 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          V 
+         
+        
+          = 
+         
+         
+         
+           W 
+          
+         
+           q 
+          
+         
+        
+          I 
+         
+        
+       
+         V=W^qI 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.22222em;">V</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.664392em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">q</span></span></span></span></span></span></span></span><span class="mord mathdefault" style="margin-right: 0.07847em;">I</span></span></span></span></span></li><li><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           α 
+          
+          
+          
+            i 
+           
+          
+            , 
+           
+          
+            j 
+           
+          
+         
+        
+       
+         \alpha _{i, j} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.716668em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.0037em;">α</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: -0.0037em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">i</span><span class="mpunct mtight">,</span><span class="mord mathdefault mtight" style="margin-right: 0.05724em;">j</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 可以合并成<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          A 
+         
+        
+          = 
+         
+         
+         
+           K 
+          
+         
+           T 
+          
+         
+        
+          Q 
+         
+        
+       
+         A=K^TQ 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord mathdefault">A</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.03577em; vertical-align: -0.19444em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.07153em;">K</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.841331em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.13889em;">T</span></span></span></span></span></span></span></span><span class="mord mathdefault">Q</span></span></span></span></span></li><li><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           α 
+          
+          
+          
+            i 
+           
+          
+            , 
+           
+          
+            j 
+           
+          
+         
+           / 
+          
+         
+        
+       
+         \alpha^/ _{i, j} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.45777em; vertical-align: -0.412972em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.0037em;">α</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.0448em;"><span class="" style="top: -2.42314em; margin-left: -0.0037em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">i</span><span class="mpunct mtight">,</span><span class="mord mathdefault mtight" style="margin-right: 0.05724em;">j</span></span></span></span><span class="" style="top: -3.2198em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">/</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.412972em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 可以转换成<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           A 
+          
+         
+           / 
+          
+         
+        
+       
+         A^/ 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.888em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault">A</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.888em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">/</span></span></span></span></span></span></span></span></span></span></span></span></li><li><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           b 
+          
+         
+           i 
+          
+         
+        
+       
+         b^i 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.824664em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault">b</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.824664em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">i</span></span></span></span></span></span></span></span></span></span></span></span> 最终的输出可以转换成<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          O 
+         
+        
+          = 
+         
+        
+          V 
+         
+         
+         
+           A 
+          
+         
+           / 
+          
+         
+        
+       
+         O=VA^/ 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.02778em;">O</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.888em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.22222em;">V</span><span class="mord"><span class="mord mathdefault">A</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.888em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">/</span></span></span></span></span></span></span></span></span></span></span></span></li></ul> 
+<p><strong>所以未知参数仅仅<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           W 
+          
+         
+           k 
+          
+         
+        
+            
+         
+         
+         
+           W 
+          
+         
+           q 
+          
+         
+        
+            
+         
+         
+         
+           W 
+          
+         
+           v 
+          
+         
+        
+       
+         W^k \ W^q \ W^v 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.849108em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.849108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03148em;">k</span></span></span></span></span></span></span></span><span class="mspace"> </span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.664392em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">q</span></span></span></span></span></span></span></span><span class="mspace"> </span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.664392em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">v</span></span></span></span></span></span></span></span></span></span></span></span></strong></p> 
+<h3><a id="33_Multihead_selfattention_99"></a>3.3 Multi-head self-attention</h3> 
+<p>其实就是多个q去找相关性。</p> 
+<ul><li><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           q 
+          
+         
+           i 
+          
+         
+        
+       
+         q^i 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.0191em; vertical-align: -0.19444em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.03588em;">q</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.824664em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">i</span></span></span></span></span></span></span></span></span></span></span></span> -&gt; <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          Q 
+         
+        
+          = 
+         
+         
+         
+           W 
+          
+         
+           q 
+          
+         
+        
+          I 
+         
+        
+       
+         Q=W^qI 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.87777em; vertical-align: -0.19444em;"></span><span class="mord mathdefault">Q</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.664392em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">q</span></span></span></span></span></span></span></span><span class="mord mathdefault" style="margin-right: 0.07847em;">I</span></span></span></span></span> 
+  <ul><li>分别用矩阵乘<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+        
+         
+          
+          
+            Q 
+           
+          
+         
+           Q 
+          
+         
+       </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.87777em; vertical-align: -0.19444em;"></span><span class="mord mathdefault">Q</span></span></span></span></span>以得到两个Q</li><li><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+        
+         
+          
+           
+           
+             Q 
+            
+           
+             1 
+            
+           
+          
+            = 
+           
+           
+           
+             W 
+            
+            
+            
+              q 
+             
+            
+              . 
+             
+            
+              1 
+             
+            
+           
+          
+            Q 
+           
+          
+         
+           Q^1 = W^{q.1}Q 
+          
+         
+       </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.00855em; vertical-align: -0.19444em;"></span><span class="mord"><span class="mord mathdefault">Q</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">1</span></span></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.00855em; vertical-align: -0.19444em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">q</span><span class="mord mtight">.</span><span class="mord mtight">1</span></span></span></span></span></span></span></span></span><span class="mord mathdefault">Q</span></span></span></span></span></li><li><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+        
+         
+          
+           
+           
+             Q 
+            
+           
+             2 
+            
+           
+          
+            = 
+           
+           
+           
+             W 
+            
+            
+            
+              q 
+             
+            
+              , 
+             
+            
+              2 
+             
+            
+           
+          
+            Q 
+           
+          
+         
+           Q^2 = W^{q, 2}Q 
+          
+         
+       </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.00855em; vertical-align: -0.19444em;"></span><span class="mord"><span class="mord mathdefault">Q</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.00855em; vertical-align: -0.19444em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">q</span><span class="mpunct mtight">,</span><span class="mord mtight">2</span></span></span></span></span></span></span></span></span><span class="mord mathdefault">Q</span></span></span></span></span></li></ul> </li><li><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           K 
+          
+         
+           i 
+          
+         
+        
+       
+         K^i 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.824664em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.07153em;">K</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.824664em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">i</span></span></span></span></span></span></span></span></span></span></span></span> -&gt; <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          K 
+         
+        
+          = 
+         
+         
+         
+           W 
+          
+         
+           k 
+          
+         
+        
+          I 
+         
+        
+       
+         K=W^kI 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.07153em;">K</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.849108em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.849108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03148em;">k</span></span></span></span></span></span></span></span><span class="mord mathdefault" style="margin-right: 0.07847em;">I</span></span></span></span></span> 
+  <ul><li>分别用矩阵乘<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+        
+         
+          
+          
+            K 
+           
+          
+         
+           K 
+          
+         
+       </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.07153em;">K</span></span></span></span></span>以得到两个K</li><li><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+        
+         
+          
+           
+           
+             K 
+            
+           
+             1 
+            
+           
+          
+            = 
+           
+           
+           
+             W 
+            
+            
+            
+              k 
+             
+            
+              . 
+             
+            
+              1 
+             
+            
+           
+          
+            K 
+           
+          
+         
+           K^1 = W^{k.1}K 
+          
+         
+       </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.814108em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.07153em;">K</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">1</span></span></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.849108em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.849108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03148em;">k</span><span class="mord mtight">.</span><span class="mord mtight">1</span></span></span></span></span></span></span></span></span><span class="mord mathdefault" style="margin-right: 0.07153em;">K</span></span></span></span></span></li><li><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+        
+         
+          
+           
+           
+             K 
+            
+           
+             2 
+            
+           
+          
+            = 
+           
+           
+           
+             W 
+            
+            
+            
+              k 
+             
+            
+              , 
+             
+            
+              2 
+             
+            
+           
+          
+            K 
+           
+          
+         
+           K^2 = W^{k, 2}K 
+          
+         
+       </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.814108em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.07153em;">K</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.849108em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.849108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03148em;">k</span><span class="mpunct mtight">,</span><span class="mord mtight">2</span></span></span></span></span></span></span></span></span><span class="mord mathdefault" style="margin-right: 0.07153em;">K</span></span></span></span></span></li></ul> </li><li><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           V 
+          
+         
+           i 
+          
+         
+        
+       
+         V^i 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.824664em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.22222em;">V</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.824664em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">i</span></span></span></span></span></span></span></span></span></span></span></span> -&gt; <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          V 
+         
+        
+          = 
+         
+         
+         
+           W 
+          
+         
+           v 
+          
+         
+        
+          I 
+         
+        
+       
+         V=W^vI 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.22222em;">V</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.664392em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">v</span></span></span></span></span></span></span></span><span class="mord mathdefault" style="margin-right: 0.07847em;">I</span></span></span></span></span> 
+  <ul><li>分别用矩阵乘<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+        
+         
+          
+          
+            V 
+           
+          
+         
+           V 
+          
+         
+       </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.22222em;">V</span></span></span></span></span>以得到两个V</li><li><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+        
+         
+          
+           
+           
+             V 
+            
+           
+             1 
+            
+           
+          
+            = 
+           
+           
+           
+             W 
+            
+            
+            
+              v 
+             
+            
+              . 
+             
+            
+              1 
+             
+            
+           
+          
+            V 
+           
+          
+         
+           V^1 = W^{v.1}V 
+          
+         
+       </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.814108em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.22222em;">V</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">1</span></span></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.814108em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">v</span><span class="mord mtight">.</span><span class="mord mtight">1</span></span></span></span></span></span></span></span></span><span class="mord mathdefault" style="margin-right: 0.22222em;">V</span></span></span></span></span></li><li><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+        
+         
+          
+           
+           
+             V 
+            
+           
+             2 
+            
+           
+          
+            = 
+           
+           
+           
+             W 
+            
+            
+            
+              v 
+             
+            
+              , 
+             
+            
+              2 
+             
+            
+           
+          
+            V 
+           
+          
+         
+           V^2 = W^{v, 2}V 
+          
+         
+       </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.814108em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.22222em;">V</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.814108em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">v</span><span class="mpunct mtight">,</span><span class="mord mtight">2</span></span></span></span></span></span></span></span></span><span class="mord mathdefault" style="margin-right: 0.22222em;">V</span></span></span></span></span></li></ul> </li><li>算出两个O 
+  <ul><li><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+        
+         
+          
+           
+           
+             A 
+            
+           
+             1 
+            
+           
+             / 
+            
+           
+          
+            = 
+           
+          
+            s 
+           
+          
+            o 
+           
+          
+            f 
+           
+          
+            t 
+           
+          
+            m 
+           
+          
+            a 
+           
+          
+            x 
+           
+          
+            ( 
+           
+           
+            
+            
+              K 
+             
+            
+              1 
+             
+            
+           
+             T 
+            
+           
+           
+           
+             Q 
+            
+           
+             1 
+            
+           
+          
+            ) 
+           
+          
+                
+           
+           
+           
+             O 
+            
+           
+             1 
+            
+           
+          
+            = 
+           
+           
+           
+             V 
+            
+           
+             1 
+            
+           
+           
+            
+            
+              A 
+             
+            
+              1 
+             
+            
+           
+             / 
+            
+           
+          
+         
+           A^/_1= softmax({K^{1}}^TQ^1) \ \ \ O^1=V^1{A^1}^/ 
+          
+         
+       </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.31111em; vertical-align: -0.266308em;"></span><span class="mord"><span class="mord mathdefault">A</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.0448em;"><span class="" style="top: -2.43369em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">1</span></span></span><span class="" style="top: -3.2198em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">/</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.266308em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.29534em; vertical-align: -0.25em;"></span><span class="mord mathdefault">s</span><span class="mord mathdefault">o</span><span class="mord mathdefault" style="margin-right: 0.10764em;">f</span><span class="mord mathdefault">t</span><span class="mord mathdefault">m</span><span class="mord mathdefault">a</span><span class="mord mathdefault">x</span><span class="mopen">(</span><span class="mord"><span class="mord"><span class="mord"><span class="mord mathdefault" style="margin-right: 0.07153em;">K</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">1</span></span></span></span></span></span></span></span></span></span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 1.04534em;"><span class="" style="top: -3.26701em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.13889em;">T</span></span></span></span></span></span></span></span><span class="mord"><span class="mord mathdefault">Q</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">1</span></span></span></span></span></span></span></span><span class="mclose">)</span><span class="mspace"> </span><span class="mspace"> </span><span class="mspace"> </span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.02778em;">O</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">1</span></span></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.09201em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.22222em;">V</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">1</span></span></span></span></span></span></span></span><span class="mord"><span class="mord"><span class="mord"><span class="mord mathdefault">A</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">1</span></span></span></span></span></span></span></span></span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 1.09201em;"><span class="" style="top: -3.26701em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">/</span></span></span></span></span></span></span></span></span></span></span></span></li><li><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+        
+         
+          
+           
+           
+             A 
+            
+           
+             2 
+            
+           
+             / 
+            
+           
+          
+            = 
+           
+          
+            s 
+           
+          
+            o 
+           
+          
+            f 
+           
+          
+            t 
+           
+          
+            m 
+           
+          
+            a 
+           
+          
+            x 
+           
+          
+            ( 
+           
+           
+            
+            
+              K 
+             
+            
+              2 
+             
+            
+           
+             T 
+            
+           
+           
+           
+             Q 
+            
+           
+             2 
+            
+           
+          
+            ) 
+           
+          
+                
+           
+           
+           
+             O 
+            
+           
+             2 
+            
+           
+          
+            = 
+           
+           
+           
+             V 
+            
+           
+             2 
+            
+           
+           
+            
+            
+              A 
+             
+            
+              2 
+             
+            
+           
+             / 
+            
+           
+          
+         
+           A^/_2= softmax({K^{2}}^TQ^2) \ \ \ O^2=V^2{A^2}^/ 
+          
+         
+       </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.31111em; vertical-align: -0.266308em;"></span><span class="mord"><span class="mord mathdefault">A</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.0448em;"><span class="" style="top: -2.43369em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span><span class="" style="top: -3.2198em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">/</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.266308em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.29534em; vertical-align: -0.25em;"></span><span class="mord mathdefault">s</span><span class="mord mathdefault">o</span><span class="mord mathdefault" style="margin-right: 0.10764em;">f</span><span class="mord mathdefault">t</span><span class="mord mathdefault">m</span><span class="mord mathdefault">a</span><span class="mord mathdefault">x</span><span class="mopen">(</span><span class="mord"><span class="mord"><span class="mord"><span class="mord mathdefault" style="margin-right: 0.07153em;">K</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">2</span></span></span></span></span></span></span></span></span></span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 1.04534em;"><span class="" style="top: -3.26701em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.13889em;">T</span></span></span></span></span></span></span></span><span class="mord"><span class="mord mathdefault">Q</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span></span></span></span></span><span class="mclose">)</span><span class="mspace"> </span><span class="mspace"> </span><span class="mspace"> </span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.02778em;">O</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.09201em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.22222em;">V</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span></span></span></span></span><span class="mord"><span class="mord"><span class="mord"><span class="mord mathdefault">A</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span></span></span></span></span></span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 1.09201em;"><span class="" style="top: -3.26701em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">/</span></span></span></span></span></span></span></span></span></span></span></span></li></ul> </li><li>然后concat在一起 
+  <ul><li><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+        
+         
+          
+          
+            O 
+           
+          
+            = 
+           
+           
+           
+             W 
+            
+           
+             O 
+            
+           
+          
+            c 
+           
+          
+            o 
+           
+          
+            n 
+           
+          
+            c 
+           
+          
+            a 
+           
+          
+            t 
+           
+          
+            ( 
+           
+           
+           
+             O 
+            
+           
+             1 
+            
+           
+          
+            , 
+           
+           
+           
+             O 
+            
+           
+             2 
+            
+           
+          
+            ) 
+           
+          
+         
+           O=W^Oconcat(O^1, O^2) 
+          
+         
+       </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.02778em;">O</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.09133em; vertical-align: -0.25em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.841331em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.02778em;">O</span></span></span></span></span></span></span></span><span class="mord mathdefault">c</span><span class="mord mathdefault">o</span><span class="mord mathdefault">n</span><span class="mord mathdefault">c</span><span class="mord mathdefault">a</span><span class="mord mathdefault">t</span><span class="mopen">(</span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.02778em;">O</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">1</span></span></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.02778em;">O</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span></span></span></span></span><span class="mclose">)</span></span></span></span></span></li></ul> </li></ul> 
+<h3><a id="34_Encoding_119"></a>3.4 位置的Encoding</h3> 
+<p>因为前面attention并没有考虑位置的信息，所以可以加入位置的信息</p> 
+<ul><li>在输入中加入到位置信息<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           e 
+          
+         
+           i 
+          
+         
+        
+       
+         e^i 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.824664em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault">e</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.824664em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">i</span></span></span></span></span></span></span></span></span></span></span></span> 
+  <ul><li><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+        
+         
+          
+           
+           
+             e 
+            
+           
+             i 
+            
+           
+          
+            + 
+           
+           
+           
+             a 
+            
+           
+             i 
+            
+           
+          
+         
+           e^i + a^i 
+          
+         
+       </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.907994em; vertical-align: -0.08333em;"></span><span class="mord"><span class="mord mathdefault">e</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.824664em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">i</span></span></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 0.824664em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault">a</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.824664em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">i</span></span></span></span></span></span></span></span></span></span></span></span></li></ul> </li><li>原始论文使用的是 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          c 
+         
+        
+          o 
+         
+        
+          n 
+         
+        
+          c 
+         
+        
+          a 
+         
+        
+          t 
+         
+        
+          ( 
+         
+        
+          s 
+         
+        
+          i 
+         
+        
+          n 
+         
+        
+          ( 
+         
+        
+          i 
+         
+        
+          d 
+         
+        
+          x 
+         
+        
+          ) 
+         
+        
+          , 
+         
+        
+          c 
+         
+        
+          o 
+         
+        
+          s 
+         
+        
+          ( 
+         
+        
+          i 
+         
+        
+          d 
+         
+        
+          x 
+         
+        
+          ) 
+         
+        
+          ) 
+         
+        
+       
+         concat(sin(idx), cos(idx)) 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault">c</span><span class="mord mathdefault">o</span><span class="mord mathdefault">n</span><span class="mord mathdefault">c</span><span class="mord mathdefault">a</span><span class="mord mathdefault">t</span><span class="mopen">(</span><span class="mord mathdefault">s</span><span class="mord mathdefault">i</span><span class="mord mathdefault">n</span><span class="mopen">(</span><span class="mord mathdefault">i</span><span class="mord mathdefault">d</span><span class="mord mathdefault">x</span><span class="mclose">)</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault">c</span><span class="mord mathdefault">o</span><span class="mord mathdefault">s</span><span class="mopen">(</span><span class="mord mathdefault">i</span><span class="mord mathdefault">d</span><span class="mord mathdefault">x</span><span class="mclose">)</span><span class="mclose">)</span></span></span></span></span></li></ul>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/34b3c30d01a21293e2cedda9484f154e/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">vue3组合式API搭配TS类型推导</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/039286091cccbb2edbfc97c117fc45c3/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">sharding-proxy分表配置过程记录</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

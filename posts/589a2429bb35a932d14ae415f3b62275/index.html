@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【并发编程】AQS源码分析(四)通过ReentrantReadWriteLock来查看读写锁的源码实现 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【并发编程】AQS源码分析(四)通过ReentrantReadWriteLock来查看读写锁的源码实现" />
+<meta property="og:description" content="前几篇文章分别介绍了AQS的基本的加锁解锁流程，Condition，CountDownLatch共享锁等。这篇文章继续介绍关于ReentrantReadWriteLock相关的原理。
+从名字来看就知道ReentrantReadWriteLock是读写锁，读锁指的是共享锁，而写锁则是独占锁。在前几篇文章中了解到ReentrantLock内部通过AQS来实现的是独占锁加锁，其中利用了state变量的值来实现是否加锁的操作。而CountDownLatch则是通过state值是否减为0来实现共享锁。那么ReentrantReadWriteLock却可以既实现共享锁又实现独占锁，它具体是怎么实现的呢？，下面就一步一步解析一下源码。
+ReentrantReadWriteLock的类结构 注：下图中绿色箭头代表 implements 实现
+紫色箭头代表 extends 继承
+红色带’&#43;&#39;号的 代表 内部类
+1、从图中，我们可以看到 ReentrantReadWriteLock 实现了 ReadWriteLock 接口。其中只有两个方法如下：
+// ReadWriteLock 只有两个方法，一个获取读锁，一个获取写锁 public interface ReadWriteLock { Lock readLock(); Lock writeLock(); } 2、ReadLock和WriteLock作为ReentrantReadWriteLock 内部类 都实现了Lock接口中的lock和tryLock等方法。
+3、FairSync和NonFairSync作为ReentrantReadWriteLock 内部类 继承自Sync类，分别实现了公平锁和非公平锁。
+这里和ReentrantLock实现不太一样。
+在ReentrantLock中，FairSync和NonFairSync都有自己各自的实现方式。都有自己的实际的方法体。
+而在ReentrantReadWriteLock 中则将主要实现过程都放在了Sync类中，FairSync和NonFairSync中只是简单的判断了是否为阻塞方式进行（判断是否需要进行排队），需要注意的是，读写锁都可以支持公平和非公平两种模式。
+源码解析 首先要解决开始的疑问。
+同时实现共享和独占锁 ？ 通常state的含义在不同模式下表示方式也不同
+独占模式：0 代表未获取锁，1代表获取锁。
+共享模式：每个线程都可以获取锁，对state进行加减操作。
+为了能够兼容共享和独占模式，jdk将state这个int类型的值（4个字节，32位）分为了高16位和低16位。其中高16位用于共享模式锁的获取次数，低16位用于独占模式锁的重入次数。
+好了，具体的细节，怎么操作的下面跟着源码一步一步来看吧。
+ReadLock 我们源码都从构造方法和方法调用入口：
+//1、默认非公平锁实现模式 ReadWriteLock readWriteLock = new ReentrantReadWriteLock(); //获取读锁 Lock readLock = readWriteLock.readLock(); //加读锁 readLock.lock(); //释放读锁 readLock.unlock(); 构造方法：
+//读写锁的内部类变量声明 private final ReentrantReadWriteLock." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/589a2429bb35a932d14ae415f3b62275/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-09-10T15:39:32+08:00" />
+<meta property="article:modified_time" content="2020-09-10T15:39:32+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【并发编程】AQS源码分析(四)通过ReentrantReadWriteLock来查看读写锁的源码实现</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>前几篇文章分别介绍了AQS的基本的加锁解锁流程，Condition，CountDownLatch共享锁等。这篇文章继续介绍关于ReentrantReadWriteLock相关的原理。</p> 
+<p>从名字来看就知道ReentrantReadWriteLock是读写锁，读锁指的是共享锁，而写锁则是独占锁。在前几篇文章中了解到ReentrantLock内部通过AQS来实现的是独占锁加锁，其中利用了state变量的值来实现是否加锁的操作。而CountDownLatch则是通过state值是否减为0来实现共享锁。那么ReentrantReadWriteLock却可以既实现共享锁又实现独占锁，它具体是怎么实现的呢？，下面就一步一步解析一下源码。</p> 
+<h2><a id="ReentrantReadWriteLock_7"></a>ReentrantReadWriteLock的类结构</h2> 
+<p>注：下图中绿色箭头代表 implements 实现<br> 紫色箭头代表 extends 继承<br> 红色带’+'号的 代表 内部类</p> 
+<p><img src="https://images2.imgbox.com/e9/ed/SM3cnyl3_o.png" alt="在这里插入图片描述"></p> 
+<p>1、从图中，我们可以看到 ReentrantReadWriteLock 实现了 ReadWriteLock 接口。其中只有两个方法如下：</p> 
+<pre><code class="prism language-java"><span class="token comment">// ReadWriteLock  只有两个方法，一个获取读锁，一个获取写锁</span>
+<span class="token keyword">public</span> <span class="token keyword">interface</span> <span class="token class-name">ReadWriteLock</span> <span class="token punctuation">{<!-- --></span>
+   
+    Lock <span class="token function">readLock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    Lock <span class="token function">writeLock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>2、ReadLock和WriteLock作为ReentrantReadWriteLock 内部类 都实现了Lock接口中的lock和tryLock等方法。</p> 
+<p>3、FairSync和NonFairSync作为ReentrantReadWriteLock 内部类 继承自Sync类，分别实现了公平锁和非公平锁。<br> 这里和ReentrantLock实现不太一样。</p> 
+<p>在ReentrantLock中，FairSync和NonFairSync都有自己各自的实现方式。都有自己的实际的方法体。<br> 而在ReentrantReadWriteLock 中则将主要实现过程都放在了Sync类中，FairSync和NonFairSync中只是简单的判断了是否为阻塞方式进行（判断是否需要进行排队），需要注意的是，<mark>读写锁都可以支持公平和非公平两种模式。</mark></p> 
+<h2><a id="_35"></a>源码解析</h2> 
+<p>首先要解决开始的疑问。</p> 
+<h3><a id="__38"></a>同时实现共享和独占锁 ？</h3> 
+<p>通常state的含义在不同模式下表示方式也不同<br> 独占模式：0 代表未获取锁，1代表获取锁。<br> 共享模式：每个线程都可以获取锁，对state进行加减操作。</p> 
+<p>为了能够兼容共享和独占模式，jdk将state这个int类型的值（4个字节，32位）分为了高16位和低16位。其中高16位用于共享模式锁的获取次数，低16位用于独占模式锁的重入次数。</p> 
+<p>好了，具体的细节，怎么操作的下面跟着源码一步一步来看吧。</p> 
+<h3><a id="ReadLock_48"></a>ReadLock</h3> 
+<p>我们源码都从构造方法和方法调用入口：</p> 
+<pre><code class="prism language-java"><span class="token comment">//1、默认非公平锁实现模式</span>
+ReadWriteLock readWriteLock <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ReentrantReadWriteLock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">//获取读锁</span>
+Lock readLock <span class="token operator">=</span> readWriteLock<span class="token punctuation">.</span><span class="token function">readLock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">//加读锁</span>
+readLock<span class="token punctuation">.</span><span class="token function">lock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">//释放读锁</span>
+readLock<span class="token punctuation">.</span><span class="token function">unlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+</code></pre> 
+<p>构造方法：</p> 
+<pre><code class="prism language-java">
+<span class="token comment">//读写锁的内部类变量声明</span>
+<span class="token keyword">private</span> <span class="token keyword">final</span> ReentrantReadWriteLock<span class="token punctuation">.</span>ReadLock readerLock<span class="token punctuation">;</span>
+
+<span class="token keyword">private</span> <span class="token keyword">final</span> ReentrantReadWriteLock<span class="token punctuation">.</span>WriteLock writerLock<span class="token punctuation">;</span>
+
+<span class="token comment">//1、默认构造方法，非公平锁</span>
+ <span class="token keyword">public</span> <span class="token function">ReentrantReadWriteLock</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+ 		<span class="token comment">//这里去调用带参数的构造方法 ReentrantReadWriteLock(boolean fair)</span>
+        <span class="token keyword">this</span><span class="token punctuation">(</span><span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+<span class="token comment">//带参数的构造方法，方法会默认去实例化读写锁</span>
+<span class="token keyword">public</span> <span class="token function">ReentrantReadWriteLock</span><span class="token punctuation">(</span><span class="token keyword">boolean</span> fair<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+       sync <span class="token operator">=</span> fair <span class="token operator">?</span> <span class="token keyword">new</span> <span class="token class-name">FairSync</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">:</span> <span class="token keyword">new</span> <span class="token class-name">NonfairSync</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+       readerLock <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ReadLock</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+       writerLock <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">WriteLock</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+
+<span class="token comment">//调用writeLock返回写锁</span>
+<span class="token keyword">public</span> ReentrantReadWriteLock<span class="token punctuation">.</span>WriteLock <span class="token function">writeLock</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> <span class="token keyword">return</span> writerLock<span class="token punctuation">;</span> <span class="token punctuation">}</span>
+
+<span class="token comment">//调用readLock返回读锁</span>
+<span class="token keyword">public</span> ReentrantReadWriteLock<span class="token punctuation">.</span>ReadLock  <span class="token function">readLock</span><span class="token punctuation">(</span><span class="token punctuation">)</span>  <span class="token punctuation">{<!-- --></span> <span class="token keyword">return</span> readerLock<span class="token punctuation">;</span> <span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="_94"></a>读锁加锁过程：</h4> 
+<pre><code class="prism language-java">
+<span class="token comment">//加锁</span>
+ <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">lock</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+ 	<span class="token comment">//共享模式加锁，默认sync为NonFairSync</span>
+       sync<span class="token punctuation">.</span><span class="token function">acquireShared</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<p>下面开始加锁流程的实现了，提前说明一下，在AQS共享锁中，tryAcquireShared(arg)返回结果如果&lt;0 代表没有获取共享锁，如果&gt;0则代表获取到了共享锁。<br> 这个其实跟CountDownLatch是一样的。</p> 
+<pre><code class="prism language-java">
+	<span class="token comment">//这里很熟悉吧，去调用AQS的方法了</span>
+  <span class="token keyword">public</span> <span class="token keyword">final</span> <span class="token keyword">void</span> <span class="token function">acquireShared</span><span class="token punctuation">(</span><span class="token keyword">int</span> arg<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  	<span class="token comment">//这里就调用ReentrantReadWriteLock</span>
+  	<span class="token comment">//重写的tryAcquireShared的方法了</span>
+      <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">tryAcquireShared</span><span class="token punctuation">(</span>arg<span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+          <span class="token function">doAcquireShared</span><span class="token punctuation">(</span>arg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<p>接下来tryAcquireShared 方法的实现和CountDownLatch不一样。重点看这个方法。</p> 
+<pre><code class="prism language-java"><span class="token keyword">static</span> <span class="token keyword">final</span> <span class="token keyword">int</span> SHARED_UNIT    <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token number">1</span> <span class="token operator">&lt;&lt;</span> SHARED_SHIFT<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">//记录最后一个获取读锁的线程计数</span>
+<span class="token keyword">private</span> <span class="token keyword">transient</span> HoldCounter cachedHoldCounter<span class="token punctuation">;</span>
+
+<span class="token comment">//通过threadLocal设置每个线程获取读锁的计数</span>
+<span class="token keyword">private</span> <span class="token keyword">transient</span> ThreadLocalHoldCounter readHolds<span class="token punctuation">;</span>
+<span class="token comment">//默认初始化一个HoldCounter</span>
+<span class="token keyword">static</span> <span class="token keyword">final</span> <span class="token keyword">class</span> <span class="token class-name">ThreadLocalHoldCounter</span>
+           <span class="token keyword">extends</span> <span class="token class-name">ThreadLocal</span><span class="token generics function"><span class="token punctuation">&lt;</span>HoldCounter<span class="token punctuation">&gt;</span></span> <span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">public</span> HoldCounter <span class="token function">initialValue</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">HoldCounter</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span>
+  <span class="token punctuation">}</span>
+<span class="token comment">//好了来了要真正加锁的方法了，</span>
+<span class="token comment">//其实基本流程和之前共享锁流程都差不多</span>
+<span class="token comment">//只是在state的操作上有些区别，又额外加了一些多线程的属性</span>
+<span class="token keyword">protected</span> <span class="token keyword">final</span> <span class="token keyword">int</span> <span class="token function">tryAcquireShared</span><span class="token punctuation">(</span><span class="token keyword">int</span> unused<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">/*
+           	获取当前线程
+             */</span>
+            Thread current <span class="token operator">=</span> Thread<span class="token punctuation">.</span><span class="token function">currentThread</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">//这里获取的state为一个32位的二进制数</span>
+            <span class="token keyword">int</span> c <span class="token operator">=</span> <span class="token function">getState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">//如果有线程拥有该独占锁并且独占锁不是当前线程</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">exclusiveCount</span><span class="token punctuation">(</span>c<span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token number">0</span> <span class="token operator">&amp;&amp;</span>
+                <span class="token function">getExclusiveOwnerThread</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">!=</span> current<span class="token punctuation">)</span>
+                <span class="token comment">//加锁失败</span>
+                <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+			
+            <span class="token comment">//获取当前共享锁持有锁的线程数</span>
+            <span class="token keyword">int</span> r <span class="token operator">=</span> <span class="token function">sharedCount</span><span class="token punctuation">(</span>c<span class="token punctuation">)</span><span class="token punctuation">;</span>
+       <span class="token comment">//1、readerShouldBlock()判断是否是公平锁默认是非公平</span>
+       <span class="token comment">//2、r &lt; MAX_COUNT是否已经达到了共享锁限制的最大数量</span>
+            <span class="token comment">// MAX_COUNT =  2^16 -1 ;</span>
+            <span class="token comment">//3、CAS直接更新state值尝试获取锁</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">readerShouldBlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span>
+                r <span class="token operator">&lt;</span> MAX_COUNT <span class="token operator">&amp;&amp;</span>
+              <span class="token comment">//这里c+SHARED_UNIT 是因为共享锁是高16位，那么</span>
+                <span class="token comment">//在给共享锁获取次数赋值的时候，需要向左移动16位</span>
+               <span class="token comment">//这里是高16位+1</span>
+               <span class="token function">compareAndSetState</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> c <span class="token operator">+</span> SHARED_UNIT<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>r <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                	<span class="token comment">//记录第一个获取读锁的线程</span>
+                	<span class="token comment">//当firstReader释放锁后，</span>
+                	<span class="token comment">//又会有新的线程来占有锁</span>
+                	<span class="token comment">//所以firstReader是不断更新的</span>
+                    firstReader <span class="token operator">=</span> current<span class="token punctuation">;</span>
+                    <span class="token comment">//记录第一个获取读锁的重入次数</span>
+                    <span class="token comment">//这里应该是为了更方便记录锁重入次数吧</span>
+                    firstReaderHoldCount <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>firstReader <span class="token operator">==</span> current<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                	<span class="token comment">//锁重入</span>
+                    firstReaderHoldCount<span class="token operator">++</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token comment">/**
+              1、HoldCounter 这里记录了每个线程持有锁的计数，
+                是以	ThreadLocal方式来进行缓存的
+                主要是通过readHolds.set()来设置的
+                
+              2、cachedHoldCounter记录是最后一个
+                获取读锁的线程计数
+                    
+              3、判断如果cachedHoldCounter记录的不是当前线程
+                 则直接设置为当前线程 **/</span>
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span>rh <span class="token operator">==</span> null <span class="token operator">||</span> rh<span class="token punctuation">.</span>tid <span class="token operator">!=</span> 
+                    <span class="token function">getThreadId</span><span class="token punctuation">(</span>current<span class="token punctuation">)</span><span class="token punctuation">)</span>
+                        cachedHoldCounter <span class="token operator">=</span> rh <span class="token operator">=</span> 
+                        readHolds<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>rh<span class="token punctuation">.</span>count <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span>
+    <span class="token comment">//cachedHoldCounter 设置为当前线程计数后，count还是0</span>
+    <span class="token comment">//设置threadLocal readHolds，</span>
+    <span class="token comment">//readHolds默认实例化一个新的HoldCounter</span>
+                        readHolds<span class="token punctuation">.</span><span class="token function">set</span><span class="token punctuation">(</span>rh<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token comment">//count数加一</span>
+                    rh<span class="token punctuation">.</span>count<span class="token operator">++</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+                <span class="token comment">//获取锁成功</span>
+                <span class="token keyword">return</span> <span class="token number">1</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+
+			<span class="token comment">//来到这里说明上面的条件不符合，要继续去尝试获取锁</span>
+            <span class="token keyword">return</span> <span class="token function">fullTryAcquireShared</span><span class="token punctuation">(</span>current<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+</code></pre> 
+<p>这里简单解释一下获取独占锁加锁次数为什么是c &amp; EXCLUSIVE_MASK;<br> 1、首先EXCLUSIVE_MASK= (1 &lt;&lt; SHARED_SHIFT) - 1这就意味着是长达15位的全是1的一个掩码值（例如4的二进制位100，也就是2^2，<br> 那么 2^2 -1 = 3 = 111）</p> 
+<p>2、其次独占锁是低16位，而c值是一个32为位的二进制数，这里c &amp; EXCLUSIVE_MASK 执行的是一个与操作，1 &lt;&lt; 16 -1 为 15位那么掩码不够32位的前面要用0来补齐。</p> 
+<p>而与操作是只有两个都是1才会为1，所以前面补齐的位 &amp; 之后都是0，只有独占锁低位15位上面，如果已经有线程获取独占锁了，那么与结果才为1，有几次加锁次数，结果就是几。通过此方法来获取独占锁获取次数。</p> 
+<pre><code class="prism language-java"><span class="token keyword">static</span> <span class="token keyword">final</span> <span class="token keyword">int</span> EXCLUSIVE_MASK <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token number">1</span> <span class="token operator">&lt;&lt;</span> SHARED_SHIFT<span class="token punctuation">)</span> <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">;</span>
+<span class="token comment">//获取独占锁加锁次数（包含重入次数）</span>
+<span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">exclusiveCount</span><span class="token punctuation">(</span><span class="token keyword">int</span> c<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> 
+	<span class="token keyword">return</span> c <span class="token operator">&amp;</span> EXCLUSIVE_MASK<span class="token punctuation">;</span> 
+<span class="token punctuation">}</span>
+</code></pre> 
+<pre><code class="prism language-java"><span class="token comment">//持有共享锁线程数量</span>
+<span class="token keyword">static</span> <span class="token keyword">final</span> <span class="token keyword">int</span> SHARED_SHIFT   <span class="token operator">=</span> <span class="token number">16</span><span class="token punctuation">;</span>
+<span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">sharedCount</span><span class="token punctuation">(</span><span class="token keyword">int</span> c<span class="token punctuation">)</span>   <span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//高位代表共享锁持有数量，c向右移16位</span>
+	<span class="token comment">//代表真正获取共享锁的次数</span>
+	 <span class="token keyword">return</span> c <span class="token operator">&gt;&gt;&gt;</span> SHARED_SHIFT<span class="token punctuation">;</span> 
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>好了，接下来继续尝试获取读锁。</p> 
+<pre><code class="prism language-java"><span class="token keyword">final</span> <span class="token keyword">int</span> <span class="token function">fullTryAcquireShared</span><span class="token punctuation">(</span>Thread current<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">/*
+         tryAcquireShared方法中CAS失败，这里要自旋去获取锁
+             */</span>
+            HoldCounter rh <span class="token operator">=</span> null<span class="token punctuation">;</span>
+            <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token punctuation">;</span><span class="token punctuation">;</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">int</span> c <span class="token operator">=</span> <span class="token function">getState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token comment">//判断如果有线程持有写锁</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">exclusiveCount</span><span class="token punctuation">(</span>c<span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token comment">//并且写锁不是当前线程</span>
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">getExclusiveOwnerThread</span><span class="token punctuation">(</span><span class="token punctuation">)</span> 
+                    <span class="token operator">!=</span> current<span class="token punctuation">)</span>
+                    <span class="token comment">//直接获取失败，返回进入阻塞队列中</span>
+                        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+                 	<span class="token comment">/**else{} 
+                 	这里省略了else 就是当前线程已经持有写锁
+                 	那么就直接继续向下执行
+                 	这里涉及到了锁降级处理，如果还是同一个线程
+                 	既获取了写锁，又要获取读锁，则直接降级为读锁
+                 	否则如果阻塞的话就会造成死锁
+                 	**/</span>
+           <span class="token comment">//这里涉及到了阻塞问题，公平锁和非公平的问题下面说 </span>
+                <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">readerShouldBlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token comment">//进入到这里的，都是需要排队的</span>
+                    <span class="token comment">//但是如果是线程锁重入则不需要排队</span>
+                    <span class="token comment">//所以下面这段代码主要是判断是否为锁重入的</span>
+                    
+				<span class="token comment">//线程重入读锁，直接到下面的CAS获取锁重入代码</span>
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span>firstReader <span class="token operator">==</span> current<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                   <span class="token comment">// assert firstReaderHoldCount &gt; 0;</span>
+                    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+				
+				<span class="token comment">//不是锁重入，那么就是其他新的线程</span>
+                        <span class="token keyword">if</span> <span class="token punctuation">(</span>rh <span class="token operator">==</span> null<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token comment">//rh先设置为之前最后一个获取锁的线程计数</span>
+                            rh <span class="token operator">=</span> cachedHoldCounter<span class="token punctuation">;</span>
+                        <span class="token comment">//如果为null或者不是当前线程</span>
+                            <span class="token keyword">if</span> <span class="token punctuation">(</span>rh <span class="token operator">==</span> null <span class="token operator">||</span> rh<span class="token punctuation">.</span>tid <span class="token operator">!=</span> <span class="token function">getThreadId</span><span class="token punctuation">(</span>current<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                            <span class="token comment">//rh重新赋值为一个新的线程变量信息</span>
+                                rh <span class="token operator">=</span> readHolds<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                            <span class="token comment">//如果是刚刚初始化的，count = 0</span>
+                                <span class="token keyword">if</span> <span class="token punctuation">(</span>rh<span class="token punctuation">.</span>count <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span>
+                                <span class="token comment">//那么直接移除掉</span>
+                                    readHolds<span class="token punctuation">.</span><span class="token function">remove</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                            <span class="token punctuation">}</span>
+                        <span class="token punctuation">}</span>
+                        <span class="token comment">//最后rh不为null时，</span>
+                        <span class="token comment">//如果count =0 则跳出循环加入阻塞队列中</span>
+                        <span class="token keyword">if</span> <span class="token punctuation">(</span>rh<span class="token punctuation">.</span>count <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span>
+                            <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">sharedCount</span><span class="token punctuation">(</span>c<span class="token punctuation">)</span> <span class="token operator">==</span> MAX_COUNT<span class="token punctuation">)</span>
+                    <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">Error</span><span class="token punctuation">(</span><span class="token string">"Maximum lock count exceeded"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                 <span class="token comment">//尝试去获取读锁，或者是重入读锁</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">compareAndSetState</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> c <span class="token operator">+</span> SHARED_UNIT<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+               <span class="token comment">//因为进入到这就说明已经获取读锁了，state不可能为0了</span>
+                	<span class="token comment">//????这个条件我一直没有理解，总觉得不会执行到这里</span>
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">sharedCount</span><span class="token punctuation">(</span>c<span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        firstReader <span class="token operator">=</span> current<span class="token punctuation">;</span>
+                        firstReaderHoldCount <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+					<span class="token comment">//再次判断firstReader是否为当前线程</span>
+                    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>firstReader <span class="token operator">==</span> current<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token comment">//如果是的话，更新firstReaderHoldCount</span>
+                        firstReaderHoldCount<span class="token operator">++</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token keyword">if</span> <span class="token punctuation">(</span>rh <span class="token operator">==</span> null<span class="token punctuation">)</span>
+                            rh <span class="token operator">=</span> cachedHoldCounter<span class="token punctuation">;</span>
+                        <span class="token keyword">if</span> <span class="token punctuation">(</span>rh <span class="token operator">==</span> null <span class="token operator">||</span> rh<span class="token punctuation">.</span>tid <span class="token operator">!=</span> <span class="token function">getThreadId</span><span class="token punctuation">(</span>current<span class="token punctuation">)</span><span class="token punctuation">)</span>
+                            rh <span class="token operator">=</span> readHolds<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>rh<span class="token punctuation">.</span>count <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span>
+                      <span class="token comment">//新线程进入获取锁时，count = 0</span>
+                        <span class="token comment">//当线程来获取锁时，则直接赋值了</span>
+                            readHolds<span class="token punctuation">.</span><span class="token function">set</span><span class="token punctuation">(</span>rh<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        rh<span class="token punctuation">.</span>count<span class="token operator">++</span><span class="token punctuation">;</span>
+                        cachedHoldCounter <span class="token operator">=</span> rh<span class="token punctuation">;</span> 
+                    <span class="token punctuation">}</span>
+                    <span class="token keyword">return</span> <span class="token number">1</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+                <span class="token comment">//这里省略了else，else就是CAS失败，会去继续自旋获取锁</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+</code></pre> 
+<p>当fullTryAcquireShared方法结束后仍然返回 -1加锁失败后，那么就会进入阻塞队列中去排队获取锁了。</p> 
+<p>读锁的加锁流程图：<br> <img src="https://images2.imgbox.com/d1/1b/sMwj7NhZ_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="_327"></a>读锁的释放</h4> 
+<pre><code class="prism language-java"><span class="token comment">//读锁解锁</span>
+readLock<span class="token punctuation">.</span><span class="token function">unlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+ <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">unlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+ 	<span class="token comment">//跟之前的思路一样</span>
+	<span class="token keyword">this</span><span class="token punctuation">.</span>sync<span class="token punctuation">.</span><span class="token function">releaseShared</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">public</span> <span class="token keyword">final</span> <span class="token keyword">boolean</span> <span class="token function">releaseShared</span><span class="token punctuation">(</span><span class="token keyword">int</span> arg<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//如果成功释放共享锁</span>
+     <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">tryReleaseShared</span><span class="token punctuation">(</span>arg<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+     	<span class="token comment">//唤醒等待的节点</span>
+          <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">doReleaseShared</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+          <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+          <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<p>接下来看读锁释放的具体实现：</p> 
+<pre><code class="prism language-java"><span class="token comment">//尝试去释放读锁</span>
+<span class="token keyword">protected</span> <span class="token keyword">final</span> <span class="token keyword">boolean</span> <span class="token function">tryReleaseShared</span><span class="token punctuation">(</span><span class="token keyword">int</span> unused<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            Thread current <span class="token operator">=</span> Thread<span class="token punctuation">.</span><span class="token function">currentThread</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            
+            <span class="token comment">//释放锁之前，要先更新一下firstReader</span>
+            <span class="token comment">//和cachedHoldCounter的记录的值</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>firstReader <span class="token operator">==</span> current<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token comment">// 如果记录的第一个获取读锁的线程是当前线程</span>
+                <span class="token comment">//并且获取锁次数为1</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>firstReaderHoldCount <span class="token operator">==</span> <span class="token number">1</span><span class="token punctuation">)</span>
+                <span class="token comment">//那么释放锁之后，这个要设置为null</span>
+                    firstReader <span class="token operator">=</span> null<span class="token punctuation">;</span>
+                <span class="token keyword">else</span>
+                	<span class="token comment">//否则 -1</span>
+                    firstReaderHoldCount<span class="token operator">--</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            	<span class="token comment">//如果不是第一个获取锁的，那么就可能是最后一个</span>
+                HoldCounter rh <span class="token operator">=</span> cachedHoldCounter<span class="token punctuation">;</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>rh <span class="token operator">==</span> null <span class="token operator">||</span> rh<span class="token punctuation">.</span>tid <span class="token operator">!=</span> <span class="token function">getThreadId</span><span class="token punctuation">(</span>current<span class="token punctuation">)</span><span class="token punctuation">)</span>
+                	<span class="token comment">//如果不是最后一个，要从threadLocal中去获取</span>
+                    rh <span class="token operator">=</span> readHolds<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                 
+                <span class="token keyword">int</span> count <span class="token operator">=</span> rh<span class="token punctuation">.</span>count<span class="token punctuation">;</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>count <span class="token operator">&lt;=</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token comment">//如果&lt;=1则直接移除，防止内存泄漏</span>
+                    readHolds<span class="token punctuation">.</span><span class="token function">remove</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span>count <span class="token operator">&lt;=</span> <span class="token number">0</span><span class="token punctuation">)</span>
+                        <span class="token keyword">throw</span> <span class="token function">unmatchedUnlockException</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+                <span class="token comment">//如果count&gt;1则每次释放锁 -1</span>
+                <span class="token operator">--</span>rh<span class="token punctuation">.</span>count<span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+			<span class="token comment">//上面完成了线程计数器的更新，接下来要完成state的更新了</span>
+            <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token punctuation">;</span><span class="token punctuation">;</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">int</span> c <span class="token operator">=</span> <span class="token function">getState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token comment">//释放锁每次state - 1</span>
+                <span class="token keyword">int</span> nextc <span class="token operator">=</span> c <span class="token operator">-</span> SHARED_UNIT<span class="token punctuation">;</span>
+                <span class="token comment">//更新state值</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">compareAndSetState</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> nextc<span class="token punctuation">)</span><span class="token punctuation">)</span>
+                 	<span class="token comment">//如果为0则释放完成，否则返回false</span>
+                    <span class="token keyword">return</span> nextc <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="WriteLock_400"></a>WriteLock</h3> 
+<h4><a id="_401"></a>写锁的加锁过程</h4> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">static</span> ReadWriteLock readWriteLock <span class="token operator">=</span> 
+					<span class="token keyword">new</span> <span class="token class-name">ReentrantReadWriteLock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">//获取写锁</span>
+<span class="token keyword">public</span> <span class="token keyword">static</span> Lock writeLock <span class="token operator">=</span> readWriteLock<span class="token punctuation">.</span><span class="token function">writeLock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">//对写锁加锁</span>
+writeLock<span class="token punctuation">.</span><span class="token function">lock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<pre><code class="prism language-java"><span class="token comment">//默认非公平锁</span>
+ <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">lock</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      sync<span class="token punctuation">.</span><span class="token function">acquire</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+
+</code></pre> 
+<pre><code class="prism language-java"><span class="token comment">//这个方法和ReentrantLock一样</span>
+  <span class="token keyword">public</span> <span class="token keyword">final</span> <span class="token keyword">void</span> <span class="token function">acquire</span><span class="token punctuation">(</span><span class="token keyword">int</span> arg<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">tryAcquire</span><span class="token punctuation">(</span>arg<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span>
+            <span class="token function">acquireQueued</span><span class="token punctuation">(</span><span class="token function">addWaiter</span><span class="token punctuation">(</span>Node<span class="token punctuation">.</span>EXCLUSIVE<span class="token punctuation">)</span><span class="token punctuation">,</span> arg<span class="token punctuation">)</span><span class="token punctuation">)</span>
+            <span class="token function">selfInterrupt</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<pre><code class="prism language-java"><span class="token comment">//读写锁中关于写锁加锁的实现</span>
+<span class="token keyword">protected</span> <span class="token keyword">final</span> <span class="token keyword">boolean</span> <span class="token function">tryAcquire</span><span class="token punctuation">(</span><span class="token keyword">int</span> acquires<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">/*
+             * Walkthrough:
+             * 1. If read count nonzero or write count nonzero
+             *    and owner is a different thread, fail.
+             * 2. If count would saturate, fail. (This can only
+             *    happen if count is already nonzero.)
+             * 3. Otherwise, this thread is eligible for lock if
+             *    it is either a reentrant acquire or
+             *    queue policy allows it. If so, update state
+             *    and set owner.
+             */</span>
+            Thread current <span class="token operator">=</span> Thread<span class="token punctuation">.</span><span class="token function">currentThread</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">int</span> c <span class="token operator">=</span> <span class="token function">getState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">//获取独占锁数量</span>
+            <span class="token keyword">int</span> w <span class="token operator">=</span> <span class="token function">exclusiveCount</span><span class="token punctuation">(</span>c<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">//c !=0 说明有线程持有锁，可能为读锁，也可能为写锁</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>c <span class="token operator">!=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token comment">//如果写锁为0（那么有线程持有读锁），</span>
+                <span class="token comment">//或者写锁线程不是当前线程</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>w <span class="token operator">==</span> <span class="token number">0</span> <span class="token operator">||</span> current <span class="token operator">!=</span> <span class="token function">getExclusiveOwnerThread</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+                	<span class="token comment">//直接返回false，说明读写锁不能兼容</span>
+                    <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+                 <span class="token comment">//如果写锁数量超出范围，直接抛出异常</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>w <span class="token operator">+</span> <span class="token function">exclusiveCount</span><span class="token punctuation">(</span>acquires<span class="token punctuation">)</span> <span class="token operator">&gt;</span> MAX_COUNT<span class="token punctuation">)</span>
+                    <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">Error</span><span class="token punctuation">(</span><span class="token string">"Maximum lock count exceeded"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token comment">//到这里，说明没有线程获取读锁，</span>
+                <span class="token comment">//并且是当前线程已经拥有了写锁，相当于写锁重入</span>
+                <span class="token function">setState</span><span class="token punctuation">(</span>c <span class="token operator">+</span> acquires<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token comment">//返回加锁成功</span>
+                <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+		<span class="token comment">//走到这里，说明既没有线程获取读锁也没有线程获取写锁</span>
+		
+		<span class="token comment">//如果需要阻塞，或者尝试cas失败</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">writerShouldBlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">||</span>
+                <span class="token operator">!</span><span class="token function">compareAndSetState</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> c <span class="token operator">+</span> acquires<span class="token punctuation">)</span><span class="token punctuation">)</span>
+                <span class="token comment">//直接返回去阻塞队列排队</span>
+                <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+            <span class="token comment">//否则将持有写锁的线程设置为当前线程</span>
+            <span class="token function">setExclusiveOwnerThread</span><span class="token punctuation">(</span>current<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">//返回加锁成功</span>
+            <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+</code></pre> 
+<p>这之后如果tryAcquire返回false，那么会去执行acquireQueued(addWaiter(Node.EXCLUSIVE), arg)，这个方法和之前说过的一抹一样，如果还不太清楚的可以去翻看之前的博客。</p> 
+<p>写锁的加锁流程图：<br> <img src="https://images2.imgbox.com/9f/f8/vOXPHGz5_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="_483"></a>写锁的释放</h4> 
+<pre><code class="prism language-java">writeLock<span class="token punctuation">.</span><span class="token function">unlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">unlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    sync<span class="token punctuation">.</span><span class="token function">release</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+ <span class="token punctuation">}</span>
+
+
+</code></pre> 
+<pre><code class="prism language-java"><span class="token comment">//这里释放和之前的释放相同</span>
+<span class="token keyword">public</span> <span class="token keyword">final</span> <span class="token keyword">boolean</span> <span class="token function">release</span><span class="token punctuation">(</span><span class="token keyword">int</span> arg<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//这个方法时需要重写的</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">tryRelease</span><span class="token punctuation">(</span>arg<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    	
+         Node h <span class="token operator">=</span> head<span class="token punctuation">;</span>
+         <span class="token keyword">if</span> <span class="token punctuation">(</span>h <span class="token operator">!=</span> null <span class="token operator">&amp;&amp;</span> h<span class="token punctuation">.</span>waitStatus <span class="token operator">!=</span> <span class="token number">0</span><span class="token punctuation">)</span>
+         	<span class="token comment">//如果释放成功，则唤醒h之后的节点</span>
+             <span class="token function">unparkSuccessor</span><span class="token punctuation">(</span>h<span class="token punctuation">)</span><span class="token punctuation">;</span>
+         <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+     <span class="token punctuation">}</span>
+     <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<pre><code class="prism language-java"><span class="token comment">//重写释放锁的方法</span>
+ <span class="token keyword">protected</span> <span class="token keyword">final</span> <span class="token keyword">boolean</span> <span class="token function">tryRelease</span><span class="token punctuation">(</span><span class="token keyword">int</span> releases<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">isHeldExclusively</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+            <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">IllegalMonitorStateException</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//每次释放state - 1</span>
+        <span class="token keyword">int</span> nextc <span class="token operator">=</span> <span class="token function">getState</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span> releases<span class="token punctuation">;</span>
+        <span class="token comment">//直到state == 0 释放成功</span>
+        <span class="token keyword">boolean</span> free <span class="token operator">=</span> <span class="token function">exclusiveCount</span><span class="token punctuation">(</span>nextc<span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>free<span class="token punctuation">)</span>
+        	<span class="token comment">//如果释放成功设置拥有锁线程为null</span>
+            <span class="token function">setExclusiveOwnerThread</span><span class="token punctuation">(</span>null<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//将state设置为0</span>
+        <span class="token function">setState</span><span class="token punctuation">(</span>nextc<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> free<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="_529"></a>公平和非公平的问题</h3> 
+<p>公平和非公平的问题，主要是看读写锁在判断是否需要排队时的条件是什么？</p> 
+<p>公平锁的情况下读锁和写锁的条件为：</p> 
+<pre><code class="prism language-java"><span class="token keyword">static</span> <span class="token keyword">final</span> <span class="token keyword">class</span> <span class="token class-name">FairSync</span> <span class="token keyword">extends</span> <span class="token class-name">Sync</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">//写锁公平条件下判断是否阻塞</span>
+        <span class="token keyword">final</span> <span class="token keyword">boolean</span> <span class="token function">writerShouldBlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        	<span class="token comment">//直接判断是否有前驱节点在排队</span>
+            <span class="token keyword">return</span> <span class="token function">hasQueuedPredecessors</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+		
+		<span class="token comment">//读锁公平条件下判断是否阻塞</span>
+        <span class="token keyword">final</span> <span class="token keyword">boolean</span> <span class="token function">readerShouldBlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        	<span class="token comment">//直接判断是否有前驱节点在排队</span>
+            <span class="token keyword">return</span> <span class="token function">hasQueuedPredecessors</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p>也就是在公平锁情况下，读锁和写锁的判断条件都是阻塞队列中是否有前驱节点在排队。</p> 
+<p>非公平下：</p> 
+<pre><code class="prism language-java"> <span class="token keyword">static</span> <span class="token keyword">final</span> <span class="token keyword">class</span> <span class="token class-name">NonfairSync</span> <span class="token keyword">extends</span> <span class="token class-name">Sync</span> <span class="token punctuation">{<!-- --></span>
+     	<span class="token comment">//非公平下，写锁始终都不会阻塞</span>
+        <span class="token keyword">final</span> <span class="token keyword">boolean</span> <span class="token function">writerShouldBlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span> <span class="token comment">// writers can always barge</span>
+        <span class="token punctuation">}</span>
+        <span class="token comment">//非公平下，读锁也会去判断队列中头节点之后第一个节点是否写锁</span>
+        <span class="token comment">//如果是写锁，会先阻塞读锁，让写锁先执行</span>
+        <span class="token keyword">final</span> <span class="token keyword">boolean</span> <span class="token function">readerShouldBlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+           
+            <span class="token keyword">return</span> <span class="token function">apparentlyFirstQueuedIsExclusive</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p>可见，在读写锁实现中，给与了写锁更高的优先级。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/0364df7976f7e6fdb229ccf1ecd298a3/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">v-model和v-decorator同用时的赋值方法</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/de7d17a2ff2041ece1074a0731c5d627/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">边缘计算网关是什么 边缘计算网关功能优势</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

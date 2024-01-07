@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Cilium系列-4-Cilium本地路由 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Cilium系列-4-Cilium本地路由" />
+<meta property="og:description" content="系列文章 Cilium 系列文章 前言 在前文中我们提到, cilium install 默认安装后, Cilium 功能启用和禁用情况如下:
+datapath mode: tunnel: 因为兼容性原因，Cilium 会默认启用 tunnel（基于 vxlan) 的 datapatch 模式，也就是 overlay 网络结构。KubeProxyReplacement: Disabled Cilium 是没有完全替换掉 kube-proxy 的，后面我们会出文章介绍如何实现替换。IPv6 BIG TCP: Disabled 该功能要求 Linux Kernel &gt;= 5.19, 所以在 Kernel 4.19.232 状态为禁用。BandwidthManager: Disabled 该功能要求 Linux Kernel &gt;= 5.1, 所以目前是禁用的Host Routing: Legacy Legacy Host Routing 还是会用到 iptables, 性能较弱；但是 BPF-based host routing 需要 Linux Kernel &gt;= 5.10Masquerading: IPtables IP 伪装有几种方式：基于 eBPF 的，和基于 iptables 的。默认使用基于 iptables, 推荐使用 基于 eBPF 的。Hubble Relay: disabled 默认 Hubble 也是禁用的。 今天我们尝试关闭 tunnel 功能, 启用本地路由(Native-Routing)功能以提升网络性能." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/05968846f13a66a33b2e5805f4ce19d1/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-07-25T11:01:27+08:00" />
+<meta property="article:modified_time" content="2023-07-25T11:01:27+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Cilium系列-4-Cilium本地路由</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h3 id="系列文章">系列文章</h3> 
+<ul><li><a href="https://ewhisper.cn/tags/Cilium/" rel="nofollow">Cilium 系列文章</a></li></ul> 
+<h3 id="前言">前言</h3> 
+<p>在<a href="https://ewhisper.cn/posts/7030/" rel="nofollow">前文</a>中我们提到, <code>cilium install</code> 默认安装后, Cilium 功能启用和禁用情况如下:</p> 
+<ol><li><code>datapath mode: tunnel</code>: 因为兼容性原因，Cilium 会默认启用 tunnel（基于 vxlan) 的 datapatch 模式，也就是 overlay 网络结构。</li><li><code>KubeProxyReplacement: Disabled</code> Cilium 是没有完全替换掉 kube-proxy 的，后面我们会出文章介绍如何实现替换。</li><li><code>IPv6 BIG TCP: Disabled</code> 该功能要求 Linux Kernel &gt;= 5.19, 所以在 Kernel 4.19.232 状态为禁用。</li><li><code>BandwidthManager: Disabled</code> 该功能要求 Linux Kernel &gt;= 5.1, 所以目前是禁用的</li><li><code>Host Routing: Legacy</code> Legacy Host Routing 还是会用到 iptables, 性能较弱；但是 BPF-based host routing 需要 Linux Kernel &gt;= 5.10</li><li><code>Masquerading: IPtables</code> IP 伪装有几种方式：基于 eBPF 的，和基于 iptables 的。默认使用基于 iptables, 推荐使用 基于 eBPF 的。</li><li><code>Hubble Relay: disabled</code> 默认 Hubble 也是禁用的。</li></ol> 
+<p>今天我们尝试关闭 tunnel 功能, 启用<strong>本地路由</strong>(Native-Routing)功能以提升网络性能.</p> 
+<h4 id="测试环境">测试环境</h4> 
+<ul><li>Cilium 1.13.4</li><li>K3s v1.26.6+k3s1</li><li>OS 
+  <ul><li>3台 Ubuntu 23.04 VM, Kernel 6.2, x86</li></ul> </li></ul> 
+<h3 id="vxlan-封装">VXLan 封装</h3> 
+<p>在未提供任何配置的情况下，Cilium 会自动以这种模式运行，因为这种模式<strong>对底层网络基础设施的要求最低</strong>。</p> 
+<p>在这种模式下，所有集群节点都会使用基于 UDP 的封装协议 VXLAN 或 Geneve 形成网状隧道。Cilium 节点之间的所有流量都经过封装.</p> 
+<h4 id="这种模式的缺点">这种模式的缺点</h4> 
+<p><strong>MTU 开销</strong></p> 
+<p>由于增加了封装头，有效载荷可用的 MTU 要低于本地路由（VXLAN 每个网络数据包 50 字节）。这导致特定网络连接的最大吞吐率降低。</p> 
+<h3 id="本地路由native-routing">本地路由(Native-Routing)</h3> 
+<p>本地路由数据路径在 <code>tunnel: disabled</code> 时启用，并启用本机数据包转发模式。本机数据包转发模式利用 Cilium 运行网络的路由功能，而不是执行封装。</p> 
+<p><img src="https://images2.imgbox.com/43/d8/gv4tFeJg_o.png" alt="Native-Routing"></p> 
+<p>在本地路由模式下，Cilium 会将所有未寻址到其他本地端点的数据包委托给 <strong>Linux 内核的路由子系统</strong>。这意味着，数据包的路由将如同本地进程发出数据包一样。因此，连接集群节点的网络必须能够路由 PodCIDR。</p> 
+<p>配置本地路由时，Cilium 会自动在 Linux 内核中启用 IP 转发。</p> 
+<h4 id="网络需求">网络需求</h4> 
+<ul><li>要运行本地路由模式，连接运行 Cilium 的主机的网络必须能够转发使用给 pod 或其他工作负载的地址的 IP 流量。</li><li>节点上的 Linux 内核必须知道如何转发所有运行 Cilium 的节点上 pod 或其他工作负载的数据包。这可以通过两种方式实现： 
+  <ul><li>节点本身不知道如何路由所有 pod IP，但<strong>网络上有路由器知道如何到达所有其他 pod</strong>。在这种情况下，Linux 节点被配置为包含指向此类路由器的默认路由。这种模式用于<strong>云提供商网络集成</strong>。有关详细信息，请参阅 <a href="https://docs.cilium.io/en/stable/network/concepts/routing/#gke-datapath" rel="nofollow">Google Cloud</a>、<a href="https://docs.cilium.io/en/stable/network/concepts/routing/#aws-eni-datapath" rel="nofollow">AWS ENI</a> 和 <a href="https://docs.cilium.io/en/stable/network/concepts/ipam/azure/#ipam-azure" rel="nofollow">Azure IPAM</a>。</li><li>每个节点都知道所有其他节点的所有 pod IP，并在 <strong>Linux 内核路由表</strong>中插入路由来表示这一点。 
+    <ul><li>如果所有节点<strong>共享一个 L2 网络</strong>，则可以启用选项 <code>auto-direct-node-routes: true</code> 来解决这个问题。<strong>本次实验我们使用这种方式启用本地路由.</strong></li><li>否则，必须运行额外的系统组件（如 <strong>BGP</strong> 守护进程）来分发路由。有关如何使用 kube-router 项目实现这一目标，请参阅指南<a href="https://docs.cilium.io/en/stable/network/kube-router/#kube-router" rel="nofollow">《使用 Kube-Router 运行 BGP》</a>。</li></ul> </li></ul> </li></ul> 
+<h3 id="实战-启用本地路由">实战: 启用本地路由</h3> 
+<p>从现在开始, 后续的 cilium 安装配置越来越复杂, 有很多定制的配置参数, 所以我们从现在开始使用 <strong>Helm Chart</strong> 方式安装 Cilium.</p> 
+<blockquote> 
+ <p>📚️<strong>Reference:</strong></p> 
+ <p>Helm Chart 方法适用于需要对 Cilium 安装进行<strong>精细控制的高级安装和生产环境</strong>。它要求你为特定的 Kubernetes 环境手动选择最佳数据路径 (datapath) 和 IPAM 模式。</p> 
+</blockquote> 
+<p>先使用 Helm Chart 进行最基本安装, 保证和前文的配置相同.</p> 
+<h4 id="卸载-cilium">卸载 Cilium</h4> 
+<p>首先卸载通过 <code>cilium install</code> 安装的 Cilium.</p> 
+<pre><code class="language-bash">export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+cilium uninstall</code></pre> 
+<h4 id="helm-chart-基本安装">Helm Chart 基本安装</h4> 
+<p>然后, 使用 Helm Chart 进行基本安装, 保证和前文配置相同.</p> 
+<pre><code class="language-bash">helm repo add cilium https://helm.cilium.io/
+
+helm install cilium cilium/cilium --version 1.13.4 \
+   --namespace kube-system \
+   --set operator.replicas=1 \
+   --set k8sServiceHost=192.168.2.43 \
+   --set k8sServicePort=6443 \
+   --set hubble.relay.enabled=true \
+   --set hubble.ui.enabled=true</code></pre> 
+<p>说明如下:</p> 
+<ul><li><code>--namespace kube-system</code> 和默认的 <code>cilium install</code> 保持一致, cilium 安装在 <code>kube-system</code> 下</li><li><code>operator.replicas=1</code> 指定 Operator 副本数为 1, 默认为 2</li><li><code>k8sServiceHost</code> <code>k8sServicePort</code> 显式指定 K8s 集群的 APIServer 的 IP 和 端口</li><li><code>hubble.relay.enabled=true</code> <code>hubble.ui.enabled=true</code> 启用 Hubble 可观察性.</li></ul> 
+<h4 id="重启未受管节点">重启未受管节点</h4> 
+<p>如果你创建的集群中没有使用 <code>node.cilium.io/agent-not-ready</code> 污点的节点，则需要手动重启未托管的 pod。重启所有已运行但未以主机联网模式运行的 pod，以确保 Cilium 开始管理它们。这样做是为了确保所有在部署 Cilium 之前已经运行的 pod 都具有 Cilium 提供的网络连接，并且 NetworkPolicy 也适用于它们：</p> 
+<pre><code class="language-bash">$ kubectl get pods --all-namespaces -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,HOSTNETWORK:.spec.hostNetwork --no-headers=true | grep '&lt;none&gt;' | awk '{print "-n "$1" "$2}' | xargs -L 1 -r kubectl delete pod
+pod "helm-install-traefik-crd-wv67f" deleted
+pod "helm-install-traefik-vt2zh" deleted
+pod "svclb-traefik-c19bcc42-6jqxs" deleted
+pod "coredns-59b4f5bbd5-qmn2k" deleted
+pod "local-path-provisioner-76d776f6f9-mpct2" deleted
+pod "traefik-57c84cf78d-jpx47" deleted
+pod "metrics-server-68cf49699b-dxvnk" deleted
+pod "hubble-ui-68fb44f6f5-z9w7c" deleted
+pod "hubble-relay-5f68b89b76-s6xp5" deleted</code></pre> 
+<h4 id="helm-chart-启用本地路由">Helm Chart 启用本地路由</h4> 
+<pre><code class="language-bash">helm upgrade cilium cilium/cilium \
+   --namespace kube-system \
+   --reuse-values \
+   --set tunnel=disabled \
+   --set autoDirectNodeRoutes=true \
+   --set ipv4NativeRoutingCIDR=10.0.0.0/22</code></pre> 
+<p>配置说明如下:</p> 
+<ul><li><code>--reuse-values</code> 复用上一次的 Helm Chart 安装配置</li><li><code>tunnel=disabled</code> 启用本地路由模式</li><li><code>autoDirectNodeRoutes=true</code> 每个节点都知道所有其他节点的所有 pod IP，并在 <strong>Linux 内核路由表</strong>中插入路由来表示这一点。如果所有节点<strong>共享一个 L2 网络</strong>，则可以启用选项 <code>auto-direct-node-routes: true</code> 来解决这个问题。</li><li><code>ipv4-native-routing-cidr: x.x.x.x/y</code> 设置可执行本地路由的 CIDR。</li></ul> 
+<p>至此, 本地路由就已经启用了. 可以再次运行相关命令来检查.</p> 
+<h3 id="验证本地路由是否启用">验证本地路由是否启用</h3> 
+<p>首先, 未启用之前, 也就是通过 VXLan 封装时, 会有一个对应的 VXLan 网卡 <code>cilium_vxlan</code>. 示例如下:</p> 
+<pre><code>5: cilium_vxlan: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/ether 52:5b:dd:37:f5:45 brd ff:ff:ff:ff:ff:ff
+    inet6 fe80::505b:ddff:fe37:f545/64 scope link
+       valid_lft forever preferred_lft forever</code></pre> 
+<p>可以查看 Cilium Agent 的日志:</p> 
+<pre><code class="language-bash">$ k3s kubectl logs -f cilium-nxbsn -n kube-system|grep datapath
+Defaulted container "cilium-agent" out of: cilium-agent, config (init), mount-cgroup (init), apply-sysctl-overwrites (init), mount-bpf-fs (init), clean-cilium-state (init), install-cni-binaries (init)
+level=info msg="  --datapath-mode='veth'" subsys=daemon
+level=info msg="clang (10.0.0) and kernel (6.2.0) versions: OK!" subsys=linux-datapath
+level=info msg="linking environment: OK!" subsys=linux-datapath
+level=info msg="Restored 1 node IDs from the BPF map" subsys=linux-datapath
+level=info msg="Detected devices" devices="[]" subsys=linux-datapath
+level=info msg="Setting up BPF datapath" bpfClockSource=jiffies bpfInsnSet=v3 subsys=datapath-loader</code></pre> 
+<p>通过 <code>--datapath-mode='veth'</code> 可以判断已经成功启用本地路由.</p> 
+<p>也可以查看网卡的 mtu, cilium 的 vslan 网卡没有了, 如下:</p> 
+<pre><code class="language-bash">$ ip a
+...
+2: eth0: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc mq state UP group default qlen 1000
+    link/ether 00:15:5d:02:20:22 brd ff:ff:ff:ff:ff:ff
+    inet 172.17.236.121/20 brd 172.17.239.255 scope global dynamic noprefixroute eth0
+       valid_lft 84958sec preferred_lft 84958sec
+    inet6 fe80::e4ed:31d3:3101:3265/64 scope link noprefixroute
+       valid_lft forever preferred_lft forever
+3: cilium_net@cilium_host: &lt;BROADCAST,MULTICAST,NOARP,UP,LOWER_UP&gt; mtu 1500 qdisc noqueue state UP group default qlen 1000
+    link/ether f6:e6:97:fa:8a:d9 brd ff:ff:ff:ff:ff:ff
+    inet6 fe80::f4e6:97ff:fefa:8ad9/64 scope link
+       valid_lft forever preferred_lft forever
+4: cilium_host@cilium_net: &lt;BROADCAST,MULTICAST,NOARP,UP,LOWER_UP&gt; mtu 1500 qdisc noqueue state UP group default qlen 1000
+    link/ether 72:f7:bb:f9:31:0b brd ff:ff:ff:ff:ff:ff
+    inet 10.0.0.172/32 scope global cilium_host
+       valid_lft forever preferred_lft forever
+    inet6 fe80::70f7:bbff:fef9:310b/64 scope link
+       valid_lft forever preferred_lft forever
+15: lxca13b12696333@if14: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc noqueue state UP group default qlen 1000
+    link/ether de:89:24:7b:86:e0 brd ff:ff:ff:ff:ff:ff link-netns cni-0253f30e-07bc-2273-640c-7ec96f0a30dd
+    inet6 fe80::dc89:24ff:fe7b:86e0/64 scope link
+       valid_lft forever preferred_lft forever
+...</code></pre> 
+<p>可以看到 cilium 和 lxc 相关的网卡, mtu 已经和 eth0 保持一致, 为: <code>mtu 1500</code>. 而在没启用之前, <code>mtu 1280</code>.</p> 
+<p>没启用本地路由, 使用VXLan 封装的 mtu 如下:</p> 
+<pre><code class="language-bash">$ ip a
+...
+3: eth0: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc mq state UP group default qlen 1000
+    link/ether aa:94:b7:b4:25:ac brd ff:ff:ff:ff:ff:ff
+    inet 192.168.2.44/24 brd 192.168.2.255 scope global dynamic noprefixroute eth0
+       valid_lft 74264sec preferred_lft 74264sec
+    inet6 240e:3a1:166d:dd70:4ea1:7c0c:13de:aa3/64 scope global dynamic noprefixroute
+       valid_lft 208339sec preferred_lft 121939sec
+    inet6 fe80::b0:3f98:e4e1:1d16/64 scope link noprefixroute
+       valid_lft forever preferred_lft forever
+6: cilium_net@cilium_host: &lt;BROADCAST,MULTICAST,NOARP,UP,LOWER_UP&gt; mtu 1280 qdisc noqueue state UP group default qlen 1000
+    link/ether be:0f:af:14:c7:05 brd ff:ff:ff:ff:ff:ff
+    inet6 fe80::bc0f:afff:fe14:c705/64 scope link
+       valid_lft forever preferred_lft forever
+7: cilium_host@cilium_net: &lt;BROADCAST,MULTICAST,NOARP,UP,LOWER_UP&gt; mtu 1280 qdisc noqueue state UP group default qlen 1000
+    link/ether 1e:96:a5:af:3c:a3 brd ff:ff:ff:ff:ff:ff
+    inet 10.0.0.109/32 scope global cilium_host
+       valid_lft forever preferred_lft forever
+    inet6 fe80::1c96:a5ff:feaf:3ca3/64 scope link
+       valid_lft forever preferred_lft forever
+98: lxc_health@if97: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1280 qdisc noqueue state UP group default qlen 1000
+    link/ether 1a:41:2c:3b:18:0b brd ff:ff:ff:ff:ff:ff link-netnsid 0
+    inet6 fe80::1841:2cff:fe3b:180b/64 scope link
+       valid_lft forever preferred_lft forever
+...</code></pre> 
+<h3 id="性能测试">性能测试</h3> 
+<p>通过 iperf 测试网络吞吐量. 来验证启用本地路由带来的性能提升. 我们使用 iperf3 来进行测试.</p> 
+<h4 id="vm-间宽带">VM 间宽带</h4> 
+<p>测试 VM 间原生带宽, apt 安装 iperf3:</p> 
+<pre><code class="language-bash">sudo apt install -y iperf3</code></pre> 
+<p>测试 VM 间宽带. 结果为:</p> 
+<pre><code>$ iperf3 -c 192.168.2.3 -f M
+Connecting to host 192.168.2.3, port 5201
+[  5] local 192.168.2.26 port 32930 connected to 192.168.2.3 port 5201
+[ ID] Interval           Transfer     Bitrate         Retr  Cwnd
+[  5]   0.00-1.00   sec  1.02 GBytes  1047 MBytes/sec    0   3.12 MBytes
+[  5]   1.00-2.00   sec  1.13 GBytes  1161 MBytes/sec    0   3.12 MBytes
+[  5]   2.00-3.00   sec  1.12 GBytes  1150 MBytes/sec    0   3.12 MBytes
+[  5]   3.00-4.00   sec  1.08 GBytes  1107 MBytes/sec    0   3.12 MBytes
+[  5]   4.00-5.00   sec  1.17 GBytes  1194 MBytes/sec    0   3.12 MBytes
+[  5]   5.00-6.00   sec  1.09 GBytes  1120 MBytes/sec    0   3.12 MBytes
+[  5]   6.00-7.00   sec  1.10 GBytes  1128 MBytes/sec    0   3.12 MBytes
+[  5]   7.00-8.00   sec  1.10 GBytes  1131 MBytes/sec    0   3.12 MBytes
+[  5]   8.00-9.00   sec  1.18 GBytes  1211 MBytes/sec    0   3.12 MBytes
+[  5]   9.00-10.00  sec  1.11 GBytes  1133 MBytes/sec    0   3.12 MBytes
+- - - - - - - - - - - - - - - - - - - - - - - - -
+[ ID] Interval           Transfer     Bitrate         Retr
+[  5]   0.00-10.00  sec  11.1 GBytes  1138 MBytes/sec    0             sender
+[  5]   0.00-10.00  sec  11.1 GBytes  1138 MBytes/sec                  receiver
+
+iperf Done.</code></pre> 
+<p>结果为 <strong>1138 MBytes/sec</strong> 带宽.</p> 
+<h4 id="容器里部署-iperf3">容器里部署 iperf3</h4> 
+<p>测试 Cilium vxlan 封装和本地路由模式, 将 iperf3 部署为 Daemonset:</p> 
+<pre><code class="language-yaml">apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+   name: iperf3
+   labels:
+      app: iperf3
+spec:
+   selector:
+      matchLabels:
+        app: iperf3
+   template:
+      metadata:
+         labels:
+            app: iperf3
+      spec:
+         containers:
+         -  name: iperf3
+            image: clearlinux/iperf:3
+            command: ['/bin/sh', '-c', 'sleep 1d']
+            ports:
+            - containerPort: 5201</code></pre> 
+<p>结果如下:</p> 
+<pre><code class="language-bash">$ k3s kubectl get pod -o wide
+NAME           READY   STATUS    RESTARTS   AGE   IP           NODE          NOMINATED NODE   READINESS GATES
+iperf3-dmqzb   1/1     Running   0          30s   10.0.0.13    cilium-62-1   &lt;none&gt;           &lt;none&gt;
+iperf3-g84hd   1/1     Running   0          30s   10.0.2.239   cilium-62-3   &lt;none&gt;           &lt;none&gt;
+iperf3-lnwfn   1/1     Running   0          30s   10.0.1.39    cilium-62-2   &lt;none&gt;           &lt;none&gt;</code></pre> 
+<h4 id="使用容器内-iperf3-测试">使用容器内 iperf3 测试</h4> 
+<p>选择一个 pod 作为 server(cilium-62-2 node 上的为 server), 另一个作为 client(cilium-62-3 node 上的为client).</p> 
+<p>Server (iperf3-lnwfn) 运行的命令为:</p> 
+<pre><code class="language-bash">kubectl exec -it iperf3-lnwfn -- iperf3 -s -f M</code></pre> 
+<p>Client (iperf3-g84hd) 运行的命令为:</p> 
+<pre><code class="language-bash">kubectl exec -it iperf3-g84hd -- iperf3 -c 10.0.1.39 -f M</code></pre> 
+<h4 id="vxlan-封装-1">VXLan 封装</h4> 
+<p>VXLan 封装的情况:</p> 
+<pre><code>$ kubectl exec -it iperf3-g84hd -- iperf3 -c 10.0.1.39 -f M
+Connecting to host 10.0.1.39, port 5201
+[  5] local 10.0.2.239 port 38102 connected to 10.0.1.39 port 5201
+[ ID] Interval           Transfer     Bitrate         Retr  Cwnd
+[  5]   0.00-1.00   sec   377 MBytes   377 MBytes/sec   46   1.19 MBytes
+[  5]   1.00-2.00   sec   458 MBytes   457 MBytes/sec    0   1.31 MBytes
+[  5]   2.00-3.00   sec   538 MBytes   538 MBytes/sec   46   1.43 MBytes
+[  5]   3.00-4.00   sec   538 MBytes   537 MBytes/sec    0   1.49 MBytes
+[  5]   4.00-5.00   sec   525 MBytes   525 MBytes/sec   14   1.50 MBytes
+[  5]   5.00-6.00   sec   494 MBytes   494 MBytes/sec    0   1.51 MBytes
+[  5]   6.00-7.00   sec   494 MBytes   494 MBytes/sec    0   1.51 MBytes
+[  5]   7.00-8.00   sec   494 MBytes   494 MBytes/sec   33   1.52 MBytes
+[  5]   8.00-9.00   sec   528 MBytes   528 MBytes/sec    0   1.53 MBytes
+[  5]   9.00-10.00  sec   495 MBytes   495 MBytes/sec   46   1.54 MBytes
+- - - - - - - - - - - - - - - - - - - - - - - - -
+[ ID] Interval           Transfer     Bitrate         Retr
+[  5]   0.00-10.00  sec  4.82 GBytes   494 MBytes/sec  185             sender
+[  5]   0.00-10.00  sec  4.82 GBytes   493 MBytes/sec                  receiver
+
+iperf Done.</code></pre> 
+<p>结果为 <strong>493 MBytes/sec</strong> 左右带宽, 直接少了一半.</p> 
+<h4 id="本地路由">本地路由</h4> 
+<pre><code class="language-bash">$ kubectl exec -it iperf3-g84hd -- iperf3 -c 10.0.1.39 -f M
+Connecting to host 10.0.1.39, port 5201
+[  5] local 10.0.2.239 port 39518 connected to 10.0.1.39 port 5201
+[ ID] Interval           Transfer     Bitrate         Retr  Cwnd
+[  5]   0.00-1.00   sec  1.01 GBytes  1030 MBytes/sec   33   1.53 MBytes
+[  5]   1.00-2.00   sec  1.16 GBytes  1191 MBytes/sec    0   2.01 MBytes
+[  5]   2.00-3.00   sec  1.31 GBytes  1339 MBytes/sec    0   2.45 MBytes
+[  5]   3.00-4.00   sec  1.28 GBytes  1312 MBytes/sec    0   2.79 MBytes
+[  5]   4.00-5.00   sec  1.25 GBytes  1283 MBytes/sec    0   3.00 MBytes
+[  5]   5.00-6.00   sec  1.28 GBytes  1310 MBytes/sec    0   3.00 MBytes
+[  5]   6.00-7.00   sec  1.26 GBytes  1292 MBytes/sec    0   3.01 MBytes
+[  5]   7.00-8.00   sec  1.31 GBytes  1337 MBytes/sec    0   3.01 MBytes
+[  5]   8.00-9.00   sec  1.23 GBytes  1260 MBytes/sec    0   3.01 MBytes
+[  5]   9.00-10.00  sec  1.28 GBytes  1308 MBytes/sec   92   3.01 MBytes
+- - - - - - - - - - - - - - - - - - - - - - - - -
+[ ID] Interval           Transfer     Bitrate         Retr
+[  5]   0.00-10.00  sec  12.4 GBytes  1266 MBytes/sec  125             sender
+[  5]   0.00-10.00  sec  12.4 GBytes  1266 MBytes/sec                  receiver
+
+iperf Done.</code></pre> 
+<p>结果为 <strong>1266 MBytes/sec</strong>. 和原生的相差无几.</p> 
+<h4 id="小结">小结</h4> 
+<p>👍️ <strong>禁用封装(隧道 tunnel)(本次测试为 VXLAN 封装模式), 启用本地路由, 确实可以提升网络最大吞吐量.</strong></p> 
+<h3 id="总结">总结</h3> 
+<p>在未提供任何配置的情况下，Cilium 会自动以封装(隧道 tunnel)模式运行，因为这种模式<strong>对底层网络基础设施的要求最低</strong>。</p> 
+<p>在这种模式下，所有集群节点都会使用基于 UDP 的封装协议 VXLAN 或 Geneve 形成网状隧道。</p> 
+<p>由于增加了封装头，有效载荷可用的 MTU 要低于本地路由, 这导致特定网络连接的最大吞吐率降低。</p> 
+<p>启用本地路由(Native-Routing)可以避免这种情况, 但是启用对本地网络有一定要求. 本次我们通过 <code>autoDirectNodeRoutes=true</code> 方式来进行启用.</p> 
+<p>通过 iperf 测试, 也确实证明启用本地路由可以提升吞吐量.💪</p> 
+<h3 id="📚️参考文档">📚️参考文档</h3> 
+<ul><li><a href="https://docs.cilium.io/en/stable/network/concepts/routing/#native-routing" rel="nofollow">Routing — Cilium 1.13.4 documentation</a></li><li><a href="https://docs.cilium.io/en/stable/installation/k8s-install-helm/#k8s-install-helm" rel="nofollow">Installation using Helm — Cilium 1.13.4 documentation</a></li></ul> 
+<blockquote> 
+ <p><em>三人行, 必有我师; 知识共享, 天下为公.</em> 本文由东风微鸣技术博客 <a href="https://EWhisper.cn" rel="nofollow">EWhisper.cn</a> 编写.</p> 
+</blockquote>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/f846baa88dd7ed1e418c78fc69e652b1/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Docker 命令（新手上路）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/2256958ae39d0ae728c79b45cc89a34c/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Python tkinter(GUI编程)模块最完整教程（中）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

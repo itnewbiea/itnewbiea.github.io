@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>ClickHouse基础介绍 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="ClickHouse基础介绍" />
+<meta property="og:description" content="目录
+前言
+1、什么是clickhouse
+2、OLAP场景的关键特征
+3、列式存储更适合于OLAP场景的原因
+4、clickhouse的独特功能
+5、clickhouse的缺点
+6、性能
+6.1、单个大查询的吞吐量
+6.2、处理短查询的延迟时间
+6.3、处理大量短查询的吞吐量
+6.4、数据的写入性能
+前言 11月份的时候，有幸收到OceanBase官方的邀请，代表部门去参加了OceanBase2023年度发布大会（对OceanBase不了解的兄弟盟，后面有空我会发表一些关于Ob的文章哈），之前公司国产化信创适配改造过程中，对于OB有了一定的实践以及了解。整个大会让我印象最深刻的就是OceanBase列存实验室版本同业内一流的大宽表数据库ClickHouse现场进行了跑分PK。结果显示，在同等硬件条件下，OceanBase的性能达到了ClickHouse的同一水平，甚至比ClickHouse还高一点点。之前对ClickHouse基本不了解，会后对这兄弟产生了好奇。利用业余时间了解了一下，做了下总结。
+1、什么是clickhouse clickhouse是一个用于联机分析(OLAP)的列式数据库管理系统(DBMS)，由俄罗斯最大的搜索公司Yandex开发，于2016年开源，采用c&#43;&#43;开发
+2、OLAP场景的关键特征 大多数是读请求数据总是以相当大批的写入(&gt;1000rows)不修改已添加的数据每次查询都从数据中读取大量的行，但同时仅需要少量的列宽表，即每个表包含大量的列较少的查询(通常每台服务器每秒数百个查询或更少)对于简单查询，允许延迟大约50ms列中的数据相对较小，如数字和短字符串处理单个查询时需要高吞吐量(每个服务器每秒高达数十亿行)事务不是必须的对于数据一致性要求低每个查询除了一个大表外，其余都很小查询结果明显小于源数据，或者说，数据被过滤或聚合后能够被盛放在内存中 3、列式存储更适合于OLAP场景的原因 列式数据对于大多数查询而言，处理速度至少提高了100倍
+行式：
+列式：
+为何会有以上情况的发生？
+针对分析类查询，通常只需要读取表中一小部分列。在列式数据库中你可以只读取你需要的数据。如果只需要读取100列中的5列数据，这将帮助你减少20倍的io消耗。由于数据总是打包成批量读取的，所以压缩是非常容易的。同时数据按列分别存储也容易压缩。由于io的降低，这将帮助更多的数据被系统缓存。 4、clickhouse的独特功能 真正的列式数据库管理系统，即除了数据本身外不应该存在其它额外的数据。这意味着为了避免在值旁边存在它们的长度，必须支持固定长度数值类型数据压缩，数据压缩在性能提升上有很关键的作用数据存储，clickhouse专门设计在机械盘工作，因此存储成本更低。如果有ssd和额外ram也将充分利用多核并行处理多服务器分布式查询处理，在clickhouse中，数据可以保存在不同的shard上，每个shard都由一组用于容错的replica组成，查询可以并行的在所有shard上进行处理，这对用户是透明的大部分情况兼容标准sql向量引擎，数据不仅以列存储，还以向量块来处理。因此可以提高cpu效率实时数据更新，click house支持具有主键的表，为了能够快速在主键范围内快速执行扫描，使用合并树对数据增量排序，因此支持数据不断添加到表中，添加时没有锁表索引，通过主键对数据进行物理排序这使得你以较低延迟（数毫秒）接收特定值或范围的数据适用于在线查询，低延迟意味着可以立即执行查询支持近似计算，click house提供各种允许牺牲数据精度情况下对查询数据进行加速的方法支持数据复制和数据完整性，clickhouse使用异步复制技术。当数据被写入任何一个可用副本后，系统会在后台将数据分发给其它副本，以保证系统在不同副本上保持相同的数据。大多数情况下，clickhouse能在故障后自动恢复，在一些少数情况下需要手动恢复 5、clickhouse的缺点 没有完整的事务支持缺乏高速率低延迟修改或删除已存在数据的能力，有可用于批量更新和删除数据的能力稀疏索引使得clickhouse不适合通过其键检索单行的定点查询 6、性能 根据Yandex的内部测试结果，clickhouse表现出了同类可比较产品更优的性能（长查询的吞吐量最高，短查询的延迟最低）
+6.1、单个大查询的吞吐量 吞吐量可以以每秒处理的行数或每秒处理的字节数来衡量。如果数据被放置在page cache缓存的情况下，则不太复杂的查询在现代硬件上大约2-10G/s的速度在单个服务器上处理未压缩数据（对于简单查询，速度可以达到30G/s）
+对于分布式处理，处理速度几乎是线性扩展的，但这受限于聚合或排序的结果不是那么大的情况下
+6.2、处理短查询的延迟时间 如果一个查询使用主键且没有太多行（几十万行）进行处理，并且查询没有太多列，那么在数据被page cache的情况下，它的延迟应该小于50ms（最佳情况应该小于10ms）。否则，延迟取决于数据的查找次数。如果使用HDD，在数据没有加载的情况下，查询所需要的延迟可以通过一下公式计算得知：查找时间（10ms）*查询的列的数量*查询的数据库的数量
+6.3、处理大量短查询的吞吐量 在相同情况下，clickhouse可以在单个服务器每秒处理数百个查询（在最佳的情况下最多可以处理数千个）。但是由于这不适用于分析型场景，因此我们建议每秒最多100次查询
+6.4、数据的写入性能 建议每次写入不少于1000行的批量写入，或每秒不超过一个写入请求。可以使用多个insert并行插入，这将使性能线性提升" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/c598c74004fabe3a1f68f5e435e3a1b3/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-01-01T16:15:39+08:00" />
+<meta property="article:modified_time" content="2024-01-01T16:15:39+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">ClickHouse基础介绍</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p><strong>目录</strong></p> 
+<p style="margin-left:0px;"><a href="#%E5%89%8D%E8%A8%80" rel="nofollow">前言</a></p> 
+<p style="margin-left:0px;"><a href="#%E4%BB%80%E4%B9%88%E6%98%AFclickhouse" rel="nofollow">1、什么是clickhouse</a></p> 
+<p style="margin-left:0px;"><a href="#OLAP%E5%9C%BA%E6%99%AF%E7%9A%84%E5%85%B3%E9%94%AE%E7%89%B9%E5%BE%81" rel="nofollow">2、OLAP场景的关键特征</a></p> 
+<p style="margin-left:0px;"><a href="#%E5%88%97%E5%BC%8F%E5%AD%98%E5%82%A8%E6%9B%B4%E9%80%82%E5%90%88%E4%BA%8EOLAP%E5%9C%BA%E6%99%AF%E7%9A%84%E5%8E%9F%E5%9B%A0" rel="nofollow">3、列式存储更适合于OLAP场景的原因</a></p> 
+<p style="margin-left:0px;"><a href="#clickhouse%E7%9A%84%E7%8B%AC%E7%89%B9%E5%8A%9F%E8%83%BD" rel="nofollow">4、clickhouse的独特功能</a></p> 
+<p style="margin-left:0px;"><a href="#clickhouse%E7%9A%84%E7%BC%BA%E7%82%B9" rel="nofollow">5、clickhouse的缺点</a></p> 
+<p style="margin-left:0px;"><a href="#%E6%80%A7%E8%83%BD" rel="nofollow">6、性能</a></p> 
+<p style="margin-left:40px;"><a href="#%E5%8D%95%E4%B8%AA%E5%A4%A7%E6%9F%A5%E8%AF%A2%E7%9A%84%E5%90%9E%E5%90%90%E9%87%8F" rel="nofollow">6.1、单个大查询的吞吐量</a></p> 
+<p style="margin-left:40px;"><a href="#%E5%A4%84%E7%90%86%E7%9F%AD%E6%9F%A5%E8%AF%A2%E7%9A%84%E5%BB%B6%E8%BF%9F%E6%97%B6%E9%97%B4" rel="nofollow">6.2、处理短查询的延迟时间</a></p> 
+<p style="margin-left:40px;"><a href="#%E5%A4%84%E7%90%86%E5%A4%A7%E9%87%8F%E7%9F%AD%E6%9F%A5%E8%AF%A2%E7%9A%84%E5%90%9E%E5%90%90%E9%87%8F" rel="nofollow">6.3、处理大量短查询的吞吐量</a></p> 
+<p style="margin-left:40px;"><a href="#%E6%95%B0%E6%8D%AE%E7%9A%84%E5%86%99%E5%85%A5%E6%80%A7%E8%83%BD" rel="nofollow">6.4、数据的写入性能</a></p> 
+<hr> 
+<p> </p> 
+<h2>前言</h2> 
+<blockquote> 
+ <p>        11月份的时候，有幸收到OceanBase官方的邀请，代表部门去参加了OceanBase2023年度发布大会（对OceanBase不了解的兄弟盟，后面有空我会发表一些关于Ob的文章哈），之前公司国产化信创适配改造过程中，对于OB有了一定的实践以及了解。整个大会让我印象最深刻的就是<strong>OceanBase列存实验室版本同业内一流的大宽表数据库ClickHouse现场进行了跑分PK。结果显示，在同等硬件条件下，OceanBase的性能达到了ClickHouse的同一水平，甚至比ClickHouse还高一点点</strong>。之前对ClickHouse基本不了解，会后对这兄弟产生了好奇。利用业余时间了解了一下，做了下总结。</p> 
+</blockquote> 
+<h2 style="margin-left:0px;text-align:center;"><img src="https://images2.imgbox.com/f4/ce/LVhIBnYj_o.jpg" alt="913de29407e544dc8365a99bc772aeda.webp"></h2> 
+<h2 style="margin-left:0px;text-align:left;"><strong><strong><strong>1、什么是clickhouse</strong></strong></strong></h2> 
+<p>clickhouse是一个用于联机分析(OLAP)的列式数据库管理系统(DBMS)，由俄罗斯最大的搜索公司Yandex开发，于2016年开源，采用c++开发</p> 
+<h2 style="text-align:left;"><strong><strong><strong>2、OLAP场景的关键特征</strong></strong></strong></h2> 
+<ol><li style="text-align:left;">大多数是读请求</li><li style="text-align:left;">数据总是以相当大批的写入(&gt;1000rows)</li><li style="text-align:left;">不修改已添加的数据</li><li style="text-align:left;">每次查询都从数据中读取大量的行，但同时仅需要少量的列</li><li style="text-align:left;">宽表，即每个表包含大量的列</li><li style="text-align:left;">较少的查询(通常每台服务器每秒数百个查询或更少)</li><li style="text-align:left;">对于简单查询，允许延迟大约50ms</li><li style="text-align:left;">列中的数据相对较小，如数字和短字符串</li><li style="text-align:left;">处理单个查询时需要高吞吐量(每个服务器每秒高达数十亿行)</li><li style="text-align:left;">事务不是必须的</li><li style="text-align:left;">对于数据一致性要求低</li><li style="text-align:left;">每个查询除了一个大表外，其余都很小</li><li style="text-align:left;">查询结果明显小于源数据，或者说，数据被过滤或聚合后能够被盛放在内存中</li></ol> 
+<h2 style="text-align:left;"><strong><strong><strong>3、列式存储更适合于OLAP场景的原因</strong></strong></strong></h2> 
+<p>列式数据对于大多数查询而言，处理速度至少提高了100倍</p> 
+<p style="text-align:left;"><strong><strong><strong>行式：</strong></strong></strong></p> 
+<p style="text-align:center;"><strong><strong><strong><img src="https://images2.imgbox.com/e1/ea/dm2FaJcX_o.png" alt="8d221e36b5e947ce88323291c47025ba.png"></strong></strong></strong></p> 
+<p style="text-align:left;"><strong><strong><strong>列式：</strong></strong></strong></p> 
+<p style="text-align:center;"><strong><strong><strong><img src="https://images2.imgbox.com/80/16/VoWnAylX_o.png" alt="fc02de70e1a941d49815278dcbf5ef69.png"></strong></strong></strong></p> 
+<p style="text-align:left;"><strong><strong><strong>为何会有以上情况的发生？</strong></strong></strong></p> 
+<ol><li style="text-align:left;">针对分析类查询，通常只需要读取表中一小部分列。在列式数据库中你可以只读取你需要的数据。如果只需要读取100列中的5列数据，这将帮助你减少20倍的io消耗。</li><li style="text-align:left;">由于数据总是打包成批量读取的，所以压缩是非常容易的。同时数据按列分别存储也容易压缩。</li><li style="text-align:left;">由于io的降低，这将帮助更多的数据被系统缓存。</li></ol> 
+<h2 style="text-align:left;"><strong><strong><strong>4、clickhouse的独特功能</strong></strong></strong></h2> 
+<ol><li style="text-align:left;">真正的列式数据库管理系统，即除了数据本身外不应该存在其它额外的数据。这意味着为了避免在值旁边存在它们的长度，必须支持固定长度数值类型</li><li style="text-align:left;">数据压缩，数据压缩在性能提升上有很关键的作用</li><li style="text-align:left;">数据存储，clickhouse专门设计在机械盘工作，因此存储成本更低。如果有ssd和额外ram也将充分利用</li><li style="text-align:left;">多核并行处理</li><li style="text-align:left;">多服务器分布式查询处理，在clickhouse中，数据可以保存在不同的shard上，每个shard都由一组用于容错的replica组成，查询可以并行的在所有shard上进行处理，这对用户是透明的</li><li style="text-align:left;">大部分情况兼容标准sql</li><li style="text-align:left;">向量引擎，数据不仅以列存储，还以向量块来处理。因此可以提高cpu效率</li><li style="text-align:left;">实时数据更新，click house支持具有主键的表，为了能够快速在主键范围内快速执行扫描，使用合并树对数据增量排序，因此支持数据不断添加到表中，添加时没有锁表</li><li style="text-align:left;">索引，通过主键对数据进行物理排序这使得你以较低延迟（数毫秒）接收特定值或范围的数据</li><li style="text-align:left;">适用于在线查询，低延迟意味着可以立即执行查询</li><li style="text-align:left;">支持近似计算，click house提供各种允许牺牲数据精度情况下对查询数据进行加速的方法</li><li style="text-align:left;">支持数据复制和数据完整性，clickhouse使用异步复制技术。当数据被写入任何一个可用副本后，系统会在后台将数据分发给其它副本，以保证系统在不同副本上保持相同的数据。大多数情况下，clickhouse能在故障后自动恢复，在一些少数情况下需要手动恢复</li></ol> 
+<h2 style="text-align:left;"><strong><strong><strong>5、clickhouse的缺点</strong></strong></strong></h2> 
+<ol><li style="text-align:left;">没有完整的事务支持</li><li style="text-align:left;">缺乏高速率低延迟修改或删除已存在数据的能力，有可用于批量更新和删除数据的能力</li><li style="text-align:left;">稀疏索引使得clickhouse不适合通过其键检索单行的定点查询</li></ol> 
+<h2 style="text-align:left;"><strong><strong><strong>6、性能</strong></strong></strong></h2> 
+<p style="margin-left:0;text-align:left;">根据Yandex的内部测试结果，clickhouse表现出了同类可比较产品更优的性能（长查询的吞吐量最高，短查询的延迟最低）</p> 
+<p style="margin-left:0px;text-align:center;"><img src="https://images2.imgbox.com/84/d0/goxdOxCg_o.png" alt="b062e33140aa43058a17fbc9dd6a2691.png"></p> 
+<p style="margin-left:0px;text-align:center;"> </p> 
+<h3 style="text-align:left;"><strong><strong><strong>6.1、单个大查询的吞吐量</strong></strong></strong></h3> 
+<p style="margin-left:0;text-align:left;">吞吐量可以以每秒处理的行数或每秒处理的字节数来衡量。如果数据被放置在page cache缓存的情况下，则不太复杂的查询在现代硬件上大约2-10G/s的速度在单个服务器上处理未压缩数据（对于简单查询，速度可以达到30G/s）</p> 
+<p style="margin-left:0;text-align:left;">对于分布式处理，处理速度几乎是线性扩展的，但这受限于聚合或排序的结果不是那么大的情况下</p> 
+<h3 style="text-align:left;"><strong><strong><strong>6.2、处理短查询的延迟时间</strong></strong></strong></h3> 
+<p style="margin-left:0;text-align:left;">如果一个查询使用主键且没有太多行（几十万行）进行处理，并且查询没有太多列，那么在数据被page cache的情况下，它的延迟应该小于50ms（最佳情况应该小于10ms）。否则，延迟取决于数据的查找次数。如果使用HDD，在数据没有加载的情况下，查询所需要的延迟可以通过一下公式计算得知：查找时间（10ms）*查询的列的数量*查询的数据库的数量</p> 
+<h3 style="text-align:left;"><strong><strong><strong>6.3、处理大量短查询的吞吐量</strong></strong></strong></h3> 
+<p style="margin-left:0;text-align:left;">在相同情况下，clickhouse可以在单个服务器每秒处理数百个查询（在最佳的情况下最多可以处理数千个）。但是由于这不适用于分析型场景，因此我们建议每秒最多100次查询</p> 
+<h3 style="text-align:left;"><strong><strong><strong>6.4、数据的写入性能</strong></strong></strong></h3> 
+<p style="margin-left:0;text-align:left;">建议每次写入不少于1000行的批量写入，或每秒不超过一个写入请求。可以使用多个insert并行插入，这将使性能线性提升</p> 
+<p style="margin-left:0px;text-align:center;"> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/9cac380bab7be97bd4aae55bc8787ccc/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">服务器的关键参数指标</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/3917f9133be794f1d2832d1604ac6665/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【AIGC矢量风格】黑色和白色一系列物体</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

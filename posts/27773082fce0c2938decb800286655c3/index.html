@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Weblogic安全漫谈（四） - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Weblogic安全漫谈（四）" />
+<meta property="og:description" content="黑名单机制必然会推动两种研究方向的发展：一是挖掘不在黑名单的新组件，是为绕过规则；二是发掘检查的盲区，是为绕过逻辑。
+CVE-2020-14756 二次反序列化具有对抗检查逻辑的天生丽质，在CVE-2018-2893中就有利用字节数组和反射重建类两种方式。找找还有没有readObject到Class.forName的路子：
+readUnsignedByte读到的nType为9或10时会进入readXmlSerializable或readExternalizableLite分支。
+上述两个方法均通过自身loadClass方法加载类，最终由Class.forName获取类并返回。
+readXmlSerializable方法获取类后继续进行XML解析，是另一个XXE漏洞。
+readExternalizableLite方法获取类后继续调用readExternal反序列化，不受黑名单限制，进而引出两个问题：
+ExternalizableHelper自身没有实现Serializable接口，一定有什么地方调用它的readObject
+loadClass加载后强转为了ExternalizableLite类型，它哪些满足readExternal参数要求的子类可以被用作sink
+找到PermissionInfo#readExternal会调用ExternalizableHelper#readCollection进而调用readObject作为链首。
+继续找到TopNAggregator$PartialResult及其父类SortedBag：
+readExternal方法会调用父类的instantiateInternalMap方法将comparator封装进TreeMap，随后在add方法中调用map.put时就会触发compare，进而连上以前的链尾。与PriorityQueue的作用相同，只是绕这么一圈过掉了黑名单。
+重写PermissionInfo#writeExternal按照以前的套路一步步构造payload打出去就行。
+extract:95, MvelExtractor (com.tangosol.coherence.rest.util.extractor) extract:112, ReflectionExtractor (com.tangosol.util.extractor) extract:105, ChainedExtractor (com.tangosol.util.extractor) // extract:96, MultiExtractor (com.tangosol.util.extractor) compare:143, AbstractExtractor (com.tangosol.util.extractor) compare:416, SortedBag$WrapperComparator (com.tangosol.util) compare:1295, TreeMap (java.util) put:538, TreeMap (java.util) add:152, SortedBag (com.tangosol.util) add:270, TopNAggregator$PartialResult (com.tangosol.util.aggregator) readExternal:299, TopNAggregator$PartialResult (com.tangosol.util.aggregator) readExternalizableLite:2345, ExternalizableHelper (com.tangosol.util) readObjectInternal:2661, ExternalizableHelper (com.tangosol.util) readObject:2606, ExternalizableHelper (com.tangosol.util) readCollection:2131, ExternalizableHelper (com.tangosol.util) readExternal:190, PermissionInfo (com.tangosol.net.security) readExternalData:2118, ObjectInputStream (java.io) readOrdinaryObject:2067, ObjectInputStream (java.io) readObject0:1573, ObjectInputStream (java." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/27773082fce0c2938decb800286655c3/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-01-05T10:36:11+08:00" />
+<meta property="article:modified_time" content="2024-01-05T10:36:11+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Weblogic安全漫谈（四）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>黑名单机制必然会推动两种研究方向的发展：一是挖掘不在黑名单的新组件，是为绕过规则；二是发掘检查的盲区，是为绕过逻辑。</p> 
+<h3>CVE-2020-14756</h3> 
+<p>二次反序列化具有对抗检查逻辑的天生丽质，在CVE-2018-2893中就有利用字节数组和反射重建类两种方式。找找还有没有<span style="color:#be191c;"><code><span style="background-color:#cccccc;">readObject</span></code></span>到<span style="color:#be191c;"><code><span style="background-color:#cccccc;">Class.forName</span></code></span>的路子：</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="603" src="https://images2.imgbox.com/95/4c/0NZSKOhs_o.png" width="1080"></p> 
+<p><span style="color:#be191c;"><code><span style="background-color:#cccccc;">readUnsignedByte</span></code></span>读到的<span style="color:#be191c;"><code><span style="background-color:#cccccc;">nType</span></code></span>为9或10时会进入<span style="color:#be191c;"><code><span style="background-color:#cccccc;">readXmlSerializable</span></code></span>或<span style="color:#be191c;"><code><span style="background-color:#cccccc;">readExternalizableLite</span></code></span>分支。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="664" src="https://images2.imgbox.com/98/cb/jxtCZlay_o.png" width="1080"></p> 
+<p>上述两个方法均通过自身<span style="color:#be191c;"><code><span style="background-color:#cccccc;">loadClass</span></code></span>方法加载类，最终由<span style="color:#be191c;"><code><span style="background-color:#cccccc;">Class.forName</span></code></span>获取类并返回。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="598" src="https://images2.imgbox.com/ff/d7/hG1zsPnK_o.png" width="1080"></p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="727" src="https://images2.imgbox.com/d3/35/0giHgUrU_o.png" width="1080"></p> 
+<ul><li> <p><span style="color:#be191c;"><code><span style="background-color:#cccccc;">readXmlSerializable</span></code></span>方法获取类后继续进行XML解析，是另一个XXE漏洞。</p> </li></ul> 
+<p><span style="color:#be191c;"><code><span style="background-color:#cccccc;">readExternalizableLite</span></code></span>方法获取类后继续调用<span style="color:#be191c;"><code><span style="background-color:#cccccc;">readExternal</span></code></span>反序列化，不受黑名单限制，进而引出两个问题：</p> 
+<ol><li> <p><span style="color:#be191c;"><code><span style="background-color:#cccccc;">ExternalizableHelper</span></code></span>自身没有实现<span style="color:#be191c;"><code><span style="background-color:#cccccc;">Serializable</span></code></span>接口，一定有什么地方调用它的<span style="color:#be191c;"><code><span style="background-color:#cccccc;">readObject</span></code></span></p> </li><li> <p><span style="color:#be191c;"><code><span style="background-color:#cccccc;">loadClass</span></code></span>加载后强转为了<span style="color:#be191c;"><code><span style="background-color:#cccccc;">ExternalizableLite</span></code></span>类型，它哪些满足<span style="color:#be191c;"><code><span style="background-color:#cccccc;">readExternal</span></code></span>参数要求的子类可以被用作sink</p> </li></ol> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="516" src="https://images2.imgbox.com/42/42/cmh1wmIZ_o.png" width="1080"></p> 
+<p>找到<span style="color:#be191c;"><code><span style="background-color:#cccccc;">PermissionInfo#readExternal</span></code></span>会调用<span style="color:#be191c;"><code><span style="background-color:#cccccc;">ExternalizableHelper#readCollection</span></code></span>进而调用<span style="color:#be191c;"><code><span style="background-color:#cccccc;">readObject</span></code></span>作为链首。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="609" src="https://images2.imgbox.com/2e/f3/SiAkyDRc_o.png" width="1080"></p> 
+<p>继续找到<span style="color:#be191c;"><code><span style="background-color:#cccccc;">TopNAggregator$PartialResult</span></code></span>及其父类<span style="color:#be191c;"><code><span style="background-color:#cccccc;">SortedBag</span></code></span>：</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="524" src="https://images2.imgbox.com/ca/13/mQzi5R3z_o.png" width="1080"></p> 
+<p><span style="color:#be191c;"><code><span style="background-color:#cccccc;">readExternal</span></code></span>方法会调用父类的<span style="color:#be191c;"><code><span style="background-color:#cccccc;">instantiateInternalMap</span></code></span>方法将<span style="color:#be191c;"><code><span style="background-color:#cccccc;">comparator</span></code></span>封装进<span style="color:#be191c;"><code><span style="background-color:#cccccc;">TreeMap</span></code></span>，随后在<span style="color:#be191c;"><code><span style="background-color:#cccccc;">add</span></code></span>方法中调用<span style="color:#be191c;"><code><span style="background-color:#cccccc;">map.put</span></code></span>时就会触发<span style="color:#be191c;"><code><span style="background-color:#cccccc;">compare</span></code></span>，进而连上以前的链尾。与<span style="color:#be191c;"><code><span style="background-color:#cccccc;">PriorityQueue</span></code></span>的作用相同，只是绕这么一圈过掉了黑名单。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="609" src="https://images2.imgbox.com/ab/b6/TuZC8oIW_o.png" width="1080"></p> 
+<p>重写<span style="color:#be191c;"><code><span style="background-color:#cccccc;">PermissionInfo#writeExternal</span></code></span>按照以前的套路一步步构造payload打出去就行。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="554" src="https://images2.imgbox.com/87/b5/PIfYhDjB_o.png" width="1080"></p> 
+<pre><code class="hljs">extract:95, MvelExtractor (com.tangosol.coherence.rest.util.extractor)
+
+extract:112, ReflectionExtractor (com.tangosol.util.extractor)
+extract:105, ChainedExtractor (com.tangosol.util.extractor)
+
+// extract:96, MultiExtractor (com.tangosol.util.extractor)
+
+compare:143, AbstractExtractor (com.tangosol.util.extractor)
+compare:416, SortedBag$WrapperComparator (com.tangosol.util)
+compare:1295, TreeMap (java.util)
+put:538, TreeMap (java.util)
+add:152, SortedBag (com.tangosol.util)
+add:270, TopNAggregator$PartialResult (com.tangosol.util.aggregator)
+readExternal:299, TopNAggregator$PartialResult (com.tangosol.util.aggregator)
+readExternalizableLite:2345, ExternalizableHelper (com.tangosol.util)
+readObjectInternal:2661, ExternalizableHelper (com.tangosol.util)
+readObject:2606, ExternalizableHelper (com.tangosol.util)
+readCollection:2131, ExternalizableHelper (com.tangosol.util)
+readExternal:190, PermissionInfo (com.tangosol.net.security)
+readExternalData:2118, ObjectInputStream (java.io)
+readOrdinaryObject:2067, ObjectInputStream (java.io)
+readObject0:1573, ObjectInputStream (java.io)</code></pre> 
+<p> 漏洞作者用了<span style="color:#be191c;"><code><span style="background-color:#cccccc;">AttributeHolder</span></code></span>作为链首，主要是<span style="color:#be191c;"><code><span style="background-color:#cccccc;">writeExternal</span></code></span>的逻辑友好，不用重写构造起来更加方便。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="842" src="https://images2.imgbox.com/0b/24/yBEug8qN_o.png" width="1080"></p> 
+<h2>CVE-2020-14644</h2> 
+<p>按照同样的思路找<span style="color:#be191c;"><code><span style="background-color:#cccccc;">ClassLoader.defineClass</span></code></span>的路子：</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="567" src="https://images2.imgbox.com/42/d7/fl4YYFhu_o.png" width="1080"></p> 
+<p><span style="color:#be191c;"><code><span style="background-color:#cccccc;">com.tangosol.internal.util.invoke.RemoteConstructor#readResolve</span></code></span>会触发<span style="color:#be191c;"><code><span style="background-color:#cccccc;">newInstance</span></code></span>并调用<span style="color:#be191c;"><code><span style="background-color:#cccccc;">com.tangosol.internal.util.invoke.RemotableSupport#realize</span></code></span>。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="733" src="https://images2.imgbox.com/dc/d1/1v0TYoZP_o.png" width="1080"></p> 
+<p>随后会经过多个方法处理后最终进入<span style="color:#be191c;"><code><span style="background-color:#cccccc;">ClassLoader.defineClass</span></code></span>，可以看到关键是最开始传入<span style="color:#be191c;"><code><span style="background-color:#cccccc;">RemoteConstructor</span></code></span>构造方法的<span style="color:#be191c;"><code><span style="background-color:#cccccc;">ClassDefinition</span></code></span>对象。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="733" src="https://images2.imgbox.com/e2/f3/8Lku0cXb_o.png" width="1080"></p> 
+<p>对于字节码相关的处理函数就是获取构造方法，之后会被用于创建实例化对象，真正的关键变为了<span style="color:#be191c;"><code><span style="background-color:#cccccc;">ClassDefinition</span></code></span>构造方法的<span style="color:#be191c;"><code><span style="background-color:#cccccc;">ClassIdentity</span></code></span>对象。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="733" src="https://images2.imgbox.com/d1/92/srYqaBvG_o.png" width="1080"></p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="733" src="https://images2.imgbox.com/f8/82/A9PwSoXL_o.png" width="1080"></p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="733" src="https://images2.imgbox.com/a3/5a/MGMXq4no_o.png" width="1080"></p> 
+<p>看到<span style="color:#be191c;"><code><span style="background-color:#cccccc;">ClassIdentity</span></code></span>构造函数会将包名、类名、以及md5哈希分别存入三个属性，上文中<span style="color:#be191c;"><code><span style="background-color:#cccccc;">RemotableSupport</span></code></span>加载字节码时，会以这个<span style="color:#be191c;"><code><span style="background-color:#cccccc;">getName</span></code></span>方法获取到的类名为准。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="575" src="https://images2.imgbox.com/83/b7/Uz8Phlmw_o.png" width="1080"></p> 
+<p>梳理一下整体逻辑：</p> 
+<ol><li> <p>将要加载的类喂给<span style="color:#be191c;"><code><span style="background-color:#cccccc;">ClassIdentity</span></code></span>构造函数</p> </li><li> <p><span style="color:#be191c;"><code><span style="background-color:#cccccc;">ClassDefinition</span></code></span>构造函数接收第一步创建的<span style="color:#be191c;"><code><span style="background-color:#cccccc;">ClassIdentity</span></code></span>对象、以及要加载的类字节码</p> </li><li> <p><span style="color:#be191c;"><code><span style="background-color:#cccccc;">RemoteConstructor</span></code></span>构造函数接收第二步创建的<span style="color:#be191c;"><code><span style="background-color:#cccccc;">ClassDefinition</span></code></span>对象、以及要加载的类构造函数的参数类型数组</p> </li></ol> 
+<p>反序列化时就会触发类加载，要解决的核心问题是<span style="color:#be191c;"><code><span style="background-color:#cccccc;">ClassIdentity</span></code></span>构造函数把传给<span style="color:#be191c;"><code><span style="background-color:#cccccc;">ClassLoader.defineClass</span></code></span>的类名作了变化，我们也要对字节码中的类名作相应的格式变化，用asm或者javassist或者手动创建类对象都行。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="398" src="https://images2.imgbox.com/5b/c2/VM2fNXyY_o.png" width="1080"></p> 
+<pre><code class="hljs">defineClass:181, RemotableSupport (com.tangosol.internal.util.invoke)
+realize:137, RemotableSupport (com.tangosol.internal.util.invoke)
+newInstance:120, RemoteConstructor (com.tangosol.internal.util.invoke)
+readResolve:231, RemoteConstructor (com.tangosol.internal.util.invoke)
+invoke0:-1, NativeMethodAccessorImpl (sun.reflect)
+invoke:62, NativeMethodAccessorImpl (sun.reflect)
+invoke:43, DelegatingMethodAccessorImpl (sun.reflect)
+invoke:498, Method (java.lang.reflect)
+invokeReadResolve:1260, ObjectStreamClass (java.io)
+readOrdinaryObject:2078, ObjectInputStream (java.io)
+readObject0:1573, ObjectInputStream (java.io)</code></pre> 
+<h2>CVE-2021-2135</h2> 
+<p>早期对于14756的修复方法之一就是在<span style="color:#be191c;"><code><span style="background-color:#cccccc;">ExternalizableHelper#readExternalizableLite</span></code><span style="background-color:#cccccc;">中</span><code><span style="background-color:#cccccc;">loadClass</span></code></span>后，判断输入流属于<span style="color:#be191c;"><code><span style="background-color:#cccccc;">ObjectInputStream</span></code></span>就进入检查流程。这就是把找一条非<span style="color:#be191c;"><code><span style="background-color:#cccccc;">ObjectInputStream</span></code></span>输入流就能绕过写在脸上了。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="746" src="https://images2.imgbox.com/78/7d/che9eNcJ_o.png" width="1080"></p> 
+<pre><code class="hljs">extract:95, MvelExtractor (com.tangosol.coherence.rest.util.extractor)
+
+extract:112, ReflectionExtractor (com.tangosol.util.extractor)
+extract:105, ChainedExtractor (com.tangosol.util.extractor)
+
+// extract:96, MultiExtractor (com.tangosol.util.extractor)
+
+compare:79, AbstractExtractor (com.tangosol.util.extractor)
+compare:416, SortedBag$WrapperComparator (com.tangosol.util)
+compare:1295, TreeMap (java.util)
+put:538, TreeMap (java.util)
+add:152, SortedBag (com.tangosol.util)
+add:268, TopNAggregator$PartialResult (com.tangosol.util.aggregator)
+readExternal:297, TopNAggregator$PartialResult (com.tangosol.util.aggregator)
+readExternalizableLite:2265, ExternalizableHelper (com.tangosol.util)
+readObjectInternal:2579, ExternalizableHelper (com.tangosol.util)
+deserializeInternal:3098, ExternalizableHelper (com.tangosol.util)
+fromBinary:334, ExternalizableHelper (com.tangosol.util)
+getKey:56, SimpleBinaryEntry (com.tangosol.internal.util)
+toString:153, SimpleBinaryEntry (com.tangosol.internal.util)
+equals:392, XString (com.sun.org.apache.xpath.internal.objects)
+equals:3415, Base (com.tangosol.util)
+put:213, LiteMap (com.tangosol.util)
+readMap:1900, ExternalizableHelper (com.tangosol.util)
+readExternal:190, ConditionalPutAll (com.tangosol.util.processor)
+readExternalizableLite:2265, ExternalizableHelper (com.tangosol.util)
+readObjectInternal:2579, ExternalizableHelper (com.tangosol.util)
+readObject:2524, ExternalizableHelper (com.tangosol.util)
+readObject:2502, ExternalizableHelper (com.tangosol.util)
+readExternal:406, AttributeHolder (com.tangosol.coherence.servlet)
+readExternal:371, AttributeHolder (com.tangosol.coherence.servlet)
+readExternalData:2118, ObjectInputStream (java.io)
+readOrdinaryObject:2067, ObjectInputStream (java.io)
+readObject0:1573, ObjectInputStream (java.io)</code></pre>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/8085d68ab542aae1769092e43cebc7d3/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">6 网关和配置服务器</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/44a1f57251ebd61ec5a2c160a0a8fcb1/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">怎样找回电脑回收站已清空的文件？3招轻松恢复！</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

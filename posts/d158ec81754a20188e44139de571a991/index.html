@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>STM32传输FPGA业务 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="STM32传输FPGA业务" />
+<meta property="og:description" content="1、实现功能：
+FPGA芯片两个信号管脚分别是TTL_RX与TTL_TX，stm32读取FPGA采集信号TTL_RX的数据，再写到FPGA中通过TTL_TX发送出去，实现FPGA串口功能
+2、大概方法：
+①、FPGA中FIFO_RX和FIFO_TX,分别负责TTL_RX采集接收与TTL_TX发送功能
+②、stm32通过FSMC nand flash 驱动与FPGA通讯，读取FIFO_RX接收到的数据，把想发送的数据写入FIFO_TX中
+3、遇到的问题与解决方法：
+①什么时候读写FPGA?
+方法：FPGA中fifo有空、满、快空、快满信号，可以设置快空、快满触发条件，输出给STM32形成中断触发读写
+②怎么保证数据在时间上连续，STM32接收到快满标志，去读FPGA时候，FPGA中FIFO_TX中数据已经发完了，这中间时间误差可能ns级的，但是TTL_TX信号中可能有几ns是默认的值，波特率不高可能看不出误码，但实际存在。
+方法：FIFO_TX无数据，输出默认未知值，那么在程序启动时候先往FIFO_TX写入足够TTL_TX发送1~2ms的数据，STM32读写FPGA任务优先级调高，接收到FIFO_RX快满中断读写时间误差在1~2ms以内，那么TTL_TX发送的数据一定是TTL_RX接收的数据
+③程序快满设置1024字节触发，但是STM32接收到中断只读1000字节，FIFO_RX为什么出现空信号？
+方法：STM32接收FIFO_RX快满中断后在读FPGA数据过程中接收到快满中断丢弃
+原因：STM32读FPGA过程中，FIFO_RX中数据剩余1023个，快满标志清零了，但FIFO_RX刚好这时候又采集到TTL_RX数据，恢复到1024个，再次触发快满标志，造成STM32读2*1000数据。
+④FIFO_RX出现满标志，并且stm32没有接收到快满中断
+原因：fpga启动后FIFO_RX不断接收，STM32可能启动慢或没到读FPGA数据
+方法：通过STM32控制FPGA的FIFO启动时间（或操作FPGA且先读fpga，把FIFO_RX读空）
+⑤fpga采样时钟2M正常，8M，16M后FIFO_TX再次出现②问题，但是fpga中的fifo资源有限，高速实现2ms缓存需求资源太大，芯片无法满足需求
+方法：在STM32添加fifo" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/d158ec81754a20188e44139de571a991/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-12-29T14:45:21+08:00" />
+<meta property="article:modified_time" content="2023-12-29T14:45:21+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">STM32传输FPGA业务</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p><strong>1、实现功能：</strong></p> 
+<p>FPGA芯片两个信号管脚分别是TTL_RX与TTL_TX，stm32读取FPGA采集信号TTL_RX的数据，再写到FPGA中通过TTL_TX发送出去，实现FPGA串口功能</p> 
+<p></p> 
+<p><strong>2、大概方法：</strong></p> 
+<p>①、FPGA中FIFO_RX和FIFO_TX,分别负责TTL_RX采集接收与TTL_TX发送功能</p> 
+<p>②、stm32通过FSMC nand flash 驱动与FPGA通讯，读取FIFO_RX接收到的数据，把想发送的数据写入FIFO_TX中</p> 
+<p></p> 
+<p><strong>3、遇到的问题与解决方法：</strong></p> 
+<p><span style="color:#a2e043;">①什么时候读写FPGA?</span></p> 
+<p>方法：FPGA中fifo有空、满、快空、快满信号，可以设置快空、快满触发条件，输出给STM32形成中断触发读写</p> 
+<p><span style="color:#a2e043;">②怎么保证数据在时间上连续</span>，STM32接收到快满标志，去读FPGA时候，FPGA中FIFO_TX中数据已经发完了，这中间时间误差可能ns级的，但是TTL_TX信号中可能有几ns是默认的值，波特率不高可能看不出误码，但实际存在。</p> 
+<p>方法：FIFO_TX无数据，输出默认未知值，那么在程序启动时候先往FIFO_TX写入足够TTL_TX发送1~2ms的数据，STM32读写FPGA任务优先级调高，接收到FIFO_RX快满中断读写时间误差在1~2ms以内，那么TTL_TX发送的数据一定是TTL_RX接收的数据</p> 
+<p><span style="color:#a2e043;">③</span>程序快满设置1024字节触发，但是STM32接收到中断只读1000字节，<span style="color:#a2e043;">FIFO_RX为什么出现空信号</span>？</p> 
+<p>方法：STM32接收FIFO_RX快满中断后在读FPGA数据过程中接收到快满中断丢弃</p> 
+<p>原因：STM32读FPGA过程中，FIFO_RX中数据剩余1023个，快满标志清零了，但FIFO_RX刚好这时候又采集到TTL_RX数据，恢复到1024个，再次触发快满标志，造成STM32读2*1000数据。</p> 
+<p><span style="color:#a2e043;">④FIFO_RX出现满标志</span>，并且stm32没有接收到快满中断</p> 
+<p>原因：fpga启动后FIFO_RX不断接收，STM32可能启动慢或没到读FPGA数据</p> 
+<p>方法：通过STM32控制FPGA的FIFO启动时间（或操作FPGA且先读fpga，把FIFO_RX读空）</p> 
+<p>⑤fpga采样时钟2M正常，8M，16M后FIFO_TX再次出现②问题，但是fpga中的fifo资源有限，高速实现2ms缓存需求资源太大，芯片无法满足需求</p> 
+<p>方法：在STM32添加fifo</p> 
+<p></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/c4ae62dd8464dce97d0a450b30c09a88/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">如何利用小红书笔记API进行高效内容运营？</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/b723d5f980bf2175e577e6ce6bdc0018/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">C#常用类</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

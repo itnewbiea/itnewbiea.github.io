@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Docker容器技术之网络配置（5） - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Docker容器技术之网络配置（5）" />
+<meta property="og:description" content="文章目录 1. Linux内核实现名称空间的创建1.1 ip netns命令1.2 创建Network Namespace1.3 操作Network Namespace1.4 转移设备1.5 veth pair1.6 创建veth pair1.7 实现Network Namespace间通信1.8 veth设备重命名 1. Linux内核实现名称空间的创建 1.1 ip netns命令 可以借助ip netns命令来完成对 Network Namespace 的各种操作。ip netns命令来自于iproute安装包，一般系统会默认安装，如果没有的话，请自行安装。
+注意：ip netns命令修改网络配置时需要 sudo 权限。
+可以通过ip netns命令完成对Network Namespace 的相关操作，可以通过ip netns help查看命令帮助信息：
+[root@node02 ~]# ip netns help Usage: ip netns list ip netns add NAME ip netns set NAME NETNSID ip [-all] netns delete [NAME] ip netns identify [PID] ip netns pids NAME ip [-all] netns exec [NAME] cmd ." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/c82c211ae11e497aa5f158a837a0c404/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-08-29T12:01:34+08:00" />
+<meta property="article:modified_time" content="2020-08-29T12:01:34+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Docker容器技术之网络配置（5）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-github-gist">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#1_Linux_1" rel="nofollow">1. Linux内核实现名称空间的创建</a></li><li><ul><li><a href="#11_ip_netns_3" rel="nofollow">1.1 ip netns命令</a></li><li><a href="#12_Network_Namespace_22" rel="nofollow">1.2 创建Network Namespace</a></li><li><a href="#13_Network_Namespace_38" rel="nofollow">1.3 操作Network Namespace</a></li><li><a href="#14__66" rel="nofollow">1.4 转移设备</a></li><li><a href="#15_veth_pair_70" rel="nofollow">1.5 veth pair</a></li><li><a href="#16_veth_pair_74" rel="nofollow">1.6 创建veth pair</a></li><li><a href="#17_Network_Namespace_118" rel="nofollow">1.7 实现Network Namespace间通信</a></li><li><a href="#18_veth_182" rel="nofollow">1.8 veth设备重命名</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="1_Linux_1"></a>1. Linux内核实现名称空间的创建</h2> 
+<hr> 
+<h3><a id="11_ip_netns_3"></a>1.1 ip netns命令</h3> 
+<p>可以借助ip netns命令来完成对 Network Namespace 的各种操作。ip netns命令来自于iproute安装包，一般系统会默认安装，如果没有的话，请自行安装。</p> 
+<p>注意：ip netns命令修改网络配置时需要 sudo 权限。</p> 
+<p>可以通过ip netns命令完成对Network Namespace 的相关操作，可以通过ip netns help查看命令帮助信息：</p> 
+<pre><code>[root@node02 ~]# ip netns help
+Usage: ip netns list
+       ip netns add NAME
+       ip netns set NAME NETNSID
+       ip [-all] netns delete [NAME]
+       ip netns identify [PID]
+       ip netns pids NAME
+       ip [-all] netns exec [NAME] cmd ...
+       ip netns monitor
+       ip netns list-id
+</code></pre> 
+<p>默认情况下，Linux系统中是没有任何 Network Namespace的，所以ip netns list命令不会返回任何信息。</p> 
+<h3><a id="12_Network_Namespace_22"></a>1.2 创建Network Namespace</h3> 
+<p>通过命令创建一个名为ns0的命名空间：</p> 
+<pre><code>[root@node02 ~]# ip netns list
+[root@node02 ~]# ip netns add ns0
+[root@node02 ~]# ip netns list
+ns0
+</code></pre> 
+<p>新创建的 Network Namespace 会出现在/var/run/netns/目录下。如果相同名字的 namespace 已经存在，命令会报Cannot create namespace file “/var/run/netns/ns0”: File exists的错误。</p> 
+<pre><code>[root@node02 ~]# ls /var/run/netns/
+ns0
+[root@node02 ~]# ip netns add ns0
+Cannot create namespace file "/var/run/netns/ns0": File exists
+</code></pre> 
+<p>对于每个 Network Namespace 来说，它会有自己独立的网卡、路由表、ARP 表、iptables 等和网络相关的资源。</p> 
+<h3><a id="13_Network_Namespace_38"></a>1.3 操作Network Namespace</h3> 
+<p>ip命令提供了<code>ip netns exec</code>子命令可以在对应的 Network Namespace 中执行命令。</p> 
+<p>查看新创建 Network Namespace 的网卡信息</p> 
+<pre><code>[root@node02 ~]# ip netns exec ns0 ip addr
+1: lo: &lt;LOOPBACK&gt; mtu 65536 qdisc noop state DOWN group default qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+</code></pre> 
+<p>可以看到，新创建的Network Namespace中会默认创建一个lo回环网卡，此时网卡处于关闭状态。此时，尝试去 ping 该lo回环网卡，会提示Network is unreachable</p> 
+<pre><code>[root@node02 ~]# ip netns exec ns0 ping 127.0.0.1
+connect: 网络不可达
+</code></pre> 
+<p>通过下面的命令启用lo回环网卡：</p> 
+<pre><code>[root@node02 ~]# ip netns exec ns0 ip link set lo up
+[root@node02 ~]# 
+[root@node02 ~]# ip netns exec ns0 ping 127.0.0.1  
+PING 127.0.0.1 (127.0.0.1) 56(84) bytes of data.
+64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=0.060 ms
+64 bytes from 127.0.0.1: icmp_seq=2 ttl=64 time=0.066 ms
+64 bytes from 127.0.0.1: icmp_seq=3 ttl=64 time=0.025 ms
+^C
+--- 127.0.0.1 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2000ms
+rtt min/avg/max/mdev = 0.025/0.050/0.066/0.019 ms
+</code></pre> 
+<h3><a id="14__66"></a>1.4 转移设备</h3> 
+<p>我们可以在不同的 Network Namespace 之间转移设备（如veth）。由于一个设备只能属于一个 Network Namespace ，所以转移后在这个 Network Namespace 内就看不到这个设备了。</p> 
+<p>其中，veth设备属于可转移设备，而很多其它设备（如lo、vxlan、ppp、bridge等）是不可以转移的。</p> 
+<h3><a id="15_veth_pair_70"></a>1.5 veth pair</h3> 
+<p>veth pair 全称是 Virtual Ethernet Pair，是一个成对的端口，所有从这对端口一 端进入的数据包都将从另一端出来，反之也是一样。<br> 引入veth pair是为了在不同的 Network Namespace 直接进行通信，利用它可以直接将两个 Network Namespace 连接起来。<br> <img src="https://images2.imgbox.com/de/50/1MIkFlZK_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="16_veth_pair_74"></a>1.6 创建veth pair</h3> 
+<pre><code>[root@node02 ~]# ip link add type veth
+[root@node02 ~]# ip a
+1: lo: &lt;LOOPBACK,UP,LOWER_UP&gt; mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+    inet6 ::1/128 scope host 
+       valid_lft forever preferred_lft forever
+2: ens33: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc pfifo_fast state UP group default qlen 1000
+    link/ether 00:0c:29:dd:54:b6 brd ff:ff:ff:ff:ff:ff
+    inet 192.168.159.161/24 brd 192.168.159.255 scope global noprefixroute dynamic ens33
+       valid_lft 1309sec preferred_lft 1309sec
+    inet6 fe80::2d92:6f17:5128:80f9/64 scope link noprefixroute 
+       valid_lft forever preferred_lft forever
+3: docker0: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc noqueue state UP group default 
+    link/ether 02:42:06:c5:29:42 brd ff:ff:ff:ff:ff:ff
+    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0
+       valid_lft forever preferred_lft forever
+    inet6 fe80::42:6ff:fec5:2942/64 scope link 
+       valid_lft forever preferred_lft forever
+5: veth1c4e358@if4: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc noqueue master docker0 state UP group default 
+    link/ether 56:17:7a:17:60:b4 brd ff:ff:ff:ff:ff:ff link-netnsid 0
+    inet6 fe80::5417:7aff:fe17:60b4/64 scope link 
+       valid_lft forever preferred_lft forever
+11: veth710559c@if10: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc noqueue master docker0 state UP group default 
+    link/ether a2:f8:89:83:4b:55 brd ff:ff:ff:ff:ff:ff link-netnsid 1
+    inet6 fe80::a0f8:89ff:fe83:4b55/64 scope link 
+       valid_lft forever preferred_lft forever
+13: veth664302c@if12: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc noqueue master docker0 state UP group default 
+    link/ether 16:b2:4d:f7:f6:28 brd ff:ff:ff:ff:ff:ff link-netnsid 2
+    inet6 fe80::14b2:4dff:fef7:f628/64 scope link 
+       valid_lft forever preferred_lft forever
+15: veth3b5c82d@if14: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc noqueue master docker0 state UP group default 
+    link/ether 1a:b1:44:eb:27:d9 brd ff:ff:ff:ff:ff:ff link-netnsid 3
+    inet6 fe80::18b1:44ff:feeb:27d9/64 scope link 
+       valid_lft forever preferred_lft forever
+20: veth0@veth1: &lt;BROADCAST,MULTICAST,M-DOWN&gt; mtu 1500 qdisc noop state DOWN group default qlen 1000
+    link/ether ce:eb:80:60:da:2f brd ff:ff:ff:ff:ff:ff
+21: veth1@veth0: &lt;BROADCAST,MULTICAST,M-DOWN&gt; mtu 1500 qdisc noop state DOWN group default qlen 1000
+    link/ether ba:87:52:76:35:c5 brd ff:ff:ff:ff:ff:ff
+</code></pre> 
+<p>可以看到，此时系统中新增了一对veth pair，将veth0和veth1两个虚拟网卡连接了起来，此时这对 veth pair 处于”未启用“状态。</p> 
+<h3><a id="17_Network_Namespace_118"></a>1.7 实现Network Namespace间通信</h3> 
+<p>下面我们利用veth pair实现两个不同的 Network Namespace 之间的通信。刚才我们已经创建了一个名为ns0的 Network Namespace，下面再创建一个信息Network Namespace，命名为ns1</p> 
+<pre><code>[root@node02 ~]# ip netns add ns1
+[root@node02 ~]# ip netns list
+ns1
+ns0
+</code></pre> 
+<p>然后我们将veth0加入到ns0，将veth1加入到ns1</p> 
+<pre><code>[root@node02 ~]# ip link set veth0 netns ns0
+[root@node02 ~]# ip link set veth1 netns ns1
+</code></pre> 
+<p>然后我们分别为这对veth pair配置上ip地址，并启用它们</p> 
+<pre><code>[root@node02 ~]# ip netns exec ns0 ip link set veth0 up
+[root@node02 ~]# ip netns exec ns0 ip addr add 10.0.0.1/24 dev veth0
+[root@node02 ~]# ip netns exec ns1 ip link set lo up
+[root@node02 ~]# ip netns exec ns1 ip link set veth1 up
+[root@node02 ~]# ip netns exec ns1 ip addr add 10.0.0.2/24 dev veth1
+</code></pre> 
+<p>查看这对veth pair的状态</p> 
+<pre><code>[root@node02 ~]# ip netns exec ns0 ip a
+1: lo: &lt;LOOPBACK,UP,LOWER_UP&gt; mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+    inet6 ::1/128 scope host 
+       valid_lft forever preferred_lft forever
+20: veth0@if21: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc noqueue state UP group default qlen 1000
+    link/ether ce:eb:80:60:da:2f brd ff:ff:ff:ff:ff:ff link-netnsid 1
+    inet 10.0.0.1/24 scope global veth0
+       valid_lft forever preferred_lft forever
+    inet6 fe80::cceb:80ff:fe60:da2f/64 scope link 
+       valid_lft forever preferred_lft forever
+
+[root@node02 ~]# ip netns exec ns1 ip a
+1: lo: &lt;LOOPBACK,UP,LOWER_UP&gt; mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+    inet6 ::1/128 scope host 
+       valid_lft forever preferred_lft forever
+21: veth1@if20: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc noqueue state UP group default qlen 1000
+    link/ether ba:87:52:76:35:c5 brd ff:ff:ff:ff:ff:ff link-netnsid 0
+    inet 10.0.0.2/24 scope global veth1
+       valid_lft forever preferred_lft forever
+    inet6 fe80::b887:52ff:fe76:35c5/64 scope link 
+       valid_lft forever preferred_lft forever
+</code></pre> 
+<p>从上面可以看出，我们已经成功启用了这个veth pair，并为每个veth设备分配了对应的ip地址。我们尝试在ns1中访问ns0中的ip地址：</p> 
+<pre><code>[root@node02 ~]# ip netns exec ns1 ping 10.0.0.1
+PING 10.0.0.1 (10.0.0.1) 56(84) bytes of data.
+64 bytes from 10.0.0.1: icmp_seq=1 ttl=64 time=0.065 ms
+64 bytes from 10.0.0.1: icmp_seq=2 ttl=64 time=0.079 ms
+64 bytes from 10.0.0.1: icmp_seq=3 ttl=64 time=0.034 ms
+^C
+--- 10.0.0.1 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2000ms
+rtt min/avg/max/mdev = 0.034/0.059/0.079/0.019 ms
+</code></pre> 
+<p>可以看到，veth pair成功实现了两个不同Network Namespace之间的网络交互。</p> 
+<h3><a id="18_veth_182"></a>1.8 veth设备重命名</h3> 
+<pre><code>[root@node02 ~]# ip netns exec ns0 ip link set veth0 down
+[root@node02 ~]# ip netns exec ns0 ip link set dev veth0 name eth0
+[root@node02 ~]# ip netns exec ns0 ip a
+1: lo: &lt;LOOPBACK,UP,LOWER_UP&gt; mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+    inet6 ::1/128 scope host 
+       valid_lft forever preferred_lft forever
+20: eth0@if21: &lt;BROADCAST,MULTICAST&gt; mtu 1500 qdisc noqueue state DOWN group default qlen 1000
+    link/ether ce:eb:80:60:da:2f brd ff:ff:ff:ff:ff:ff link-netnsid 1
+    inet 10.0.0.1/24 scope global eth0
+       valid_lft forever preferred_lft forever
+
+[root@node02 ~]# ip netns exec ns0 ip link set eth0 up
+</code></pre>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/068b3a6678ab93f00c43367c0c1b43e6/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">vue element 树形图回显</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/162d9c3e86a140a633f317e38381e020/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">js中if判断indexOf可能导致的问题</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

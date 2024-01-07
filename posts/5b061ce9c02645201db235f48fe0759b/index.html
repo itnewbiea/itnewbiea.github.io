@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>cas5.x实现将ticket维护到redis集群（不使用官方提供的哨兵模式） - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="cas5.x实现将ticket维护到redis集群（不使用官方提供的哨兵模式）" />
+<meta property="og:description" content="转载至： http://zhfeat.cc/article/45
+2020博客地址汇总
+2019年博客汇总
+前段时间基于CAS 5.2.6为公司二次开发了一套SSO单点登陆系统，整体来说比较顺利，不过最后卡在了将CAS服务端登陆所产生的ticket放到redis集群中这一环节。现在网上相关资料最多的是基于CAS 4.x版本的文章，对于CAS 5.x版本相关的资料还是比较少的，因此没有找到具体的解决同学，纠结了许久最后通过覆盖官方提供的jar包中的类解决了这个问题，希望能帮助到同样遇到这个问题的童鞋。该问题可能会有更优雅的解决方式，如果大家有更好的解决思路希望能分享给我，大家一同进步。
+什么是CAS 这段是对CAS原理的一个剖析和总结，已经很清楚的同学可以略过。
+SSO单点登录访问流程主要有以下步骤 访问服务：SSO客户端发送请求访问应用系统提供的服务资源。定向认证：SSO客户端会重定向用户请求到SSO服务器。用户认证：用户身份认证。发放票据：SSO服务器会产生一个随机的Service Ticket。验证票据：SSO服务器验证票据Service Ticket的合法性，验证通过后，允许客户端访问服务。传输用户信息：SSO服务器验证票据通过后，传输用户认证结果信息给客户端。 CAS 原理和协议 从结构上看，CAS 包含两个部分： CAS Server 和 CAS Client。CAS Server 需要独立部署，主要负责对用户的认证工作；CAS Client 负责处理对客户端受保护资源的访问请求，需要登录时，重定向到 CAS Server。如图是 CAS 最基本的协议过程：
+CAS Client 与受保护的客户端应用部署在一起，以 Filter 方式保护受保护的资源。对于访问受保护资源的每个 Web 请求，CAS Client 会分析该请求的 Http 请求中是否包含 Service Ticket，如果没有，则说明当前用户尚未登录，于是将请求重定向到指定好的 CAS Server 登录地址，并传递 Service （也就是要访问的目的资源地址），以便登录成功过后转回该地址。
+用户在第3步中输入认证信息，如果登录成功，CAS Server 随机产生一个相当长度、唯一、不可伪造的 Service Ticket，并缓存以待将来验证，之后系统自动重定向到 Service 所在地址，并为客户端浏览器设置一个 Ticket Granted Cookie（TGC），CAS Client 在拿到 Service 和新产生的 Ticket 过后，在第 5，6 步中与 CAS Server 进行身份核对，以确保 Service Ticket 的合法性。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/5b061ce9c02645201db235f48fe0759b/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-08-30T21:40:17+08:00" />
+<meta property="article:modified_time" content="2020-08-30T21:40:17+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">cas5.x实现将ticket维护到redis集群（不使用官方提供的哨兵模式）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>转载至： <a href="http://zhfeat.cc/article/45" rel="nofollow">http://zhfeat.cc/article/45</a></p> 
+<p><u><em><strong><a href="https://blog.csdn.net/qq_27384769/article/details/105770402"><span style="color:#f33b45;">2020博客地址汇总</span></a></strong></em></u></p> 
+<p><strong><u><a href="https://blog.csdn.net/qq_27384769/article/details/80343511"><span style="color:#f33b45;">2019年博客汇总</span></a></u></strong></p> 
+<p> </p> 
+<blockquote> 
+ <p>前段时间基于CAS 5.2.6为公司二次开发了一套SSO单点登陆系统，整体来说比较顺利，不过最后卡在了将CAS服务端登陆所产生的ticket放到redis集群中这一环节。现在网上相关资料最多的是基于CAS 4.x版本的文章，对于CAS 5.x版本相关的资料还是比较少的，因此没有找到具体的解决同学，纠结了许久最后通过覆盖官方提供的jar包中的类解决了这个问题，希望能帮助到同样遇到这个问题的童鞋。该问题可能会有更优雅的解决方式，如果大家有更好的解决思路希望能分享给我，大家一同进步。</p> 
+</blockquote> 
+<h3 id="directory051877593073659131">什么是CAS</h3> 
+<p>这段是对CAS原理的一个剖析和总结，已经很清楚的同学可以略过。</p> 
+<h4 id="directory051877593073659132">SSO单点登录访问流程主要有以下步骤</h4> 
+<ol><li>访问服务：SSO客户端发送请求访问应用系统提供的服务资源。</li><li>定向认证：SSO客户端会重定向用户请求到SSO服务器。</li><li>用户认证：用户身份认证。</li><li>发放票据：SSO服务器会产生一个随机的Service Ticket。</li><li>验证票据：SSO服务器验证票据Service Ticket的合法性，验证通过后，允许客户端访问服务。</li><li>传输用户信息：SSO服务器验证票据通过后，传输用户认证结果信息给客户端。</li></ol> 
+<h4 id="directory051877593073659133">CAS 原理和协议</h4> 
+<p>从结构上看，CAS 包含两个部分： CAS Server 和 CAS Client。CAS Server 需要独立部署，主要负责对用户的认证工作；CAS Client 负责处理对客户端受保护资源的访问请求，需要登录时，重定向到 CAS Server。如图是 CAS 最基本的协议过程：</p> 
+<p><img alt="" height="440" src="https://images2.imgbox.com/11/1c/xsyP3StL_o.png" width="662"></p> 
+<p> </p> 
+<ul><li> <p>CAS Client 与受保护的客户端应用部署在一起，以 Filter 方式保护受保护的资源。对于访问受保护资源的每个 Web 请求，CAS Client 会分析该请求的 Http 请求中是否包含 Service Ticket，如果没有，则说明当前用户尚未登录，于是将请求重定向到指定好的 CAS Server 登录地址，并传递 Service （也就是要访问的目的资源地址），以便登录成功过后转回该地址。</p> </li><li> <p>用户在第3步中输入认证信息，如果登录成功，CAS Server 随机产生一个相当长度、唯一、不可伪造的 Service Ticket，并缓存以待将来验证，之后系统自动重定向到 Service 所在地址，并为客户端浏览器设置一个 Ticket Granted Cookie（TGC），CAS Client 在拿到 Service 和新产生的 Ticket 过后，在第 5，6 步中与 CAS Server 进行身份核对，以确保 Service Ticket 的合法性。</p> </li><li> <p>在该协议中，所有与 CAS 的交互均采用 SSL 协议，确保，ST 和 TGC 的安全性。协议工作过程中会有 2 次重定向的过程，但是 CAS Client 与 CAS Server 之间进行 Ticket 验证的过程对于用户是透明的(在服务端进行验证)。</p> </li></ul> 
+<h4 id="directory051877593073659134">名词解释</h4> 
+<ul><li><strong>ST</strong>:Server Ticket(就是Ticket) ST是CAS为用户签发的访问某一service的票据。用户访问service时，service发现用户没有ST，则要求用户去CAS获取ST。用户向CAS发出获取ST的请求，如果用户的请求中包含cookie，则CAS会以此cookie值为key查询缓存中有无TGT，如果存在TGT，则用此TGT签发一个ST，返回给用户。用户凭借ST去访问service，service拿ST去CAS验证，验证通过后，允许用户访问资源。</li><li><strong>TGC</strong>：Ticket Granted Cookie (客户端用户持有，传送到服务器，用于验证） 存放用户身份认证凭证的cookie，在浏览器和CAS Server间通讯时使用，并且只能基于安全通道传输（Https），是CAS Server用来明确用户身份的凭证。</li><li><strong>TGT</strong>（Ticket Grangting Ticket） TGT是CAS为用户签发的登录票据，拥有了TGT，用户就可以证明自己在CAS成功登录过。TGT封装了Cookie值以及此Cookie值对应的用户信息。用户在CAS认证成功后，CAS生成cookie（叫TGC），写入浏览器，同时生成一个TGT对象，放入自己的缓存，TGT对象的ID就是cookie的值。当HTTP再次请求到来时，如果传过来的有CAS生成的cookie，则CAS以此cookie值为key查询缓存中有无TGT ，如果有的话，则说明用户之前登录过，如果没有，则用户需要重新登录。</li></ul> 
+<h3 id="directory051877593073659135">为什么要将ticket维护到redis</h3> 
+<p>在分布式环境下，为提升系统的稳定性，我们的CAS服务端是需要部署到多台节点上的。通过以上介绍，你应该有所了解，如果登录成功，CAS Server 随机产生一个相当长度、唯一、不可伪造的 Service Ticket，并缓存以待将来验证。</p> 
+<p>如果不将Service Ticket持久化到数据库或其他中间件而是维护到本地缓存，在cas服务端多节点部署时，客户端通过Service Ticket与CAS服务端进行认证时，就会随机分配到其中的某一节点，导致匹配失败。</p> 
+<p>这里我选择将Service Ticket维护到redis。在分布式环境下，reids一般都是以集群方式存在的，因此我们在进行CAS二次开发时，需要将ticket维护到redis集群。</p> 
+<h3 id="directory051877593073659136">使用官方CAS 5.x框架遇到的问题</h3> 
+<p>CAS官方已经能把我们实际使用时能遇到的场景都考虑到了，而且提供了完善的解决方案，通过简单的配置即可实现。 <a href="https://apereo.github.io/cas/5.3.x/installation/Redis-Ticket-Registry.html" rel="nofollow">CAS官方文档传送门</a><br> 比如我想把Service Ticket的操作都从中央缓存redis中存取，可以进行如下配置：</p> 
+<ul><li>pom.xml引入依赖：</li></ul> 
+<pre><code>&lt;dependency&gt;
+    &lt;groupId&gt;org.apereo.cas&lt;/groupId&gt;
+    &lt;artifactId&gt;cas-server-support-redis-ticket-registry&lt;/artifactId&gt;
+    &lt;version&gt;${cas.version}&lt;/version&gt;
+&lt;/dependency&gt;
+</code></pre> 
+<ul><li>配置application.properties文件</li></ul> 
+<pre><code>#配置redis存储ticket
+cas.ticket.registry.redis.host=127.0.0.1
+cas.ticket.registry.redis.database=0
+cas.ticket.registry.redis.port=6379
+cas.ticket.registry.redis.password=sa123
+cas.ticket.registry.redis.timeout=2000
+cas.ticket.registry.redis.useSsl=false
+cas.ticket.registry.redis.usePool=true
+cas.ticket.registry.redis.pool.max-active=20
+cas.ticket.registry.redis.pool.maxIdle=8
+cas.ticket.registry.redis.pool.minIdle=0
+cas.ticket.registry.redis.pool.maxActive=8
+cas.ticket.registry.redis.pool.maxWait=-1
+cas.ticket.registry.redis.pool.numTestsPerEvictionRun=0
+cas.ticket.registry.redis.pool.softMinEvictableIdleTimeMillis=0
+cas.ticket.registry.redis.pool.minEvictableIdleTimeMillis=0
+cas.ticket.registry.redis.pool.lifo=true
+cas.ticket.registry.redis.pool.fairness=false
+cas.ticket.registry.redis.pool.testOnCreate=false
+cas.ticket.registry.redis.pool.testOnBorrow=false
+cas.ticket.registry.redis.pool.testOnReturn=false
+cas.ticket.registry.redis.pool.testWhileIdle=false
+#cas.ticket.registry.redis.sentinel.master=mymaster
+#cas.ticket.registry.redis.sentinel.nodes[0]=localhost:26377
+#cas.ticket.registry.redis.sentinel.nodes[1]=localhost:26378
+#cas.ticket.registry.redis.sentinel.nodes[2]=localhost:26379
+</code></pre> 
+<p>重启cas 登录之后测试一下，查看redis里面就会有CAS_TICKET:开头的key了。</p> 
+<p>从这里的例子可以看出，对于在reids中维护ticket，官方提供了两种方案很轻松的解决了我们实际生产环境分布式部署的问题，分别是可配单点reids模式和sentinel哨兵模式。"生活总是这样，看似很简单的东西落到你手里会变得既纠结又复杂"。我们生产环境使用的是简单的主从方式搭建的redis集群，如果要开启哨兵模式，需要更改目前的redis集群结构，测试环境好说，生产环境还需要找运维沟通改一波。</p> 
+<p>说了这么多，写该篇文章的目的，就是告诉大家我是怎么在CAS5.x中，将ticket维护到非哨兵模式的redis集群的- -!。</p> 
+<h3 id="directory051877593073659137">解决方案</h3> 
+<p>网上针对这块的文章根本没有，可能大家都是使用的哨兵模式的redis集群吧，就我闲的蛋疼改这玩意。</p> 
+<p>官方提供了 cas-server-support-redis-ticket-registry:5.2.6.jar 这个包用于访问将ticket维护到redis。因此POM中需引入：</p> 
+<pre><code> &lt;!-- 支持redis存储ticket --&gt;
+ &lt;dependency&gt;
+     &lt;groupId&gt;org.apereo.cas&lt;/groupId&gt;
+     &lt;artifactId&gt;cas-server-support-redis-ticket-registry&lt;/artifactId&gt;
+     &lt;version&gt;${cas.version}&lt;/version&gt;
+  &lt;/dependency&gt;
+</code></pre> 
+<p>我通过idea直接反编译看了下里面的源码，里面有一个RedisTicketRegistryConfiguration类是用来向redis里面缓存ticket的：</p> 
+<pre><code>package org.apereo.cas.config;
+
+import org.apereo.cas.configuration.CasConfigurationProperties;
+import org.apereo.cas.configuration.model.support.redis.RedisTicketRegistryProperties;
+import org.apereo.cas.configuration.support.Beans;
+import org.apereo.cas.redis.core.RedisObjectFactory;
+import org.apereo.cas.ticket.Ticket;
+import org.apereo.cas.ticket.registry.RedisTicketRegistry;
+import org.apereo.cas.ticket.registry.TicketRedisTemplate;
+import org.apereo.cas.ticket.registry.TicketRegistry;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.cloud.context.config.annotation.RefreshScope;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.data.redis.connection.RedisConnectionFactory;
+import org.springframework.data.redis.core.RedisTemplate;
+
+/**
+ * This is {@link RedisTicketRegistryConfiguration}.
+ *
+ * @author serv
+ * @since 5.0.0
+ */
+@Configuration("redisTicketRegistryConfiguration")
+@EnableConfigurationProperties(CasConfigurationProperties.class)
+public class RedisTicketRegistryConfiguration {
+
+    @Autowired
+    private CasConfigurationProperties casProperties;
+    
+    @Bean
+    @RefreshScope
+    public RedisConnectionFactory redisConnectionFactory() {
+        final RedisTicketRegistryProperties redis = casProperties.getTicket().getRegistry().getRedis();
+        final RedisObjectFactory obj = new RedisObjectFactory();
+        return obj.newRedisConnectionFactory(redis);
+    }
+
+    @Bean
+    @RefreshScope
+    public RedisTemplate&lt;String, Ticket&gt; ticketRedisTemplate() {
+        return new TicketRedisTemplate(redisConnectionFactory());
+    }
+
+    @Bean
+    @RefreshScope
+    public TicketRegistry ticketRegistry() {
+        final RedisTicketRegistryProperties redis = casProperties.getTicket().getRegistry().getRedis();
+        final RedisTicketRegistry r = new RedisTicketRegistry(ticketRedisTemplate());
+        r.setCipherExecutor(Beans.newTicketRegistryCipherExecutor(redis.getCrypto(), "redis"));
+        return r;
+    }
+}
+
+</code></pre> 
+<p>从源码我们可以看出，CAS在缓存ticket到redis是通过redisConnectionFactory这个方法获取了一个Redis连接工厂实例，用来操作Redis数据库。该方法中创建RedisObjectFactory时，在这个对象的构造方法中传入了从application.properties中获取的redis相关配置。</p> 
+<p>我们跳到RedisObjectFactory这个类里面，发现该类写在cas-server-support-redis-core:5.2.6.jar这个jar包里面，因此我们在pom中引入：</p> 
+<pre><code>  &lt;dependency&gt;
+      &lt;groupId&gt;org.apereo.cas&lt;/groupId&gt;
+      &lt;artifactId&gt;cas-server-support-redis-core&lt;/artifactId&gt;
+      &lt;version&gt;${cas.version}&lt;/version&gt;
+  &lt;/dependency&gt;
+</code></pre> 
+<p>通过查看源码，该jar包下只有RedisObjectFactory这一个核心类，源码如下：</p> 
+<pre><code>package org.apereo.cas.redis.core;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import org.apereo.cas.configuration.model.support.redis.BaseRedisProperties;
+import org.apereo.cas.configuration.model.support.redis.RedisTicketRegistryProperties;
+import org.springframework.data.redis.connection.RedisConnectionFactory;
+import org.springframework.data.redis.connection.RedisNode;
+import org.springframework.data.redis.connection.RedisSentinelConfiguration;
+import org.springframework.data.redis.connection.jedis.JedisConnectionFactory;
+import org.springframework.util.StringUtils;
+
+import redis.clients.jedis.JedisPoolConfig;
+
+/**
+ * This is {@link RedisObjectFactory}.
+ *
+ * @author Misagh Moayyed
+ * @since 5.2.0
+ */
+public class RedisObjectFactory {
+
+    /**
+     * New redis connection factory.
+     *
+     * @param redis the redis
+     * @return the redis connection factory
+     */
+    public RedisConnectionFactory newRedisConnectionFactory(final BaseRedisProperties redis) {
+        final JedisPoolConfig poolConfig = redis.getPool() != null ? jedisPoolConfig(redis) : new JedisPoolConfig();
+        final JedisConnectionFactory factory = new JedisConnectionFactory(potentiallyGetSentinelConfig(redis), poolConfig);
+        factory.setHostName(redis.getHost());
+        factory.setPort(redis.getPort());
+        if (redis.getPassword() != null) {
+            factory.setPassword(redis.getPassword());
+        }
+        factory.setDatabase(redis.getDatabase());
+        if (redis.getTimeout() &gt; 0) {
+            factory.setTimeout(redis.getTimeout());
+        }
+        factory.setUseSsl(redis.isUseSsl());
+        factory.setUsePool(redis.isUsePool());
+
+        return factory;
+    }
+
+    private JedisPoolConfig jedisPoolConfig(final BaseRedisProperties redis) {
+        final JedisPoolConfig config = new JedisPoolConfig();
+        final RedisTicketRegistryProperties.Pool props = redis.getPool();
+        config.setMaxTotal(props.getMaxActive());
+        config.setMaxIdle(props.getMaxIdle());
+        config.setMinIdle(props.getMinIdle());
+        config.setMaxWaitMillis(props.getMaxWait());
+        config.setLifo(props.isLifo());
+        config.setFairness(props.isFairness());
+        config.setTestWhileIdle(props.isTestWhileIdle());
+        config.setTestOnBorrow(props.isTestOnBorrow());
+        config.setTestOnReturn(props.isTestOnReturn());
+        config.setTestOnCreate(props.isTestOnCreate());
+
+        if (props.getMinEvictableIdleTimeMillis() &gt; 0) {
+            config.setMinEvictableIdleTimeMillis(props.getMinEvictableIdleTimeMillis());
+        }
+        if (props.getNumTestsPerEvictionRun() &gt; 0) {
+            config.setNumTestsPerEvictionRun(props.getNumTestsPerEvictionRun());
+        }
+        if (props.getSoftMinEvictableIdleTimeMillis() &gt; 0) {
+            config.setSoftMinEvictableIdleTimeMillis(props.getSoftMinEvictableIdleTimeMillis());
+        }
+        return config;
+    }
+
+    private RedisSentinelConfiguration potentiallyGetSentinelConfig(final BaseRedisProperties redis) {
+        if (redis.getSentinel() == null) {
+            return null;
+        }
+        RedisSentinelConfiguration sentinelConfig = null;
+        if (redis.getSentinel() != null) {
+            sentinelConfig = new RedisSentinelConfiguration().master(redis.getSentinel().getMaster());
+            sentinelConfig.setSentinels(createRedisNodesForProperties(redis));
+        }
+        return sentinelConfig;
+    }
+
+    private List&lt;RedisNode&gt; createRedisNodesForProperties(final BaseRedisProperties redis) {
+        final List&lt;RedisNode&gt; redisNodes = new ArrayList&lt;RedisNode&gt;();
+        if (redis.getSentinel().getNode() != null) {
+            final List&lt;String&gt; nodes = redis.getSentinel().getNode();
+            for (final String hostAndPort : nodes) {
+                final String[] args = StringUtils.split(hostAndPort, ":");
+                redisNodes.add(new RedisNode(args[0], Integer.parseInt(args[1])));
+            }
+        }
+        return redisNodes;
+    }
+}
+
+</code></pre> 
+<p>可以看到，在newRedisConnectionFactory这个方法中，CAS根据JedisConnectionFactory构建了一个基于jedis支持单点的redis工厂实例，JedisConnectionFactory这个工厂类是在spring-data-redis:1.8.4.RELEASE.jar这个jar包里维护的，我们这里在pom中引入该jar包：</p> 
+<pre><code>  &lt;!-- 该类用于创建redis连接工厂实例 --&gt;
+  &lt;dependency&gt;
+      &lt;groupId&gt;org.springframework.data&lt;/groupId&gt;
+      &lt;artifactId&gt;spring-data-redis&lt;/artifactId&gt;
+      &lt;version&gt;1.8.4.RELEASE&lt;/version&gt;
+  &lt;/dependency&gt;
+</code></pre> 
+<p>通过查看该jar包中的源码我们可以发现，jar包中jedis目录下除了JedisConnectionFactory还有JedisClusterConnection、JedisSentinelConnection，很明显，各种集群模式各种支持。这里我们线上使用的是普通主从集群模式，因此我们通过JedisClusterConnectionfu覆写一下获取reids工厂实例的方法，应该就可以实现操作普通集群的需求。</p> 
+<p>由于该类是在官方提供的jar包中，我这里直接在项目src下面，定义一个同样包名，类名的RedisObjectFactory类，这样在打包的过程中，会优先使用我项目src下的RedisObjectFactory类，从而达到复写jar包中的类的需求。</p> 
+<p>复写RedisObjectFactory源码如下：</p> 
+<pre><code>package org.apereo.cas.redis.core;
+
+import org.apereo.cas.configuration.model.support.redis.BaseRedisProperties;
+import org.apereo.cas.configuration.model.support.redis.RedisTicketRegistryProperties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.data.redis.connection.RedisClusterConfiguration;
+import org.springframework.data.redis.connection.RedisConnectionFactory;
+import org.springframework.data.redis.connection.RedisNode;
+import org.springframework.data.redis.connection.RedisSentinelConfiguration;
+import org.springframework.data.redis.connection.jedis.JedisConnectionFactory;
+import org.springframework.util.StringUtils;
+import redis.clients.jedis.JedisPoolConfig;
+
+import java.util.*;
+
+/**
+ * This is {@link RedisObjectFactory}.
+ * 直接覆写jar包中获取jedis的方法，使用集群模式
+ * 配置文件仍走单点模式
+ * @author ZhangHao
+ * @since 5.2.0
+ */
+public class RedisObjectFactory {
+
+    private final Logger logger = LoggerFactory.getLogger(RedisObjectFactory.class);
+
+    /**
+     * New redis connection factory.
+     *
+     * @param redis the redis
+     * @return the redis connection factory
+     */
+    public RedisConnectionFactory newRedisConnectionFactory(final BaseRedisProperties redis) {
+
+        JedisConnectionFactory jedisConnectionFactory = null;
+        // 集群模式
+        RedisClusterConfiguration redisClusterConfiguration = new RedisClusterConfiguration();
+        // 加载服务器集群节点
+        Set&lt;String&gt; serviceRedisNodes = new HashSet&lt;String&gt;(Arrays.asList(redis.getHost().split(",")));
+
+        try {
+            // 转换成Redis点节
+            Set&lt;RedisNode&gt; clusterNodes = new HashSet&lt;&gt;(serviceRedisNodes.size());
+            for(String node : serviceRedisNodes) {
+                String[] ipAndPort = StringUtils.split(node, ":");
+                String ip = ipAndPort[0];
+                Integer port = Integer.parseInt(ipAndPort[1]);
+                clusterNodes.add(new RedisNode(ip, port));
+            }
+            redisClusterConfiguration.setClusterNodes(clusterNodes);
+            // Redis 连接池配置
+            JedisPoolConfig poolConfig = new JedisPoolConfig();
+            poolConfig.setMaxIdle(redis.getPool().getMaxIdle());
+            poolConfig.setMaxTotal(redis.getPool().getMaxActive());
+            poolConfig.setMinIdle(redis.getPool().getMinIdle());
+            poolConfig.setMaxWaitMillis(redis.getPool().getMaxWait());
+            // 创建连接工厂
+            jedisConnectionFactory = new JedisConnectionFactory(redisClusterConfiguration, poolConfig);
+            // 设置数据库
+            jedisConnectionFactory.setDatabase(0);
+            // 设置密码
+            jedisConnectionFactory.setPassword(redis.getPassword());
+        } catch (Exception e) {
+            logger.error("创建Redis连接工厂错误：{}", e);
+        }
+
+        return jedisConnectionFactory;
+    }
+
+}
+</code></pre> 
+<p>仍然是走cas提供的读取配置文件的方式，application.propertieszhon中reidis集群配置如下：</p> 
+<pre><code>#配置redis集群存储ticke
+cas.ticket.registry.redis.host=10.10.40.61:6379,10.10.40.62:6379,10.10.40.63:6379
+cas.ticket.registry.redis.password=sa123
+cas.ticket.registry.redis.pool.max-active=20
+cas.ticket.registry.redis.pool.maxIdle=8
+cas.ticket.registry.redis.pool.minIdle=0
+cas.ticket.registry.redis.pool.maxWait=1
+</code></pre> 
+<p>重启cas 登录之后测试一下，查看redis集群某台机器里面，是否有CAS_TICKET:开头的key。</p> 
+<h3 id="directory051877593073659138">附：将框架中的session缓存到redis集群的方式</h3> 
+<p>pom.xml中增加：</p> 
+<pre><code>        &lt;dependency&gt;
+            &lt;groupId&gt;org.springframework&lt;/groupId&gt;
+            &lt;artifactId&gt;spring-websocket&lt;/artifactId&gt;
+            &lt;version&gt;4.3.16.RELEASE&lt;/version&gt;
+        &lt;/dependency&gt;
+
+        &lt;dependency&gt;
+            &lt;groupId&gt;org.apereo.cas&lt;/groupId&gt;
+            &lt;artifactId&gt;cas-server-webapp-session-redis&lt;/artifactId&gt;
+            &lt;version&gt;${cas.version}&lt;/version&gt;
+        &lt;/dependency&gt;
+</code></pre> 
+<p>application.propertieszhon 配置：</p> 
+<pre><code>spring.session.store-type=redis
+spring.redis.host=10.10.40.61:6379,10.10.40.62:6379,10.10.40.63:6379
+spring.redis.password=sa123
+</code></pre> 
+<h3 id="directory051877593073659139">遇到的坑</h3> 
+<p>在整合ticket存储到redis集群的过程中，我之前使用的是spring-data-redis:2.1.0.RELEASE.jar这个的jarb包，结果项目启动后spring-data-redis里涉及到Assert的语句抛异常：</p> 
+<pre><code>NoSuchMethodError：org.springframework.util.Assert.isTrue
+</code></pre> 
+<p>搞了好久，网上说必须是spring5或者spring-boot2，才支持这个语法，我换了spring-boot2版本后问题没有解决。也有说spring-data-redis和jedis版本版本不兼容的，试了半天，换了各种版本也不行。最后把spring-data-redis:2.1.0.RELEASE.jar降低版本到:spring-data-redis:1.8.4.RELEASE.jar，DEBUG进去发现这个版本的jar包中buc不存在Assert相关代码，项目正常启动。</p> 
+<h3 id="directory0518775930736591310">总结</h3> 
+<p>几年前就接触过CAS，当时用的应该是比较老的4.x版本，那时候没有太多针对服务端进行二次开发的机会。这次在项目组有幸对CAS5.x这个版本的框架进行一次整体的梳理，并进行了框架内各个功能点的二次开发工作，实际自己动手解决了一些问题，对单点登录整个体系有了更深入的了解。</p> 
+<p>CAS这套框架有着优雅的开发逻辑，完全满足任何SSO业务场景，是非常不错的开源项目。有空我会整理一套我二次开发后的服务端源码，分享出来，和大家一起交流学习。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/180f8f100e13672e6cb9f34784197fda/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Docker容器技术之存储卷（7）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/68408ed8c7fbe8d4c7a22f1387f66d3c/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">214. 最短回文串20200831</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

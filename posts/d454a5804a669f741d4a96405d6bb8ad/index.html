@@ -1,0 +1,1617 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>对抗训练 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="对抗训练" />
+<meta property="og:description" content="文章目录 1、定义2、对抗训练：从CV到NLP2.1 CV中的数据格式2.2 NLP中数据格式 ３、对抗样本与数据增强样本４ 如何确定微小扰动４.1 Fast Gradient Sign Method(FGSM)４.2 Fast Gradient Method(FGM)4.3 Projected Gradient Descent(PGD) 5 实验结果6 实现6.1 pytorch实现[2]6.2 keras实现[3] 1、定义 对抗样本：对输入增加微小扰动得到的样本。旨在增加模型损失。
+对抗训练：训练模型去区分样例是真实样例还是对抗样本的过程。对抗训练不仅可以提升模型对对抗样本的防御能力，还能提升对原始样本的泛化能力。
+2、对抗训练：从CV到NLP ​ 对抗训练最初在cv中使用，nlp中很少使用。因为图像和文本的数据格式导致，在文本中无法增加微小扰动。同数据增强一样，cv中很适用，但nlp中的很少使用。
+2.1 CV中的数据格式 图像是由矩阵表示的，如RGB图像是0~255的数字矩阵表示。
+图像&#43;微小扰动=图像 2.2 NLP中数据格式 文本会首先设置词表，然后将词映射为对应的索引：
+文本&#43;微小扰动≠文本 ​ Goodfellow在17年[2]提出可以在embedding上做扰动。这样做会带来问题：在embedding扰动得到的“对抗样本”不能map到某个单词。在对抗攻击时，不能通过修改原始输入得到这样的样本。所以nlp中的对抗训练不能用于对抗攻击，只能用来提高模型泛化能力。
+３、对抗样本与数据增强样本 ​ 提高模型的泛化性能是机器学习致力追求的目标之一。常见的提高泛化性的方法主要有两种：
+添加噪声，比如往输入添加高斯噪声、中间层增加Dropout以及近来比较热门的对抗训练等，对图像进行随机平移缩放等数据扩增手段某种意义上也属于此列；是往loss里边添加正则项，比如L1,L2惩罚、梯度惩罚等 数据增强与对抗样本都属于在原始输入引入噪声的方法。区别在于数据增强的噪声通常是随机的，而对抗样本的噪声是有目的性的。
+随机噪声的实现方式简单，对泛化性的提升也确实有效。但他的一个明显缺点是“特异性”。随机噪声可能不会对模型造成明显干扰，所以对泛化性能提升帮助有限。
+４ 如何确定微小扰动 ​ 对抗训练流程，在原始输入上增加一个微小的扰动 r a d v r_{adv} radv​，得到对抗样本，用对抗样本就行训练。可以抽象为下面的模型：
+l o s s = − l o g p ( y ∣ x &#43; r a d v ; θ ) w h e r e r a d v = − a r g m a x r , ∣ ∣ r ∣ ∣ &lt; ε l o g p ( y ∣ x &#43; r ; θ ^ ) = a r g m i n r , ∣ ∣ r ∣ ∣ &lt; ε l o g p ( y ∣ x &#43; r ; θ ^ ) (1) loss=-\mathop{log}p(y|x&#43;r_{adv};\theta)\tag1\\ \mathop{where}r_{adv}=-\mathop{argmax}\limits_{r,||r||&lt;\varepsilon}\mathop{log}p(y|x&#43;r;\hat\theta) =\mathop{argmin}\limits_{r,||r||&lt;\varepsilon}\mathop{log}p(y|x&#43;r;\hat\theta) loss=−logp(y∣x&#43;radv​;θ)whereradv​=−r,∣∣r∣∣&lt;εargmax​logp(y∣x&#43;r;θ^)=r,∣∣r∣∣&lt;εargmin​logp(y∣x&#43;r;θ^)(1)" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/d454a5804a669f741d4a96405d6bb8ad/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-05-17T16:05:17+08:00" />
+<meta property="article:modified_time" content="2021-05-17T16:05:17+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">对抗训练</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-tomorrow-night-eighties">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><ul><li><a href="#1_2" rel="nofollow">1、定义</a></li><li><a href="#2CVNLP_9" rel="nofollow">2、对抗训练：从CV到NLP</a></li><li><ul><li><a href="#21_CV_13" rel="nofollow">2.1 CV中的数据格式</a></li><li><a href="#22_NLP_23" rel="nofollow">2.2 NLP中数据格式</a></li></ul> 
+   </li><li><a href="#_32" rel="nofollow">３、对抗样本与数据增强样本</a></li><li><a href="#__48" rel="nofollow">４ 如何确定微小扰动</a></li><li><ul><li><a href="#1_Fast_Gradient_Sign_MethodFGSM_88" rel="nofollow">４.1 Fast Gradient Sign Method(FGSM)</a></li><li><a href="#2_Fast_Gradient_MethodFGM_96" rel="nofollow">４.2 Fast Gradient Method(FGM)</a></li><li><a href="#43_Projected_Gradient_DescentPGD_105" rel="nofollow">4.3 Projected Gradient Descent(PGD)</a></li></ul> 
+   </li><li><a href="#5__109" rel="nofollow">5 实验结果</a></li><li><a href="#6__120" rel="nofollow">6 实现</a></li><li><ul><li><a href="#61_pytorchfont_colorred2font_122" rel="nofollow">6.1 pytorch实现<font color="red">[2]</font></a></li><li><a href="#62_kerasfont_colorred3font_170" rel="nofollow">6.2 keras实现<font color="red">[3]</font></a></li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h3><a id="1_2"></a>1、定义</h3> 
+<p><code>对抗样本</code>：对输入增加微小扰动得到的样本。<strong>旨在增加模型损失</strong>。</p> 
+<p><code>对抗训练</code>：训练模型去区分样例是真实样例还是对抗样本的过程。对抗训练不仅可以提升模型对对抗样本的<font color="blue">防御能力</font>，还能提升对原始样本的<font color="blue">泛化能力</font>。<br> <img src="https://images2.imgbox.com/e4/c9/PJrk0P3p_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="2CVNLP_9"></a>2、对抗训练：从CV到NLP</h3> 
+<p>​ 对抗训练最初在cv中使用，nlp中很少使用。因为图像和文本的数据格式导致，在文本中无法增加微小扰动。同数据增强一样，cv中很适用，但nlp中的很少使用。</p> 
+<h4><a id="21_CV_13"></a>2.1 CV中的数据格式</h4> 
+<p>图像是由矩阵表示的，如RGB图像是0~255的数字矩阵表示。</p> 
+<center>
+  图像+微小扰动=图像 
+</center> 
+<p><img src="https://images2.imgbox.com/ae/13/ECJe8EUO_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="22_NLP_23"></a>2.2 NLP中数据格式</h4> 
+<p>文本会首先设置词表，然后将词映射为对应的索引：</p> 
+<center>
+  文本+微小扰动≠文本 
+</center> 
+<p><img src="https://images2.imgbox.com/f2/2b/3anHgkJS_o.png" alt="在这里插入图片描述"><br> ​ Goodfellow在17年[2]提出可以在embedding上做扰动。这样做会带来问题：在embedding扰动得到的“对抗样本”不能map到某个单词。在对抗攻击时，不能通过修改原始输入得到这样的样本。所以nlp中的对抗训练不能用于对抗攻击，只能用来提高模型泛化能力。</p> 
+<h3><a id="_32"></a>３、对抗样本与数据增强样本</h3> 
+<p>​ 提高模型的泛化性能是机器学习致力追求的目标之一。常见的提高泛化性的方法主要有两种：</p> 
+<ul><li>添加噪声，比如往输入添加高斯噪声、中间层增加Dropout以及近来比较热门的对抗训练等，对图像进行随机平移缩放等数据扩增手段某种意义上也属于此列；</li><li>是往loss里边添加正则项，比如L1,L2惩罚、梯度惩罚等</li></ul> 
+<p>数据增强与对抗样本都属于在原始输入引入噪声的方法。区别在于数据增强的噪声通常是<font color="blue">随机</font>的，而对抗样本的噪声是<font color="blue">有目的性的</font>。</p> 
+<p><img src="https://images2.imgbox.com/02/3f/GzUsXPl1_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/53/b0/NVYkWxmB_o.png" alt="在这里插入图片描述"></p> 
+<p>随机噪声的实现方式简单，对泛化性的提升也确实有效。但他的一个明显缺点是“特异性”。随机噪声可能不会对模型造成明显干扰，所以对泛化性能提升帮助有限。</p> 
+<h3><a id="__48"></a>４ 如何确定微小扰动</h3> 
+<p>​ 对抗训练流程，在原始输入上增加一个微小的扰动<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          r 
+         
+         
+         
+           a 
+          
+         
+           d 
+          
+         
+           v 
+          
+         
+        
+       
+      
+        r_{adv} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.58056em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.02778em;">r</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.336108em;"><span class="" style="top: -2.55em; margin-left: -0.02778em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">a</span><span class="mord mathdefault mtight">d</span><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">v</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>，得到对抗样本，用对抗样本就行训练。可以抽象为下面的模型：<br> <span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+          
+          
+           
+           
+             l 
+            
+           
+             o 
+            
+           
+             s 
+            
+           
+             s 
+            
+           
+             = 
+            
+           
+             − 
+            
+            
+            
+              l 
+             
+            
+              o 
+             
+            
+              g 
+             
+            
+           
+             p 
+            
+           
+             ( 
+            
+           
+             y 
+            
+           
+             ∣ 
+            
+           
+             x 
+            
+           
+             + 
+            
+            
+            
+              r 
+             
+             
+             
+               a 
+              
+             
+               d 
+              
+             
+               v 
+              
+             
+            
+           
+             ; 
+            
+           
+             θ 
+            
+           
+             ) 
+            
+            
+            
+            
+              w 
+             
+            
+              h 
+             
+            
+              e 
+             
+            
+              r 
+             
+            
+              e 
+             
+            
+            
+            
+              r 
+             
+             
+             
+               a 
+              
+             
+               d 
+              
+             
+               v 
+              
+             
+            
+           
+             = 
+            
+           
+             − 
+            
+            
+             
+             
+               a 
+              
+             
+               r 
+              
+             
+               g 
+              
+             
+               m 
+              
+             
+               a 
+              
+             
+               x 
+              
+             
+             
+             
+               r 
+              
+             
+               , 
+              
+             
+               ∣ 
+              
+             
+               ∣ 
+              
+             
+               r 
+              
+             
+               ∣ 
+              
+             
+               ∣ 
+              
+             
+               &lt; 
+              
+             
+               ε 
+              
+             
+            
+            
+            
+              l 
+             
+            
+              o 
+             
+            
+              g 
+             
+            
+           
+             p 
+            
+           
+             ( 
+            
+           
+             y 
+            
+           
+             ∣ 
+            
+           
+             x 
+            
+           
+             + 
+            
+           
+             r 
+            
+           
+             ; 
+            
+            
+            
+              θ 
+             
+            
+              ^ 
+             
+            
+           
+             ) 
+            
+           
+             = 
+            
+            
+             
+             
+               a 
+              
+             
+               r 
+              
+             
+               g 
+              
+             
+               m 
+              
+             
+               i 
+              
+             
+               n 
+              
+             
+             
+             
+               r 
+              
+             
+               , 
+              
+             
+               ∣ 
+              
+             
+               ∣ 
+              
+             
+               r 
+              
+             
+               ∣ 
+              
+             
+               ∣ 
+              
+             
+               &lt; 
+              
+             
+               ε 
+              
+             
+            
+            
+            
+              l 
+             
+            
+              o 
+             
+            
+              g 
+             
+            
+           
+             p 
+            
+           
+             ( 
+            
+           
+             y 
+            
+           
+             ∣ 
+            
+           
+             x 
+            
+           
+             + 
+            
+           
+             r 
+            
+           
+             ; 
+            
+            
+            
+              θ 
+             
+            
+              ^ 
+             
+            
+           
+             ) 
+            
+           
+          
+          
+          
+          
+            (1) 
+           
+          
+         
+        
+       
+         loss=-\mathop{log}p(y|x+r_{adv};\theta)\tag1\\ \mathop{where}r_{adv}=-\mathop{argmax}\limits_{r,||r||&lt;\varepsilon}\mathop{log}p(y|x+r;\hat\theta) =\mathop{argmin}\limits_{r,||r||&lt;\varepsilon}\mathop{log}p(y|x+r;\hat\theta) 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.69444em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.01968em;">l</span><span class="mord mathdefault">o</span><span class="mord mathdefault">s</span><span class="mord mathdefault">s</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord">−</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mop"><span class="mord mathdefault" style="margin-right: 0.01968em;">l</span><span class="mord mathdefault">o</span><span class="mord mathdefault" style="margin-right: 0.03588em;">g</span></span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault">p</span><span class="mopen">(</span><span class="mord mathdefault" style="margin-right: 0.03588em;">y</span><span class="mord">∣</span><span class="mord mathdefault">x</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.02778em;">r</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.336108em;"><span class="" style="top: -2.55em; margin-left: -0.02778em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">a</span><span class="mord mathdefault mtight">d</span><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">v</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mpunct">;</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault" style="margin-right: 0.02778em;">θ</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.166667em;"></span></span><span class="mspace newline"></span><span class="base"><span class="strut" style="height: 0.84444em; vertical-align: -0.15em;"></span><span class="mop"><span class="mord mathdefault" style="margin-right: 0.02691em;">w</span><span class="mord mathdefault">h</span><span class="mord mathdefault">ere</span></span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.02778em;">r</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.336108em;"><span class="" style="top: -2.55em; margin-left: -0.02778em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">a</span><span class="mord mathdefault mtight">d</span><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">v</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.91044em; vertical-align: -1.16044em;"></span><span class="mord">−</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mop op-limits"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.43056em;"><span class="" style="top: -2.11456em; margin-left: 0em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight" style="margin-right: 0.02778em;">r</span><span class="mpunct mtight">,</span><span class="mord mtight">∣</span><span class="mord mtight">∣</span><span class="mord mathdefault mtight" style="margin-right: 0.02778em;">r</span><span class="mord mtight">∣</span><span class="mord mtight">∣</span><span class="mrel mtight">&lt;</span><span class="mord mathdefault mtight">ε</span></span></span></span><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class=""><span class="mop"><span class="mord mathdefault">a</span><span class="mord mathdefault" style="margin-right: 0.02778em;">r</span><span class="mord mathdefault" style="margin-right: 0.03588em;">g</span><span class="mord mathdefault">ma</span><span class="mord mathdefault">x</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 1.16044em;"><span class=""></span></span></span></span></span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mop"><span class="mord mathdefault" style="margin-right: 0.01968em;">l</span><span class="mord mathdefault">o</span><span class="mord mathdefault" style="margin-right: 0.03588em;">g</span></span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault">p</span><span class="mopen">(</span><span class="mord mathdefault" style="margin-right: 0.03588em;">y</span><span class="mord">∣</span><span class="mord mathdefault">x</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1.20788em; vertical-align: -0.25em;"></span><span class="mord mathdefault" style="margin-right: 0.02778em;">r</span><span class="mpunct">;</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.95788em;"><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord mathdefault" style="margin-right: 0.02778em;">θ</span></span><span class="" style="top: -3.26344em;"><span class="pstrut" style="height: 3em;"></span><span class="accent-body" style="left: -0.16666em;">^</span></span></span></span></span></span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.91044em; vertical-align: -1.16044em;"></span><span class="mop op-limits"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.65952em;"><span class="" style="top: -2.11456em; margin-left: 0em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight" style="margin-right: 0.02778em;">r</span><span class="mpunct mtight">,</span><span class="mord mtight">∣</span><span class="mord mtight">∣</span><span class="mord mathdefault mtight" style="margin-right: 0.02778em;">r</span><span class="mord mtight">∣</span><span class="mord mtight">∣</span><span class="mrel mtight">&lt;</span><span class="mord mathdefault mtight">ε</span></span></span></span><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class=""><span class="mop"><span class="mord mathdefault">a</span><span class="mord mathdefault" style="margin-right: 0.02778em;">r</span><span class="mord mathdefault" style="margin-right: 0.03588em;">g</span><span class="mord mathdefault">min</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 1.16044em;"><span class=""></span></span></span></span></span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mop"><span class="mord mathdefault" style="margin-right: 0.01968em;">l</span><span class="mord mathdefault">o</span><span class="mord mathdefault" style="margin-right: 0.03588em;">g</span></span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault">p</span><span class="mopen">(</span><span class="mord mathdefault" style="margin-right: 0.03588em;">y</span><span class="mord">∣</span><span class="mord mathdefault">x</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1.20788em; vertical-align: -0.25em;"></span><span class="mord mathdefault" style="margin-right: 0.02778em;">r</span><span class="mpunct">;</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.95788em;"><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord mathdefault" style="margin-right: 0.02778em;">θ</span></span><span class="" style="top: -3.26344em;"><span class="pstrut" style="height: 3em;"></span><span class="accent-body" style="left: -0.16666em;">^</span></span></span></span></span></span><span class="mclose">)</span></span><span class="tag"><span class="strut" style="height: 2.11832em; vertical-align: -1.16044em;"></span><span class="mord text"><span class="mord">(</span><span class="mord"><span class="mord">1</span></span><span class="mord">)</span></span></span></span></span></span></span><br> <strong>min-max公式</strong><br> <span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+          
+          
+            m 
+           
+          
+            i 
+           
+          
+            n 
+           
+          
+         
+           θ 
+          
+         
+         
+         
+           E 
+          
+          
+          
+            ( 
+           
+          
+            x 
+           
+          
+            , 
+           
+          
+            y 
+           
+          
+            ) 
+           
+          
+            ∼ 
+           
+          
+            D 
+           
+          
+         
+        
+          [ 
+         
+         
+          
+          
+            m 
+           
+          
+            a 
+           
+          
+            x 
+           
+          
+          
+          
+            r 
+           
+          
+            , 
+           
+          
+            ∣ 
+           
+          
+            ∣ 
+           
+          
+            r 
+           
+          
+            ∣ 
+           
+          
+            ∣ 
+           
+          
+            &lt; 
+           
+          
+            ε 
+           
+          
+         
+        
+          L 
+         
+        
+          ( 
+         
+        
+          θ 
+         
+        
+          , 
+         
+        
+          x 
+         
+        
+          + 
+         
+         
+         
+           r 
+          
+          
+          
+            a 
+           
+          
+            d 
+           
+          
+            v 
+           
+          
+         
+        
+          , 
+         
+        
+          y 
+         
+        
+          ) 
+         
+        
+          ] 
+         
+        
+       
+         \mathop{min}\limits_{\theta}\mathbb{E}_{(x,y)\sim D}[\mathop{max}\limits_{r,||r||&lt;\varepsilon}L(\theta,x+r_{adv},y)] 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.716em; vertical-align: -0.966em;"></span><span class="mop op-limits"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.65952em;"><span class="" style="top: -2.34789em; margin-left: 0em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight" style="margin-right: 0.02778em;">θ</span></span></span></span><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class=""><span class="mop"><span class="mord mathdefault">min</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.752108em;"><span class=""></span></span></span></span></span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord"><span class="mord mathbb">E</span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3448em;"><span class="" style="top: -2.5198em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mopen mtight">(</span><span class="mord mathdefault mtight">x</span><span class="mpunct mtight">,</span><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">y</span><span class="mclose mtight">)</span><span class="mrel mtight">∼</span><span class="mord mathdefault mtight" style="margin-right: 0.02778em;">D</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.3552em;"><span class=""></span></span></span></span></span></span><span class="mopen">[</span><span class="mop op-limits"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.43056em;"><span class="" style="top: -2.309em; margin-left: 0em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight" style="margin-right: 0.02778em;">r</span><span class="mpunct mtight">,</span><span class="mord mtight">∣</span><span class="mord mtight">∣</span><span class="mord mathdefault mtight" style="margin-right: 0.02778em;">r</span><span class="mord mtight">∣</span><span class="mord mtight">∣</span><span class="mrel mtight">&lt;</span><span class="mord mathdefault mtight">ε</span></span></span></span><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class=""><span class="mop"><span class="mord mathdefault">ma</span><span class="mord mathdefault">x</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.966em;"><span class=""></span></span></span></span></span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault">L</span><span class="mopen">(</span><span class="mord mathdefault" style="margin-right: 0.02778em;">θ</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault">x</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.02778em;">r</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.336108em;"><span class="" style="top: -2.55em; margin-left: -0.02778em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">a</span><span class="mord mathdefault mtight">d</span><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">v</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault" style="margin-right: 0.03588em;">y</span><span class="mclose">)</span><span class="mclose">]</span></span></span></span></span></span><br> <strong>梯度下降</strong></p> 
+<p>假设损失函数是：<br> <span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+          
+          
+           
+           
+             L 
+            
+           
+             = 
+            
+           
+             − 
+            
+            
+            
+              l 
+             
+            
+              o 
+             
+            
+              g 
+             
+            
+           
+             p 
+            
+           
+             ( 
+            
+           
+             y 
+            
+           
+             ∣ 
+            
+           
+             x 
+            
+           
+             ; 
+            
+           
+             θ 
+            
+           
+             ) 
+            
+           
+          
+          
+          
+          
+            (2) 
+           
+          
+         
+        
+       
+         L=-\mathop{log}p(y|x;\theta)\tag2 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord mathdefault">L</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord">−</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mop"><span class="mord mathdefault" style="margin-right: 0.01968em;">l</span><span class="mord mathdefault">o</span><span class="mord mathdefault" style="margin-right: 0.03588em;">g</span></span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault">p</span><span class="mopen">(</span><span class="mord mathdefault" style="margin-right: 0.03588em;">y</span><span class="mord">∣</span><span class="mord mathdefault">x</span><span class="mpunct">;</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault" style="margin-right: 0.02778em;">θ</span><span class="mclose">)</span></span><span class="tag"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord text"><span class="mord">(</span><span class="mord"><span class="mord">2</span></span><span class="mord">)</span></span></span></span></span></span></span><br> 使用一阶泰勒展开（用线性函数逼近），得：<br> <span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+          
+          
+           
+           
+             L 
+            
+           
+             ( 
+            
+           
+             θ 
+            
+           
+             + 
+            
+           
+             Δ 
+            
+           
+             θ 
+            
+           
+             ) 
+            
+           
+             ≃ 
+            
+           
+             L 
+            
+           
+             ( 
+            
+           
+             θ 
+            
+           
+             ) 
+            
+           
+             + 
+            
+            
+            
+              L 
+             
+            
+              ′ 
+             
+            
+           
+             ( 
+            
+           
+             θ 
+            
+           
+             ) 
+            
+           
+             Δ 
+            
+           
+             θ 
+            
+           
+          
+          
+          
+          
+            (3) 
+           
+          
+         
+        
+       
+         L(\theta+\Delta \theta)\simeq L(\theta)+L'(\theta)\Delta \theta\tag3 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault">L</span><span class="mopen">(</span><span class="mord mathdefault" style="margin-right: 0.02778em;">θ</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord">Δ</span><span class="mord mathdefault" style="margin-right: 0.02778em;">θ</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">≃</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault">L</span><span class="mopen">(</span><span class="mord mathdefault" style="margin-right: 0.02778em;">θ</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1.05189em; vertical-align: -0.25em;"></span><span class="mord"><span class="mord mathdefault">L</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.801892em;"><span class="" style="top: -3.113em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">′</span></span></span></span></span></span></span></span></span><span class="mopen">(</span><span class="mord mathdefault" style="margin-right: 0.02778em;">θ</span><span class="mclose">)</span><span class="mord">Δ</span><span class="mord mathdefault" style="margin-right: 0.02778em;">θ</span></span><span class="tag"><span class="strut" style="height: 1.05189em; vertical-align: -0.25em;"></span><span class="mord text"><span class="mord">(</span><span class="mord"><span class="mord">3</span></span><span class="mord">)</span></span></span></span></span></span></span></p> 
+<p><span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+          
+          
+           
+           
+             L 
+            
+           
+             ( 
+            
+           
+             θ 
+            
+           
+             + 
+            
+           
+             Δ 
+            
+           
+             θ 
+            
+           
+             ) 
+            
+           
+             − 
+            
+           
+             L 
+            
+           
+             ( 
+            
+           
+             θ 
+            
+           
+             ) 
+            
+           
+             ≃ 
+            
+            
+            
+              L 
+             
+            
+              ′ 
+             
+            
+           
+             ( 
+            
+           
+             θ 
+            
+           
+             ) 
+            
+           
+             Δ 
+            
+           
+             θ 
+            
+           
+          
+          
+          
+          
+            (4) 
+           
+          
+         
+        
+       
+         L(\theta+\Delta \theta)-L(\theta)\simeq L'(\theta)\Delta \theta\tag4 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault">L</span><span class="mopen">(</span><span class="mord mathdefault" style="margin-right: 0.02778em;">θ</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord">Δ</span><span class="mord mathdefault" style="margin-right: 0.02778em;">θ</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault">L</span><span class="mopen">(</span><span class="mord mathdefault" style="margin-right: 0.02778em;">θ</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">≃</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.05189em; vertical-align: -0.25em;"></span><span class="mord"><span class="mord mathdefault">L</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.801892em;"><span class="" style="top: -3.113em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">′</span></span></span></span></span></span></span></span></span><span class="mopen">(</span><span class="mord mathdefault" style="margin-right: 0.02778em;">θ</span><span class="mclose">)</span><span class="mord">Δ</span><span class="mord mathdefault" style="margin-right: 0.02778em;">θ</span></span><span class="tag"><span class="strut" style="height: 1.05189em; vertical-align: -0.25em;"></span><span class="mord text"><span class="mord">(</span><span class="mord"><span class="mord">4</span></span><span class="mord">)</span></span></span></span></span></span></span></p> 
+<p>泰勒公式：<br> <span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          f 
+         
+        
+          ( 
+         
+        
+          x 
+         
+        
+          ) 
+         
+        
+          = 
+         
+        
+          f 
+         
+        
+          ( 
+         
+         
+         
+           x 
+          
+         
+           0 
+          
+         
+        
+          ) 
+         
+        
+          + 
+         
+         
+         
+           f 
+          
+         
+           ′ 
+          
+         
+        
+          ( 
+         
+         
+         
+           x 
+          
+         
+           0 
+          
+         
+        
+          ) 
+         
+        
+          ( 
+         
+        
+          x 
+         
+        
+          − 
+         
+         
+         
+           x 
+          
+         
+           0 
+          
+         
+        
+          ) 
+         
+        
+          + 
+         
+        
+          o 
+         
+        
+          ( 
+         
+        
+          x 
+         
+        
+          ) 
+         
+         
+        
+          f 
+         
+        
+          ( 
+         
+        
+          x 
+         
+        
+          + 
+         
+        
+          Δ 
+         
+        
+          x 
+         
+        
+          ) 
+         
+        
+          ≃ 
+         
+        
+          f 
+         
+        
+          ( 
+         
+        
+          x 
+         
+        
+          ) 
+         
+        
+          + 
+         
+         
+         
+           f 
+          
+         
+           ′ 
+          
+         
+        
+          ( 
+         
+        
+          x 
+         
+        
+          ) 
+         
+        
+          Δ 
+         
+        
+          x 
+         
+        
+       
+         f(x)=f(x_0)+f'(x_0)(x-x_0)+o(x)\\f(x+\Delta x)\simeq f(x)+f'(x)\Delta x 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault" style="margin-right: 0.10764em;">f</span><span class="mopen">(</span><span class="mord mathdefault">x</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault" style="margin-right: 0.10764em;">f</span><span class="mopen">(</span><span class="mord"><span class="mord mathdefault">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.301108em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">0</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1.05189em; vertical-align: -0.25em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.10764em;">f</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.801892em;"><span class="" style="top: -3.113em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">′</span></span></span></span></span></span></span></span></span><span class="mopen">(</span><span class="mord"><span class="mord mathdefault">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.301108em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">0</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span><span class="mopen">(</span><span class="mord mathdefault">x</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord"><span class="mord mathdefault">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.301108em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">0</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault">o</span><span class="mopen">(</span><span class="mord mathdefault">x</span><span class="mclose">)</span></span><span class="mspace newline"></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault" style="margin-right: 0.10764em;">f</span><span class="mopen">(</span><span class="mord mathdefault">x</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord">Δ</span><span class="mord mathdefault">x</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">≃</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault" style="margin-right: 0.10764em;">f</span><span class="mopen">(</span><span class="mord mathdefault">x</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1.05189em; vertical-align: -0.25em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.10764em;">f</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.801892em;"><span class="" style="top: -3.113em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">′</span></span></span></span></span></span></span></span></span><span class="mopen">(</span><span class="mord mathdefault">x</span><span class="mclose">)</span><span class="mord">Δ</span><span class="mord mathdefault">x</span></span></span></span></span></span><br> 公式(4)描述参数的微小变动<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         Δ 
+        
+       
+         θ 
+        
+       
+      
+        \Delta \theta 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.69444em; vertical-align: 0em;"></span><span class="mord">Δ</span><span class="mord mathdefault" style="margin-right: 0.02778em;">θ</span></span></span></span></span>会引起损失函数怎样的变动。当<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         Δ 
+        
+       
+         θ 
+        
+       
+         = 
+        
+       
+         − 
+        
+       
+         η 
+        
+        
+        
+          L 
+         
+        
+          ′ 
+         
+        
+       
+         ( 
+        
+       
+         θ 
+        
+       
+         ) 
+        
+       
+      
+        \Delta \theta=-\eta L'(\theta) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.69444em; vertical-align: 0em;"></span><span class="mord">Δ</span><span class="mord mathdefault" style="margin-right: 0.02778em;">θ</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.00189em; vertical-align: -0.25em;"></span><span class="mord">−</span><span class="mord mathdefault" style="margin-right: 0.03588em;">η</span><span class="mord"><span class="mord mathdefault">L</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.751892em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">′</span></span></span></span></span></span></span></span></span><span class="mopen">(</span><span class="mord mathdefault" style="margin-right: 0.02778em;">θ</span><span class="mclose">)</span></span></span></span></span>时，<br> <span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+          
+          
+           
+           
+             L 
+            
+           
+             ( 
+            
+           
+             θ 
+            
+           
+             + 
+            
+           
+             Δ 
+            
+           
+             θ 
+            
+           
+             ) 
+            
+           
+             − 
+            
+           
+             L 
+            
+           
+             ( 
+            
+           
+             θ 
+            
+           
+             ) 
+            
+           
+             ≃ 
+            
+           
+             − 
+            
+            
+            
+              L 
+             
+             
+             
+               ′ 
+              
+             
+               2 
+              
+             
+            
+           
+             ( 
+            
+           
+             θ 
+            
+           
+             ) 
+            
+            
+           
+             L 
+            
+           
+             ( 
+            
+           
+             θ 
+            
+           
+             + 
+            
+           
+             Δ 
+            
+           
+             θ 
+            
+           
+             ) 
+            
+           
+             &lt; 
+            
+           
+             L 
+            
+           
+             ( 
+            
+           
+             θ 
+            
+           
+             ) 
+            
+           
+          
+          
+          
+          
+            (5) 
+           
+          
+         
+        
+       
+         L(\theta+\Delta \theta)-L(\theta)\simeq -L'^2(\theta)\tag5\\ L(\theta+\Delta \theta)&lt;L(\theta) 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault">L</span><span class="mopen">(</span><span class="mord mathdefault" style="margin-right: 0.02778em;">θ</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord">Δ</span><span class="mord mathdefault" style="margin-right: 0.02778em;">θ</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault">L</span><span class="mopen">(</span><span class="mord mathdefault" style="margin-right: 0.02778em;">θ</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">≃</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.11411em; vertical-align: -0.25em;"></span><span class="mord">−</span><span class="mord"><span class="mord mathdefault">L</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.864108em;"><span class="" style="top: -3.113em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">′</span><span class="mord mtight">2</span></span></span></span></span></span></span></span></span><span class="mopen">(</span><span class="mord mathdefault" style="margin-right: 0.02778em;">θ</span><span class="mclose">)</span></span><span class="mspace newline"></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault">L</span><span class="mopen">(</span><span class="mord mathdefault" style="margin-right: 0.02778em;">θ</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord">Δ</span><span class="mord mathdefault" style="margin-right: 0.02778em;">θ</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">&lt;</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault">L</span><span class="mopen">(</span><span class="mord mathdefault" style="margin-right: 0.02778em;">θ</span><span class="mclose">)</span></span><span class="tag"><span class="strut" style="height: 1.11411em; vertical-align: -0.25em;"></span><span class="mord text"><span class="mord">(</span><span class="mord"><span class="mord">5</span></span><span class="mord">)</span></span></span></span></span></span></span><br> 在迭代求解时，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         Δ 
+        
+       
+         θ 
+        
+       
+         = 
+        
+       
+         − 
+        
+       
+         η 
+        
+        
+        
+          L 
+         
+        
+          ′ 
+         
+        
+       
+         ( 
+        
+       
+         θ 
+        
+       
+         ) 
+        
+       
+      
+        \Delta \theta=-\eta L'(\theta) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.69444em; vertical-align: 0em;"></span><span class="mord">Δ</span><span class="mord mathdefault" style="margin-right: 0.02778em;">θ</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.00189em; vertical-align: -0.25em;"></span><span class="mord">−</span><span class="mord mathdefault" style="margin-right: 0.03588em;">η</span><span class="mord"><span class="mord mathdefault">L</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.751892em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">′</span></span></span></span></span></span></span></span></span><span class="mopen">(</span><span class="mord mathdefault" style="margin-right: 0.02778em;">θ</span><span class="mclose">)</span></span></span></span></span>会使得损失不断变小。负梯度方向是使函数值下降最快的方向。</p> 
+<p>同样，可以使用梯度求解使得loss增大的微小扰动<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          r 
+         
+         
+         
+           a 
+          
+         
+           d 
+          
+         
+           v 
+          
+         
+        
+       
+      
+        r_{adv} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.58056em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.02778em;">r</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.336108em;"><span class="" style="top: -2.55em; margin-left: -0.02778em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">a</span><span class="mord mathdefault mtight">d</span><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">v</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>。</p> 
+<h4><a id="1_Fast_Gradient_Sign_MethodFGSM_88"></a>４.1 Fast Gradient Sign Method(FGSM)</h4> 
+<p><span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           r 
+          
+          
+          
+            a 
+           
+          
+            d 
+           
+          
+            v 
+           
+          
+         
+        
+          = 
+         
+        
+          ϵ 
+         
+        
+          ⋅ 
+         
+         
+         
+           s 
+          
+         
+           g 
+          
+         
+           n 
+          
+         
+        
+          ( 
+         
+         
+         
+           ∇ 
+          
+         
+           x 
+          
+         
+        
+          L 
+         
+        
+          ( 
+         
+        
+          θ 
+         
+        
+          , 
+         
+        
+          x 
+         
+        
+          , 
+         
+        
+          y 
+         
+        
+          ) 
+         
+        
+          ) 
+         
+        
+       
+         r_{adv}=\epsilon\cdot \mathop{sgn}(\nabla_xL(\theta,x,y) ) 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.58056em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.02778em;">r</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.336108em;"><span class="" style="top: -2.55em; margin-left: -0.02778em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">a</span><span class="mord mathdefault mtight">d</span><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">v</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.44445em; vertical-align: 0em;"></span><span class="mord mathdefault">ϵ</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">⋅</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mop"><span class="mord mathdefault">s</span><span class="mord mathdefault" style="margin-right: 0.03588em;">g</span><span class="mord mathdefault">n</span></span><span class="mopen">(</span><span class="mord"><span class="mord">∇</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">x</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mord mathdefault">L</span><span class="mopen">(</span><span class="mord mathdefault" style="margin-right: 0.02778em;">θ</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault">x</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault" style="margin-right: 0.03588em;">y</span><span class="mclose">)</span><span class="mclose">)</span></span></span></span></span></span></p> 
+<p><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         s 
+        
+       
+         g 
+        
+       
+         n 
+        
+       
+      
+        sgn 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.625em; vertical-align: -0.19444em;"></span><span class="mord mathdefault">s</span><span class="mord mathdefault" style="margin-right: 0.03588em;">g</span><span class="mord mathdefault">n</span></span></span></span></span>是符号函数，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         ϵ 
+        
+       
+         = 
+        
+       
+         0.25 
+        
+       
+      
+        \epsilon=0.25 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault">ϵ</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.64444em; vertical-align: 0em;"></span><span class="mord">0</span><span class="mord">.</span><span class="mord">2</span><span class="mord">5</span></span></span></span></span>就能给单层分类器造成99.9%的错误率。</p> 
+<h4><a id="2_Fast_Gradient_MethodFGM_96"></a>４.2 Fast Gradient Method(FGM)</h4> 
+<p>​ Goodfellow在15年的ICLR <font color="red">[1]</font> 中提出了Fast Gradient Sign Method（FGSM）。随后在17年提出FGM方法，只是在扰动计算部分做了简单修改。<br> <span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           r 
+          
+          
+          
+            a 
+           
+          
+            d 
+           
+          
+            v 
+           
+          
+         
+        
+          = 
+         
+        
+          ϵ 
+         
+        
+          ⋅ 
+         
+        
+          g 
+         
+        
+          / 
+         
+        
+          ∣ 
+         
+        
+          ∣ 
+         
+        
+          g 
+         
+        
+          ∣ 
+         
+         
+         
+           ∣ 
+          
+         
+           2 
+          
+         
+         
+        
+          g 
+         
+        
+          = 
+         
+         
+         
+           ∇ 
+          
+         
+           x 
+          
+         
+        
+          L 
+         
+        
+          ( 
+         
+        
+          θ 
+         
+        
+          , 
+         
+        
+          x 
+         
+        
+          , 
+         
+        
+          y 
+         
+        
+          ) 
+         
+        
+       
+         r_{adv}=\epsilon\cdot g/||g||_2\\ g=\nabla_xL(\theta,x,y) 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.58056em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.02778em;">r</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.336108em;"><span class="" style="top: -2.55em; margin-left: -0.02778em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">a</span><span class="mord mathdefault mtight">d</span><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">v</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.44445em; vertical-align: 0em;"></span><span class="mord mathdefault">ϵ</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">⋅</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault" style="margin-right: 0.03588em;">g</span><span class="mord">/</span><span class="mord">∣</span><span class="mord">∣</span><span class="mord mathdefault" style="margin-right: 0.03588em;">g</span><span class="mord">∣</span><span class="mord"><span class="mord">∣</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.301108em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span><span class="mspace newline"></span><span class="base"><span class="strut" style="height: 0.625em; vertical-align: -0.19444em;"></span><span class="mord mathdefault" style="margin-right: 0.03588em;">g</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord"><span class="mord">∇</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">x</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mord mathdefault">L</span><span class="mopen">(</span><span class="mord mathdefault" style="margin-right: 0.02778em;">θ</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault">x</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault" style="margin-right: 0.03588em;">y</span><span class="mclose">)</span></span></span></span></span></span><br> 实际上就是取消符号函数，用二范数做了一个放缩。原文中norm是，每个输入的矩阵norm。如x的embedding结果时(B,L,H),norm后为(B,1,1)。为简单实现，对batch数据进行norm。</p> 
+<h4><a id="43_Projected_Gradient_DescentPGD_105"></a>4.3 Projected Gradient Descent(PGD)</h4> 
+<p>​ 内部max的过程，本质上是一个非凹的约束优化问题，FGM解决的思路其实就是梯度上升，<strong>那么FGM简单粗暴的“一步到位”，是不是有可能并不能走到约束内的最优点呢？<strong>当然是有可能的。于是，一个很intuitive的改进诞生了：Madry在18年的ICLR中[8]，提出了用Projected Gradient Descent（PGD）的方法，简单的说，就是</strong>“小步走，多走几步”</strong>，如果走出了扰动半径为ϵ的空间，就映射回“球面”上，以保证扰动不要过大</p> 
+<h3><a id="5__109"></a>5 实验结果</h3> 
+<p>在多个任务上的测试结果：</p> 
+<p><img src="https://images2.imgbox.com/b3/f5/hqIRiWR3_o.png" alt="在这里插入图片描述"></p> 
+<p>在两个文本分类上的测试结果：</p> 
+<p><img src="https://images2.imgbox.com/1f/a9/Mg1xMjuX_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="6__120"></a>6 实现</h3> 
+<h4><a id="61_pytorchfont_colorred2font_122"></a>6.1 pytorch实现<font color="red">[2]</font></h4> 
+<pre><code class="prism language-python"><span class="token keyword">class</span> <span class="token class-name">FGM</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token triple-quoted-string string">""" 快速梯度对抗训练
+    """</span>
+    <span class="token keyword">def</span> <span class="token function">__init__</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> model<span class="token punctuation">)</span><span class="token punctuation">:</span>
+        self<span class="token punctuation">.</span>model <span class="token operator">=</span> model
+        self<span class="token punctuation">.</span>backup <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+
+    <span class="token keyword">def</span> <span class="token function">attack</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> epsilon<span class="token operator">=</span><span class="token number">1</span><span class="token punctuation">.</span><span class="token punctuation">,</span> emb_name<span class="token operator">=</span><span class="token string">'word_embeddings'</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+        <span class="token comment"># emb_name这个参数要换成你模型中embedding的参数名</span>
+        <span class="token keyword">for</span> name<span class="token punctuation">,</span> param <span class="token keyword">in</span> self<span class="token punctuation">.</span>model<span class="token punctuation">.</span>named_parameters<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+            <span class="token keyword">if</span> param<span class="token punctuation">.</span>requires_grad <span class="token operator">and</span> emb_name <span class="token keyword">in</span> name<span class="token punctuation">:</span>
+                self<span class="token punctuation">.</span>backup<span class="token punctuation">[</span>name<span class="token punctuation">]</span> <span class="token operator">=</span> param<span class="token punctuation">.</span>data<span class="token punctuation">.</span>clone<span class="token punctuation">(</span><span class="token punctuation">)</span>
+                norm <span class="token operator">=</span> torch<span class="token punctuation">.</span>norm<span class="token punctuation">(</span>param<span class="token punctuation">.</span>grad<span class="token punctuation">)</span>
+                <span class="token keyword">if</span> norm <span class="token operator">!=</span> <span class="token number">0</span> <span class="token operator">and</span> <span class="token operator">not</span> torch<span class="token punctuation">.</span>isnan<span class="token punctuation">(</span>norm<span class="token punctuation">)</span><span class="token punctuation">:</span>
+                    r_at <span class="token operator">=</span> epsilon <span class="token operator">*</span> param<span class="token punctuation">.</span>grad <span class="token operator">/</span> norm
+                    param<span class="token punctuation">.</span>data<span class="token punctuation">.</span>add_<span class="token punctuation">(</span>r_at<span class="token punctuation">)</span>
+
+    <span class="token keyword">def</span> <span class="token function">restore</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> emb_name<span class="token operator">=</span><span class="token string">'word_embeddings'</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+        <span class="token comment"># emb_name这个参数要换成你模型中embedding的参数名</span>
+        <span class="token keyword">for</span> name<span class="token punctuation">,</span> param <span class="token keyword">in</span> self<span class="token punctuation">.</span>model<span class="token punctuation">.</span>named_parameters<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+            <span class="token keyword">if</span> param<span class="token punctuation">.</span>requires_grad <span class="token operator">and</span> emb_name <span class="token keyword">in</span> name<span class="token punctuation">:</span>
+                <span class="token keyword">assert</span> name <span class="token keyword">in</span> self<span class="token punctuation">.</span>backup
+                param<span class="token punctuation">.</span>data <span class="token operator">=</span> self<span class="token punctuation">.</span>backup<span class="token punctuation">[</span>name<span class="token punctuation">]</span>
+        self<span class="token punctuation">.</span>backup <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+</code></pre> 
+<p>按以下方式使用：</p> 
+<pre><code class="prism language-python"><span class="token comment"># 初始化</span>
+fgm <span class="token operator">=</span> FGM<span class="token punctuation">(</span>model<span class="token punctuation">)</span>
+<span class="token keyword">for</span> batch_input<span class="token punctuation">,</span> batch_label <span class="token keyword">in</span> data<span class="token punctuation">:</span>
+    <span class="token comment"># 正常训练</span>
+    loss <span class="token operator">=</span> model<span class="token punctuation">(</span>batch_input<span class="token punctuation">,</span> batch_label<span class="token punctuation">)</span>
+    loss<span class="token punctuation">.</span>backward<span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token comment"># 反向传播，得到正常的grad</span>
+    <span class="token comment"># 对抗训练</span>
+    fgm<span class="token punctuation">.</span>attack<span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token comment"># 在embedding上添加对抗扰动</span>
+    loss_adv <span class="token operator">=</span> model<span class="token punctuation">(</span>batch_input<span class="token punctuation">,</span> batch_label<span class="token punctuation">)</span>
+    loss_adv<span class="token punctuation">.</span>backward<span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token comment"># 反向传播，并在正常的grad基础上，累加对抗训练的梯度</span>
+    fgm<span class="token punctuation">.</span>restore<span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token comment"># 恢复embedding参数</span>
+    <span class="token comment"># 梯度下降，更新参数</span>
+    optimizer<span class="token punctuation">.</span>step<span class="token punctuation">(</span><span class="token punctuation">)</span>
+    model<span class="token punctuation">.</span>zero_grad<span class="token punctuation">(</span><span class="token punctuation">)</span>
+</code></pre> 
+<h4><a id="62_kerasfont_colorred3font_170"></a>6.2 keras实现<font color="red">[3]</font></h4> 
+<pre><code class="prism language-python"><span class="token keyword">def</span> <span class="token function">adversarial_training</span><span class="token punctuation">(</span>model<span class="token punctuation">,</span> embedding_name<span class="token punctuation">,</span> epsilon<span class="token operator">=</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token triple-quoted-string string">"""给模型添加对抗训练
+    其中model是需要添加对抗训练的keras模型，embedding_name
+    则是model里边Embedding层的名字。要在模型compile之后使用。
+    """</span>
+    <span class="token keyword">if</span> model<span class="token punctuation">.</span>train_function <span class="token keyword">is</span> <span class="token boolean">None</span><span class="token punctuation">:</span>  <span class="token comment"># 如果还没有训练函数</span>
+        model<span class="token punctuation">.</span>_make_train_function<span class="token punctuation">(</span><span class="token punctuation">)</span>  <span class="token comment"># 手动make</span>
+    old_train_function <span class="token operator">=</span> model<span class="token punctuation">.</span>train_function  <span class="token comment"># 备份旧的训练函数</span>
+
+    <span class="token comment"># 查找Embedding层</span>
+    <span class="token keyword">for</span> output <span class="token keyword">in</span> model<span class="token punctuation">.</span>outputs<span class="token punctuation">:</span>
+        embedding_layer <span class="token operator">=</span> search_layer<span class="token punctuation">(</span>output<span class="token punctuation">,</span> embedding_name<span class="token punctuation">)</span>
+        <span class="token keyword">if</span> embedding_layer <span class="token keyword">is</span> <span class="token operator">not</span> <span class="token boolean">None</span><span class="token punctuation">:</span>
+            <span class="token keyword">break</span>
+    <span class="token keyword">if</span> embedding_layer <span class="token keyword">is</span> <span class="token boolean">None</span><span class="token punctuation">:</span>
+        <span class="token keyword">raise</span> Exception<span class="token punctuation">(</span><span class="token string">'Embedding layer not found'</span><span class="token punctuation">)</span>
+
+    <span class="token comment"># 求Embedding梯度</span>
+    embeddings <span class="token operator">=</span> embedding_layer<span class="token punctuation">.</span>embeddings  <span class="token comment"># Embedding矩阵</span>
+    gradients <span class="token operator">=</span> K<span class="token punctuation">.</span>gradients<span class="token punctuation">(</span>model<span class="token punctuation">.</span>total_loss<span class="token punctuation">,</span> <span class="token punctuation">[</span>embeddings<span class="token punctuation">]</span><span class="token punctuation">)</span>  <span class="token comment"># Embedding梯度</span>
+    gradients <span class="token operator">=</span> K<span class="token punctuation">.</span>zeros_like<span class="token punctuation">(</span>embeddings<span class="token punctuation">)</span> <span class="token operator">+</span> gradients<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span>  <span class="token comment"># 转为dense tensor</span>
+
+    <span class="token comment"># 封装为函数</span>
+    inputs <span class="token operator">=</span> <span class="token punctuation">(</span>model<span class="token punctuation">.</span>_feed_inputs <span class="token operator">+</span>
+              model<span class="token punctuation">.</span>_feed_targets <span class="token operator">+</span>
+              model<span class="token punctuation">.</span>_feed_sample_weights<span class="token punctuation">)</span>  <span class="token comment"># 所有输入层</span>
+    embedding_gradients <span class="token operator">=</span> K<span class="token punctuation">.</span>function<span class="token punctuation">(</span>
+        inputs<span class="token operator">=</span>inputs<span class="token punctuation">,</span>
+        outputs<span class="token operator">=</span><span class="token punctuation">[</span>gradients<span class="token punctuation">]</span><span class="token punctuation">,</span>
+        name<span class="token operator">=</span><span class="token string">'embedding_gradients'</span><span class="token punctuation">,</span>
+    <span class="token punctuation">)</span>  <span class="token comment"># 封装为函数</span>
+
+    <span class="token keyword">def</span> <span class="token function">train_function</span><span class="token punctuation">(</span>inputs<span class="token punctuation">)</span><span class="token punctuation">:</span>  <span class="token comment"># 重新定义训练函数</span>
+        grads <span class="token operator">=</span> embedding_gradients<span class="token punctuation">(</span>inputs<span class="token punctuation">)</span><span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span>  <span class="token comment"># Embedding梯度</span>
+        delta <span class="token operator">=</span> epsilon <span class="token operator">*</span> grads <span class="token operator">/</span> <span class="token punctuation">(</span>np<span class="token punctuation">.</span>sqrt<span class="token punctuation">(</span><span class="token punctuation">(</span>grads<span class="token operator">**</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token builtin">sum</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token number">1e</span><span class="token operator">-</span><span class="token number">8</span><span class="token punctuation">)</span>  <span class="token comment"># 计算扰动</span>
+        K<span class="token punctuation">.</span>set_value<span class="token punctuation">(</span>embeddings<span class="token punctuation">,</span> K<span class="token punctuation">.</span><span class="token builtin">eval</span><span class="token punctuation">(</span>embeddings<span class="token punctuation">)</span> <span class="token operator">+</span> delta<span class="token punctuation">)</span>  <span class="token comment"># 注入扰动</span>
+        outputs <span class="token operator">=</span> old_train_function<span class="token punctuation">(</span>inputs<span class="token punctuation">)</span>  <span class="token comment"># 梯度下降</span>
+        K<span class="token punctuation">.</span>set_value<span class="token punctuation">(</span>embeddings<span class="token punctuation">,</span> K<span class="token punctuation">.</span><span class="token builtin">eval</span><span class="token punctuation">(</span>embeddings<span class="token punctuation">)</span> <span class="token operator">-</span> delta<span class="token punctuation">)</span>  <span class="token comment"># 删除扰动</span>
+        <span class="token keyword">return</span> outputs
+
+    model<span class="token punctuation">.</span>train_function <span class="token operator">=</span> train_function  <span class="token comment"># 覆盖原训练函数</span>
+</code></pre> 
+<p>使用方式：</p> 
+<pre><code># 写好函数后，启用对抗训练只需要一行代码
+adversarial_training(model, 'Embedding-Token', 0.5)
+</code></pre> 
+<p><strong>参考：</strong></p> 
+<p>[1] <a href="https://arxiv.org/abs/1412.6572" rel="nofollow">Explaining and Harnessing Adversarial Examples</a></p> 
+<p>[2] <a href="https://fyubang.com/2019/10/15/adversarial-train/" rel="nofollow">[炼丹技巧]功守道：NLP中的对抗训练 + PyTorch实现</a></p> 
+<p>[3] <a href="https://kexue.fm/archives/7234" rel="nofollow">对抗训练浅谈：意义、方法和思考（附Keras实现）</a></p> 
+<p>[4] <a href="https://kexue.fm/archives/7466" rel="nofollow">泛化性乱弹：从随机噪声、梯度惩罚到虚拟对抗训练</a></p> 
+<p>[5] <a href="https://arxiv.org/abs/1605.07725" rel="nofollow">Adversarial Training Methods for Semi-Supervised Text Classification</a></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/64d9452642ad70eb8bf4ce3b80ec93a9/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">解决 group_concat 默认长度限制</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/91236c416bdb52eb86f1d38a035fdd03/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">oracle中to_date的使用</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

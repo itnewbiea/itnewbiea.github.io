@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Android插件化（一、插件化基本原理） - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Android插件化（一、插件化基本原理）" />
+<meta property="og:description" content="插件化简介 插件化概念 插件化开发就是将整个app拆分成很多模块，每个模块都是一个apk，最终打包的时候将宿主apk和插件apk分开打包，插件apk通过动态下发到宿主apk。
+插件化优点 宿主和插件分开编译可并发开发，都是apk，开发互不影响（宿主需要给插件下发一个context）动态更新插件按需下载模块可解决方法数超过65536的问题 插件化难点 插件化需要解决的问题 插件中代码的加载与主工程的相互调用插件中资源的加载与主工程的相互访问四大组件生命周期的管理 解决方法 插件中代码的加载与主工程的相互调用
+类加载
+Android中对于外部apk的类加载有两种常用的类加载器，DexClassLoader和PathClassLoader,他们都继承自BaseDexClassLoader区别在于调用父类构造器时，DexClassLoader多传了一个optimizedDirectory 参数，这个目录必须是内部存储路径，用来缓存系统创建的dex文件，我们可以用DexClassLoader去加载外部apk，用法如下
+双亲委派机制
+ClassLoader在加载类时，先查看自身是否已经加载过该类，如果没有加载过会首先让父加载器去加载，如果父加载器无法加载该类时，该类才会调用自身的findClass方法去加载，该机制很大程度上避免了类的重复加载。
+ClassLoader的加载过程
+DexClassLoader重载了findClassLoader方法，在加载类时会调用其内部的DexPathList去加载，
+DexPathList是在构造DexClassLoader时生成的，其内部包含了DexFile。DexPathList的loadClass()会去遍历DexFile知道找到需要加载的类。
+插件中的类加载
+通过给插件生成相应的DexClassLoader便可以访问其中的类，有两种处理方式，单DexClassLoader和多DexClassLoader
+互相调用：
+插件调用主工程
+在构造插件的ClassLoader时会传入主工程的ClassLoader作为父加载器，所以插件可以直接通过类名引用主工程的类。
+主工程调用插件：
+若使用多classLoader机制，主工程引用插件的类需要先通过插件的ClassLoader加载该类，再通过反射调用其方法，插件化框架一般会通过统一的入口去管理对各个插件中类的访问，并且做一定限制。
+若使用单ClassLoader机制，主工程可以直接通过类名去访问插件中的类，该方式有一个问题，若两个不同插件工程引用了同一个库的不同版本，程序可能会报错，所以一定要通过一些规范去避免该情况的发生。
+资源加载
+Android系统通过Resource对象加载资源，该对象生成过程如下：
+因此，只需要将插件apk的路径加入到AssetManager中，就可以实现对插件资源的访问。但是AssetManager并不是一个public的类，因此实现时需要用反射去创建。
+和代码加载过程相似，插件和主工程的资源关系也有两种处理方式。
+·合并式：addAssetPath的时候加入所有插件和主工程路径
+·独立式：各个插件只添加自己的路径
+注：合并式由于AssetManager中加入了主工程和所有插件的路径，生成的Resource可以访问主工程和插件的所有资源，但是由于插件和主工程都是独立编译的，所以生成的资源ID会存在相同的情况，就会出现资源访问冲突的问题。
+独立式各个插件资源都是互相隔离的，如果想实现资源的共享，就必须拿到对应的Resource对象
+·资源冲突
+合并式的资源处理，会引入资源冲突。资源 id 是由 8 位 16 进制数表示，表示为 0xPPTTNNNN。PP 段用来区分包空间，默认只区分了应用资源和系统资源，TT 段为资源类型，NNNN 段在同一个 APK 中从 0000 递增。
+所以思路是修改id的PP段，不同的插件使用不同的PP段，从而区分不同插件资源，具体实现方式有两种：
+1.修改aapt源码，编译期修改PP段
+2.修改resources.arsc,该文件列出了资源id到具体资源路径的映射
+推荐第二种，不会入侵原有的编译流程。
+四大组件支持
+Android开发中有一些特殊的类，是由系统创建的，并且由系统管理生命周期，如常用的四大组件，activity,service,broadcastReceiver和contentProvider,仅仅构造出这些类的实例是没有用的，还需要管理组件的生命周期。其中以activity的最为复杂，不同的框架有不同的方式，大致分为两种方式
+1.ProxyActivity代理
+2.hook方式
+hook启动插件activity需要解决两个问题：
+·插件Activity没有在Manifest文件中注册，如何绕过检测
+·如何构造Activity实例，并同步生命周期
+解决方法：
+·先在manifest中预埋StupActivity,启动时hook住，将intent替换成StubActivity
+·通过插件的ClassLoader反射创建插件activity
+·之后Activity的所有生命周期都会回调给插件Activity
+Service：Service 和 Activity 的差别在于，Activity 的生命周期是由用户交互决定的，而 Service 的生命周期是我们通过代码主动调用的，且 Service 实例和 manifest 中注册的是一一对应的。实现 Service 插件化的思路是通过在 manifest 中预埋StubService，hook 系统 startService 等调用替换启动的 Service，之后在 StubService 中创建插件 Service，并手动管理其生命周期。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/3b5e994cd8a406fd0c158ad6696b1c3d/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-11-15T15:40:10+08:00" />
+<meta property="article:modified_time" content="2021-11-15T15:40:10+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Android插件化（一、插件化基本原理）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="_0"></a>插件化简介</h2> 
+<h4><a id="_1"></a>插件化概念</h4> 
+<p>插件化开发就是将整个app拆分成很多模块，每个模块都是一个apk，最终打包的时候将宿主apk和插件apk分开打包，插件apk通过动态下发到宿主apk。</p> 
+<h4><a id="_3"></a>插件化优点</h4> 
+<ul><li>宿主和插件分开编译</li><li>可并发开发，都是apk，开发互不影响（宿主需要给插件下发一个context）</li><li>动态更新插件</li><li>按需下载模块</li><li>可解决方法数超过65536的问题</li></ul> 
+<h2><a id="_9"></a>插件化难点</h2> 
+<h4><a id="_10"></a>插件化需要解决的问题</h4> 
+<ul><li>插件中代码的加载与主工程的相互调用</li><li>插件中资源的加载与主工程的相互访问</li><li>四大组件生命周期的管理</li></ul> 
+<h4><a id="_14"></a>解决方法</h4> 
+<p>插件中代码的加载与主工程的相互调用</p> 
+<ul><li> <p>类加载<br> <img src="https://images2.imgbox.com/4a/6a/FDaSLF2G_o.png" alt="在这里插入图片描述"><br> Android中对于外部apk的类加载有两种常用的类加载器，DexClassLoader和PathClassLoader,他们都继承自BaseDexClassLoader区别在于调用父类构造器时，DexClassLoader多传了一个optimizedDirectory 参数，这个目录必须是内部存储路径，用来缓存系统创建的dex文件，我们可以用DexClassLoader去加载外部apk，用法如下<br> <img src="https://images2.imgbox.com/cf/5c/KXu25wsI_o.png" alt="在这里插入图片描述"></p> </li><li> <p>双亲委派机制<br> <img src="https://images2.imgbox.com/aa/88/F83txy7Q_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/25/75/RNfaSSgV_o.png" alt="在这里插入图片描述"><br> ClassLoader在加载类时，先查看自身是否已经加载过该类，如果没有加载过会首先让父加载器去加载，如果父加载器无法加载该类时，该类才会调用自身的findClass方法去加载，该机制很大程度上避免了类的重复加载。</p> </li><li> <p>ClassLoader的加载过程<br> <img src="https://images2.imgbox.com/95/56/eXev47xy_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/11/52/Ps8oNFTu_o.png" alt="在这里插入图片描述"><br> DexClassLoader重载了findClassLoader方法，在加载类时会调用其内部的DexPathList去加载，<br> DexPathList是在构造DexClassLoader时生成的，其内部包含了DexFile。DexPathList的loadClass()会去遍历DexFile知道找到需要加载的类。</p> </li><li> <p>插件中的类加载<br> 通过给插件生成相应的DexClassLoader便可以访问其中的类，有两种处理方式，单DexClassLoader和多DexClassLoader<br> 互相调用：<br> 插件调用主工程<br> 在构造插件的ClassLoader时会传入主工程的ClassLoader作为父加载器，所以插件可以直接通过类名引用主工程的类。<br> 主工程调用插件：<br> 若使用多classLoader机制，主工程引用插件的类需要先通过插件的ClassLoader加载该类，再通过反射调用其方法，插件化框架一般会通过统一的入口去管理对各个插件中类的访问，并且做一定限制。<br> 若使用单ClassLoader机制，主工程可以直接通过类名去访问插件中的类，该方式有一个问题，若两个不同插件工程引用了同一个库的不同版本，程序可能会报错，所以一定要通过一些规范去避免该情况的发生。</p> </li><li> <p>资源加载<br> Android系统通过Resource对象加载资源，该对象生成过程如下：<br> <img src="https://images2.imgbox.com/18/63/za8CsDSW_o.png" alt="在这里插入图片描述"><br> 因此，只需要将插件apk的路径加入到AssetManager中，就可以实现对插件资源的访问。但是AssetManager并不是一个public的类，因此实现时需要用反射去创建。<br> 和代码加载过程相似，插件和主工程的资源关系也有两种处理方式。<br> ·合并式：addAssetPath的时候加入所有插件和主工程路径<br> ·独立式：各个插件只添加自己的路径<br> 注：合并式由于AssetManager中加入了主工程和所有插件的路径，生成的Resource可以访问主工程和插件的所有资源，但是由于插件和主工程都是独立编译的，所以生成的资源ID会存在相同的情况，就会出现资源访问冲突的问题。<br> 独立式各个插件资源都是互相隔离的，如果想实现资源的共享，就必须拿到对应的Resource对象<br> ·资源冲突<br> 合并式的资源处理，会引入资源冲突。资源 id 是由 8 位 16 进制数表示，表示为 0xPPTTNNNN。PP 段用来区分包空间，默认只区分了应用资源和系统资源，TT 段为资源类型，NNNN 段在同一个 APK 中从 0000 递增。<br> 所以思路是修改id的PP段，不同的插件使用不同的PP段，从而区分不同插件资源，具体实现方式有两种：<br> 1.修改aapt源码，编译期修改PP段<br> 2.修改resources.arsc,该文件列出了资源id到具体资源路径的映射<br> 推荐第二种，不会入侵原有的编译流程。</p> </li><li> <p>四大组件支持<br> Android开发中有一些特殊的类，是由系统创建的，并且由系统管理生命周期，如常用的四大组件，activity,service,broadcastReceiver和contentProvider,仅仅构造出这些类的实例是没有用的，还需要管理组件的生命周期。其中以activity的最为复杂，不同的框架有不同的方式，大致分为两种方式<br> 1.ProxyActivity代理<br> 2.hook方式<br> hook启动插件activity需要解决两个问题：<br> ·插件Activity没有在Manifest文件中注册，如何绕过检测<br> ·如何构造Activity实例，并同步生命周期<br> 解决方法：<br> ·先在manifest中预埋StupActivity,启动时hook住，将intent替换成StubActivity<br> ·通过插件的ClassLoader反射创建插件activity<br> ·之后Activity的所有生命周期都会回调给插件Activity<br> Service：Service 和 Activity 的差别在于，Activity 的生命周期是由用户交互决定的，而 Service 的生命周期是我们通过代码主动调用的，且 Service 实例和 manifest 中注册的是一一对应的。实现 Service 插件化的思路是通过在 manifest 中预埋StubService，hook 系统 startService 等调用替换启动的 Service，之后在 StubService 中创建插件 Service，并手动管理其生命周期。<br> BroadCastReceiver：解析插件的 manifest，将静态注册的广播转为动态注册。<br> ContentProvider：类似于 Service 的方式，对插件 ContentProvider 的所有调用都会通过一个在 manifest 中占坑的ContentProvider 分发。</p> </li></ul>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/f5e4e4804fac11ade4f731e6f06b4952/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">相机标定——张氏标定法</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/33b39da348c80731c6764618342a55eb/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Oracle数据库面试题</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

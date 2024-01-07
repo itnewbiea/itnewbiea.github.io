@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>如何用binlog日志恢复MySQL误删数据 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="如何用binlog日志恢复MySQL误删数据" />
+<meta property="og:description" content="从学习数据库以来，我接触数据库后在日常学习中理解了 “从删库到跑路” 这句话的重要性。
+终于我学到了用binlog文件恢复数据来避免这个问题，我使用的流程如下（要求：必须是centos环境下安装的MySQL）：
+1.让我们先创建、插入数据（此时一定记得检查日志功能是否开启，具体参照第3步）；
+mysql&gt; select * from reader; &#43;------&#43;---------------&#43;---------&#43;--------------&#43; | rid | rName | lendNum | rAddress | &#43;------&#43;---------------&#43;---------&#43;--------------&#43; | 001 | zhangYongwei | 2 | 北京西城 | | 002 | zhangDawei | 1 | 北京东城 | | 3 | jixiegongye | 10 | 北京南 | | 4 | zhangchongkun | 10 | 北京北 | | 5 | wangdaxian | 10 | 北京西 | | 6 | liergou | 10 | 北京南 | &#43;------&#43;---------------&#43;---------&#43;--------------&#43; 6 rows in set (0." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/96d84aad70e3888af9ee519d8f5dfd1f/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-11-28T20:53:50+08:00" />
+<meta property="article:modified_time" content="2022-11-28T20:53:50+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">如何用binlog日志恢复MySQL误删数据</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>从学习数据库以来，我接触数据库后在日常学习中理解了 “从删库到跑路” 这句话的重要性。</p> 
+<p>终于我学到了用binlog文件恢复数据来避免这个问题，我使用的流程如下（要求：必须是centos环境下安装的MySQL）：</p> 
+<p>1.让我们先创建、插入数据（此时一定记得检查日志功能是否开启，具体参照第3步）；</p> 
+<pre><code>
+mysql&gt; select * from reader;
++------+---------------+---------+--------------+
+| rid  | rName         | lendNum | rAddress     |
++------+---------------+---------+--------------+
+| 001  | zhangYongwei  |       2 | 北京西城     |
+| 002  | zhangDawei    |       1 | 北京东城     |
+| 3    | jixiegongye   |      10 | 北京南       |
+| 4    | zhangchongkun |      10 | 北京北       |
+| 5    | wangdaxian    |      10 | 北京西       |
+| 6    | liergou       |      10 | 北京南       |
++------+---------------+---------+--------------+
+6 rows in set (0.00 sec)
+
+
+
+</code></pre> 
+<p>2.破坏数据，并查看；</p> 
+<pre><code>mysql&gt; delete from reader where rid = 6;
+Query OK, 1 row affected (0.00 sec)
+
+mysql&gt; select * from reader;
++------+---------------+---------+--------------+
+| rid  | rName         | lendNum | rAddress     |
++------+---------------+---------+--------------+
+| 001  | zhangYongwei  |       2 | 北京西城     |
+| 002  | zhangDawei    |       1 | 北京东城     |
+| 3    | jixiegongye   |      10 | 北京南       |
+| 4    | zhangchongkun |      10 | 北京北       |
+| 5    | wangdaxian    |      10 | 北京西       |
++------+---------------+---------+--------------+
+5 rows in set (0.00 sec)
+
+mysql&gt; </code></pre> 
+<p>3.这里就开始做恢复步骤了，先检查日志功能是否打开，用到代码（这里一定要在创建数据前就提前开启日志功能）：</p> 
+<pre><code> show variables like '%log_bin%';
+</code></pre> 
+<p>显示如下：log_bin 与 sql_log_bin 均为 on即为开启，若未开启输入：</p> 
+<p># set lon_bin = on  与  # set sql_log_bin = on 即可开启，显示如下：</p> 
+<pre><code>mysql&gt; show variables like '%log_bin%';
++---------------------------------+-----------------------------+
+| Variable_name                   | Value                       |
++---------------------------------+-----------------------------+
+| log_bin                         | ON                          |
+| log_bin_basename                | /var/lib/mysql/binlog       |
+| log_bin_index                   | /var/lib/mysql/binlog.index |
+| log_bin_trust_function_creators | OFF                         |
+| log_bin_use_v1_row_events       | OFF                         |
+| sql_log_bin                     | ON                          |
++---------------------------------+-----------------------------+
+6 rows in set (0.01 sec)
+
+mysql&gt; 
+</code></pre> 
+<p>4.查看最新一次生成的log文件的编号，这里由于是刚删的就在新生成的log文件里面，若删的时间过早就得自己找了，用到的命令是：</p> 
+<pre><code> show master logs;
+</code></pre> 
+<pre><code>mysql&gt; show master logs;
++---------------+-----------+-----------+
+| Log_name      | File_size | Encrypted |
++---------------+-----------+-----------+
+| binlog.000001 |       821 | No        |
+| binlog.000002 |     12268 | No        |
+| binlog.000003 |       200 | No        |
+| binlog.000004 |      1759 | No        |
++---------------+-----------+-----------+
+4 rows in set (0.01 sec)
+
+mysql&gt; 
+</code></pre> 
+<p>5.查到指定log文件后就可以查看里面的pos了（每个用户的文件名不一，我的是binlog.000004）</p> 
+<pre><code>show binlog events in 'binlog.000004';
+</code></pre> 
+<p>查询结果：</p> 
+<pre><code>mysql&gt; show binlog events in 'binlog.000004';
++---------------+------+----------------+-----------+-------------+--------------------------------------+
+| Log_name      | Pos  | Event_type     | Server_id | End_log_pos | Info                                 |
++---------------+------+----------------+-----------+-------------+--------------------------------------+
+| binlog.000004 |    4 | Format_desc    |         1 |         125 | Server ver: 8.0.25, Binlog ver: 4    |
+| binlog.000004 |  125 | Previous_gtids |         1 |         156 |                                      |
+| binlog.000004 |  156 | Anonymous_Gtid |         1 |         235 | SET @@SESSION.GTID_NEXT= 'ANONYMOUS' |
+| binlog.000004 |  235 | Query          |         1 |         313 | BEGIN                                |
+| binlog.000004 |  313 | Table_map      |         1 |         382 | table_id: 93 (library.reader)        |
+| binlog.000004 |  382 | Write_rows     |         1 |         447 | table_id: 93 flags: STMT_END_F       |
+| binlog.000004 |  447 | Xid            |         1 |         478 | COMMIT /* xid=14 */                  |
+| binlog.000004 |  478 | Anonymous_Gtid |         1 |         557 | SET @@SESSION.GTID_NEXT= 'ANONYMOUS' |
+| binlog.000004 |  557 | Query          |         1 |         635 | BEGIN                                |
+| binlog.000004 |  635 | Table_map      |         1 |         704 | table_id: 93 (library.reader)        |
+| binlog.000004 |  704 | Write_rows     |         1 |         771 | table_id: 93 flags: STMT_END_F       |
+| binlog.000004 |  771 | Xid            |         1 |         802 | COMMIT /* xid=15 */                  |
+| binlog.000004 |  802 | Anonymous_Gtid |         1 |         881 | SET @@SESSION.GTID_NEXT= 'ANONYMOUS' |
+| binlog.000004 |  881 | Query          |         1 |         959 | BEGIN                                |
+| binlog.000004 |  959 | Table_map      |         1 |        1028 | table_id: 93 (library.reader)        |
+| binlog.000004 | 1028 | Write_rows     |         1 |        1092 | table_id: 93 flags: STMT_END_F       |
+| binlog.000004 | 1092 | Xid            |         1 |        1123 | COMMIT /* xid=16 */                  |
+| binlog.000004 | 1123 | Anonymous_Gtid |         1 |        1202 | SET @@SESSION.GTID_NEXT= 'ANONYMOUS' |
+| binlog.000004 | 1202 | Query          |         1 |        1280 | BEGIN                                |
+| binlog.000004 | 1280 | Table_map      |         1 |        1349 | table_id: 93 (library.reader)        |
+| binlog.000004 | 1349 | Write_rows     |         1 |        1410 | table_id: 93 flags: STMT_END_F       |
+| binlog.000004 | 1410 | Xid            |         1 |        1441 | COMMIT /* xid=17 */                  |
+| binlog.000004 | 1441 | Anonymous_Gtid |         1 |        1520 | SET @@SESSION.GTID_NEXT= 'ANONYMOUS' |
+| binlog.000004 | 1520 | Query          |         1 |        1598 | BEGIN                                |
+| binlog.000004 | 1598 | Table_map      |         1 |        1667 | table_id: 93 (library.reader)        |
+| binlog.000004 | 1667 | Delete_rows    |         1 |        1728 | table_id: 93 flags: STMT_END_F       |
+| binlog.000004 | 1728 | Xid            |         1 |        1759 | COMMIT /* xid=20 */                  |
++---------------+------+----------------+-----------+-------------+--------------------------------------+
+27 rows in set (0.00 sec)
+
+</code></pre> 
+<p>注意：这里需要找到的是我们创建数据时的pos而不是删数据时的pos，我们创建数据这个操作是连续的所以Info里面的xid也是连续的；</p> 
+<p>同时起始pos是开始创建的xid上最近的BEGIN对应的，结束pos是终止的xid下面最近的SET对应的，找错的话会报错，具体见下图（xid=18、19我做了两次查询）：<img alt="" src="https://images2.imgbox.com/86/63/yCh40SAw_o.png"></p> 
+<p> 所以他的起始pos为：235，终止pos为：1441</p> 
+<p>6.查询完毕后退出数据库进入到mysql目录下准备恢复，命令： quit  ； #cd /var/lib/mysql ;</p> 
+<pre><code>mysql&gt; quit
+Bye
+[root@atdajv ~]# cd /var/lib/mysql
+[root@atdajv mysql]# 
+</code></pre> 
+<p>7.恢复数据，命令：</p> 
+<pre><code># /usr/bin/mysqlbinlog --start-position=235 --stop-position=1441 --database=databasename /var/lib/mysql/binlog.000004 | /usr/bin/mysql -uroot -ppassword -v databasename</code></pre> 
+<p>效果如下：</p> 
+<pre><code>.
+.
+.
+SET @@SESSION.GTID_NEXT= 'AUTOMATIC'
+--------------
+
+--------------
+/*!50003 SET COMPLETION_TYPE=@OLD_COMPLETION_TYPE*/
+--------------
+
+--------------
+/*!50530 SET @@SESSION.PSEUDO_SLAVE_MODE=0*/
+--------------
+
+[root@atdajv mysql]# 
+</code></pre> 
+<p> 8.再次查询后数据已经恢复成功了</p> 
+<pre><code>mysql&gt; select * from reader;
++------+---------------+---------+--------------+
+| rid  | rName         | lendNum | rAddress     |
++------+---------------+---------+--------------+
+| 001  | zhangYongwei  |       2 | 北京西城     |
+| 002  | zhangDawei    |       1 | 北京东城     |
+| 3    | jixiegongye   |      10 | 北京南       |
+| 4    | zhangchongkun |      10 | 北京北       |
+| 5    | wangdaxian    |      10 | 北京西       |
+| 3    | jixiegongye   |      10 | 北京南       |
+| 4    | zhangchongkun |      10 | 北京北       |
+| 5    | wangdaxian    |      10 | 北京西       |
+| 6    | liergou       |      10 | 北京南       |
++------+---------------+---------+--------------+
+9 rows in set (0.00 sec)
+
+mysql&gt; 
+</code></pre> 
+<p> 9.收拾东西，不用跑路咯</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/784274d26bb540e26f122de1b0e0162f/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">React详解(CDN引入、JSX、脚手架、类组件、函数组件、事件、Hooks、生命周期方法、Ref使用、注意点)</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/b6560066897c961b7661bef40e09f8df/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">算法练习--日更 准备蓝桥杯</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>CAS服务端redis集群搭建 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="CAS服务端redis集群搭建" />
+<meta property="og:description" content="注：cas4.0.x&#43;Tomcat7&#43;Jdk7&#43;redis3.0
+CAS中的票据默认是存储在TicketRegistry中的，若是想要实现CAS服务端的集群，首先要做的是将票据共享到缓存中。
+1.实现AbstractDistributedTicketRegistry抽象类
+import java.io.ByteArrayInputStream; import java.io.ByteArrayOutputStream; import java.io.ObjectInputStream; import java.io.ObjectOutputStream; import java.util.Collection; import javax.validation.constraints.Min; import org.jasig.cas.ticket.ServiceTicket; import org.jasig.cas.ticket.Ticket; import org.jasig.cas.ticket.TicketGrantingTicket; import org.jasig.cas.ticket.registry.AbstractDistributedTicketRegistry; import org.springframework.beans.factory.DisposableBean; import redis.clients.jedis.Jedis; import com.sdzn.cas.util.RedisClient; public class RedisTicketRegistry extends AbstractDistributedTicketRegistry implements DisposableBean { /** * TGT cache entry timeout in seconds. */ @Min(0) private final int tgtTimeout; /** * ST cache entry timeout in seconds. */ @Min(0) private final int stTimeout; /** * Creates a new instance that stores tickets * * @param ticketGrantingTicketTimeOut * TGT timeout in seconds." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/fef64ccacc7b22ff74e2733516f8b506/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2016-10-15T18:59:00+08:00" />
+<meta property="article:modified_time" content="2016-10-15T18:59:00+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">CAS服务端redis集群搭建</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div class="content" id="articleContent"> 
+ <p><span style="color:#FF0000;">注</span>：cas4.0.x+Tomcat7+Jdk7+redis3.0</p> 
+ <p>CAS中的票据默认是存储在TicketRegistry中的，若是想要实现CAS服务端的集群，首先要做的是将票据共享到缓存中。</p> 
+ <p>1.实现<span style="color:#008080;">AbstractDistributedTicketRegistry</span>抽象类</p> 
+ <pre><code class="language-java">import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.util.Collection;
+import javax.validation.constraints.Min;
+import org.jasig.cas.ticket.ServiceTicket;
+import org.jasig.cas.ticket.Ticket;
+import org.jasig.cas.ticket.TicketGrantingTicket;
+import org.jasig.cas.ticket.registry.AbstractDistributedTicketRegistry;
+import org.springframework.beans.factory.DisposableBean;
+import redis.clients.jedis.Jedis;
+import com.sdzn.cas.util.RedisClient;
+public class RedisTicketRegistry extends AbstractDistributedTicketRegistry
+implements DisposableBean {
+/**
+* TGT cache entry timeout in seconds.
+*/
+@Min(0)
+private final int tgtTimeout;
+/**
+* ST cache entry timeout in seconds.
+*/
+@Min(0)
+private final int stTimeout;
+/**
+* Creates a new instance that stores tickets
+*
+* @param ticketGrantingTicketTimeOut
+* TGT timeout in seconds.
+* @param serviceTicketTimeOut
+* ST timeout in seconds.
+*/
+public RedisTicketRegistry(final int ticketGrantingTicketTimeOut,
+final int serviceTicketTimeOut) {
+this.tgtTimeout = ticketGrantingTicketTimeOut;
+this.stTimeout = serviceTicketTimeOut;
+}
+protected void updateTicket(final Ticket ticket) {
+logger.debug("Updating ticket {}", ticket);
+try {
+addTicket(ticket);
+} catch (final Exception e) {
+logger.error("Failed updating {}", ticket, e);
+}
+}
+public void addTicket(final Ticket ticket) {
+logger.debug("Adding ticket {}", ticket);
+try {
+Jedis jedis = RedisClient.getJedis();
+int seconds = 0;
+String key = ticket.getId();
+if (ticket instanceof TicketGrantingTicket) {
+// key = ((TicketGrantingTicket) ticket).getAuthentication()
+// .getPrincipal().getId();
+seconds = tgtTimeout;
+} else {
+seconds = stTimeout;
+}
+ByteArrayOutputStream bos = new ByteArrayOutputStream();
+ObjectOutputStream oos = null;
+try {
+oos = new ObjectOutputStream(bos);
+oos.writeObject(ticket);
+} catch (Exception e) {
+logger.error("adding ticket to redis error.");
+} finally {
+try {
+if (null != oos) oos.close();
+} catch (Exception e) {
+logger.error("oos closing error when adding ticket to redis.");
+}
+}
+jedis.set(key.getBytes(), bos.toByteArray());
+jedis.expire(key.getBytes(), seconds);
+RedisClient.closeJedis(jedis);
+} catch (final Exception e) {
+logger.error("Failed adding {}", ticket, e);
+}
+}
+public boolean deleteTicket(final String ticketId) {
+logger.debug("Deleting ticket {}", ticketId);
+try {
+if (ticketId == null) {
+return false;
+}
+Jedis jedis = RedisClient.getJedis();
+jedis.del(ticketId.getBytes());
+RedisClient.closeJedis(jedis);
+return true;
+} catch (final Exception e) {
+logger.error("Failed deleting {}", ticketId, e);
+}
+return false;
+}
+public Ticket getTicket(final String ticketId) {
+try {
+final Ticket t = getRawTicket(ticketId);
+if (t != null) {
+return getProxiedTicketInstance(t);
+}
+} catch (final Exception e) {
+logger.error("Failed fetching {} ", ticketId, e);
+}
+return null;
+}
+private Ticket getRawTicket(final String ticketId) {
+if (null == ticketId) return null;
+Jedis jedis = RedisClient.getJedis();
+Ticket ticket = null;
+if (jedis.exists(ticketId.getBytes())) {
+ByteArrayInputStream bais = new ByteArrayInputStream(
+jedis.get(ticketId.getBytes()));
+ObjectInputStream ois = null;
+try {
+ois = new ObjectInputStream(bais);
+ticket = (Ticket) ois.readObject();
+} catch (Exception e) {
+logger.error("getting ticket to redis error.");
+} finally {
+try {
+if (null != ois) ois.close();
+} catch (Exception e) {
+logger.error("ois closing error when getting ticket to redis.");
+}
+}
+}
+RedisClient.closeJedis(jedis);
+return ticket;
+}
+/**
+* {@inheritDoc} This operation is not supported.
+*
+* @throws UnsupportedOperationException
+* if you try and call this operation.
+*/
+@Override
+public Collection&lt;Ticket&gt; getTickets() {
+throw new UnsupportedOperationException("GetTickets not supported.");
+}
+public void destroy() throws Exception {
+/**
+* TODO
+*/
+}
+/**
+* @param sync
+* set to true, if updates to registry are to be synchronized
+* @deprecated As of version 3.5, this operation has no effect since async
+* writes can cause registry consistency issues.
+*/
+@Deprecated
+public void setSynchronizeUpdatesToRegistry(final boolean sync) {
+}
+@Override
+protected boolean needsCallback() {
+return true;
+}
+private int getTimeout(final Ticket t) {
+if (t instanceof TicketGrantingTicket) {
+return this.tgtTimeout;
+} else if (t instanceof ServiceTicket) {
+return this.stTimeout;
+}
+throw new IllegalArgumentException("Invalid ticket type");
+}
+}</code></pre> 
+ <p>2.修改ticketRegistry.xml</p> 
+ <pre><code class="language-java">&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+
+&lt;!--
+
+ 
+
+Licensed to Jasig under one or more contributor license
+
+agreements. See the NOTICE file distributed with this work
+
+for additional information regarding copyright ownership.
+
+Jasig licenses this file to you under the Apache License,
+
+Version 2.0 (the "License"); you may not use this file
+
+except in compliance with the License. You may obtain a
+
+copy of the License at the following location:
+
+ 
+
+http://www.apache.org/licenses/LICENSE-2.0
+
+ 
+
+Unless required by applicable law or agreed to in writing,
+
+software distributed under the License is distributed on an
+
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+
+KIND, either express or implied. See the License for the
+
+specific language governing permissions and limitations
+
+under the License.
+
+ 
+
+--&gt;
+
+&lt;beans xmlns="http://www.springframework.org/schema/beans"
+
+xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+
+xmlns:p="http://www.springframework.org/schema/p"
+
+xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd"&gt;
+
+&lt;description&gt;
+
+Configuration for the default TicketRegistry which stores the tickets in-memory and cleans them out as specified intervals.
+
+&lt;/description&gt;
+
+&lt;!-- Ticket Registry
+
+&lt;bean id="ticketRegistry" class="org.jasig.cas.ticket.registry.DefaultTicketRegistry" /&gt;--&gt;
+
+&lt;bean id="ticketRegistry" class="com.sdzn.cas.support.RedisTicketRegistry"&gt;
+
+&lt;constructor-arg index="0" value="36000" /&gt;
+
+&lt;constructor-arg index="1" value="2" /&gt;
+
+&lt;/bean&gt;
+
+&lt;!--Quartz --&gt;
+
+&lt;!-- TICKET REGISTRY CLEANER
+
+&lt;bean id="ticketRegistryCleaner" class="org.jasig.cas.ticket.registry.support.DefaultTicketRegistryCleaner"
+
+p:ticketRegistry-ref="ticketRegistry"
+
+p:logoutManager-ref="logoutManager" /&gt;
+
+&lt;bean id="jobDetailTicketRegistryCleaner" class="org.springframework.scheduling.quartz.MethodInvokingJobDetailFactoryBean"
+
+p:targetObject-ref="ticketRegistryCleaner"
+
+p:targetMethod="clean" /&gt;
+
+&lt;bean id="triggerJobDetailTicketRegistryCleaner" class="org.springframework.scheduling.quartz.SimpleTriggerBean"
+
+p:jobDetail-ref="jobDetailTicketRegistryCleaner"
+
+p:startDelay="20000"
+
+p:repeatInterval="5000000" /&gt;--&gt;
+
+&lt;/beans&gt;</code></pre> 
+ <p>3.共享tomcat中的session。</p> 
+ <p>拷贝编译打包之后的tomcat-redis-session-manager-VERSION.jar，jedis-2.5.2.jar，commons-pool2-2.2.jar到tomcat/lib目录下；修改Tomcat context.xml：</p> 
+ <pre><code class="language-java">&lt;Valve className="com.orangefunction.tomcat.redissessions.RedisSessionHandlerValve"/&gt;
+
+&lt;Manager className="com.orangefunction.tomcat.redissessions.RedisSessionManager"
+
+host="redis_server_name"
+
+port="6379"
+
+database="0"
+
+maxInactiveInterval="1800"/&gt;</code></pre> 
+ <p>CAS使用redis集群后的问题：</p> 
+ <p>1.1问题描述</p> 
+ <p>第一次登陆成功，退出后无法再次登陆</p> 
+ <pre><code class="language-java">日志信息
+
+DEBUG [org.jasig.cas.web.support.CasArgumentExtractor] - &lt;Extractor did not generate service.&gt;
+
+DEBUG [org.jasig.cas.web.flow.GenerateLoginTicketAction] - &lt;Generated login ticket LT-16-0WUz0ySwzIrQ1QhfMbFm6Lyl0wK6uP-sso1.***.com&gt;</code></pre> 
+ <p>1.2问题排查</p> 
+ <p>跟踪访问流程发现是由于第一次登出后，会在浏览器残留上一次所使用<em>CASTGC</em>以及SESSIONID，因此导致在登出后访问时发生重定向不能正确登陆。</p> 
+ <p>1.3解决办法</p> 
+ <p>修改退出流程，增加对于cookie的清除</p> 
+ <pre><code class="language-java">import java.util.List;
+
+ 
+
+import javax.servlet.http.Cookie;
+
+import javax.servlet.http.HttpServletRequest;
+
+import javax.servlet.http.HttpServletResponse;
+
+import javax.validation.constraints.NotNull;
+
+ 
+
+import org.jasig.cas.authentication.principal.SimpleWebApplicationServiceImpl;
+
+import org.jasig.cas.logout.LogoutRequest;
+
+import org.jasig.cas.logout.LogoutRequestStatus;
+
+import org.jasig.cas.services.RegisteredService;
+
+import org.jasig.cas.services.ServicesManager;
+
+import org.jasig.cas.web.flow.AbstractLogoutAction;
+
+import org.jasig.cas.web.support.WebUtils;
+
+import org.springframework.webflow.execution.Event;
+
+import org.springframework.webflow.execution.RequestContext;
+
+ 
+
+public class MyLogoutAction extends AbstractLogoutAction {
+
+ 
+
+@NotNull
+
+private ServicesManager servicesManager;
+
+private boolean followServiceRedirects;
+
+ 
+
+protected Event doInternalExecute(HttpServletRequest request,
+
+HttpServletResponse response, RequestContext context)
+
+throws Exception {
+
+boolean needFrontSlo = false;
+
+putLogoutIndex(context, 0);
+
+List&lt;LogoutRequest&gt; logoutRequests = WebUtils
+
+.getLogoutRequests(context);
+
+if (logoutRequests != null) {
+
+for (LogoutRequest logoutRequest : logoutRequests) {
+
+if (logoutRequest.getStatus() == LogoutRequestStatus.NOT_ATTEMPTED) {
+
+needFrontSlo = true;
+
+break;
+
+}
+
+}
+
+}
+
+ 
+
+String service = request.getParameter("service");
+
+if ((this.followServiceRedirects) &amp;&amp; (service != null)) {
+
+RegisteredService rService = this.servicesManager
+
+.findServiceBy(new SimpleWebApplicationServiceImpl(service));
+
+ 
+
+if ((rService != null) &amp;&amp; (rService.isEnabled())) {
+
+context.getFlowScope().put("logoutRedirectUrl", service);
+
+}
+
+ 
+
+}
+
+ 
+
+/**
+
+* delete cookie
+
+*/
+
+Cookie[] cookies = request.getCookies();
+
+for (Cookie cookie : cookies) {
+
+cookie.setMaxAge(0);
+
+response.addCookie(cookie);
+
+}
+
+if (needFrontSlo) {
+
+return new Event(this, "front");
+
+}
+
+ 
+
+return new Event(this, "finish");
+
+}
+
+ 
+
+public void setFollowServiceRedirects(boolean followServiceRedirects) {
+
+this.followServiceRedirects = followServiceRedirects;
+
+}
+
+ 
+
+public void setServicesManager(ServicesManager servicesManager) {
+
+this.servicesManager = servicesManager;
+
+}
+
+}</code></pre> 
+ <p>2.1问题描述</p> 
+ <p>第一次输入密码失败后无法再次登陆的问题。</p> 
+ <p>2.2问题原因</p> 
+ <p>webflow中的信息是保存在session中的，但是tomcat-redis-session-manager中对于对象中属性发生改变或集合增删内容的情况是不会同步。github上关于该特性的描述如下：</p> 
+ <pre><code class="language-java">
+As noted in the "Overview" section above, in order to prevent colliding writes, the Redis Session Manager only serializes the session object into Redis if the session object has changed (it always updates the expiration separately however.) This dirty tracking marks the session as needing serialization according to the following rules:
+
+Calling session.removeAttribute(key) always marks the session as dirty (needing serialization.)
+
+Calling session.setAttribute(key, newAttributeValue) marks the session as dirty if any of the following are true:
+
+previousAttributeValue == null &amp;&amp; newAttributeValue != null
+
+previousAttributeValue != null &amp;&amp; newAttributeValue == null
+
+!newAttributeValue.getClass().isInstance(previousAttributeValue)
+
+!newAttributeValue.equals(previousAttributeValue)
+
+This feature can have the unintended consequence of hiding writes if you implicitly change a key in the session or if the object's equality does not change even though the key is updated. For example, assuming the session already contains the key "myArray" with an Array instance as its corresponding value, and has been previously serialized, the following code would not cause the session to be serialized again:
+
+List myArray = session.getAttribute("myArray");
+
+myArray.add(additionalArrayValue);
+
+If your code makes these kind of changes, then the RedisSession provides a mechanism by which you can mark the session as dirty in order to guarantee serialization at the end of the request. For example:
+
+List myArray = session.getAttribute("myArray");
+
+myArray.add(additionalArrayValue);
+
+session.setAttribute("__changed__");
+
+In order to not cause issues with an application that may already use the key "__changed__", this feature is disabled by default. To enable this feature, simple call the following code in your application's initialization:
+
+RedisSession.setManualDirtyTrackingSupportEnabled(true);</code></pre> 
+ <p>大意是如果要实现对象内容的更改，需要同时在session中出发给定的条件。所以这里修改了Spring webflow源代码:</p> 
+ <pre><code class="language-java">package org.springframework.webflow.context.servlet;
+
+ 
+
+import java.util.Iterator;
+
+ 
+
+import javax.servlet.http.HttpServletRequest;
+
+import javax.servlet.http.HttpSession;
+
+ 
+
+import org.springframework.binding.collection.SharedMap;
+
+import org.springframework.binding.collection.StringKeyedMapAdapter;
+
+import org.springframework.web.util.WebUtils;
+
+import org.springframework.webflow.context.web.HttpSessionMapBindingListener;
+
+import org.springframework.webflow.core.collection.AttributeMapBindingListener;
+
+import org.springframework.webflow.core.collection.CollectionUtils;
+
+ 
+
+public class HttpSessionMap extends StringKeyedMapAdapter implements SharedMap {
+
+ 
+
+private static final String REDIS_CHANGE_KEY = "__changed__";
+
+private HttpServletRequest request;
+
+ 
+
+public HttpSessionMap(HttpServletRequest request) {
+
+this.request = request;
+
+}
+
+ 
+
+private HttpSession getSession() {
+
+return this.request.getSession(false);
+
+}
+
+ 
+
+protected Object getAttribute(String key) {
+
+HttpSession session = getSession();
+
+if (session == null) {
+
+return null;
+
+}
+
+Object value = session.getAttribute(key);
+
+if ((value instanceof HttpSessionMapBindingListener)) {
+
+return ((HttpSessionMapBindingListener) value).getListener();
+
+}
+
+return value;
+
+}
+
+ 
+
+protected void setAttribute(String key, Object value) {
+
+HttpSession session = this.request.getSession(true);
+
+if ((value instanceof AttributeMapBindingListener)) {
+
+session.setAttribute(key, new HttpSessionMapBindingListener(
+
+(AttributeMapBindingListener) value, this));
+
+} else
+
+session.setAttribute(key, value);
+
+
+ 
+
+session.setAttribute(REDIS_CHANGE_KEY, "");
+
+}
+
+ 
+
+protected void removeAttribute(String key) {
+
+HttpSession session = getSession();
+
+if (session != null) session.removeAttribute(key);
+
+}
+
+ 
+
+protected Iterator getAttributeNames() {
+
+HttpSession session = getSession();
+
+return session == null ? CollectionUtils.EMPTY_ITERATOR
+
+: CollectionUtils.toIterator(session.getAttributeNames());
+
+}
+
+ 
+
+public Object getMutex() {
+
+HttpSession session = this.request.getSession(true);
+
+Object mutex = session.getAttribute(WebUtils.SESSION_MUTEX_ATTRIBUTE);
+
+return mutex != null ? mutex : session;
+
+}
+
+}</code></pre> 
+ <p>增加了<span style="color:rgb(72,72,76);">REDIS_CHANGE_KEY </span>，在每次<span style="color:rgb(72,72,76);">setAttribute</span>时将其作为key放入session中。问题得以解决。</p> 
+</div> 
+<p>转载于:https://my.oschina.net/leewb/blog/758940</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/638876a81aab98a0166fe62ca4d6e975/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">新版sonar代码审查问题总结</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/86b09f8b7b78a91448b9c87cfb094fb6/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">面试基础知识准备</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

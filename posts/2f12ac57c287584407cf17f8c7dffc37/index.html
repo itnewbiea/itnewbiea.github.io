@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Spark Shuffle模块——Suffle Read过程分析 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Spark Shuffle模块——Suffle Read过程分析" />
+<meta property="og:description" content="在阅读本文之前，请先阅读Spark Sort Based Shuffle内存分析
+Spark Shuffle Read调用栈如下： 1. org.apache.spark.rdd.ShuffledRDD#compute() 2. org.apache.spark.shuffle.ShuffleManager#getReader() 3. org.apache.spark.shuffle.hash.HashShuffleReader#read() 4. org.apache.spark.storage.ShuffleBlockFetcherIterator#initialize() 5. org.apache.spark.storage.ShuffleBlockFetcherIterator#splitLocalRemoteBlocks() org.apache.spark.storage.ShuffleBlockFetcherIterator#sendRequest() org.apache.spark.storage.ShuffleBlockFetcherIterator#fetchLocalBlocks()
+下面是fetchLocalBlocks()方法执行时涉及到的类和对应方法： 6. org.apache.spark.storage.BlockManager#getBlockData() org.apache.spark.shuffle.hash.ShuffleManager#shuffleBlockResolver() ShuffleManager有两个子类，如果是HashShuffle 则对应的是org.apache.spark.shuffle.hash.HashShuffleManager#shuffleBlockResolver()方法，该方法返回的是org.apache.spark.shuffle.FileShuffleBlockResolver，再调用FileShuffleBlockResolver#getBlockData()方法返回Block数据 ；如果是Sort Shuffle，则对应的是 org.apache.spark.shuffle.hash.SortShuffleManager#shuffleBlockResolver()，该方法返回的是org.apache.spark.shuffle.IndexShuffleBlockResolver，然后再调用IndexShuffleBlockResolver#getBlockData()返回Block数据。
+下面是org.apache.spark.storage.ShuffleBlockFetcherIterator#sendRequest()方法执行时涉及到的类和对应方法 7. org.apache.spark.network.shuffle.ShuffleClient#fetchBlocks org.apache.spark.network.shuffle.ShuffleClient有两个子类，分别是ExternalShuffleClient及BlockTransferService ，其中org.apache.spark.network.shuffle.BlockTransferService又有两个子类，分别是NettyBlockTransferService和NioBlockTransferService，对应两种不同远程获取Block数据方式，Spark 1.5.2中已经将NioBlockTransferService方式设置为deprecated，在后续版本中将被移除
+下面按上述调用栈对各方法进行说明，这里只讲脉络，细节后面再讨论
+ShuffledRDD#compute()代码 Task执行时，调用ShuffledRDD的compute方法，其代码如下：
+//org.apache.spark.rdd.ShuffledRDD#compute() override def compute(split: Partition, context: TaskContext): Iterator[(K, C)] = { val dep = dependencies.head.asInstanceOf[ShuffleDependency[K, V, C]] //通过org.apache.spark.shuffle.ShuffleManager#getReader()方法 //无论是Sort Shuffle 还是 Hash Shuffle，使用的都是 //org.apache.spark.shuffle.hash.HashShuffleReader SparkEnv.get.shuffleManager.getReader(dep.shuffleHandle, split.index, split.index &#43; 1, context) .read() .asInstanceOf[Iterator[(K, C)]] } 可以看到，其核心逻辑是通过调用ShuffleManager#getReader()方法得到HashShuffleReader对象，然后调用HashShuffleReader#read()方法完成前一Stage中ShuffleMapTask生成的Shuffle 数据的读取。需要说明的是，无论是Hash Shuffle还是Sort Shuffle，使用的都是HashShuffleReader。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/2f12ac57c287584407cf17f8c7dffc37/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2015-12-21T21:19:00+08:00" />
+<meta property="article:modified_time" content="2015-12-21T21:19:00+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Spark Shuffle模块——Suffle Read过程分析</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div class="content-detail markdown-body"> 
+ <div class="markdown_views"> 
+  <p>在阅读本文之前，请先阅读<a href="http://www.jianshu.com/p/c83bb237caa8?utm_campaign=hugo&amp;utm_medium=reader_share&amp;utm_content=note&amp;utm_source=weixin-friends&amp;from=groupmessage&amp;isappinstalled=0" rel="nofollow">Spark Sort Based Shuffle内存分析</a></p> 
+  <p>Spark Shuffle Read调用栈如下： <br> 1. org.apache.spark.rdd.ShuffledRDD#compute() <br> 2. org.apache.spark.shuffle.ShuffleManager#getReader() <br> 3. org.apache.spark.shuffle.hash.HashShuffleReader#read() <br> 4. org.apache.spark.storage.ShuffleBlockFetcherIterator#initialize() <br> 5. org.apache.spark.storage.ShuffleBlockFetcherIterator#splitLocalRemoteBlocks() <br> org.apache.spark.storage.ShuffleBlockFetcherIterator#sendRequest() <br> org.apache.spark.storage.ShuffleBlockFetcherIterator#fetchLocalBlocks()</p> 
+  <p>下面是fetchLocalBlocks()方法执行时涉及到的类和对应方法： <br> 6. org.apache.spark.storage.BlockManager#getBlockData() <br> org.apache.spark.shuffle.hash.ShuffleManager#shuffleBlockResolver() <br> ShuffleManager有两个子类，如果是HashShuffle 则对应的是org.apache.spark.shuffle.hash.HashShuffleManager#shuffleBlockResolver()方法，该方法返回的是org.apache.spark.shuffle.FileShuffleBlockResolver，再调用FileShuffleBlockResolver#getBlockData()方法返回Block数据 <br> ；如果是Sort Shuffle，则对应的是 <br> org.apache.spark.shuffle.hash.SortShuffleManager#shuffleBlockResolver()，该方法返回的是org.apache.spark.shuffle.IndexShuffleBlockResolver，然后再调用IndexShuffleBlockResolver#getBlockData()返回Block数据。</p> 
+  <p>下面是org.apache.spark.storage.ShuffleBlockFetcherIterator#sendRequest()方法执行时涉及到的类和对应方法 <br> 7. </p> 
+  <p>org.apache.spark.network.shuffle.ShuffleClient#fetchBlocks <br> org.apache.spark.network.shuffle.ShuffleClient有两个子类，分别是ExternalShuffleClient及BlockTransferService <br> ，其中org.apache.spark.network.shuffle.BlockTransferService又有两个子类，分别是NettyBlockTransferService和NioBlockTransferService，对应两种不同远程获取Block数据方式，Spark 1.5.2中已经将NioBlockTransferService方式设置为deprecated，在后续版本中将被移除</p> 
+  <p>下面按上述调用栈对各方法进行说明，这里只讲脉络，细节后面再讨论</p> 
+  <h3>ShuffledRDD#compute()代码</h3> 
+  <p>Task执行时，调用ShuffledRDD的compute方法，其代码如下：</p> 
+  <pre class="prettyprint"><code class="hljs avrasm">//org<span class="hljs-preprocessor">.apache</span><span class="hljs-preprocessor">.spark</span><span class="hljs-preprocessor">.rdd</span><span class="hljs-preprocessor">.ShuffledRDD</span><span class="hljs-preprocessor">#compute()</span>
+override def compute(split: Partition, context: TaskContext): Iterator[(K, C)] = {
+    val dep = dependencies<span class="hljs-preprocessor">.head</span><span class="hljs-preprocessor">.asInstanceOf</span>[ShuffleDependency[K, V, C]]
+    //通过org<span class="hljs-preprocessor">.apache</span><span class="hljs-preprocessor">.spark</span><span class="hljs-preprocessor">.shuffle</span><span class="hljs-preprocessor">.ShuffleManager</span><span class="hljs-preprocessor">#getReader()方法</span>
+    //无论是Sort Shuffle 还是 Hash Shuffle，使用的都是
+    //org<span class="hljs-preprocessor">.apache</span><span class="hljs-preprocessor">.spark</span><span class="hljs-preprocessor">.shuffle</span><span class="hljs-preprocessor">.hash</span><span class="hljs-preprocessor">.HashShuffleReader</span>
+    SparkEnv<span class="hljs-preprocessor">.get</span><span class="hljs-preprocessor">.shuffleManager</span><span class="hljs-preprocessor">.getReader</span>(dep<span class="hljs-preprocessor">.shuffleHandle</span>, split<span class="hljs-preprocessor">.index</span>, split<span class="hljs-preprocessor">.index</span> + <span class="hljs-number">1</span>, context)
+      <span class="hljs-preprocessor">.read</span>()
+      <span class="hljs-preprocessor">.asInstanceOf</span>[Iterator[(K, C)]]
+  }</code></pre> 
+  <p>可以看到，其核心逻辑是通过调用ShuffleManager#getReader()方法得到HashShuffleReader对象，然后调用HashShuffleReader#read()方法完成前一Stage中ShuffleMapTask生成的Shuffle 数据的读取。需要说明的是，无论是Hash Shuffle还是Sort Shuffle，使用的都是HashShuffleReader。</p> 
+  <h3>HashShuffleReader#read()</h3> 
+  <p>跳到HashShuffleReader#read()方法当中，其源码如下：</p> 
+  <pre class="prettyprint"><code class="hljs scala"><span class="hljs-javadoc">/** Read the combined key-values for this reduce task */</span>
+  <span class="hljs-keyword">override</span> <span class="hljs-keyword">def</span> read(): Iterator[Product2[K, C]] = {
+    <span class="hljs-comment">//创建ShuffleBlockFetcherIterator对象，在其构造函数中会调用initialize()方法</span>
+    <span class="hljs-comment">//该方法中会执行splitLocalRemoteBlocks()，确定数据的读取策略</span>
+    <span class="hljs-comment">//远程数据调用sendRequest()方法读取</span>
+    <span class="hljs-comment">//本地数据调用fetchLocalBlocks()方法读取</span>
+    <span class="hljs-keyword">val</span> blockFetcherItr = <span class="hljs-keyword">new</span> ShuffleBlockFetcherIterator(
+      context,
+      blockManager.shuffleClient,
+      blockManager,
+      mapOutputTracker.getMapSizesByExecutorId(handle.shuffleId, startPartition),
+      <span class="hljs-comment">// Note: we use getSizeAsMb when no suffix is provided for backwards compatibility</span>
+      SparkEnv.get.conf.getSizeAsMb(<span class="hljs-string">"spark.reducer.maxSizeInFlight"</span>, <span class="hljs-string">"48m"</span>) * <span class="hljs-number">1024</span> * <span class="hljs-number">1024</span>)
+
+    <span class="hljs-comment">// Wrap the streams for compression based on configuration</span>
+    <span class="hljs-keyword">val</span> wrappedStreams = blockFetcherItr.map { <span class="hljs-keyword">case</span> (blockId, inputStream) =&gt;
+      blockManager.wrapForCompression(blockId, inputStream)
+    }
+
+    <span class="hljs-keyword">val</span> ser = Serializer.getSerializer(dep.serializer)
+    <span class="hljs-keyword">val</span> serializerInstance = ser.newInstance()
+
+    <span class="hljs-comment">// Create a key/value iterator for each stream</span>
+    <span class="hljs-keyword">val</span> recordIter = wrappedStreams.flatMap { wrappedStream =&gt;
+      <span class="hljs-comment">// Note: the asKeyValueIterator below wraps a key/value iterator inside of a</span>
+      <span class="hljs-comment">// NextIterator. The NextIterator makes sure that close() is called on the</span>
+      <span class="hljs-comment">// underlying InputStream when all records have been read.</span>
+      serializerInstance.deserializeStream(wrappedStream).asKeyValueIterator
+    }
+
+    <span class="hljs-comment">// Update the context task metrics for each record read.</span>
+    <span class="hljs-keyword">val</span> readMetrics = context.taskMetrics.createShuffleReadMetricsForDependency()
+    <span class="hljs-keyword">val</span> metricIter = CompletionIterator[(Any, Any), Iterator[(Any, Any)]](
+      recordIter.map(record =&gt; {
+        readMetrics.incRecordsRead(<span class="hljs-number">1</span>)
+        record
+      }),
+      context.taskMetrics().updateShuffleReadMetrics())
+
+    <span class="hljs-comment">// An interruptible iterator must be used here in order to support task cancellation</span>
+    <span class="hljs-keyword">val</span> interruptibleIter = <span class="hljs-keyword">new</span> InterruptibleIterator[(Any, Any)](context, metricIter)
+
+    <span class="hljs-keyword">val</span> aggregatedIter: Iterator[Product2[K, C]] = <span class="hljs-keyword">if</span> (dep.aggregator.isDefined) {
+      <span class="hljs-keyword">if</span> (dep.mapSideCombine) { 
+        <span class="hljs-comment">// 读取Map端已经聚合的数据</span>
+        <span class="hljs-keyword">val</span> combinedKeyValuesIterator = interruptibleIter.asInstanceOf[Iterator[(K, C)]]
+        dep.aggregator.get.combineCombinersByKey(combinedKeyValuesIterator, context)
+      } <span class="hljs-keyword">else</span> {
+        <span class="hljs-comment">//读取Reducer端聚合的数据</span>
+        <span class="hljs-keyword">val</span> keyValuesIterator = interruptibleIter.asInstanceOf[Iterator[(K, Nothing)]]
+        dep.aggregator.get.combineValuesByKey(keyValuesIterator, context)
+      }
+    } <span class="hljs-keyword">else</span> {
+      require(!dep.mapSideCombine, <span class="hljs-string">"Map-side combine without Aggregator specified!"</span>)
+      interruptibleIter.asInstanceOf[Iterator[Product2[K, C]]]
+    }
+
+    <span class="hljs-comment">// 对输出结果进行排序</span>
+    dep.keyOrdering <span class="hljs-keyword">match</span> {
+      <span class="hljs-keyword">case</span> Some(keyOrd: Ordering[K]) =&gt;
+        <span class="hljs-comment">// Create an ExternalSorter to sort the data. Note that if spark.shuffle.spill is disabled,</span>
+        <span class="hljs-comment">// the ExternalSorter won't spill to disk.</span>
+        <span class="hljs-keyword">val</span> sorter = <span class="hljs-keyword">new</span> ExternalSorter[K, C, C](ordering = Some(keyOrd), serializer = Some(ser))
+        sorter.insertAll(aggregatedIter)
+        context.taskMetrics().incMemoryBytesSpilled(sorter.memoryBytesSpilled)
+        context.taskMetrics().incDiskBytesSpilled(sorter.diskBytesSpilled)
+        context.internalMetricsToAccumulators(
+          InternalAccumulator.PEAK_EXECUTION_MEMORY).add(sorter.peakMemoryUsedBytes)
+        sorter.iterator
+      <span class="hljs-keyword">case</span> None =&gt;
+        aggregatedIter
+    }
+  }</code></pre> 
+  <h3>ShuffleBlockFetcherIterator#splitLocalRemoteBlocks()</h3> 
+  <p>splitLocalRemoteBlocks()方法确定数据的读取策略，localBlocks变量记录在本地机器的BlockID，remoteBlocks变量则用于记录所有在远程机器上的BlockID。远程数据块被分割成最大为maxSizeInFlight大小的FetchRequests</p> 
+  <pre class="prettyprint"><code class="hljs javascript">val remoteRequests = <span class="hljs-keyword">new</span> <span class="hljs-built_in">ArrayBuffer</span>[FetchRequest]</code></pre> 
+  <p>splitLocalRemoteBlocks()方法具有源码如下：</p> 
+  <pre class="prettyprint"><code class="hljs scala"><span class="hljs-keyword">private</span>[<span class="hljs-keyword">this</span>] <span class="hljs-keyword">def</span> splitLocalRemoteBlocks(): ArrayBuffer[FetchRequest] = {
+    <span class="hljs-comment">// Make remote requests at most maxBytesInFlight / 5 in length; the reason to keep them</span>
+    <span class="hljs-comment">// smaller than maxBytesInFlight is to allow multiple, parallel fetches from up to 5</span>
+    <span class="hljs-comment">// nodes, rather than blocking on reading output from one node.</span>
+    <span class="hljs-comment">//maxBytesInFlight为每次请求的最大数据量，默认值为48M</span>
+    <span class="hljs-comment">//通过SparkEnv.get.conf.getSizeAsMb("spark.reducer.maxSizeInFlight", "48m") * 1024 * 1024)进行设置</span>
+    <span class="hljs-keyword">val</span> targetRequestSize = math.max(maxBytesInFlight / <span class="hljs-number">5</span>, <span class="hljs-number">1</span>L)
+    logDebug(<span class="hljs-string">"maxBytesInFlight: "</span> + maxBytesInFlight + <span class="hljs-string">", targetRequestSize: "</span> + targetRequestSize)
+
+    <span class="hljs-comment">// Split local and remote blocks. Remote blocks are further split into FetchRequests of size</span>
+    <span class="hljs-comment">// at most maxBytesInFlight in order to limit the amount of data in flight.</span>
+    <span class="hljs-keyword">val</span> remoteRequests = <span class="hljs-keyword">new</span> ArrayBuffer[FetchRequest]
+
+    <span class="hljs-comment">// Tracks total number of blocks (including zero sized blocks)</span>
+    <span class="hljs-keyword">var</span> totalBlocks = <span class="hljs-number">0</span>
+    <span class="hljs-keyword">for</span> ((address, blockInfos) &lt;- blocksByAddress) {
+      totalBlocks += blockInfos.size
+      <span class="hljs-comment">//要获取的数据在本地</span>
+      <span class="hljs-keyword">if</span> (address.executorId == blockManager.blockManagerId.executorId) {
+        <span class="hljs-comment">// Filter out zero-sized blocks</span>
+        <span class="hljs-comment">//记录数据在本地的BlockID</span>
+        localBlocks ++= blockInfos.filter(_._2 != <span class="hljs-number">0</span>).map(_._1)
+        numBlocksToFetch += localBlocks.size
+      } <span class="hljs-keyword">else</span> {
+       <span class="hljs-comment">//数据不在本地时</span>
+        <span class="hljs-keyword">val</span> iterator = blockInfos.iterator
+        <span class="hljs-keyword">var</span> curRequestSize = <span class="hljs-number">0</span>L
+        <span class="hljs-keyword">var</span> curBlocks = <span class="hljs-keyword">new</span> ArrayBuffer[(BlockId, Long)]
+        <span class="hljs-keyword">while</span> (iterator.hasNext) {
+          <span class="hljs-keyword">val</span> (blockId, size) = iterator.next()
+          <span class="hljs-comment">// Skip empty blocks</span>
+          <span class="hljs-keyword">if</span> (size &gt; <span class="hljs-number">0</span>) {
+            curBlocks += ((blockId, size))
+            <span class="hljs-comment">//记录数据在远程机器上的BlockID</span>
+            remoteBlocks += blockId
+            numBlocksToFetch += <span class="hljs-number">1</span>
+            curRequestSize += size
+          } <span class="hljs-keyword">else</span> <span class="hljs-keyword">if</span> (size &lt; <span class="hljs-number">0</span>) {
+            <span class="hljs-keyword">throw</span> <span class="hljs-keyword">new</span> BlockException(blockId, <span class="hljs-string">"Negative block size "</span> + size)
+          }
+          <span class="hljs-keyword">if</span> (curRequestSize &gt;= targetRequestSize) {
+            <span class="hljs-comment">// Add this FetchRequest</span>
+            remoteRequests += <span class="hljs-keyword">new</span> FetchRequest(address, curBlocks)
+            curBlocks = <span class="hljs-keyword">new</span> ArrayBuffer[(BlockId, Long)]
+            logDebug(s<span class="hljs-string">"Creating fetch request of $curRequestSize at $address"</span>)
+            curRequestSize = <span class="hljs-number">0</span>
+          }
+        }
+        <span class="hljs-comment">// Add in the final request</span>
+        <span class="hljs-keyword">if</span> (curBlocks.nonEmpty) {
+          remoteRequests += <span class="hljs-keyword">new</span> FetchRequest(address, curBlocks)
+        }
+      }
+    }
+    logInfo(s<span class="hljs-string">"Getting $numBlocksToFetch non-empty blocks out of $totalBlocks blocks"</span>)
+    remoteRequests
+  }</code></pre> 
+  <h3>ShuffleBlockFetcherIterator#fetchLocalBlocks()</h3> 
+  <p>fetchLocalBlocks()方法进行本地Block的读取，调用的是BlockManager的getBlockData方法，其源代码如下：</p> 
+  <pre class="prettyprint"><code class="hljs scala"><span class="hljs-keyword">private</span>[<span class="hljs-keyword">this</span>] <span class="hljs-keyword">def</span> fetchLocalBlocks() {
+    <span class="hljs-keyword">val</span> iter = localBlocks.iterator
+    <span class="hljs-keyword">while</span> (iter.hasNext) {
+      <span class="hljs-keyword">val</span> blockId = iter.next()
+      <span class="hljs-keyword">try</span> {
+        <span class="hljs-comment">//调用BlockManager的getBlockData方法</span>
+        <span class="hljs-keyword">val</span> buf = blockManager.getBlockData(blockId)
+        shuffleMetrics.incLocalBlocksFetched(<span class="hljs-number">1</span>)
+        shuffleMetrics.incLocalBytesRead(buf.size)
+        buf.retain()
+        results.put(<span class="hljs-keyword">new</span> SuccessFetchResult(blockId, blockManager.blockManagerId, <span class="hljs-number">0</span>, buf))
+      } <span class="hljs-keyword">catch</span> {
+        <span class="hljs-keyword">case</span> e: Exception =&gt;
+          <span class="hljs-comment">// If we see an exception, stop immediately.</span>
+          logError(s<span class="hljs-string">"Error occurred while fetching local blocks"</span>, e)
+          results.put(<span class="hljs-keyword">new</span> FailureFetchResult(blockId, blockManager.blockManagerId, e))
+          <span class="hljs-keyword">return</span>
+      }
+    }
+  }</code></pre> 
+  <p>跳转到BlockManager的getBlockData方法，可以看到其源代码如下：</p> 
+  <pre class="prettyprint"><code class="hljs python">override <span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">getBlockData</span><span class="hljs-params">(blockId: BlockId)</span>:</span> ManagedBuffer = {
+          <span class="hljs-keyword">if</span> (blockId.isShuffle) {   
+//先调用的是ShuffleManager的shuffleBlockResolver方法，得到ShuffleBlockResolver
+//然后再调用其getBlockData方法   shuffleManager.shuffleBlockResolver.getBlockData(blockId.asInstanceOf[ShuffleBlockId])
+          } <span class="hljs-keyword">else</span> {
+            val blockBytesOpt = doGetLocal(blockId, asBlockResult = false)
+              .asInstanceOf[Option[ByteBuffer]]
+            <span class="hljs-keyword">if</span> (blockBytesOpt.isDefined) {
+              val buffer = blockBytesOpt.get
+        new NioManagedBuffer(buffer)
+      } <span class="hljs-keyword">else</span> {
+        throw new BlockNotFoundException(blockId.toString)
+      }
+    }
+  }</code></pre> 
+  <p>org.apache.spark.shuffle.hash.ShuffleManager#shuffleBlockResolver()方法获取相应的ShuffleBlockResolver，如果是Hash Shuffle，则 <br> 是org.apache.spark.shuffle.FileShuffleBlockResolver，如果是Sort Shuffle则org.apache.spark.shuffle.IndexShuffleBlockResolver。然后调用对应ShuffleBlockResolver的getBlockData方法，返回对应的FileSegment。 <br> FileShuffleBlockResolver#getBlockData方法源码如下：</p> 
+  <pre class="prettyprint"><code class="hljs livecodeserver">override def getBlockData(blockId: ShuffleBlockId): ManagedBuffer = {
+   <span class="hljs-comment"> //对应Hash Shuffle中的Shuffle Consolidate Files机制生成的文件</span>
+    <span class="hljs-keyword">if</span> (consolidateShuffleFiles) { 
+     <span class="hljs-comment"> // Search all file groups associated with this shuffle.</span>
+      val shuffleState = shuffleStates(blockId.shuffleId)
+      val iter = shuffleState.allFileGroups.iterator
+      <span class="hljs-keyword">while</span> (iter.hasNext) {
+        val segmentOpt = iter.next.getFileSegmentFor(blockId.mapId, blockId.reduceId)
+        <span class="hljs-keyword">if</span> (segmentOpt.isDefined) {
+          val segment = segmentOpt.<span class="hljs-built_in">get</span>
+          <span class="hljs-constant">return</span> <span class="hljs-built_in">new</span> FileSegmentManagedBuffer(
+            transportConf, segment.<span class="hljs-built_in">file</span>, segment.<span class="hljs-built_in">offset</span>, segment.<span class="hljs-built_in">length</span>)
+        }
+      }
+      throw <span class="hljs-built_in">new</span> IllegalStateException(<span class="hljs-string">"Failed to find shuffle block: "</span> + blockId)
+    } <span class="hljs-keyword">else</span> {
+     <span class="hljs-comment"> //普通的Hash Shuffle机制生成的文件</span>
+      val <span class="hljs-built_in">file</span> = blockManager.diskBlockManager.getFile(blockId)
+      <span class="hljs-built_in">new</span> FileSegmentManagedBuffer(transportConf, <span class="hljs-built_in">file</span>, <span class="hljs-number">0</span>, <span class="hljs-built_in">file</span>.<span class="hljs-built_in">length</span>)
+    }
+  }</code></pre> 
+  <p>IndexShuffleBlockResolver#getBlockData方法源码如下：</p> 
+  <pre class="prettyprint"><code class="hljs fsharp"><span class="hljs-keyword">override</span> def getBlockData(blockId: ShuffleBlockId): ManagedBuffer = {
+    <span class="hljs-comment">// The block is actually going to be a range of a single map output file for this map, so</span>
+    <span class="hljs-comment">// find out the consolidated file, then the offset within that from our index</span>
+    <span class="hljs-comment">//使用shuffleId和mapId，获取对应索引文件</span>
+    <span class="hljs-keyword">val</span> indexFile = getIndexFile(blockId.shuffleId, blockId.mapId)
+
+    <span class="hljs-keyword">val</span> <span class="hljs-keyword">in</span> = <span class="hljs-keyword">new</span> DataInputStream(<span class="hljs-keyword">new</span> FileInputStream(indexFile))
+    <span class="hljs-keyword">try</span> {
+      <span class="hljs-comment">//定位到本次Block对应的数据位置</span>
+      ByteStreams.skipFully(<span class="hljs-keyword">in</span>, blockId.reduceId * <span class="hljs-number">8</span>)
+      <span class="hljs-comment">//数据起始位置</span>
+      <span class="hljs-keyword">val</span> offset = <span class="hljs-keyword">in</span>.readLong()
+      <span class="hljs-comment">//数据结束位置</span>
+      <span class="hljs-keyword">val</span> nextOffset = <span class="hljs-keyword">in</span>.readLong()
+      <span class="hljs-comment">//返回FileSegment</span>
+      <span class="hljs-keyword">new</span> FileSegmentManagedBuffer(
+        transportConf,
+        getDataFile(blockId.shuffleId, blockId.mapId),
+        offset,
+        nextOffset - offset)
+    } <span class="hljs-keyword">finally</span> {
+      <span class="hljs-keyword">in</span>.close()
+    }
+  }</code></pre> 
+  <h3>ShuffleBlockFetcherIterator#sendRequest()</h3> 
+  <p>sendRequest()方法用于从远程机器上获取数据</p> 
+  <pre class="prettyprint"><code class="hljs avrasm"> private[this] def sendRequest(req: FetchRequest) {
+    logDebug(<span class="hljs-string">"Sending request for %d blocks (%s) from %s"</span><span class="hljs-preprocessor">.format</span>(
+      req<span class="hljs-preprocessor">.blocks</span><span class="hljs-preprocessor">.size</span>, Utils<span class="hljs-preprocessor">.bytesToString</span>(req<span class="hljs-preprocessor">.size</span>), req<span class="hljs-preprocessor">.address</span><span class="hljs-preprocessor">.hostPort</span>))
+    bytesInFlight += req<span class="hljs-preprocessor">.size</span>
+
+    // so we can look up the size of each blockID
+    val sizeMap = req<span class="hljs-preprocessor">.blocks</span><span class="hljs-preprocessor">.map</span> { case (blockId, size) =&gt; (blockId<span class="hljs-preprocessor">.toString</span>, size) }<span class="hljs-preprocessor">.toMap</span>
+    val blockIds = req<span class="hljs-preprocessor">.blocks</span><span class="hljs-preprocessor">.map</span>(_._1<span class="hljs-preprocessor">.toString</span>)
+
+    val address = req<span class="hljs-preprocessor">.address</span>
+    //使用ShuffleClient的fetchBlocks方法获取数据
+    //有两种ShuffleClient，分别是ExternalShuffleClient和BlockTransferService
+    //默认为BlockTransferService
+    shuffleClient<span class="hljs-preprocessor">.fetchBlocks</span>(address<span class="hljs-preprocessor">.host</span>, address<span class="hljs-preprocessor">.port</span>, address<span class="hljs-preprocessor">.executorId</span>, blockIds<span class="hljs-preprocessor">.toArray</span>,
+      new BlockFetchingListener {
+        override def onBlockFetchSuccess(blockId: String, buf: ManagedBuffer): Unit = {
+          // Only <span class="hljs-keyword">add</span> the buffer to results queue if the iterator is not zombie,
+          // i<span class="hljs-preprocessor">.e</span>. cleanup() has not been called yet.
+          if (!isZombie) {
+            // Increment the ref count because we need to pass this to a different thread.
+            // This needs to be released after use.
+            buf<span class="hljs-preprocessor">.retain</span>()
+            results<span class="hljs-preprocessor">.put</span>(new SuccessFetchResult(BlockId(blockId), address, sizeMap(blockId), buf))
+            shuffleMetrics<span class="hljs-preprocessor">.incRemoteBytesRead</span>(buf<span class="hljs-preprocessor">.size</span>)
+            shuffleMetrics<span class="hljs-preprocessor">.incRemoteBlocksFetched</span>(<span class="hljs-number">1</span>)
+          }
+          logTrace(<span class="hljs-string">"Got remote block "</span> + blockId + <span class="hljs-string">" after "</span> + Utils<span class="hljs-preprocessor">.getUsedTimeMs</span>(startTime))
+        }
+
+        override def onBlockFetchFailure(blockId: String, e: Throwable): Unit = {
+          logError(s<span class="hljs-string">"Failed to get block(s) from ${req.address.host}:${req.address.port}"</span>, e)
+          results<span class="hljs-preprocessor">.put</span>(new FailureFetchResult(BlockId(blockId), address, e))
+        }
+      }
+    )
+  }
+</code></pre> 
+  <p>通过上面的代码可以看到，代码使用的是shuffleClient.fetchBlocks进行远程Block数据的获取，org.apache.spark.network.shuffle.ShuffleClient有两个子类，分别是ExternalShuffleClient和BlockTransferService，而org.apache.spark.network.shuffle.BlockTransferService又有两个子类，分别是NettyBlockTransferService和NioBlockTransferService，shuffleClient 对象在 org.apache.spark.storage.BlockManager定义，其源码如下：</p> 
+  <pre class="prettyprint"><code class="hljs fsharp"><span class="hljs-comment">// org.apache.spark.storage.BlockManager中定义的shuffleClient </span>
+ <span class="hljs-keyword">private</span>[spark] <span class="hljs-keyword">val</span> shuffleClient = <span class="hljs-keyword">if</span> (externalShuffleServiceEnabled) {
+    <span class="hljs-comment">//使用ExternalShuffleClient获取远程Block数据</span>
+    <span class="hljs-keyword">val</span> transConf = SparkTransportConf.fromSparkConf(conf, numUsableCores)
+    <span class="hljs-keyword">new</span> ExternalShuffleClient(transConf, securityManager, securityManager.isAuthenticationEnabled(),
+      securityManager.isSaslEncryptionEnabled())
+  } <span class="hljs-keyword">else</span> {
+    <span class="hljs-comment">//使用NettyBlockTransferService或NioBlockTransferService获取远程Block数据</span>
+    blockTransferService
+  }</code></pre> 
+  <p>代码中的blockTransferService在SparkEnv中被初始化，具体如下：</p> 
+  <pre class="prettyprint"><code class="hljs php"> <span class="hljs-comment">//org.apache.spark.SparkEnv中初始化blockTransferService </span>
+ val blockTransferService =
+      conf.get(<span class="hljs-string">"spark.shuffle.blockTransferService"</span>, <span class="hljs-string">"netty"</span>).toLowerCase match {
+        <span class="hljs-keyword">case</span> <span class="hljs-string">"netty"</span> =&gt;
+          <span class="hljs-keyword">new</span> NettyBlockTransferService(conf, securityManager, numUsableCores)
+        <span class="hljs-keyword">case</span> <span class="hljs-string">"nio"</span> =&gt;
+          logWarning(<span class="hljs-string">"NIO-based block transfer service is deprecated, "</span> +
+            <span class="hljs-string">"and will be removed in Spark 1.6.0."</span>)
+          <span class="hljs-keyword">new</span> NioBlockTransferService(conf, securityManager)
+      }
+</code></pre> 
+ </div> 
+</div>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/ddf1aceabcce277c0cda4caa367bd3e0/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">POI：数据批量导出、按模板导出</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f44644283643e429ac4a03bea311c6cd/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">JAVA调用windows下dll文件程序代码</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

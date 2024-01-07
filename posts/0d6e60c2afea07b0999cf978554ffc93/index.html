@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>RT-DETR论文解读与代码 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="RT-DETR论文解读与代码" />
+<meta property="og:description" content="RTdetr ecoder和decoder部分pytorch复现代码链接见文末
+1.初始化策略与源码有所差异，使用过程中可以根据自己的需求进行更换！
+2.代码经过一条一条的debug，本身没有bug,并且是依据作者源码用pytorch实现，但是在进行数据预处理时，需要保证每张图片标签不为空，否则会报错。如果您需要处理相关情况，需要自己思考策略。源码中作者没有考虑标签为空的情况。
+3.本代码没有复现分割部分内容
+4.代码中，后处理输出顺序进行了调整，您可以完美嵌入YOLO的代码中，进行map的计算 1.概述 目前以大名鼎鼎的YOLO为代表的基于CNN的实时监测网络需要NMS进行后处理，导致不能很好的优化网络，并且网络不够健壮，从而导致检测器的推理速度出现延迟。研究者也分析了Anchor-based和Anchor-free的YOLO的性能，发现Anchor并不是影响实时监测的关键要素，而NMS后处理彩色。
+DETR很好的解决了后处理对于模型的限制，却受限于Transformer巨大的计算量，无法发挥实时监测性。
+因此，作者想要重构detr,使其具有实时性。研究者发现，虽然多尺度特征的引入有利于加速训练收敛和提高性能，但它也能显著增加输入编码器的序列的长度。因此，Transformer编码器由于计算成本高而成为模型的计算瓶颈。因此，作者设计了一种高效的混合编码器来代替原来的Transformer编码器。通过解耦多尺度特征的尺度内交互和跨尺度融合，该编码器可以有效地处理不同尺度的特征。此外，之前的工作表明，解码器的对象查询初始化方案对检测性能至关重要（Detr存在训练收敛缓慢和Query难以优化的问题）。为了进一步提高性能，作者提出了对iou进行感知的查询选择。通过在训练期间提供IoU约束，为解码器提供更高质量的初始对象查询。此外，提出的检测器支持通过使用不同的解码器层来灵活地调整推理速度，而不需要再训练，这得益于DETR架构中解码器的设计，方便了实时检测器的实际应用。
+2. End-to-end Speed of Detectors NMS的分析 NMS是目标检测中广泛采用的一种后处理算法，用于消除检测器输出的重叠预测框。而NMS的速度容易受到预测框的个数和两个超参数的影响。
+在YOLOv5和YOLOV8进行验证，结合图和表格可以看到，置信度阈值越高，剩余的预测框的个数越少，NMS时间越短。而在同一置信度阈值的前提下，IOU阈值越高，NMS时间越长。
+End-to-end Speed Benchmark 对于需要NMS后处理的实时检测器，无锚检测器的性能优于基于锚的检测器，因为前者占用的后处理时间明显少于后者，这在以往的工作中被忽略了。造成这种现象的原因是，基于锚的探测器比无锚的探测器产生更多的预测框。
+4. The Real-time DETR 4.1. Model Overview
+RT-DETR由一个主干网、一个混合编码器和一个带有辅助预测头的Transformer解码器组成。模型架构的概述如图所示。具体来说，利用主干{S3、S4，S53}的最后三个阶段的输出特性作为编码器的输入。该混合编码器通过尺度内交互和跨尺度融合，将多尺度特征转换为一系列图像特征。随后，使用iou感知的查询选择从编码器输出序列中选择固定数量的图像特征，作为解码器的初始对象查询。最后，带有辅助预测头的解码器迭代地优化对象查询，生成预测框和置信度分数。
+4.2. Effificient Hybrid Encoder
+Computational bottleneck analysis. 多尺度特征会导致输入序列长度急剧增加，虽然能够加速训练的收敛性和提高性能，但是却大大提高了计算量。为了克服这一障碍，作者分析了多尺度Transformer编码器中存在的计算冗余，并设计了一组变体来证明尺度内和跨尺度特征的同时交互作用是计算效率低的。
+高级特征是从包含关于图像中对象的丰富语义信息的低级特征中提取出来的。直观地说 ，在连接的多尺度特征上执行特征交互是冗余的。为了验证这一观点，作者重新考虑了编码器的结构，并设计了一系列具有不同编码器的变体，如图5所示。 这将变量集通过将多尺度特征交互解耦为尺度内交互和跨尺度融合的两步操作，逐步提高模型精度，同时显著降低计算成本.我们首先删除DINO-R50 [40]中的多尺度变压器编码器作为基线a。接下来，插入不同形式的编码器，基于基线A产生一系列变体，阐述如下： A→B：变体B插入一个单比例的Transformer编码器，它使用一层Transformer块。每个尺度的特征共享尺度内特征交互的编码器，然后将输出的多尺度特征连接起来B→C：变体C引入了基于B的跨尺度特征融合，并将连接的多尺度特征输入编码器，进行特征交互。C→D：变体D解耦了多尺度特征的尺度内相互作用和跨尺度融合。首先，利用单尺度变压器编码器进行尺度内交互，然后利用类似panet的结构进行跨尺度融合。D→E：变体E进一步优化了基于D的多尺度特征的尺度内交互和跨尺度融合，采用了设计的高效混合编码器。 混合设计:
+在此基础上，作者重新考虑了该编码器的结构，并提出了一种新的高效混合编码器。如图3所示，所提出的编码器由两个模块组成，即基于注意的尺度内特征交互（AIFI）模块和基于cnn的跨尺度特征融合模块（CCFM）。AIFI进一步减少了基于变体D的计算冗余，它只在S5上执行尺度内交互。作者认为，将自注意操作应用于具有更丰富语义概念的高级特征，可以捕获图像中概念实体之间的联系，便于后续模块对图像中对象的检测和识别。同时，由于缺乏语义概念，存在与高级特征交互的重复和混淆的风险，低级特征的尺度内交互是不必要的。为了验证这一观点，作者只对变体D中的S5进行了尺度内交互作用，与普通的变体D相比，DS5显著降低了延迟（快了35%），但提高了准确性（AP提高了0.4%）。这一结论对于实时探测器的设计至关重要。CCFM还基于变体D进行了优化，在融合路径中插入了几个由卷积层组成的融合块。融合块的作用是将相邻的特征融合成一个新的特征，其结构如图4所示。融合块包含N个重新块，双路径输出通过元素添加进行融合。可以将这个过程表述如下：
+4.3. IoU-aware Query Selection DETR中的对象查询是一组可学习的嵌入，它们由解码器进行优化，并由预测头映射到分类分数和边界框。然而，这些对象查询很难进行解释和优化，因为它们没有明确的物理意义。其改进方案共同点是利用分类分数从编码器中选择前K个特征来初始化对象查询（或仅选择位置查询[40]）。然而，由于分类分数的不一致分布和位置信心，一些预测框高分类分数但不接近真实框，导致高分类分数和低IOU的预测框被选择，而低分类分数和高IOU的预测框被丢弃。 这就损害了探测器的性能。为了解决这个问题，作者提出了IoU感知查询选择，让模型在训练期间对高IOU的特征产生高分类分数，对低IoU的特征产生低分类分数。因此，模型根据分类评分选择的前K个编码器特征对应的预测框具有较高的分类评分和较高的IoU评分。重新制定了检测器的优化目标（引入IOU）如下：
+为了分析所提出的IoU感知查询选择的有效性，作者对IOU score和分类分数进行了可视化，如图所示。红点和蓝点分别通过应用普通查询选择和iou感知查询选择训练的模型中计算出来。根据可视化结果，我们发现最显著的特征是大量的蓝色点集中在图的右上角，而红色的点集中在右下角。这表明，用iou感知的查询选择训练的模型可以产生更多高质量的编码器特征。 4.4. Scaled RT-DETR 作者将Backbone由ResNet替换为了HGNetv2,此外，作者还使用了不同的宽度和深度对模型进行拓展。作者提出的不同尺度的RT-DETR保持了一个均匀的解码器，这便于模型蒸馏。 5. Experiments 5.3. Ablation Study on Hybrid Encoder
+A-E不同混合编码器变体的性能
+5.4. Ablation Study on IoU-aware Query Selection 5." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/0d6e60c2afea07b0999cf978554ffc93/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-12-01T23:09:05+08:00" />
+<meta property="article:modified_time" content="2023-12-01T23:09:05+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">RT-DETR论文解读与代码</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h5><strong>RTdetr ecoder和decoder部分pytorch复现代码链接见文末</strong><br> 1.初始化策略与源码有所差异，使用过程中可以根据自己的需求进行更换！<br> 2.代码经过一条一条的debug，本身没有bug,并且是依据作者源码用pytorch实现，但是在进行数据预处理时，需要保证每张图片标签不为空，否则会报错。如果您需要处理相关情况，需要自己思考策略。源码中作者没有考虑标签为空的情况。<br> 3.本代码没有复现分割部分内容<br> 4.代码中，后处理输出顺序进行了调整，您可以完美嵌入YOLO的代码中，进行map的计算</h5> 
+<h2>1.概述</h2> 
+<p>        目前以大名鼎鼎的YOLO为代表的基于CNN的实时监测网络需要NMS进行后处理，导致不能很好的优化网络，并且网络不够健壮，从而导致检测器的推理速度出现延迟。研究者也分析了Anchor-based和Anchor-free的YOLO的性能，发现Anchor并不是影响实时监测的关键要素，而NMS后处理彩色。</p> 
+<p>        DETR很好的解决了后处理对于模型的限制，却受限于Transformer巨大的计算量，无法发挥实时监测性。</p> 
+<p>        因此，作者想要重构detr,使其具有实时性。研究者发现，虽然多尺度特征的引入有利于加速训练收敛和提高性能，但它也能显著增加输入编码器的序列的长度。因此，Transformer编码器由于计算成本高而成为模型的计算瓶颈。<strong>因此，作者设计了一种高效的混合编码器来代替原来的Transformer编码器。通过解耦多尺度特征的尺度内交互和跨尺度融合，该编码器可以有效地处理不同尺度的特征。此外，之前的工作表明，解码器的对象查询初始化方案对检测性能至关重要（Detr存在训练收敛缓慢和Query难以优化的问题）。为了进一步提高性能，作者提出了对iou进行感知的查询选择。通过在训练期间提供IoU约束，为解码器提供更高质量的初始对象查询。此外，<span style="color:#fe2c24;">提出的检测器支持通过使用不同的解码器层来灵活地调整推理速度，而不需要再训练</span>，这得益于DETR架构中解码器的设计，方便了实时检测器的实际应用。</strong></p> 
+<p><img alt="" height="252" src="https://images2.imgbox.com/6f/2e/3UBMG0Ir_o.png" width="255"></p> 
+<h2><span style="color:#000000;"><strong>2. End-to-end Speed of Detectors</strong></span></h2> 
+<h4><span style="color:#000000;"><strong>NMS的分析</strong></span></h4> 
+<p><span style="color:#000000;"><strong>       </strong> NMS是目标检测中广泛采用的一种后处理算法，用于消除检测器输出的重叠预测框。而NMS的速度容易受到预测框的个数和两个超参数的影响。</span></p> 
+<p><span style="color:#000000;"><strong>        </strong>在YOLOv5和YOLOV8进行验证，结合图和表格可以看到，置信度阈值越高，剩余的预测框的个数越少，NMS时间越短。而在同一置信度阈值的前提下，IOU阈值越高，NMS时间越长。</span></p> 
+<p><img alt="" height="409" src="https://images2.imgbox.com/29/21/Ua8VaJXL_o.png" width="326"></p> 
+<h4><span style="color:#000000;"><strong>End-to-end Speed Benchmark</strong></span></h4> 
+<p><span style="color:#000000;"><strong>       </strong> 对于需要NMS后处理的实时检测器，无锚检测器的性能优于基于锚的检测器，因为前者占用的后处理时间明显少于后者，这在以往的工作中被忽略了。造成这种现象的原因是，基于锚的探测器比无锚的探测器产生更多的预测框。</span><img alt="" height="252" src="https://images2.imgbox.com/c8/f0/U2vEQgCi_o.png" width="1159"></p> 
+<h2> <span style="color:#000000;"><strong>4. The Real-time DETR </strong></span></h2> 
+<p><span style="color:#000000;"><strong>4.1. Model Overview</strong></span></p> 
+<p><span style="color:#000000;"><strong>        </strong>RT-DETR由一个主干网、一个混合编码器和一个带有辅助预测头的Transformer解码器组成。模型架构的概述如图所示。具体来说，利用主干{S3、S4，S53}的最后三个阶段的输出特性作为编码器的输入。该混合编码器通过尺度内交互和跨尺度融合，将多尺度特征转换为一系列图像特征。随后，使用iou感知的查询选择从编码器输出序列中选择固定数量的图像特征，作为解码器的初始对象查询。最后，带有辅助预测头的解码器迭代地优化对象查询，生成预测框和置信度分数。</span></p> 
+<p><img alt="" height="214" src="https://images2.imgbox.com/a4/29/D28H5iDb_o.png" width="454">       </p> 
+<p> <span style="color:#000000;"><strong>4.2. Effificient Hybrid Encoder</strong></span></p> 
+<p><span style="color:#000000;"><strong>        Computational bottleneck analysis. </strong>多尺度特征会导致输入序列长度急剧增加，虽然能够加速训练的收敛性和提高性能，但是却大大提高了计算量。</span><span style="color:#000000;">为了克服这一障碍，作者分析了多尺度Transformer编码器中存在的计算冗余，并设计了一组变体来证明尺度内和跨尺度特征的同时交互作用是计算效率低的。</span></p> 
+<div>
+          高级特征是从包含关于图像中对象的丰富语义信息的低级特征中提取出来的。直观地说 
+ <strong>，在连接的多尺度特征上执行特征交互是冗余的。</strong>为了验证这一观点，作者重新考虑了编码器的结构，并设计了一系列具有不同编码器的变体，如图5所示。 
+ <strong>这将变量集通过将多尺度特征交互解耦为尺度内交互和跨尺度融合的两步操作</strong>，逐步提高模型精度，同时显著降低计算成本.我们首先删除DINO-R50 [40]中的多尺度变压器编码器作为基线a。接下来，插入不同形式的编码器，基于基线A产生一系列变体，阐述如下： 
+</div> 
+<ul><li>A→B：变体B插入一个单比例的Transformer编码器，它使用一层Transformer块。每个尺度的特征共享尺度内特征交互的编码器，然后将输出的多尺度特征连接起来</li><li>B→C：变体C引入了基于B的跨尺度特征融合，并将连接的多尺度特征输入编码器，进行特征交互。</li><li>C→D：变体D解耦了多尺度特征的尺度内相互作用和跨尺度融合。首先，利用单尺度变压器编码器进行尺度内交互，然后利用类似panet的结构进行跨尺度融合。</li><li>D→E：变体E进一步优化了基于D的多尺度特征的尺度内交互和跨尺度融合，采用了设计的高效混合编码器。</li></ul> 
+<p><strong>混合设计:</strong></p> 
+<p><strong>      </strong>  在此基础上，作者重新考虑了该编码器的结构，并提出了一种新的高效混合编码器。如图3所示，<strong>所提出的编码器由两个模块组成，即基于注意的尺度内特征交互（AIFI）模块和基于cnn的跨尺度特征融合模块（CCFM）。AIFI进一步减少了基于变体D的计算冗余，它只在S5上执行尺度内交互。作者认为，将自注意操作应用于具有更丰富语义概念的高级特征，可以捕获图像中概念实体之间的联系，便于后续模块对图像中对象的检测和识别。同时，由于缺乏语义概念，存在与高级特征交互的重复和混淆的风险，低级特征的尺度内交互是不必要的。</strong>为了验证这一观点，作者只对变体D中的S5进行了尺度内交互作用，与普通的变体D相比，DS5显著降低了延迟（快了35%），但提高了准确性（AP提高了0.4%）。这一结论对于实时探测器的设计至关重要。CCFM还基于变体D进行了优化，在融合路径中插入了几个由卷积层组成的融合块。融合块的作用是将相邻的特征融合成一个新的特征，其结构如图4所示。融合块包含N个重新块，双路径输出通过元素添加进行融合。可以将这个过程表述如下：</p> 
+<p><img alt="" height="81" src="https://images2.imgbox.com/e3/6e/MYcAqDoN_o.png" width="332"></p> 
+<p><img alt="" height="207" src="https://images2.imgbox.com/18/65/T2N1BWtm_o.png" width="334"><img alt="" height="198" src="https://images2.imgbox.com/e8/18/pWI4OvEi_o.png" width="347"></p> 
+<p><span style="color:#000000;"><strong>4.3. IoU-aware Query Selection </strong></span></p> 
+<p>        DETR中的对象查询是一组可学习的嵌入，它们由解码器进行优化，并由预测头映射到分类分数和边界框。<strong>然而，这些对象查询很难进行解释和优化，因为它们没有明确的物理意义。</strong>其改进方案共同点是利用分类分数从编码器中选择前K个特征来初始化对象查询（或仅选择位置查询[40]）。<strong>然而，由于分类分数的不一致分布和位置信心，一些预测框高分类分数但不接近真实框，导致高分类分数和低IOU的预测框被选择，而低分类分数和高IOU的预测框被丢弃</strong>。 这就损害了探测器的性能。为了解决这个问题，作者提出了IoU感知查询选择，让模型在训练期间对高IOU的特征产生高分类分数，对低IoU的特征产生低分类分数。因此，模型根据分类评分选择的前K个编码器特征对应的预测框具有较高的分类评分和较高的IoU评分。重新制定了检测器的优化目标（引入IOU）如下：</p> 
+<p><img alt="" height="83" src="https://images2.imgbox.com/7a/be/lPHP6uss_o.png" width="553"></p> 
+<p>        为了分析所提出的IoU感知查询选择的有效性，作者对IOU score和分类分数进行了可视化，如图所示。红点和蓝点分别通过应用普通查询选择和iou感知查询选择训练的模型中计算出来。根据可视化结果，我们发现最显著的特征是大量的蓝色点集中在图的右上角，而红色的点集中在右下角。这表明，用iou感知的查询选择训练的模型可以产生更多高质量的编码器特征。 </p> 
+<p><img alt="" height="363" src="https://images2.imgbox.com/fe/53/n9qafQT2_o.png" width="309"></p> 
+<p>  <span style="color:#000000;"><strong>4.4. Scaled RT-DETR</strong></span>     </p> 
+<p>        作者将Backbone由ResNet替换为了HGNetv2,此外，作者还使用了不同的宽度和深度对模型进行拓展。作者提出的不同尺度的RT-DETR保持了一个均匀的解码器，这便于模型蒸馏。    </p> 
+<h2><span style="color:#000000;"><strong>5. Experiments</strong></span></h2> 
+<p><span style="color:#000000;"><strong>        </strong></span><img alt="" height="322" src="https://images2.imgbox.com/bd/2d/LLhau39r_o.png" width="437"></p> 
+<p><span style="color:#000000;"><strong>5.3. Ablation Study on Hybrid Encoder</strong></span></p> 
+<p><span style="color:#000000;"><strong>A-E不同混合编码器变体的性能</strong></span></p> 
+<p><img alt="" height="271" src="https://images2.imgbox.com/10/c2/0h1ST4jb_o.png" width="428">        </p> 
+<p> <span style="color:#000000;"><strong>5.4. Ablation Study on IoU-aware Query Selection </strong></span></p> 
+<p><img alt="" height="167" src="https://images2.imgbox.com/af/c7/4wPqvOwS_o.png" width="355"></p> 
+<div> 
+ <span style="color:#000000;"><strong>5.5. Ablation Study on Decoder </strong></span> 
+</div> 
+<div></div> 
+<div>
+  不同解码器层对模型的影响 
+</div> 
+<div></div> 
+<div> 
+ <img alt="" height="274" src="https://images2.imgbox.com/ea/72/5FeNBUTo_o.png" width="311"> 
+</div> 
+<p></p> 
+<p>rtdetr ecoder和decoder部分pytorch代码复现</p> 
+<p>需要说明的是：</p> 
+<pre>1.初始化策略与源码有所差异，使用过程中可以根据自己的需求进行更换！
+2.代码经过一条一条的debug，本身没有bug,并且是依据作者源码用pytorch实现，但是在进行数据预处理时，需要保证每张图片标签不为空，否则会报错。如果您需要处理相关情况，需要自己思考策略。源码中作者没有考虑标签为空的情况。
+</pre> 
+<p>3.本代码没有复现分割部分内容</p> 
+<p>4.代码中，后处理输出顺序进行了调整，您可以完美嵌入YOLO的代码中，进行map的计算</p> 
+<p>链接：https://pan.baidu.com/s/1_WutIeVlA4EfBdz9_mkfpg?pwd=di3j <br> 提取码：di3j </p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<div></div> 
+<div></div> 
+<p>        </p> 
+<p></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/35f18393334e6f20017575a4390119a5/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">头歌：CSS id选择器</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/7d9aedfad286750ac531705ac18f589a/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">深度学习今年来经典模型优缺点总结，包括卷积、循环卷积、Transformer、LSTM、GANs等</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

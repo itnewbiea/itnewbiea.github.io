@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>opencv缺陷检测 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="opencv缺陷检测" />
+<meta property="og:description" content="用传统算法，根据实际工程项目，手把手教你做一个最典型的产品缺陷检测项目案例，虽然这个案例与实际生产还存在一定的差距，但是这个检测流程已经很接近实际生产了。
+我们先看一下测试结果：
+这个检测的主要需求就是，根据视频流中流水线上的产品，通过每一帧图像，检测出每个产品的缺陷属性，并把有缺陷的产品给标注出来，并注明缺陷类型。
+在项目开始之前，我们先思考一下整个检测流程的框架：
+1，首先我们要抓取视频流中的每一帧图像
+2，在抓取得每一张图像中，首先要定位出这张图片中的每一个产品，找出这件产品的边缘
+3，分析所抓取每个产品的属性，分析其缺陷类型的特征，通过算法形式来对缺陷进行归类。
+上面就是整个检测的基本流程，其实，在利用传统算法进行检测的时候，基本流程不会差别太大，所用算子也基本大致相同。在讲解这个检测方法之前，我先来讲解几个我们经常用到的算子：
+findContours()：
+这个函数是查找整张图片中所有轮廓的函数，这个函数很重要，在处理图像分割尤其是查找整个图像中边缘分割时候少不了它，所以我重点说明一下，首先它的函数原型是这样的：
+// 查找整张图片的所有轮廓findContours(InputOutputArray image, OutputArrayOfArrays contours, OutputArray hierarchy, int mode, int method, Point offset=Point()); 我先来讲解一下这个函数的主要参数：
+1），image代表输入的图像矩阵；
+2），第二个参数contours代表输出的整张图片的所有轮廓，由于轮廓坐标是一组二维坐标构成的一组数据集，因此，它的声明是一个嵌套了一层坐标数据集向量的向量：
+//参数contours的声明vector&lt;vector&lt;Point&gt;&gt; contours; 3），第三个参数hierarchy顾名思义，字面的意思是层级关系，它代表各个轮廓的继承关系，也是一个向量，长度和contours相同，每个元素和contours的元素相对应，hierarchy的每一个元素是一个包含四个整形数的向量，也即：​​​​​​​
+//参数hierarchy的声明//Vec4i 代表包含四个元素的整形向量vector&lt;Vec4i&gt; hierarchy; 那么这里的hierarchy究竟代表什么意思呢，其实对于一张图片，findContours()查找出所有的 个轮廓后，每个轮廓都会有自己的索引， ，而hierarchy[i]里面的四个元素 分别代表第 个轮廓：后一个轮廓的序号、前一个轮廓的序号、子轮廓的序号、父轮廓的序号，有严格的顺序。
+为了更加直观说明，请看下面一张图片：
+上面图片中，是一张图片中的所有轮廓，分别用序号0、1、2、3来表示，其中0有两个子轮廓，分别是1和3，而1则有一个父轮廓也有一个子轮廓，分别是0与2，它们的继承关系基本上就是这样，我们再做进一步的分析：
+4），第四个参数mode，代表定义轮廓的检索方式：
+取值一：CV_RETR_EXTERNAL，只检测最外围轮廓，包含在外围轮廓内的内围轮廓被忽略。
+取值二：CV_RETR_LIST，检测所有的轮廓，包括内围、外围轮廓，但是检测到的轮廓不建立等级关系，彼此之间独立，没有等级关系，这就意味着这个检索模式下不存在父轮廓或内嵌轮廓，所以hierarchy向量内所有元素的第3、第4个分量都会被置为-1.
+取值三：CV_RETR_CCOMP，检测所有的轮廓，但所有轮廓只建立两个等级关系，外围为顶层，若外围内的内围轮廓还包含了其他的轮廓信息，则内围内的所有轮廓均归属于顶层。
+取值四：CV_RETR_TREE，检测所有轮廓，所有轮廓建立一个等级树结构。外层轮廓包含内层轮廓，内层轮廓还可以继续包含内嵌轮廓。
+5），第五个参数method，用来定义轮廓的近似方法：
+取值一：CV_CHAIN_APPROX_NONE，保存物体边界上所有连续的轮廓点到contours向量内。
+取值二：CV_CHAIN_APPROX_SIMPLE，仅保存轮廓的拐点信息，把所有轮廓拐点处的点保存入contours向量内，拐点与拐点之间直线段上的信息点不予保留。
+取值三：CV_CHAIN_APPROX_TC89_L1;
+取值四：CV_CHAIN_APPROX_TC89_KCOS，取值三与四两者使用teh-Chinl chain 近似算法。
+6），第六个参数，Point类型的offset参数，这个参数相当于在每一个检测出的轮廓点上加上该偏移量，而且Point还可以是负数。
+在实际使用中，我们需要根据实际情况来选定合适的参数，比如第五个参数，如果你使用CV_CHAIN_APPROX_SIMPLE这个参数，那么返回的坐标向量集是仅包含拐点信息的，为了得到轮廓的完整坐标数据，我必须使用CV_CHAIN_APPROX_NONE参数。请大家在实际使用过程中根据自己的实际情况来选择合适的参数
+再来说下moments这个函数，其实moment在物理学中表示“力矩”的感念，“矩”在物理学中是表示距离和物理量乘积的物理量，表示物体的空间分布（至于汉语为什么把它翻译成矩这个字，我也不太明白，不知道是不是李善兰翻译的）。而在数学中，“矩”是概率论中的一个名词，它的本质是数学期望，我们从它的定义中就可以看出：
+在opencv中，我们看下这个函数的原型：​​​​​​​
+Moments moments( InputArray array, bool binaryImage = false ); 第一个参数是输入一个数组，也就是我们上面计算出来的contours向量，第二个参数默认为false.
+我们再来看整个程序的编写方法：
+首先我们使用opencv中的VideoCapture类来进行读取视频流，并抓取视频中的每一帧图像：​​​​​​​
+Mat img; //定义图像矩阵VideoCapture cap(&#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/7fb1e4fdbaa124bac6553f2ccf63ca6a/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-06-17T18:14:35+08:00" />
+<meta property="article:modified_time" content="2023-06-17T18:14:35+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">opencv缺陷检测</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>用传统算法，根据实际工程项目，手把手教你做一个最典型的产品缺陷检测项目案例，虽然这个案例与实际生产还存在一定的差距，但是这个检测流程已经很接近实际生产了。</p> 
+<p>我们先看一下测试结果：</p> 
+<p><img alt="" height="458" src="https://images2.imgbox.com/21/14/gNVxrMUy_o.gif" width="700"></p> 
+<p>这个检测的主要需求就是，根据视频流中流水线上的产品，通过每一帧图像，检测出每个产品的缺陷属性，并把有缺陷的产品给标注出来，并注明缺陷类型。</p> 
+<p>在项目开始之前，我们先思考一下整个检测流程的框架：</p> 
+<p>1，首先我们要抓取视频流中的每一帧图像</p> 
+<p>2，在抓取得每一张图像中，首先要定位出这张图片中的每一个产品，找出这件产品的边缘</p> 
+<p>3，分析所抓取每个产品的属性，分析其缺陷类型的特征，通过算法形式来对缺陷进行归类。</p> 
+<p>上面就是整个检测的基本流程，其实，在利用传统算法进行检测的时候，基本流程不会差别太大，所用算子也基本大致相同。在讲解这个检测方法之前，我先来讲解几个我们经常用到的算子：</p> 
+<p>findContours()：</p> 
+<p>这个函数是查找整张图片中所有轮廓的函数，这个函数很重要，在处理图像分割尤其是查找整个图像中边缘分割时候少不了它，所以我重点说明一下，首先它的函数原型是这样的：</p> 
+<pre><code>// 查找整张图片的所有轮廓</code><code>findContours(InputOutputArray image, </code><code>    OutputArrayOfArrays contours,</code><code>    OutputArray hierarchy, </code><code>    int mode,</code><code>    int method, </code><code>    Point offset=Point());</code></pre> 
+<p>我先来讲解一下这个函数的主要参数：</p> 
+<p>1），image代表输入的图像矩阵；</p> 
+<p>2），第二个参数contours代表输出的整张图片的所有轮廓，由于轮廓坐标是一组二维坐标构成的一组数据集，因此，它的声明是一个嵌套了一层坐标数据集向量的向量：</p> 
+<pre><code>//参数contours的声明</code><code>vector&lt;vector&lt;Point&gt;&gt; contours;</code></pre> 
+<p>3），第三个参数hierarchy顾名思义，字面的意思是层级关系，它代表各个轮廓的继承关系，也是一个向量，长度和contours相同，每个元素和contours的元素相对应，hierarchy的每一个元素是一个包含四个整形数的向量，也即：​​​​​​​</p> 
+<pre><code>//参数hierarchy的声明</code><code>//Vec4i 代表包含四个元素的整形向量</code><code>vector&lt;Vec4i&gt; hierarchy;  </code></pre> 
+<p>那么这里的hierarchy究竟代表什么意思呢，其实对于一张图片，findContours()查找出所有的  个轮廓后，每个轮廓都会有自己的索引，  ，而hierarchy[i]里面的四个元素  分别代表第  个轮廓：<strong>后一个轮廓的序号、前一个轮廓的序号、子轮廓的序号、父轮廓的序号，</strong>有严格的顺序。</p> 
+<p>为了更加直观说明，请看下面一张图片：</p> 
+<p><img alt="" height="441" src="https://images2.imgbox.com/69/84/aAqStcu6_o.png" width="651"></p> 
+<p>上面图片中，是一张图片中的所有轮廓，分别用序号0、1、2、3来表示，其中0有两个子轮廓，分别是1和3，而1则有一个父轮廓也有一个子轮廓，分别是0与2，它们的继承关系基本上就是这样，我们再做进一步的分析：</p> 
+<p><img alt="" height="389" src="https://images2.imgbox.com/2e/8c/9bhhhPcF_o.png" width="972"></p> 
+<p>4），第四个参数mode，代表定义轮廓的检索方式：</p> 
+<p>取值一：CV_RETR_EXTERNAL，只检测最外围轮廓，包含在外围轮廓内的内围轮廓被忽略。</p> 
+<p>取值二：CV_RETR_LIST，检测所有的轮廓，包括内围、外围轮廓，但是检测到的轮廓不建立等级关系，彼此之间独立，没有等级关系，这就意味着这个检索模式下不存在父轮廓或内嵌轮廓，所以hierarchy向量内所有元素的第3、第4个分量都会被置为-1.</p> 
+<p>取值三：CV_RETR_CCOMP，检测所有的轮廓，但所有轮廓只建立两个等级关系，外围为顶层，若外围内的内围轮廓还包含了其他的轮廓信息，则内围内的所有轮廓均归属于顶层。</p> 
+<p>取值四：CV_RETR_TREE，检测所有轮廓，所有轮廓建立一个等级树结构。外层轮廓包含内层轮廓，内层轮廓还可以继续包含内嵌轮廓。</p> 
+<p>5），第五个参数method，用来定义轮廓的近似方法：</p> 
+<p>取值一：CV_CHAIN_APPROX_NONE，保存物体边界上所有连续的轮廓点到contours向量内。</p> 
+<p>取值二：CV_CHAIN_APPROX_SIMPLE，仅保存轮廓的拐点信息，把所有轮廓拐点处的点保存入contours向量内，拐点与拐点之间直线段上的信息点不予保留。</p> 
+<p>取值三：CV_CHAIN_APPROX_TC89_L1;</p> 
+<p>取值四：CV_CHAIN_APPROX_TC89_KCOS，取值三与四两者使用teh-Chinl chain 近似算法。</p> 
+<p>6），第六个参数，Point类型的offset参数，这个参数相当于在每一个检测出的轮廓点上加上该偏移量，而且Point还可以是负数。</p> 
+<p>在实际使用中，我们需要根据实际情况来选定合适的参数，比如第五个参数，如果你使用CV_CHAIN_APPROX_SIMPLE这个参数，那么返回的坐标向量集是仅包含拐点信息的，为了得到轮廓的完整坐标数据，我必须使用CV_CHAIN_APPROX_NONE参数。请大家在实际使用过程中根据自己的实际情况来选择合适的参数</p> 
+<p>再来说下moments这个函数，其实moment在物理学中表示“力矩”的感念，“矩”在物理学中是表示距离和物理量乘积的物理量，表示物体的空间分布（至于汉语为什么把它翻译成矩这个字，我也不太明白，不知道是不是李善兰翻译的）。而在数学中，“矩”是概率论中的一个名词，它的本质是数学期望，我们从它的定义中就可以看出：</p> 
+<p> <img alt="" height="1026" src="https://images2.imgbox.com/2e/11/aPZjIIM5_o.png" width="972"></p> 
+<p><img alt="" height="1060" src="https://images2.imgbox.com/9c/e0/hPoNZWDa_o.png" width="965">  在opencv中，我们看下这个函数的原型：​​​​​​​</p> 
+<pre><code>Moments moments( </code><code>    InputArray array, </code><code>    bool binaryImage = false </code><code>    );</code></pre> 
+<p>第一个参数是输入一个数组，也就是我们上面计算出来的contours向量，第二个参数默认为false.</p> 
+<p>我们再来看整个程序的编写方法：</p> 
+<p>首先我们使用opencv中的VideoCapture类来进行读取视频流，并抓取视频中的每一帧图像：​​​​​​​</p> 
+<pre><code>Mat img; //定义图像矩阵</code><code>VideoCapture cap("1.mp4");</code><code>cap.read(img);</code></pre> 
+<p>这样我们便把图像读取到img变量中了，当然，为了叙述方便，这只是其中的部分代码，实际你在运行过程中为了不断读取，外面还要嵌套个while(true)的循环。</p> 
+<p>读取到一帧图像后，我们需要对这张图像进行一些预处理，一般情况下，无论是传统算法还是深度学习算法，预处理的方法基本上都是一样的，比如灰度转换，图像滤波，二值化处理，边缘提取等等。在这里也一样，我们先对抓取到的图像进行灰度转换，灰度图像有诸多好处，比如它只包含亮度特征，而且一般情况下它是单通道的，256色调色板，一个像素占只用一个字节，储存起来非常整齐等等。</p> 
+<p>我们最终要的预处理结果是将其转化为二值化图像，二值化图像是灰度图像的一种特殊情况，它的像素亮度只有0与255两种情况，也就是非黑既白，在图像处理中，二值图像占有非常重要的地位，比如，图像的二值化有利于图像的进一步处理，使图像变得简单，使后面的计算量大大减少，而且还能能凸显出感兴趣的目标的轮廓。</p> 
+<p>灰度处理的算子接口为：​​​​​​​</p> 
+<pre><code>void cv::cvtColor </code><code>     (InputArray src,</code><code>      OutputArray dst,</code><code>      int code,</code><code>      int dstCn = 0)</code></pre> 
+<p>这个函数第一个参数src为输入图像，第二个参数dst为输出图像，第三个参数为需要转换的色彩空间，一般我们选取CV_BGR2GRAY即可，第四个参数默认为0.</p> 
+<p>灰度转化后，我们再进行二值化处理，这个算子比较简单，函数原型为：​​​​​​​</p> 
+<pre><code>void cv::threshold</code><code>     (InputArray src,</code><code>      OutputArray dst,</code><code>      double thresh,</code><code>      double maxval,</code><code>      int type)</code></pre> 
+<p>同样，这个函数前两个参数分别为输入、输出参数；第三个参数thresh为设定的阈值；第四个参数maxval为设置的最大值，一般选取255；第五个参数type为阈值类型，表示当灰度值大于（或小于）阈值时将该灰度值赋成的值，其中最常用的有两个，分别是THRESH_BINARY，THRESH_BINARY_INV：</p> 
+<p>如果是THRESH_BINARY的话，表示当图像亮度值大于阈值thresh的话，将其设置为maxval，否则设置为0： </p> 
+<p><img alt="" height="337" src="https://images2.imgbox.com/a9/6b/27guLyDj_o.png" width="959">我们再回到视频中，先截取一张图片，我们使用下面梁行代码先后对其进行灰度、二值化处理：​​​​​​​</p> 
+<pre><code>//灰度处理</code><code>cvtColor(img, grayImage, CV_BGR2GRAY);  </code><code> //二值化处理</code><code>threshold(grayImage, binImage, </code><code>    128, 255, CV_THRESH_BINARY); </code></pre> 
+<p>下面第二、第三分别是灰度、二值化处理后的结果，可见当原图经过二值化分割后，图像增强明显，明暗分离，更重要的是原本模糊的划痕变得非常清晰，特征非常明显，这对我们下一步提取划痕轮廓从而做进一步的分析带来非常大的方便：</p> 
+<p><img alt="" height="264" src="https://images2.imgbox.com/67/bb/zh1aZVoA_o.png" width="956">经过预处理后，下面我们就要想办法如何判定一件产品是具有划痕或者某种缺陷的，观察上面第三章图片，最直观的区别就是不良的产品中附带黑色长条斑点，如果我们对整个圆区域进行轮廓查找的话，它的轮廓数量应该大于0才对，反之等于0. 但是首先我们要知道如何定位每一个产品的位置，并找出它的轮廓，所以，我们先对每一张预处理后的binImage图像进行轮廓查找：​​​​​​​</p> 
+<pre><code>//定义轮廓点集</code><code>vector&lt;vector&lt;Point&gt;&gt; contours;</code><code>//定义继承关系</code><code>vector&lt;Vec4i&gt; hierarchy;</code><code>//进行轮廓查找</code><code>findContours(binImage, </code><code>    contours, </code><code>    hierarchy, </code><code>    CV_RETR_EXTERNAL, </code><code>    CV_CHAIN_APPROX_NONE, </code><code>    Point(0, 0));</code></pre> 
+<p>注意，在首次查找的时候，我们关心的是整个产品的轮廓，或者产品的质心坐标在哪里，所以我们只需要抓取最外轮廓即可，所以第四个参数我们设置为CV_RETR_EXTERNAL，上面已经解释过了，意为只检查最外围轮廓，目的是为了方面后面从原图中截取产品轮廓。为了方便后面计算，也为了计数方便，我先定义了一个产品类型的结构体myproduct，里面包含外接Rect,质心cx,xy,还有对应索引index. 为了去除重复，每次计算每个轮廓的位置，再根据当前帧里面的所有产品坐标与上一帧图像中产品里面的坐标进行对比，如果有两个产品在上下两帧中偏移的距离很小，那么我们可以认为它是同一件产品，否则就是新出现的产品，就需要放入我们的product容器里面，这其实在实际抓拍检测过程中，比较常用的去重方法：​​​​​​​</p> 
+<pre><code>for (int i = 0; i &lt; contours.size(); i++)</code><code>{<!-- --></code><code>  double area = contourArea(contours[i]);</code><code>  //小于18000我们认为是干扰因素</code><code>  if (area &gt; 18000)</code><code>  {<!-- --></code><code>    Moments M = moments(contours[i]);  //计算矩</code><code>    double center_x = M.m10 / M.m00;</code><code>    double center_y = M.m01 / M.m00;</code><code>    Rect rect = boundingRect(contours.at(i));</code><code>    bool isNew = true;</code><code>    //必须保证产品完全出来</code><code>    if (center_x &gt; 100)</code><code>    {<!-- --></code><code>      for (int i = 0; i &lt; product.size(); i++)</code><code>      {<!-- --></code><code>        double h = abs(center_x - product[i].cx);</code><code>        double v = abs(center_y - product[i].cy);</code><code>        if(h &lt; 25 &amp;&amp; v &lt; 25)</code><code>        {<!-- --></code><code>          isNew = false;</code><code>          //说明不是新的，那就要更新一下</code><code>          product[i].cx = center_x;</code><code>          product[i].cy = center_y;</code><code>          product[i].rect = rect;</code><code>        }</code><code>      }</code><code>      if (isNew)</code><code>      {<!-- --></code><code>        myproduct p;</code><code>        p.cx = center_x;</code><code>        p.cy = center_y;</code><code>        p.rect = rect;</code><code>        idx++;</code><code>        p.index = idx;</code><code>        product.push_back(p);</code><code>      }</code><code>    }</code><code>  }</code></pre> 
+<p>函数计算后，product里面就包含了我们所要当前帧中的所有产品对象，包括质心、外接矩形等等，然后根据最大外接矩形的坐标，再回到原图中img中，把这个矩形包含的产品轮廓给裁剪出来，做进一步分析，裁剪的方法很简单，我们根据上面程序返回的rect，直接在原图像img中进行裁剪即可，即可得到右边小图像：</p> 
+<pre><code>Mat roi = img(rect);</code></pre> 
+<p><img alt="" height="331" src="https://images2.imgbox.com/2c/4a/l8A2lx7h_o.png" width="632"></p> 
+<p>拿到上图右边截取的小图像roi, 对其再做进一步的分析，从而能够抓取到缺陷划痕的轮廓，方法还是先灰度处理再二值化操作，然后查找轮廓。但注意，这次查找轮廓的对象是我们截取的roi区域，为了分析roi区域内所有的缺陷，我们必须要找出对象中的所有轮廓，所以findcontours参数中mode参数我们就不能使用CV_RETR_EXTERNAL了，而要改用CV_RETR_TREE：​​​​​​​</p> 
+<pre><code>  Mat grayImage;</code><code>  Mat binImage;</code><code>  cvtColor(roi, grayImage, CV_BGR2GRAY);  //灰度处理</code><code>  threshold(grayImage, </code><code>      binImage, </code><code>      128, 255, </code><code>      CV_THRESH_BINARY);  //二值化处理</code><code>  vector&lt;vector&lt;Point&gt;&gt; contours;</code><code>  vector&lt;Vec4i&gt; hierarchy;</code><code>  //检测出roi内所有轮廓</code><code>  findContours(binImage, contours, </code><code>      hierarchy, </code><code>      CV_RETR_TREE, </code><code>      CV_CHAIN_APPROX_NONE, </code><code>      Point(0, 0));</code></pre> 
+<p>这次返回的contours其实还包含单个产品的最外轮廓，显然不是我们想要的，对其进行适当过滤，过滤的方法很简单，还是根据面积来进行判断，进而再把缺陷部分给提取出来，我们可以用下面两行代码，将提取到的轮廓全部绘制出来：​​​​​​​</p> 
+<pre><code>//最后一个参数如果为负值CV_FILLED则为填充内部</code><code>//第三个参数如果为-1则绘制所有的轮廓</code><code>drawContours(roi, </code><code>  contours, </code><code>  -1, </code><code>  Scalar(0, 0, 255), 0);  </code></pre> 
+<p><img alt="" height="315" src="https://images2.imgbox.com/ad/01/50sJGaiP_o.png" width="711">下一步我们就要想办法把产品内部的一个划痕轮廓给单独提取出来，也就是找一把“剪刀”，将它最大外接矩形给剪切出来，同时为了防止划痕周围颜色的干扰，我们还需要将剩余部分涂成黑色，方法很简单，我们需要单独定义一个mask掩模，再使用fillPoly函数将这块区域填充到我们的mask上面即可。我们看一下这个函数的原型：​​​​​​​</p> 
+<pre><code>//填充多边形函数</code><code>void fillPoly(InputOutputArray img, </code><code>InputArrayOfArrays pts, </code><code>const Scalar&amp; color, </code><code>int lineType = LINE_8, </code><code>int shift = 0,</code><code>Point offset = Point());</code></pre> 
+<p>第一个参数img是输入的参数，也就是我们的mask, 第二个参数是轮廓点数据集，第三个参数为填充的颜色。但是这里边需要注意，第二个参数如果我们直接把上面那张提取轮廓得到的划痕轮廓数据集contours[index]输入进去是不行的，会报错，我尝试了多次，发现可能fillPoly函数第二个参数只接收vector&lt;vector&lt;Point&gt;&gt;类型的数据集，所以我们在使用之前需要把划痕的最大外接矩形使用findContours函数再做一次轮廓查找，得到缺陷轮廓contours_defect，方法跟上面的一样，事先先灰度处理，再阈值分割。​​​​​​​</p> 
+<pre><code>//定义掩膜，CV_8UC1代表单通道</code><code>Mat mask = Mat::zeros(grayImage.size(), </code><code>CV_8UC1);</code><code>//把缺陷轮廓填充掩膜</code><code>fillPoly(mask, </code><code>contours_defect, </code><code>Scalar(255, 255, 255));</code></pre> 
+<p>这里面在定义mask的时候，尽量避免使用白色背景，因为我发现在白色背景使用findContours的时候会把整个背景图片的外框也当成一个轮廓，无形之中给我们带来了不必要的麻烦。填充后的mask我们再与原图中的缺陷外接矩形轮廓做位与运算，最终将原图中的缺陷轮廓抠出来：​​​​​​​</p> 
+<pre><code>//图像按位与运算</code><code>bitwise_and(grayImage, mask, result);</code></pre> 
+<p> <img alt="" height="336" src="https://images2.imgbox.com/a7/a4/FuCq2z3Q_o.png" width="645"></p> 
+<p>上图中第三幅就是我们要的抠图效果，里面的灰色图案就是划痕形状图像背景是纯黑色，为我们下一步分析免去了诸多干扰。</p> 
+<p>接下来就是如何分析这张缺陷了，并把缺陷类型给标注出来。我们再看一下另外一种缺陷，比如掉漆的缺陷：</p> 
+<p><img alt="" height="383" src="https://images2.imgbox.com/18/02/ZCAJP2r3_o.png" width="566"> </p> 
+<p>根据肉眼判断，显然左侧的掉漆缺陷背景颜色更黑一点，这是他们两种缺陷的最大区别，所以我们可以采用灰度直方图的算法对其进行分析，从而判断是何种类型。所谓灰度直方图，就是以横坐标为像素的亮度，纵坐标为对应像素的数量，将整张图片对应的像素分布给计算出来，显然，如果是掉漆缺陷的话，它的低亮度像素值(偏向黑色)占的比重更多一些，而如果是划痕的话，整体像素亮度区间会分布的高一些，我们就按照这个方法来定义缺陷的类型。在opencv中计算灰度直方图的算法已经给我们封装好了，我们来看一下函数的原型：​​​​​​​</p> 
+<pre><code>//计算灰度直方图</code><code>void calcHist(</code><code>const Mat* images, //输入图像指针</code><code>int nimages,  //输入图像的个数</code><code>const int* channels, //需要统计的第几通道</code><code>InputArray mask, //掩膜</code><code>OutputArray hist, //输出的直方图数组</code><code>int dims, //需要统计直方图通道的个数</code><code>const int* histSize, //直方图分成区间个数指针</code><code>const float** ranges, //统计像素值的区间</code><code>bool uniform = true, //是否对得到的直方图数组进行归一化处理</code><code>bool accumulate = false); //在多个图像时，是否累计计算像素值得个数</code></pre> 
+<p>用这个函数计算后，我们需要稍微再加一点分析，将分布直方图对应像素出现的概率给计算出来即可：  whaosoft aiot <a href="http://143ai.com/" rel="nofollow" title="http://143ai.com">http://143ai.com</a> ​​​​​​​</p> 
+<pre><code>MatND hist;</code><code>//256个，范围是0，255.</code><code>const int histSize = 256;</code><code>float range[] = { 0, 255 };</code><code>const float *ranges[] = { range };</code><code>const int channels = 0;</code><code>calcHist(&amp;result, 1, &amp;channels, </code><code>cv::Mat(), hist, 1, </code><code>&amp;histSize, &amp;ranges[0]);</code><code>float *h = (float*)hist.data;</code><code>double hh[256];</code><code>double sum = 0;</code><code>for (int i = 0; i &lt; 256; ++i) </code><code>{<!-- --></code><code>  hh[i] = h[i];</code><code>  sum += hh[i];</code><code>}</code></pre> 
+<p>最后根据出现的概率区间来对缺陷进行类型定义，值得一提的是，下面两个阈值需要根据实际情况进行调整：​​​​​​​</p> 
+<pre><code>double hist_sum_scratch = 0;</code><code>double hist_sum_blot = 0;</code><code>for (int i = 90; i &lt; 135; i++)</code><code>{<!-- --></code><code>  hist_sum_scratch += hh[i];</code><code>}</code><code>hist_sum_scratch /= sum;</code><code>for (int i = 15; i &lt; 90; i++)</code><code>{<!-- --></code><code>  hist_sum_blot += hh[i];</code><code>}</code><code>hist_sum_blot /= sum;</code><code>int type = 0;</code><code>if (hist_sum_scratch &gt; 0.1)</code><code>{<!-- --></code><code>  type = 1;  //划痕类型</code><code>}</code><code>if (hist_sum_blot &gt; 0.3)</code><code>{<!-- --></code><code>  type = 2;  //掉漆类型</code><code>}</code></pre> 
+<p>好了，上面就是整个项目的检测流程，在这里我们使用的是传统算法，其实在利用传统算法进行缺陷检测基本流程都差不多，最终无非是根据像素的分布的特征进行分类，在实际场景比较单一的情况下使用起来它的鲁棒性还算可以，比如这个视频里面，流水线颜色背景是黑色的，场景模式也比较单一，用起来不会出大问题。但是如果一旦遇到实际场景比较复杂的情况下，传统算法用起来就它的局限性就非常大，举个例子，你敢保证所有的缺陷都是这两种，你敢保证实际生产情况下所有缺陷类型直方图分布严格按照自己规定的阈值进行的？显然实际场景的复杂程度要远远超过我们的所能想到的，这个时候就要用到深度学习算法进行检测了，深度学习算法相比传统算法有诸多优点，诸如它抛开了像素层面的繁琐分析，只要前期数据量够大，它就能适应各种复杂的环境等等。</p> 
+<p> </p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/f8cec06b57d4d61d162ce528bb9b5266/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">MongoDB生产部署方案</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/83ed0d8af00d1564e22a23b55b729bcd/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Python 100道基础入门练习题（附答案）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>DMA和内存零拷贝 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="DMA和内存零拷贝" />
+<meta property="og:description" content="什么是IO? IO是输入输出的意思，也就是Input和Output，这不是重点，重点是IO是相对谁，在我们编写代码的时候也有I/O的概念。以Java为例，InputStream一般都伴随read方法，OutputStream一般对应write方法，也就是说，从哪读，写到哪去？所有的IO都是相对于内存，严格来说是内存的缓冲区。所有的程序都需要加载到内存中才能使用，而普通程序(除操作系统外)都无法直接访问硬件(外设),所有的 外设也没法直接访问用户空间中的用户程序，对于一个普通程序的一次普通IO来说，所有的数据都是先加载到内核空间的缓冲区，然后再被copy到用户空间的缓冲区，我们去read这个缓冲区。
+IO接口：IO设备的代言人 大部分的输入输出设备，都有两个组成部分。第一个是它的接口，第二个才是实际的 I/O 设备。我们的硬件设备并不是直接接入到总线上和 CPU 通信的，而是通过接口，用接口连接到总线上，再通过总线和 CPU 通信。
+而IO接口标识了设备状态，设立了缓冲区，标识了设备ID，完成了地址转换，甚至可以分析指令。也就是说真实的IO设备根本不会和总线直接交互。
+CPU 是如何控制 I/O 设备的？ CPU不会直接和I/O设备交互，所有的操作都要通过接口，那么这就牵扯出CPU是如何控制接口的？
+程序查询方式：由CPU通过程序不断查询I/O设备是否已经做好准备，从而控制I/O设备与主机交换信息。
+CPU在和接口交互之前，并不知道这个设备是好是坏，是闲是忙，所以需要先询问。接口接收到具体的操作请求之后，会查询状态寄存器里当前设备的状态，然后通过控制总线告诉CPU我是闲还是忙。如果闲，也就是ready状态，地址总线和数据总线开始传输数据到接口，进而到IO设备。如果忙，那就再次请求，直到闲为止。
+这种方式大量占用CPU资源，CPU向IO设备发起读指令之后，设备如果未准备就绪，CPU会一直循环等待，直到就绪读取为止，这是一个同步的过程。
+程序中断方式：中断的方式依然需要用到CPU，只不过CPU不会一直等了，由同步的方式，转为异步。
+硬件方面需要增加响应电路用于唤醒和中断CPU，软件方面需要增加中断服务。中断请求是由设备发送给CPU的单向请求
+CPU发起请求，然后继续执行原有业务，IO设备查询设备状态，状态就绪，通过响应电路向CPU发起中断请求，CPU接收响应，保护当前正在执行的业务数据，然后进行数据传输，数据传输完毕，重新执行被中断的业务，循环往复。
+直接存储器存取（DMA）：先了解什么是DMA，DMA 技术就是我们在主板上放一块独立的芯片，称为协处理器(DMAC)。在进行内存和 I/O 设备的数据传输的时候，我们不再通过 CPU 来控制数据传输，而直接通过DMA。协处理器没有CPU强大，主要作用就是用于数据传输控制。
+该操作基本不占用CPU,使CPU在数据传输期间也可以做其他事情，进一步解放了CPU，使CPU不用在IO这件事情上劳心劳力。
+DMA方式中，主存与I/0设备之间有一条数据通路（专用数据总线），则交换信息时无需像中断一样调用中断服务程序，数据不经过CPU，直接通过这条线传输，所以DMA是需要硬件支持的。
+那数据如何 通过DMA的方式进行传输呢？ 1.设置DMA:I/O 设备可以告诉 CPU，我这里有数据要传输给你,此时DMAC是不知道的，所以需要CPU告诉DMAC,从哪拿，拿多少，写到哪去，也就是源地址的初始值以及传输时候的地址增减方式，传输的数据长度，目标地址初始值和传输时候的地址增减方式。
+2.如果我们要从硬盘上往内存里面加载数据，这个时候，硬盘就会向 DMAC 发起一个数据传输请求。这个请求并不是通过总线，而是通过一个额外的连线。
+3.然后，我们的 DMAC 需要再通过一个额外的连线响应这个申请。
+4.于是，DMAC 这个芯片，就向硬盘的接口发起要总线读的传输请求。数据就从硬盘里面，读到了 DMAC 的控制器里面。
+5.然后，DMAC 再向我们的内存发起总线写的数据传输请求，把数据写入到内存里面。循环往复，直到数据传输完毕。
+这样其实也出现了一个问题，这种传输操作其实类似于多线程，DMAC在干活，CPU也在干活，内存他们俩都要用，总线他们俩都要用，冲突了怎么办？
+结论就是DMAC&gt;CPU，DMA的优先级要高于CPU，DMA有插队的权利，但是权利有限，若DMA和CPU同时访问主存，CPU将总线占有权让给DMA，这种行为称为窃取或挪用。窃取时间一般为一个存取周期，故称为窃取周期。
+DMA与中断的比较： 1.DMA需要硬件支持，数据传输完全通过硬件传输数据；程序中断需要程序传送
+2.程序中断需要等待指令执行完成保护现场，然后再执行；DMA随时进行数据传输
+3.DMA优先级更高
+基于DMA的零拷贝机制，Kafka为什么这么快？
+用户态和内核态：多数计算机有两种运行模式，用户态和内核态。软件中最基础的部分是操作系统，它运行在内核态。在这个模式中，操作系统具有对所有硬件的完全访问权，可以执行机器能够运行的任何指令。软件的其余部分运行在用户态，在用户态下，只使用了机器指令中的一个子集。而一个数据，需要加载到内核态之后再拷贝到用户态才能被程序使用。
+以一次传统的socket数据传输为例
+1.从硬盘上，读到操作系统内核的缓冲区里。这个传输是通过 DMA 搬运的。
+2.内核缓冲区里面的数据，复制到我们应用分配的内存里面。这个传输是通过 CPU 搬运的。
+3.从我们应用的内存里面，再写到操作系统的 Socket 的缓冲区里面去。这个传输，还是由 CPU 搬运的。
+4.从 Socket 的缓冲区里面，写到网卡的缓冲区里面去。这个传输又是通过 DMA 搬运的。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/f9e8a9e192fdb7d4b690cccc7d3f3e65/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-05-25T09:11:03+08:00" />
+<meta property="article:modified_time" content="2021-05-25T09:11:03+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">DMA和内存零拷贝</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h4>什么是IO?</h4> 
+<p>IO是输入输出的意思，也就是Input和Output，这不是重点，重点是IO是相对谁，在我们编写代码的时候也有I/O的概念。以Java为例，InputStream一般都伴随read方法，OutputStream一般对应write方法，也就是说，从哪读，写到哪去？所有的IO都是相对于内存，严格来说是内存的缓冲区。所有的程序都需要加载到内存中才能使用，而普通程序(除操作系统外)都无法直接访问硬件(外设),所有的 外设也没法直接访问用户空间中的用户程序，对于一个普通程序的一次普通IO来说，所有的数据都是先加载到内核空间的缓冲区，然后再被copy到用户空间的缓冲区，我们去read这个缓冲区。</p> 
+<h4>IO接口：IO设备的代言人</h4> 
+<p>大部分的输入输出设备，都有两个组成部分。第一个是它的接口，第二个才是实际的 I/O 设备。我们的硬件设备并不是直接接入到总线上和 CPU 通信的，而是通过接口，用接口连接到总线上，再通过总线和 CPU 通信。</p> 
+<p>而IO接口标识了设备状态，设立了缓冲区，标识了设备ID，完成了地址转换，甚至可以分析指令。也就是说真实的IO设备根本不会和总线直接交互。</p> 
+<p><img alt="" src="https://images2.imgbox.com/c7/15/MhWqIZdl_o.png"></p> 
+<p> </p> 
+<h4>CPU 是如何控制 I/O 设备的？</h4> 
+<p>CPU不会直接和I/O设备交互，所有的操作都要通过接口，那么这就牵扯出CPU是如何控制接口的？</p> 
+<p>程序查询方式：由CPU通过程序不断查询I/O设备是否已经做好准备，从而控制I/O设备与主机交换信息。</p> 
+<p>CPU在和接口交互之前，并不知道这个设备是好是坏，是闲是忙，所以需要先询问。接口接收到具体的操作请求之后，会查询状态寄存器里当前设备的状态，然后通过控制总线告诉CPU我是闲还是忙。如果闲，也就是ready状态，地址总线和数据总线开始传输数据到接口，进而到IO设备。如果忙，那就再次请求，直到闲为止。</p> 
+<p><img alt="" src="https://images2.imgbox.com/e8/6b/683Gu0nk_o.png"></p> 
+<p>这种方式大量占用CPU资源，CPU向IO设备发起读指令之后，设备如果未准备就绪，CPU会一直循环等待，直到就绪读取为止，这是一个同步的过程。</p> 
+<p>程序中断方式：中断的方式依然需要用到CPU，只不过CPU不会一直等了，由同步的方式，转为异步。</p> 
+<p>硬件方面需要增加响应电路用于唤醒和中断CPU，软件方面需要增加中断服务。中断请求是由设备发送给CPU的单向请求</p> 
+<p><img alt="" src="https://images2.imgbox.com/45/49/1rQ2fRQ5_o.png"></p> 
+<p>CPU发起请求，然后继续执行原有业务，IO设备查询设备状态，状态就绪，通过响应电路向CPU发起中断请求，CPU接收响应，保护当前正在执行的业务数据，然后进行数据传输，数据传输完毕，重新执行被中断的业务，循环往复。</p> 
+<p>直接存储器存取（DMA）：先了解什么是DMA，DMA 技术就是我们在主板上放一块独立的芯片，称为协处理器(DMAC)。在进行内存和 I/O 设备的数据传输的时候，我们不再通过 CPU 来控制数据传输，而直接通过DMA。协处理器没有CPU强大，主要作用就是用于数据传输控制。</p> 
+<p>该操作基本不占用CPU,使CPU在数据传输期间也可以做其他事情，进一步解放了CPU，使CPU不用在IO这件事情上劳心劳力。</p> 
+<p>DMA方式中，主存与I/0设备之间有一条数据通路（专用数据总线），则交换信息时无需像中断一样调用中断服务程序，数据不经过CPU，直接通过这条线传输，所以DMA是需要硬件支持的。</p> 
+<p><img alt="" src="https://images2.imgbox.com/b5/5d/24NDOztb_o.png"></p> 
+<h4>那数据如何 通过DMA的方式进行传输呢？</h4> 
+<p>1.设置DMA:I/O 设备可以告诉 CPU，我这里有数据要传输给你,此时DMAC是不知道的，所以需要CPU告诉DMAC,从哪拿，拿多少，写到哪去，也就是源地址的初始值以及传输时候的地址增减方式，传输的数据长度，目标地址初始值和传输时候的地址增减方式。</p> 
+<p>2.如果我们要从硬盘上往内存里面加载数据，这个时候，硬盘就会向 DMAC 发起一个数据传输请求。这个请求并不是通过总线，而是通过一个额外的连线。</p> 
+<p>3.然后，我们的 DMAC 需要再通过一个额外的连线响应这个申请。</p> 
+<p>4.于是，DMAC 这个芯片，就向硬盘的接口发起要总线读的传输请求。数据就从硬盘里面，读到了 DMAC 的控制器里面。</p> 
+<p>5.然后，DMAC 再向我们的内存发起总线写的数据传输请求，把数据写入到内存里面。循环往复，直到数据传输完毕。</p> 
+<p>这样其实也出现了一个问题，这种传输操作其实类似于多线程，DMAC在干活，CPU也在干活，内存他们俩都要用，总线他们俩都要用，冲突了怎么办？</p> 
+<p>结论就是DMAC&gt;CPU，DMA的优先级要高于CPU，DMA有插队的权利，但是权利有限，若DMA和CPU同时访问主存，CPU将总线占有权让给DMA，这种行为称为窃取或挪用。窃取时间一般为一个存取周期，故称为窃取周期。</p> 
+<p> </p> 
+<h4>DMA与中断的比较：</h4> 
+<p>1.DMA需要硬件支持，数据传输完全通过硬件传输数据；程序中断需要程序传送</p> 
+<p>2.程序中断需要等待指令执行完成保护现场，然后再执行；DMA随时进行数据传输</p> 
+<p>3.DMA优先级更高</p> 
+<p>基于DMA的零拷贝机制，Kafka为什么这么快？</p> 
+<p>用户态和内核态：多数计算机有两种运行模式，用户态和内核态。软件中最基础的部分是操作系统，它运行在内核态。在这个模式中，操作系统具有对所有硬件的完全访问权，可以执行机器能够运行的任何指令。软件的其余部分运行在用户态，在用户态下，只使用了机器指令中的一个子集。而一个数据，需要加载到内核态之后再拷贝到用户态才能被程序使用。</p> 
+<p>以一次传统的socket数据传输为例</p> 
+<p><img alt="" src="https://images2.imgbox.com/a5/7b/4quibZhl_o.png"></p> 
+<p>1.从硬盘上，读到操作系统内核的缓冲区里。这个传输是通过 DMA 搬运的。</p> 
+<p>2.内核缓冲区里面的数据，复制到我们应用分配的内存里面。这个传输是通过 CPU 搬运的。</p> 
+<p>3.从我们应用的内存里面，再写到操作系统的 Socket 的缓冲区里面去。这个传输，还是由 CPU 搬运的。</p> 
+<p>4.从 Socket 的缓冲区里面，写到网卡的缓冲区里面去。这个传输又是通过 DMA 搬运的。</p> 
+<p>那么我们实现零拷贝之后是什么样的呢？</p> 
+<p><img alt="" src="https://images2.imgbox.com/dd/9e/vvsuQiRI_o.png"></p> 
+<p>1.通过 DMA，从硬盘直接读到操作系统内核的读缓冲区里面。</p> 
+<p>2.根据 Socket 的描述符信息，直接从读缓冲区里面，写入到网卡的缓冲区里面。</p> 
+<p>这个方法里面，我们没有在内存层面去“复制（Copy）”数据，所以这个方法，也被称之为零拷贝，那么零拷贝是怎么实现的？一句话概括<span style="color:#f33b45;">应用程序通过调用mmap()，将不同的虚拟地址映射到了同一物理地址，即内核缓冲区，使程序在用户态可以直接读取并操作内核空间的数据</span>。</p> 
+<p>1.mmap()系统调用首先会使用DMA的方式将磁盘数据读取到内核缓冲区，然后通过内存映射的方式，使用户缓冲区和内核读缓冲区的内存地址为同一内存地址，也就是说不需要CPU再讲数据从内核读缓冲区复制到用户缓冲区。</p> 
+<p>2.当使用write()系统调用的时候，cpu将内核缓冲区（等同于用户缓冲区）的数据直接写入到网络发送缓冲区（socket buffer），然后通过DMA的方式将数据传入到网卡驱动程序中准备发送。</p> 
+<p> </p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/036b6e5453a3fedf4d3814b550a841e5/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">SPN用三个队列C语言,SPN-DES-AES算法原理与应用</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/00aa31c9d926b46ab48a450de2185400/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">USB Type-C接口便携显示器的应用场景，市面上兼容性最好的LDR6282&#43;RTD2556方案</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

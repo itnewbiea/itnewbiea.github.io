@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Cilium核心技术-eBPF XDP&amp;TC介绍 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Cilium核心技术-eBPF XDP&amp;TC介绍" />
+<meta property="og:description" content="eBPF 是一项革命性技术，它能在内核中运行沙箱程序（sandbox programs）， 而无需修改内核源码或者加载内核模块。
+eBPF的一个重要特性是能够使用高级语言(如C)来实现程序。LLVM有一个eBPF后端，用于编辑包含eBPF指令的ELF文件，前端(如clang)可以用于生成程序。
+在一个后端转换为字节码后，使用bpf()系统调用加载bpf程序，并校验安全性。JIT会将字节码编译进CPU架构中，并将该程序附加到内核对象上，当这些对象发生事件时会触发程序的执行(例如，当从一个网络接口发送报文时)。
+eBPF work flow eBPF MAP eBPF map是用户空间和内核空间之间的数据交换、信息传递的桥梁。本质上是以「键/值」方式存储在内核中的数据结构，它们可以被任何知道它们的BPF程序访问。在内核空间的程序创建BPF Map并返回对应的文件描述符，在用户空间运行的程序就可以通过这个文件描述符来访问并操作BPF Map，这就是为什么BPF Map在BPF世界中是桥梁的存在了。
+网络数据收发原理 1.数据包达到物理网卡（RX FIFO），通过DMA到内存中。内存指的是网卡的接收的Ring Buffer。 2.并且拷贝成一个一个的sk_buffer. 3.触发硬中断，通知CPU，已经有数据来了，CPU根据注册的中断函数，中断函数调用驱动程序，驱动先禁用网卡的中断，目的下次再来数据就直接处理就可以，就不再通知CPU的硬中断。 4.弥补硬中断处理时间问题，需要启用一个软中断。（主要是弥补硬中断处理时间不及的问题） 5.数据单元的sk_buffer然后再交给我们的协议栈处理。实际上就是交给网络层和传输层来处理。[被ip层协议和传输层协议处理] 6.去处掉网络层和传输层的头以后，CPU就把数据Copy到用户空间的应用程序。 内核单元层级关系 网络相关的（子系统），但对于存储和其他系统，问题都是类似的。图中列出了对这些子系统进行操作所需的工具。例如: 配置以太网驱动或者网络设备需要使用 ethtool 命令; 配置路由使用 ip 命令; 配置过滤使用 seccom 命令; 配置 IP 防火墙使用 iptables 命令，但如果你使用的是 raw sockets，那有很多地方都 会 bypass，因此这并不是一个完整的防火墙; 配置流量整形使用 tc 命令; 抓包使用 tcpdump 命令，但同样的，它并没有展示出全部信息，因为它只关注了一层; 如果有虚拟交换机，那使用 brctl 或 ovsctl; 所以我们看到，每个子系统都有自己的 API，这意味着如果要自动化这些东西，必须单独的使用这些工具。有一些工具这样做了，但这种方式意味着我们需要了解其中的每一层。 eBPF work point 需要弄清楚netfilter所处的位置:
+BPF XDP ---&gt; sk_buffer ---&gt; TC[network stack Dividing Line] ---&gt; IPv4 And IPv6 ---&gt; Netfilter ---&gt; TCP UDP RAW XDP (eXpress Data Path) XDP 代表 eXpress Data Path，提供了 BPF 框架，可在 Linux 内核中实现高性能可编程数据包处理。它在软件中尽早运行 BPF 程序，即在网络驱动程序收到数据包时。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/b5c4986e82ebcdc80b9b8615a1938c6d/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-07-16T17:19:37+08:00" />
+<meta property="article:modified_time" content="2023-07-16T17:19:37+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Cilium核心技术-eBPF XDP&amp;TC介绍</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>eBPF 是一项革命性技术，它能在内核中运行沙箱程序（sandbox programs）， 而无需修改内核源码或者加载内核模块。<br> eBPF的一个重要特性是能够使用高级语言(如C)来实现程序。LLVM有一个eBPF后端，用于编辑包含eBPF指令的ELF文件，前端(如clang)可以用于生成程序。<br> 在一个后端转换为字节码后，使用bpf()系统调用加载bpf程序，并校验安全性。JIT会将字节码编译进CPU架构中，并将该程序附加到内核对象上，当这些对象发生事件时会触发程序的执行(例如，当从一个网络接口发送报文时)。</p> 
+<h3><a id="eBPF_work_flow_4"></a>eBPF work flow</h3> 
+<p><img src="https://images2.imgbox.com/04/88/QxwAIqN0_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="eBPF_MAP_6"></a>eBPF MAP</h4> 
+<p><img src="https://images2.imgbox.com/1d/ee/956QS8N0_o.png" alt=""><br> eBPF map是用户空间和内核空间之间的数据交换、信息传递的桥梁。本质上是以「键/值」方式存储在内核中的数据结构，它们可以被任何知道它们的BPF程序访问。在内核空间的程序创建BPF Map并返回对应的文件描述符，在用户空间运行的程序就可以通过这个文件描述符来访问并操作BPF Map，这就是为什么BPF Map在BPF世界中是桥梁的存在了。</p> 
+<h4><a id="_10"></a>网络数据收发原理</h4> 
+<p><img src="https://images2.imgbox.com/f4/f6/alnGN8sV_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-shell"><span class="token number">1</span>.数据包达到物理网卡（RX FIFO），通过DMA到内存中。内存指的是网卡的接收的Ring Buffer。
+<span class="token number">2</span>.并且拷贝成一个一个的sk_buffer.
+<span class="token number">3</span>.触发硬中断，通知CPU，已经有数据来了，CPU根据注册的中断函数，中断函数调用驱动程序，驱动先禁用网卡的中断，目的下次再来数据就直接处理就可以，就不再通知CPU的硬中断。
+<span class="token number">4</span>.弥补硬中断处理时间问题，需要启用一个软中断。（主要是弥补硬中断处理时间不及的问题）
+<span class="token number">5</span>.数据单元的sk_buffer然后再交给我们的协议栈处理。实际上就是交给网络层和传输层来处理。<span class="token punctuation">[</span>被ip层协议和传输层协议处理<span class="token punctuation">]</span>
+<span class="token number">6</span>.去处掉网络层和传输层的头以后，CPU就把数据Copy到用户空间的应用程序。
+</code></pre> 
+<h4><a id="_21"></a>内核单元层级关系</h4> 
+<p><img src="https://images2.imgbox.com/1a/d3/aQPEoXZu_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-shell">网络相关的（子系统），但对于存储和其他系统，问题都是类似的。图中列出了对这些子系统进行操作所需的工具。例如:
+
+配置以太网驱动或者网络设备需要使用 <span class="token function">ethtool</span> 命令<span class="token punctuation">;</span>
+配置路由使用 <span class="token function">ip</span> 命令<span class="token punctuation">;</span>
+配置过滤使用 seccom 命令<span class="token punctuation">;</span>
+配置 IP 防火墙使用 iptables 命令，但如果你使用的是 raw sockets，那有很多地方都 会 bypass，因此这并不是一个完整的防火墙<span class="token punctuation">;</span>
+配置流量整形使用 tc 命令<span class="token punctuation">;</span>
+抓包使用 tcpdump 命令，但同样的，它并没有展示出全部信息，因为它只关注了一层<span class="token punctuation">;</span>
+如果有虚拟交换机，那使用 brctl 或 ovsctl<span class="token punctuation">;</span>
+所以我们看到，每个子系统都有自己的 API，这意味着如果要自动化这些东西，必须单独的使用这些工具。有一些工具这样做了，但这种方式意味着我们需要了解其中的每一层。
+</code></pre> 
+<h4><a id="eBPF_work_point_35"></a>eBPF work point</h4> 
+<p><img src="https://images2.imgbox.com/e9/78/RgXpw9ev_o.png" alt="在这里插入图片描述"><br> <strong>需要弄清楚netfilter所处的位置:</strong></p> 
+<pre><code class="prism language-shell">BPF XDP ---<span class="token operator">&gt;</span> sk_buffer ---<span class="token operator">&gt;</span> TC<span class="token punctuation">[</span>network stack Dividing Line<span class="token punctuation">]</span> ---<span class="token operator">&gt;</span> IPv4 And IPv6 ---<span class="token operator">&gt;</span> Netfilter ---<span class="token operator">&gt;</span> TCP UDP RAW
+</code></pre> 
+<h3><a id="XDP_eXpress_Data_Path_42"></a>XDP (eXpress Data Path)</h3> 
+<p>XDP 代表 eXpress Data Path，提供了 BPF 框架，可在 Linux 内核中实现高性能可编程数据包处理。它在软件中尽早运行 BPF 程序，即在网络驱动程序收到数据包时。</p> 
+<p>在XDP中，驱动程序只是从ring buff中接收数据包，而没有执行任何其他的操作，例如分配 skb 将数据包进一步推入网络堆栈，也没有将数据包推入 GRO 引擎因此，XDP BPF 程序在 CPU 处理时最早执行。</p> 
+<p>XDP 中传递给 BPF 程序的数据包表示形式为 BPF 上下文如下所示：</p> 
+<pre><code class="prism language-C">struct xdp_buff {
+    void *data;
+    void *data_end;
+    void *data_meta;
+    void *data_hard_start;
+    struct xdp_rxq_info *rxq;
+};
+</code></pre> 
+<p>处理后返回状态：</p> 
+<pre><code class="prism language-C">enum xdp_action {
+    XDP_ABORTED = 0,
+    XDP_DROP,
+    XDP_PASS,
+    XDP_TX,
+    XDP_REDIRECT,
+};
+</code></pre> 
+<p>XDP_DROP：在驱动层丢弃报文，通常用于实现DDos或防火墙<br> XDP_PASS：允许报文上送到内核网络栈，同时处理该报文的CPU会分配并填充一个skb，将其传递到GRO引擎。之后的处理与没有XDP程序的过程相同。<br> XDP_TX：BPF程序通过该选项可以将网络报文从接收到该报文的NIC上发送出去。例如当集群中的部分机器实现了防火墙和负载均衡时，这些机器就可以作为hairpinned模式的负载均衡，在接收到报文，经过XDP BPF修改后将该报文原路发送出去。<br> XDP_REDIRECT：与XDP_TX类似，但是通过另一个网卡将包发出去。另外， XDP_REDIRECT 还可以将包重定向到一个 BPF cpumap，即，当前执行 XDP 程序的 CPU 可以将这个包交给某个远端 CPU，由后者将这个包送到更上层的内核栈，当前 CPU 则继续在这个网卡执行接收和处理包的任务。这和 XDP_PASS 类似，但当前 CPU 不用去做将包送到内核协议栈的准备工作（分配 skb，初始化等等），这部分开销还是很大的。<br> XDP_ABORTED：表示程序产生了异常，其行为和 XDP_DROP相同，但 XDP_ABORTED 会经过 trace_xdp_exception tracepoint，因此可以通过 tracing 工具来监控这种非正常行为。</p> 
+<h3><a id="TC_traffic_control_77"></a>TC (traffic control)</h3> 
+<p>除了XDP之外，BPF 还可以工作在网络数据路径中的内核 TC（流量控制）层。 XDP BPF 程序与 tc BPF 的主要区别：<br> tc BPF 程序可以在ingress方向触发，也可以网络数据路径中的egress方向触发。</p> 
+<p>没有eBPF处理丢包的网络包路径：<br> <img src="https://images2.imgbox.com/58/7e/gOUh6Mky_o.png" alt="在这里插入图片描述">netfilter 丢包处理的网络包路径：<br> <img src="https://images2.imgbox.com/f7/2c/ij9YRnWt_o.png" alt="在这里插入图片描述"><br> tc 丢包处理的网络包路径：<br> <img src="https://images2.imgbox.com/76/55/HjE0jgXg_o.png" alt="在这里插入图片描述">XDP 丢包处理的网络包路径：<br> <img src="https://images2.imgbox.com/67/cb/F2OI2nqo_o.png" alt="在这里插入图片描述">下面是一张不同的网络包处理技术处理路径图：<br> <img src="https://images2.imgbox.com/ed/e7/lN1lkUql_o.png" alt="在这里插入图片描述"></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/5b17b50d4f310dd0224eceb7cb605a08/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">算法详解：可视化冒泡排序算法及其优化</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a0088537bc4ac72e2608b3c47645915a/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">linux实现定时备份文件到百度网盘详细教程</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

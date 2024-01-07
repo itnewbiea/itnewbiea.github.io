@@ -1,0 +1,1317 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>prometheus监控k8s集群 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="prometheus监控k8s集群" />
+<meta property="og:description" content="prometheus监控k8s集群
+实现思路
+pod性能：
+使用cadvisor进行实现，监控容器的CPU、内存利用率
+Node性能：
+使用node-exporter实现，主要监控节点CPU、内存利用率
+K8S资源对象：
+使用kube-state-metrics实现，主要用于监控pod、deployment、service
+k8s基础环境准备
+IP 角色
+192.128.232.11 k8s-master,nfs
+192.128.232.12 k8s-node1
+192.128.232.13 k8s-node2
+一.部署nfs作为prometheus存储，可以使用对象存储，
+1.部署nfs服务
+[root@nfs ~]# mkdir /data/prometheus
+[root@nfs ~]# yum -y install nfs-utils
+[root@nfs ~]# vim /etc/exports
+/data/prometheus 192.128.232.0/24(rw,sync,no_root_squash)
+[root@nfs ~]# systemctl restart nfs
+[root@nfs ~]# systemctl enable nfs
+[root@nfs ~]# showmount -e
+[root@nfs ~]# chomd -R 777 /data/prometheus
+2.获取prometheus yaml文件
+[root@k8s-master ~]# git clone -b release-1.16 https://github.com/kubernetes/kubernetes.git
+[root@k8s-master ~]# cd kubernetes/cluster/addons/prometheus/
+#可以参考我的文件" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/b1eff3476903827ec30e7bb468630066/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-04-15T15:41:16+08:00" />
+<meta property="article:modified_time" content="2022-04-15T15:41:16+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">prometheus监控k8s集群</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>prometheus监控k8s集群</p> 
+<p>实现思路</p> 
+<p>pod性能：<br>   使用cadvisor进行实现，监控容器的CPU、内存利用率<br> Node性能：<br>   使用node-exporter实现，主要监控节点CPU、内存利用率<br> K8S资源对象：<br>   使用kube-state-metrics实现，主要用于监控pod、deployment、service<br>   <br> k8s基础环境准备<br> IP                  角色<br> 192.128.232.11    k8s-master,nfs<br> 192.128.232.12    k8s-node1<br> 192.128.232.13    k8s-node2</p> 
+<p>  <br> 一.部署nfs作为prometheus存储，可以使用对象存储，<br> 1.部署nfs服务<br> [root@nfs ~]# mkdir /data/prometheus<br> [root@nfs ~]# yum -y install nfs-utils<br> [root@nfs ~]# vim /etc/exports<br> /data/prometheus   192.128.232.0/24(rw,sync,no_root_squash)<br> [root@nfs ~]# systemctl restart nfs<br> [root@nfs ~]# systemctl enable nfs<br> [root@nfs ~]# showmount -e<br> [root@nfs ~]# chomd -R 777 /data/prometheus</p> 
+<p>2.获取prometheus yaml文件<br> [root@k8s-master ~]# git clone -b release-1.16 https://github.com/kubernetes/kubernetes.git<br> [root@k8s-master ~]# cd kubernetes/cluster/addons/prometheus/</p> 
+<p><span style="color:#fe2c24;">#可以参考我的文件</span></p> 
+<p>链接：https://pan.baidu.com/s/1TQFxyBcD7luFHiEv2iZYbA <br> 提取码：j295</p> 
+<p>3.prometheus部署<br> 1.创建ns<br> [root@k8s-master prometheus]# kubectl create namespace prometheus</p> 
+<p>2.修改，<span style="color:#fe2c24;">将除了kube-state-metrics外的yaml中的namespace修改为prometheus</span><br> 用vim打开输入以下命令<br> :%s/namespace: kube-system/namespace: prometheus/g</p> 
+<p>3.创建rbac资源<br> [root@master01 yaml]# cat prometheus-rbac.yaml </p> 
+<pre><code class="language-cpp">apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: prometheus
+  labels:
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: Reconcile
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus
+  labels:
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: Reconcile
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - nodes
+      - nodes/metrics
+      - services
+      - endpoints
+      - pods
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - get
+  - nonResourceURLs:
+      - "/metrics"
+    verbs:
+      - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus
+  labels:
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: Reconcile
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: prometheus
+  namespace: prometheus</code></pre> 
+<p><br>   <br> [root@master01 yaml]# kubectl apply -f prometheus-rbac.yaml </p> 
+<p>4.创建configmap资源<br> [root@master01 yaml]# cat prometheus-configmap.yaml </p> 
+<pre><code class="language-cpp"># Prometheus configuration format https://prometheus.io/docs/prometheus/latest/configuration/configuration/
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: prometheus
+  labels:
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: EnsureExists
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval:     15s # Set the scrape interval to every 15 seconds. Default is every 1 minute.
+      evaluation_interval: 15s # Evaluate rules every 15 seconds. The default is every 1 minute.
+
+    rule_files:          #prometheus配置告警规则
+    - "rules/*.yml"
+
+    scrape_configs:
+    - job_name: prometheus    #监控prometheus本身
+      static_configs:
+      - targets:
+        - localhost:9090
+
+    - job_name: k8s-node   #写要监控的node节点
+      static_configs:
+      - targets:
+        - 192.128.232.11:9100
+        - 192.128.232.12:9100
+
+    # kubernetes-apiservers自动发现，将apiserver的地址进行暴露并获取监控指标
+    - job_name: kubernetes-apiservers  
+      kubernetes_sd_configs:
+      - role: endpoints
+      relabel_configs:
+      - action: keep
+        regex: default;kubernetes;https
+        source_labels:
+        - __meta_kubernetes_namespace
+        - __meta_kubernetes_service_name
+        - __meta_kubernetes_endpoint_port_name
+      scheme: https
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        insecure_skip_verify: true
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    
+    - job_name: kubernetes-nodes-kubelet
+      kubernetes_sd_configs:
+      - role: node
+      relabel_configs:
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+)
+      scheme: https
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        insecure_skip_verify: true
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    
+	# k8s的node节点自动发现，自动发现k8s中的所有node节点并进行监控
+    - job_name: kubernetes-nodes-cadvisor
+      kubernetes_sd_configs:
+      - role: node
+      relabel_configs:
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+)
+      - target_label: __metrics_path__
+        replacement: /metrics/cadvisor
+      scheme: https
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        insecure_skip_verify: true
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    
+	# 发现endpoint的资源，主要是发现endpoint资源类型的pod，可以通过kubectl get ep查看谁是endpoint资源
+    - job_name: kubernetes-service-endpoints
+      kubernetes_sd_configs:
+      - role: endpoints
+      relabel_configs:
+      - action: keep
+        regex: true
+        source_labels:
+        - __meta_kubernetes_service_annotation_prometheus_io_scrape
+      - action: replace
+        regex: (https?)
+        source_labels:
+        - __meta_kubernetes_service_annotation_prometheus_io_scheme
+        target_label: __scheme__
+      - action: replace
+        regex: (.+)
+        source_labels:
+        - __meta_kubernetes_service_annotation_prometheus_io_path
+        target_label: __metrics_path__
+      - action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        source_labels:
+        - __address__
+        - __meta_kubernetes_service_annotation_prometheus_io_port
+        target_label: __address__
+      - action: labelmap
+        regex: __meta_kubernetes_service_label_(.+)
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_namespace
+        target_label: kubernetes_namespace
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_service_name
+        target_label: kubernetes_name
+    
+	# 自动发现services资源
+    - job_name: kubernetes-services
+      kubernetes_sd_configs:
+      - role: service
+      metrics_path: /probe
+      params:
+        module:
+        - http_2xx
+      relabel_configs:
+      - action: keep
+        regex: true
+        source_labels:
+        - __meta_kubernetes_service_annotation_prometheus_io_probe
+      - source_labels:
+        - __address__
+        target_label: __param_target
+      - replacement: blackbox
+        target_label: __address__
+      - source_labels:
+        - __param_target
+        target_label: instance
+      - action: labelmap
+        regex: __meta_kubernetes_service_label_(.+)
+      - source_labels:
+        - __meta_kubernetes_namespace
+        target_label: kubernetes_namespace
+      - source_labels:
+        - __meta_kubernetes_service_name
+        target_label: kubernetes_name
+    
+	#自动发现pod资源
+    - job_name: kubernetes-pods
+      kubernetes_sd_configs:
+      - role: pod
+      relabel_configs:
+      - action: keep
+        regex: true
+        source_labels:
+        - __meta_kubernetes_pod_annotation_prometheus_io_scrape
+      - action: replace
+        regex: (.+)
+        source_labels:
+        - __meta_kubernetes_pod_annotation_prometheus_io_path
+        target_label: __metrics_path__
+      - action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        source_labels:
+        - __address__
+        - __meta_kubernetes_pod_annotation_prometheus_io_port
+        target_label: __address__
+      - action: labelmap
+        regex: __meta_kubernetes_pod_label_(.+)
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_namespace
+        target_label: kubernetes_namespace
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_pod_name
+        target_label: kubernetes_pod_name
+    
+    alerting:         #这里是定义alertmanager告警的地址
+      alertmanagers:
+      - static_configs:
+        - targets:
+          - 192.128.232.11:30655
+		  
+</code></pre> 
+<p>  [root@k8s-master prometheus]# kubectl create -f prometheus-configmap.yaml </p> 
+<p><br> 5.创建statefulset资源<br>    github上的statefulset资源使用的是storageclasee动态创建pv，我这里为了方便就将<br> statefulset资源进行改造，使用静态pv做存储yaml中增加pv、pvc的配置，<span style="color:#fe2c24;">在将原来的storageclass配置项删除，</span></p> 
+<p>#在nfs服务上创建要挂载的目录，prometheus，grafana，aletermanager，rules都需要存储<br> [root@k8s-master prometheus]# mkdir -p /data/prometheus/{prometheus_data,grafana,alertmanager,rules}<br> [root@k8s-master prometheus]# chown -R 777 /data/prometheus</p> 
+<p>#创建prometheus的PV跟pvc<br> [root@master01 yaml]# cat prometheus-pv-pvc.yaml</p> 
+<pre><code class="language-cpp">apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-data
+  namespace: prometheus
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 16Gi
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-prometheus
+spec:
+  capacity:
+    storage: 16Gi
+  accessModes:
+    - ReadWriteOnce
+  nfs:
+    path: /data/prometheus/prometheus_data   #要存储的目录
+    server: 192.128.232.11      #nfs服务地址
+	</code></pre> 
+<p>  <br> #创建grafana的PV跟pvc<br> [root@master01 yaml]# cat grafana_pv_pvc.yaml </p> 
+<pre><code class="language-cpp">apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-ui-data
+  namespace: prometheus
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 3Gi
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-grafana-ui-data
+  namespace: prometheus
+spec:
+  capacity:
+    storage: 3Gi
+  accessModes:
+    - ReadWriteOnce
+
+  nfs:
+    path: /data/prometheus/grafana
+    server: 192.128.232.11</code></pre> 
+<p><br> [root@master01 yaml]# cat alertmanager-pvc.yaml </p> 
+<pre><code class="language-cpp">apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: alertmanager-data
+  namespace: prometheus
+  labels:
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: EnsureExists
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: "2Gi"
+---
+apiVersion: v1                     
+kind: PersistentVolume             
+metadata:                          
+  name: pv-alertmanager-data         
+  namespace: prometheus      
+spec:                              
+  capacity:                        
+    storage: 2Gi                   
+  accessModes:                     
+    - ReadWriteOnce	
+  nfs:                             
+    path: /data/prometheus/alertmanager
+    server: 192.128.232.11 </code></pre> 
+<p>#创建rules规则存储的pv跟pvc<br> [root@master01 yaml]# cat prometheus-rules-pvc.yaml </p> 
+<pre><code class="language-cpp">apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-rules
+  namespace: prometheus
+  labels:
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: "2Gi"
+---
+apiVersion: v1                     
+kind: PersistentVolume             
+metadata:                          
+  name: pv-prometheus-rules         
+spec:                              
+  capacity:                        
+    storage: 2Gi                   
+  accessModes:                     
+    - ReadWriteOnce	
+  nfs:                             
+    path: /data/prometheus/rules
+    server: 192.128.232.11        
+	</code></pre> 
+<p>#创建alertmanager，prometheus，grafana，rules的PV跟pvc<br> [root@k8s-master prometheus]# kubectl create -f prometheus-pv-pvc.yaml<br> [root@k8s-master prometheus]# kubectl create -f grafana_pv_pvc.yaml <br> [root@k8s-master prometheus]# kubectl create -f alertmanager-pvc.yaml <br> [root@k8s-master prometheus]# kubectl create -f prometheus-rules-pvc.yaml </p> 
+<p>#查看创建的pv跟pvc     <br> [root@master01 yaml]# kubectl get pv,pvc -n prometheus</p> 
+<pre><code class="language-cpp">NAME                                    CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                          STORAGECLASS   REASON   AGE
+persistentvolume/pv-alertmanager-data   2Gi        RWO            Retain           Bound    prometheus/alertmanager-data                           19h
+persistentvolume/pv-grafana-ui-data     3Gi        RWO            Retain           Bound    prometheus/grafana-ui-data                             44h
+persistentvolume/pv-prometheus          16Gi       RWO            Retain           Bound    prometheus/prometheus-data                             15h
+persistentvolume/pv-prometheus-rules    2Gi        RWO            Retain           Bound    prometheus/prometheus-rules                            18h
+
+NAME                                      STATUS   VOLUME                 CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+persistentvolumeclaim/alertmanager-data   Bound    pv-alertmanager-data   2Gi        RWO                           19h
+persistentvolumeclaim/grafana-ui-data     Bound    pv-grafana-ui-data     3Gi        RWO                           44h
+persistentvolumeclaim/prometheus-data     Bound    pv-prometheus          16Gi       RWO                           15h
+persistentvolumeclaim/prometheus-rules    Bound    pv-prometheus-rules    2Gi        RWO                           18h</code></pre> 
+<p>#创建prometheus服务    <br> [root@k8s-master prometheus]# cat prometheus-statefulset.yaml </p> 
+<pre><code class="language-cpp">apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-data
+  namespace: prometheus
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 16Gi
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-prometheus
+spec:
+  capacity:
+    storage: 16Gi
+  accessModes:
+    - ReadWriteOnce
+  nfs:
+    path: /data/prometheus/prometheus_data
+    server: 192.128.232.11
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: prometheus
+  namespace: prometheus
+  labels:
+    k8s-app: prometheus
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: Reconcile
+    version: v2.2.1
+spec:
+  serviceName: "prometheus"
+  replicas: 1
+  podManagementPolicy: "Parallel"
+  updateStrategy:
+   type: "RollingUpdate"
+  selector:
+    matchLabels:
+      k8s-app: prometheus
+  template:
+    metadata:
+      labels:
+        k8s-app: prometheus
+    spec:
+      priorityClassName: system-cluster-critical
+      serviceAccountName: prometheus
+      initContainers:
+      - name: "init-chown-data"
+        image: "busybox:latest"
+        imagePullPolicy: "IfNotPresent"
+        command: ["chown", "-R", "65534:65534", "/data"]
+        volumeMounts:
+        - name: prometheus-data
+          mountPath: /data
+          subPath: ""
+      containers:
+        - name: prometheus-server-configmap-reload
+          image: "jimmidyson/configmap-reload:v0.1"
+          imagePullPolicy: "IfNotPresent"
+          args:
+            - --volume-dir=/etc/config
+            - --webhook-url=http://localhost:9090/-/reload
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/config
+              readOnly: true
+          resources:
+            limits:
+              cpu: 10m
+              memory: 10Mi
+            requests:
+              cpu: 10m
+              memory: 10Mi
+
+        - name: prometheus-server
+          image: "prom/prometheus:v2.23.0"
+          imagePullPolicy: "IfNotPresent"
+          args:
+            - --config.file=/etc/config/prometheus.yml
+            - --storage.tsdb.path=/data
+            - --web.console.libraries=/etc/prometheus/console_libraries
+            - --web.console.templates=/etc/prometheus/consoles
+            - --web.enable-lifecycle
+          ports:
+            - containerPort: 9090
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9090
+            initialDelaySeconds: 30
+            timeoutSeconds: 30
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 9090
+            initialDelaySeconds: 30
+            timeoutSeconds: 30
+          # based on 10 running nodes with 30 pods each
+          resources:
+            limits:
+              cpu: 200m
+              memory: 1000Mi
+            requests:
+              cpu: 200m
+              memory: 1000Mi
+
+          volumeMounts:
+            - name: prometheus-rules
+              mountPath: /etc/config/rules
+            - name: config-volume
+              mountPath: /etc/config
+            - name: prometheus-data
+              mountPath: /data
+              subPath: ""
+      terminationGracePeriodSeconds: 300
+      volumes:
+        - name: config-volume
+          configMap:
+            name: prometheus-config
+        - name: prometheus-data
+          persistentVolumeClaim:
+            claimName: prometheus-data
+        - name: prometheus-rules
+          persistentVolumeClaim:
+            claimName: prometheus-rules</code></pre> 
+<p>#创建prometheus的services资源</p> 
+<p>[root@master01 yaml]# cat prometheus-service.yaml </p> 
+<pre><code class="language-cpp">kind: Service
+apiVersion: v1
+metadata:
+  name: prometheus
+  namespace: prometheus
+  labels:
+    kubernetes.io/name: "Prometheus"
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: Reconcile
+spec:
+  type: NodePort
+  ports:
+    - name: http
+      port: 9090
+      protocol: TCP
+      targetPort: 9090
+  selector:
+    k8s-app: prometheus
+    </code></pre> 
+<p>#查看创建prometheus的pod，svc资源并且查看<br> [root@k8s-master prometheus]# kubectl apply -f prometheus-statefulset.yaml <br> [root@k8s-master prometheus]# kubectl apply -f prometheus-service.yaml <br>  <br> [root@k8s-master prometheus]# kubectl get pod,svc -n prometheus|grep prometheus</p> 
+<pre><code class="language-cpp">pod/prometheus-0                    2/2     Running   0          15h
+service/prometheus      NodePort    10.108.210.68   &lt;none&gt;        9090:31155/TCP   45h</code></pre> 
+<p style="text-align:center;">#验证metrics是否在prometheus有数据，只要能在prometheus搜索到<span style="color:#fe2c24;">container</span>数据就可以，访问prometheus服务：http://192.128.232.11:31155<br> 图<img alt="" src="https://images2.imgbox.com/21/06/eNYZ3jbS_o.png"></p> 
+<p>6.k8s使用kube-state-metrics-监控资源状态<br> #这里名称空间不用改，就在kube-system就可以了<br> 6.1：定义kube-state-metrics的权限<br> [root@master01 yaml]# cat kube-state-metrics-rbac.yaml </p> 
+<pre><code class="language-cpp">apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kube-state-metrics
+  namespace: kube-system
+  labels:
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: Reconcile
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kube-state-metrics
+  labels:
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: Reconcile
+rules:
+- apiGroups: [""]
+  resources:
+  - configmaps
+  - secrets
+  - nodes
+  - pods
+  - services
+  - resourcequotas
+  - replicationcontrollers
+  - limitranges
+  - persistentvolumeclaims
+  - persistentvolumes
+  - namespaces
+  - endpoints
+  verbs: ["list", "watch"]
+- apiGroups: ["extensions","apps"]
+  resources:
+  - daemonsets
+  - deployments
+  - replicasets
+  verbs: ["list", "watch"]
+- apiGroups: ["apps"]
+  resources:
+  - statefulsets
+  verbs: ["list", "watch"]
+- apiGroups: ["batch"]
+  resources:
+  - cronjobs
+  - jobs
+  verbs: ["list", "watch"]
+- apiGroups: ["autoscaling"]
+  resources:
+  - horizontalpodautoscalers
+  verbs: ["list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kube-state-metrics-resizer
+  namespace: kube-system
+  labels:
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: Reconcile
+rules:
+- apiGroups: [""]
+  resources:
+  - pods
+  verbs: ["get"]
+- apiGroups: ["extensions","apps"]
+  resources:
+  - deployments
+  resourceNames: ["kube-state-metrics"]
+  verbs: ["get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kube-state-metrics
+  labels:
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: Reconcile
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kube-state-metrics
+subjects:
+- kind: ServiceAccount
+  name: kube-state-metrics
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kube-state-metrics
+  namespace: kube-system
+  labels:
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: Reconcile
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kube-state-metrics-resizer
+subjects:
+- kind: ServiceAccount
+  name: kube-state-metrics
+  namespace: kube-system</code></pre> 
+<p>#部署kube-state-metrics-deployment<br> [root@master01 yaml]# cat kube-state-metrics-deployment.yaml</p> 
+<pre><code class="language-cpp">apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kube-state-metrics
+  namespace: kube-system
+  labels:
+    k8s-app: kube-state-metrics
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: Reconcile
+spec:
+  selector:
+    matchLabels:
+      k8s-app: kube-state-metrics
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        k8s-app: kube-state-metrics
+    spec:
+      priorityClassName: system-cluster-critical
+      serviceAccountName: kube-state-metrics
+      containers:
+      - name: kube-state-metrics
+        image: kube-state-metrics:v1.8.0
+        ports:
+        - name: http-metrics
+          containerPort: 8080
+        - name: telemetry
+          containerPort: 8081
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          timeoutSeconds: 5
+      - name: addon-resizer
+        image: addon-resizer:1.8.6
+        resources:
+          limits:
+            cpu: 100m
+            memory: 30Mi
+          requests:
+            cpu: 100m
+            memory: 30Mi
+        env:
+          - name: MY_POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: MY_POD_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+        volumeMounts:
+          - name: config-volume
+            mountPath: /etc/config
+        command:
+          - /pod_nanny
+          - --config-dir=/etc/config
+          - --container=kube-state-metrics
+          - --cpu=100m
+          - --extra-cpu=1m
+          - --memory=100Mi
+          - --extra-memory=2Mi
+          - --threshold=5
+          - --deployment=kube-state-metrics
+      volumes:
+        - name: config-volume
+          configMap:
+            name: kube-state-metrics-config
+---
+# Config map for resource configuration.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kube-state-metrics-config
+  namespace: kube-system
+  labels:
+    k8s-app: kube-state-metrics
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: Reconcile
+data:
+  NannyConfiguration: |-
+    apiVersion: nannyconfig/v1alpha1
+    kind: NannyConfiguration
+</code></pre> 
+<p>#kube-state-metrics的服务<br> [root@k8s-master prometheus]# cat kube-state-metrics-service.yaml </p> 
+<pre><code class="language-cpp">apiVersion: v1
+kind: Service
+metadata:
+  name: kube-state-metrics
+  namespace: kube-system
+  labels:
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: Reconcile
+    kubernetes.io/name: "kube-state-metrics"
+  annotations:
+    prometheus.io/scrape: 'true'
+spec:
+  ports:
+  - name: http-metrics
+    port: 8080
+    targetPort: http-metrics
+    protocol: TCP
+  - name: telemetry
+    port: 8081
+    targetPort: telemetry
+    protocol: TCP
+  selector:
+    k8s-app: kube-state-metrics</code></pre> 
+<p>#创建kube-state-metrics<br> [root@k8s-master prometheus]# kubectl create -f kube-state-metrics-rbac.yaml <br> [root@k8s-master prometheus]# kubectl create -f kube-state-metrics-deployment.yaml <br> [root@k8s-master prometheus]# kubectl create -f kube-state-metrics-service.yaml</p> 
+<p>[root@k8s-master prometheus]# kubectl get all -n kube-system | grep kube-state</p> 
+<pre><code class="language-cpp">[root@k8s-master prometheus]# kubectl get all -n kube-system | grep kube-state
+pod/kube-state-metrics-8996fd97b-6h7tr   2/2     Running   0          116m
+service/kube-state-metrics   ClusterIP   10.104.30.105   &lt;none&gt;        8080/TCP,8081/TCP        47h
+deployment.apps/kube-state-metrics   1/1     1            1           116m
+replicaset.apps/kube-state-metrics-8996fd97b   1         1         1       116m
+</code></pre> 
+<p style="text-align:center;">#.在prometheus查看是否获取监控指标<br> 安装完<span style="color:#fe2c24;">kube-state-metrics</span>之后，直接就可以在prometheus上查询监控指标，都是以<span style="color:#fe2c24;">kube</span>开头的<br><img alt="" src="https://images2.imgbox.com/2e/d0/SXIgRbbg_o.png"></p> 
+<p style="text-align:center;">资源状态监控：6417</p> 
+<p>#安装监控k8s node节点，每个节点都安装，如果节点过多，可以使用yml文件安装<br> [root@k8s-master prometheus]# cat install_node_exportes.sh </p> 
+<pre><code class="language-cpp">#!/bin/bash
+#批量安装node_exporter
+soft_dir=/root/soft
+if [ ! -e $soft_dir ];then
+        mkdir $soft_dir
+fi
+
+netstat -lnpt | grep 9100
+if [ $? -eq 0 ];then
+        use=`netstat -lnpt | grep 9100 | awk -F/ '{print $NF}'`
+        echo "9100端口已经被占用，占用者是 $use"
+        exit 1
+fi
+
+cd $soft_dir
+wget https://github.com/prometheus/node_exporter/releases/download/v1.0.1/node_exporter-1.0.1.linux-amd64.tar.gz
+tar xf node_exporter-1.0.1.linux-amd64.tar.gz
+mv node_exporter-1.0.1.linux-amd64 /usr/local/node_exporter
+
+cat &lt;&lt;EOF &gt;/usr/lib/systemd/system/node_exporter.service
+[Unit]
+Description=https://prometheus.io
+
+[Service]
+Restart=on-failure
+ExecStart=/usr/local/node_exporter/node_exporter --collector.systemd --collector.systemd.unit-whitelist=(docker|kubelet|node_exporter).service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable node_exporter
+systemctl restart node_exporter
+
+netstat -lnpt | grep 9100
+
+if [ $? -eq 0 ];then
+        echo "node_eporter install finish..."
+fi</code></pre> 
+<p>#执行脚本<br> [root@k8s-master prometheus]# chmod +x install_node_exportes.sh &amp;&amp; ./install_node_exportes.sh</p> 
+<p>#查看node是否安装成功<br> [root@k8s-node1 ~]#  netstat -lnpt | grep 9100</p> 
+<p>在prometheus的配置文件里prometheus-configmap.yaml 指定node<br> [root@k8s-master prometheus]# vim prometheus-configmap.yaml </p> 
+<pre><code class="language-cpp">  - job_name: k8s-node
+      static_configs:
+      - targets:
+        - 192.128.232.11:9100
+        - 192.128.232.12:9100</code></pre> 
+<p># 更新完配置，prometheus页面会立马显示，因此每当configmap一修改，prometheus容器就会重载<br> [root@k8s-master prometheus]# kubectl apply -f prometheus-configmap.yaml</p> 
+<p style="text-align:center;">#查看prometheus的<br><img alt="" src="https://images2.imgbox.com/55/02/sr1xayYg_o.png"><br> node监控：9276</p> 
+<p> <br> 7.在k8s中部署grafana<br> 1.编写granfana-pv-pvc资源，前面创建了。创建grafana的sa账号，<br> [root@master01 yaml]# cat grafana-rbac.yaml </p> 
+<pre><code class="language-cpp">apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: grafana
+  namespace: prometheus
+  labels:
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: Reconcile
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: grafana
+  labels:
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: Reconcile
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - nodes
+      - nodes/metrics
+      - services
+      - endpoints
+      - pods
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - get
+  - nonResourceURLs:
+      - "/metrics"
+    verbs:
+      - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: grafana
+  labels:
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: Reconcile
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: grafana
+  namespace: prometheus</code></pre> 
+<p>#部署grafana<br> [root@master01 yaml]# cat grafana_statefulset.yaml </p> 
+<pre><code class="language-cpp">apiVersion: apps/v1 
+kind: StatefulSet
+metadata:
+  name: grafana-ui
+  namespace: prometheus
+spec:
+  serviceName: "grafana"
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana-ui
+  template:
+    metadata:
+      labels:
+        app: grafana-ui
+    spec:
+      containers:
+      - name: grafana-ui
+        image: grafana/grafana:6.6.2
+        imagePullPolicy: "IfNotPresent"
+        ports:
+          - containerPort: 3000
+            protocol: TCP
+        resources:
+          limits:
+            cpu: 100m            
+            memory: 256Mi          
+          requests:
+            cpu: 100m            
+            memory: 256Mi
+        volumeMounts:
+          - name: grafana-ui-data
+            mountPath: /var/lib/grafana
+            subPath: ""
+      securityContext:
+        fsGroup: 472
+        runAsUser: 472
+      volumes: 
+        - name: grafana-ui-data
+          persistentVolumeClaim:
+            claimName: grafana-ui-data   #前面创建的pvc
+</code></pre> 
+<p>#创建grafana的services            <br> [root@master01 yaml]# cat grafana_svc.yaml </p> 
+<pre><code class="language-cpp">apiVersion: v1
+kind: Service
+metadata:
+  name: grafana-ui
+  namespace: prometheus
+spec:
+  type: NodePort
+  ports:
+    - name: http
+      port: 3000
+      protocol: TCP
+      targetPort: 3000
+  selector:
+    app: grafana-ui			
+			</code></pre> 
+<p>3.创建grafana</p> 
+<p>[root@k8s-master prometheus]# kubectl create -f   grafana-rbac.yaml <br> [root@k8s-master prometheus]# kubectl create -f grafana_statefulset.yaml<br> [root@k8s-master prometheus]# kubectl create -f grafana_svc.yaml </p> 
+<p><br> 4.查看grafana的资源<br> [root@master01 yaml]# kubectl get pv,pvc,pod,statefulset,svc -n prometheus|grep grafana</p> 
+<pre><code class="language-cpp">[root@master01 yaml]# kubectl get pv,pvc,pod,statefulset,svc -n prometheus|grep grafana
+persistentvolume/pv-grafana-ui-data     3Gi        RWO            Retain           Bound    prometheus/grafana-ui-data                             6h59m
+persistentvolumeclaim/grafana-ui-data     Bound    pv-grafana-ui-data     3Gi        RWO                           6h59m
+pod/grafana-ui-0                    1/1     Running   0          6h2m
+statefulset.apps/grafana-ui   1/1     6h2m
+service/grafana-ui      NodePort    10.102.113.28   &lt;none&gt;        3000:30381/TCP   2d4h</code></pre> 
+<p style="text-align:center;"></p> 
+<p>5.登陆grafana，默认账号跟密码都是：admin，并且添加prometheus数据源<br>     <img alt="" src="https://images2.imgbox.com/d4/b2/J4ymKd80_o.png"></p> 
+<p></p> 
+<p><img alt="" src="https://images2.imgbox.com/34/6b/A2Ymr6OX_o.png"></p> 
+<p style="text-align:center;">导入k8s资源监控pod资源模板<br> 推荐模板：<br>   集群资源监控：3119<br>   资源状态监控：6417<br>    node监控：9276</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/a4/85/kfArzNrC_o.png"></p> 
+<p></p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/73/f7/zh6505R2_o.png"></p> 
+<p><img alt="" src="https://images2.imgbox.com/24/f5/oV4fdq0w_o.png"></p> 
+<p></p> 
+<p><img alt="" src="https://images2.imgbox.com/ba/1d/e3d4BQgk_o.png"></p> 
+<p style="text-align:center;"></p> 
+<p style="text-align:center;"><br> 8 企业ID获取<br> 首先访问企业微信官网：https://work.weixin.qq.com/</p> 
+<p></p> 
+<p>注册一个企业，当前是谁都可以注册，没有任何限制，也不需要企业认证，注册即可。</p> 
+<p>注册完成之后，登录后台管理，在【我的企业】这里，先拿到后面用到的第一个配置：企业ID</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/94/85/AJS3fnJh_o.png"><br> 8.2 部门ID获取<br> 然后在通讯录中，添加一个子部门，用于接收告警信息，后面把人加到该部门，这个人就能接收到告警信息了。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/bd/80/Gbcvu2p0_o.png"></p> 
+<p></p> 
+<p></p> 
+<p style="text-align:center;">8.3 告警AgentId和Secret获取，如果没有创建应用管理，要先创建<br> 告警AgentId和Secret获取是需要在企业微信后台，【应用管理】中，自建应用才能够获得的。 <img alt="" src="https://images2.imgbox.com/0e/d3/AgjzYzxP_o.png"></p> 
+<p></p> 
+<p>8.4：打开应用，可见范围添加要发送告警信息的部门，</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/87/14/TPTg3mTs_o.png"></p> 
+<p></p> 
+<p>8.5：创建应用管理后，获取告警AgentId和Secret获取，要绑定</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/4c/4b/goVnDbUh_o.png"><br> 以上步骤完成后，我们就得到了配置Alertmanager的所有信息，包括：企业ID，AgentId，Secret和接收告警的部门id</p> 
+<p></p> 
+<p><br> 9.在k8s中部署alertmanager实现告警系统<br> 1.alertmanager的配置文件cm<br> [root@master01 yaml]# cat alertmanager-configmap.yaml</p> 
+<pre><code class="language-cpp">apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  namespace: prometheus
+  labels:
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: EnsureExists
+data:
+  alertmanager.yml: |       #通过cm来创建alertmanager配置文件内容
+    global: 
+      resolve_timeout: 1m
+
+    receivers:
+    - name: 'wechat'   #定义接收者名字
+      wechat_configs:
+        - corp_id: '6ww5c39491d0f1779dd2'  # 企业微信唯一ID，我的企业--企业信息
+          to_party: '1'        # 企业微信中创建的接收告警的部门【告警机器人】的部门ID
+          agent_id: '1000003'  # 企业微信中创建的应用的ID
+          api_secret: '1r3UpV2fvva2p7Cf3bgaRTtNXYjuAaVRtnEMiPDGc96Q281'  # 企业微信中，应用的Secret
+          send_resolved: true
+          message: '{<!-- -->{ template "wechat.default.message" . }}'
+
+    route:
+      group_interval: 1m
+      group_by: ['env','instance','type','group','job','alertname']
+      group_wait: 10s
+      receiver: wechat    #发送接收者名字为: "wechat"
+      repeat_interval: 1m
+
+    templates:       #定义模板位置
+      - '*.tmpl'
+
+  #微信发送告警信息的模板文件
+  wechat.tmpl: |
+    {<!-- -->{ define "wechat.default.message" }}
+    {<!-- -->{- if gt (len .Alerts.Firing) 0 -}}
+    {<!-- -->{- range $index, $alert := .Alerts -}}
+    {<!-- -->{- if eq $index 0 }}
+    ========= 监控报警 =========
+    告警状态：{<!-- -->{   .Status }}
+    告警级别：{<!-- -->{ .Labels.severity }}
+    告警类型：{<!-- -->{ $alert.Labels.alertname }}
+    故障主机: {<!-- -->{ $alert.Labels.instance }}
+    告警主题: {<!-- -->{ $alert.Annotations.summary }}
+    告警详情: {<!-- -->{ $alert.Annotations.message }}{<!-- -->{ $alert.Annotations.description}};
+    触发阀值：{<!-- -->{ .Annotations.value }}
+    故障时间: {<!-- -->{ ($alert.StartsAt.Add 28800e9).Format "2006-01-02 15:04:05" }}
+    ========= = end =  =========
+    {<!-- -->{- end }}
+    {<!-- -->{- end }}
+    {<!-- -->{- end }}
+    {<!-- -->{- if gt (len .Alerts.Resolved) 0 -}}
+    {<!-- -->{- range $index, $alert := .Alerts -}}
+    {<!-- -->{- if eq $index 0 }}
+    ========= 告警恢复 =========
+    告警类型：{<!-- -->{ .Labels.alertname }}
+    告警状态：{<!-- -->{   .Status }}
+    告警主题: {<!-- -->{ $alert.Annotations.summary }}
+    告警详情: {<!-- -->{ $alert.Annotations.message }}{<!-- -->{ $alert.Annotations.description}};
+    故障时间: {<!-- -->{ ($alert.StartsAt.Add 28800e9).Format "2006-01-02 15:04:05" }}
+    恢复时间: {<!-- -->{ ($alert.EndsAt.Add 28800e9).Format "2006-01-02 15:04:05" }}
+    {<!-- -->{- if gt (len $alert.Labels.instance) 0 }}
+    实例信息: {<!-- -->{ $alert.Labels.instance }}
+    {<!-- -->{- end }}
+    ========= = end =  =========
+    {<!-- -->{- end }}
+    {<!-- -->{- end }}
+    {<!-- -->{- end }}
+    {<!-- -->{- end }}</code></pre> 
+<p></p> 
+<p>9.2。创建alertmanager-deployment资源<br> [root@master01 yaml]# cat alertmanager-deployment.yaml </p> 
+<pre><code class="language-cpp">apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  namespace: prometheus
+  labels:
+    k8s-app: alertmanager
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: Reconcile
+    version: v0.14.0
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      k8s-app: alertmanager
+      version: v0.14.0
+  template:
+    metadata:
+      labels:
+        k8s-app: alertmanager
+        version: v0.14.0
+    spec:
+      priorityClassName: system-cluster-critical
+      containers:
+        - name: prometheus-alertmanager
+          image: "prom/alertmanager:v0.14.0"
+          imagePullPolicy: "IfNotPresent"
+          args:
+            - --config.file=/etc/config/alertmanager.yml
+            - --storage.path=/data
+            - --web.external-url=/
+          ports:
+            - containerPort: 9093
+          readinessProbe:
+            httpGet:
+              path: /#/status
+              port: 9093
+            initialDelaySeconds: 30
+            timeoutSeconds: 30
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/config
+            - name: alertmanager-data
+              mountPath: "/data"
+              subPath: ""
+          resources:
+            limits:
+              cpu: 10m
+              memory: 50Mi
+            requests:
+              cpu: 10m
+              memory: 50Mi
+        - name: prometheus-alertmanager-configmap-reload
+          image: "jimmidyson/configmap-reload:v0.1"
+          imagePullPolicy: "IfNotPresent"
+          args:
+            - --volume-dir=/etc/config
+            - --webhook-url=http://localhost:9093/-/reload
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/config
+              readOnly: true
+          resources:
+            limits:
+              cpu: 10m
+              memory: 10Mi
+            requests:
+              cpu: 10m
+              memory: 10Mi
+      volumes:
+        - name: config-volume
+          configMap:
+            name: alertmanager-config
+        - name: alertmanager-data
+          persistentVolumeClaim:
+            claimName: alertmanager-data</code></pre> 
+<p><br> 9.3：创建alertmanager-service资源<br> [root@master01 yaml]# cat alertmanager-service.yaml </p> 
+<pre><code class="language-cpp">apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  namespace: prometheus
+  labels:
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: Reconcile
+    kubernetes.io/name: "Alertmanager"
+spec:
+  type: NodePort
+  ports:
+    - name: http
+      port: 9093
+      protocol: TCP
+      targetPort: 9093
+  selector:
+    k8s-app: alertmanager
+
+</code></pre> 
+<p><br> #创建alertmanager-config资源<br> [root@k8s-master ~/k8s/prometheus3]# kubectl create -f alertmanager-configmap.yaml </p> 
+<p>.创建alertmanager-deployment资源<br> [root@k8s-master ~/k8s/prometheus3]# kubectl create -f alertmanager-deployment.yaml </p> 
+<p>创建alertmanager-service资源<br> [root@k8s-master ~/k8s/prometheus3]# kubectl create -f alertmanager-service.yaml</p> 
+<p>#查看alertmanager所有资源<br> [root@master01 yaml]# kubectl get all,pv,pvc,cm -n prometheus|grep alertmanager</p> 
+<p>10.访问alertmanager</p> 
+<p>10.1：配置文件已经支持微信报警</p> 
+<p>11：配置alertmanager实现k8s告警系统<br> .1.在NFS上准备两个告警规则文件<br> 我们对于告警规则文件不采用configmap的方式而是采用pv、pvc的方式把告警规则挂载到容器里</p> 
+<p>1.在nfs上创建pv存储路径，前面创建了rules的pvc<br> [root@nfs ~]# cd /data/prometheus/rules<br> [root@master01 rules]# cat node.yml </p> 
+<pre><code class="language-cpp">groups:
+- name: node_health
+  rules:
+  - alert: HighMemoryUsage
+    expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes &lt; 0.9
+    for: 1m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Instance {<!-- -->{ $labels.instance }}"
+      description: "Instance {<!-- -->{ $labels.instance }} of job {<!-- -->{ $labels.job }} has High Memory."
+
+  - alert: HighDiskUsage
+    expr: node_filesystem_free_bytes{mountpoint='/'} / node_filesystem_size_bytes{mountpoint='/'} &lt; 0.71
+    for: 1m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Instance {<!-- -->{ $labels.instance }}"
+      description: "Instance {<!-- -->{ $labels.instance }} of job {<!-- -->{ $labels.job }} has High Disk."
+	  
+  - alert: NodeCPUUsage
+    expr: 100 - (avg(irate(node_cpu_seconds_total{mode="idle"}[5m])) by (instance) * 100) &gt; 60    
+    for: 1m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Instance {<!-- -->{ $labels.instance }} CPU使用率过高"    
+      description: "{<!-- -->{ $labels.instance }} CPU使用大于60% (当前值: {<!-- -->{ $value }})"
+	  
+	  </code></pre> 
+<p><br> [root@master01 rules]# cat node_status.yml </p> 
+<pre><code class="language-cpp">groups:
+- name: 实例存活告警规则
+  rules:
+  - alert: 实例存活告警
+    expr: up == 0
+    for: 1m
+    labels:
+      user: prometheus
+      severity: error
+    annotations:
+      summary: "Instance {<!-- -->{ $labels.instance }} is down"
+      description: "Instance {<!-- -->{ $labels.instance }} of job {<!-- -->{ $labels.job }} has been down for more than 1 minutes."
+      value: "{<!-- -->{ $value }}"
+</code></pre> 
+<p>[root@master01 rules]# ll<br> 总用量 8<br> -rw-r--r-- 1 root root 386 4月  13 19:37 node_status.yml<br> -rw-r--r-- 1  777 root 687 4月  13 19:58 node.yml</p> 
+<p>[root@master01 rules]# chmod -R 777 /data/prometheus</p> 
+<p>.修改prometheus-configmap资源配置alertmanager地址<br> 1.修改配置增加alertmanager地址<br> [root@k8s-master prometheus]# vim prometheus-configmap.yaml </p> 
+<pre><code class="language-cpp">    alerting:
+      alertmanagers:
+      - static_configs:
+        - targets:
+          - 192.128.232.11:30655</code></pre> 
+<p>2.更新资源<br> [root@k8s-master prometheus]# kubectl apply -f prometheus-configmap.yaml<br>     <br> 3.加载prometheus服务配置<br> [root@master01 yaml]# curl -X POST http://192.128.232.11:31155/-/reload</p> 
+<p>4.查看页面是否增加告警规则<br> 已经成功填加rules告警规则</p> 
+<p><img alt="" src="https://images2.imgbox.com/7f/ae/jRWfEFrz_o.png"></p> 
+<p>  5.模拟node主机宕机并查看微信告警内容<br> 模拟触发告警</p> 
+<p>将任意一个node节点的node_exporter停掉即可<br> [root@k8s-node1 ~]# systemctl stop node_exporter</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/d0/e6/v1xoF1wx_o.png"><br>  </p> 
+<p></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/3ac8affe72f7c2d269f6c4786f51a85c/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">索引下推详解</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/8412e09012cf2720f3a9cc21304988b0/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">将inputstream转化为数组byte[]</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>简单理解Binder机制的原理 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="简单理解Binder机制的原理" />
+<meta property="og:description" content="一、概述 Android系统中，涉及到多进程间的通信底层都是依赖于Binder IPC机制。例如当进程A中的Activity要向进程B中的Service通信，这便需要依赖于Binder IPC。不仅于此，整个Android系统架构中，大量采用了Binder机制作为IPC（进程间通信）方案。
+当然也存在部分其他的IPC方式，如管道、SystemV、Socket等。那么Android为什么不使用这些原有的技术，而是要使开发一种新的叫Binder的进程间通信机制呢？
+为什么要使用Binder？
+性能方面
+在移动设备上（性能受限制的设备，比如要省电），广泛地使用跨进程通信对通信机制的性能有严格的要求，Binder相对出传统的Socket方式，更加高效。Binder数据拷贝只需要一次，而管道、消息队列、Socket都需要2次，共享内存方式一次内存拷贝都不需要，但实现方式又比较复杂。
+安全方面
+传统的进程通信方式对于通信双方的身份并没有做出严格的验证，比如Socket通信ip地址是客户端手动填入，很容易进行伪造，而Binder机制从协议本身就支持对通信双方做身份校检，因而大大提升了安全性。
+二、 Binder IPC原理
+从进程角度来看IPC机制
+每个Android的进程，只能运行在自己进程所拥有的虚拟地址空间。对应一个4GB的虚拟地址空间，其中3GB是用户空间，1GB是内核空间，当然内核空间的大小是可以通过参数配置调整的。对于用户空间，不同进程之间彼此是不能共享的，而内核空间却是可共享的。Client进程向Server进程通信，恰恰是利用进程间可共享的内核内存空间来完成底层通信工作的，Client端与Server端进程往往采用ioctl等方法跟内核空间的驱动进行交互。
+Binder原理
+Binder通信采用C/S架构，从组件视角来说，包含Client、Server、ServiceManager以及binder驱动，其中ServiceManager用于管理系统中的各种服务。架构图如下所示：
+Binder通信的四个角色
+Client进程：使用服务的进程。
+Server进程：提供服务的进程。
+ServiceManager进程：ServiceManager的作用是将字符形式的Binder名字转化成Client中对该Binder的引用，使得Client能够通过Binder名字获得对Server中Binder实体的引用。
+Binder驱动：驱动负责进程之间Binder通信的建立，Binder在进程之间的传递，Binder引用计数管理，数据包在进程之间的传递和交互等一系列底层支持。
+Binder运行机制
+图中Client/Server/ServiceManage之间的相互通信都是基于Binder机制。既然基于Binder机制通信，那么同样也是C/S架构，则图中的3大步骤都有相应的Client端与Server端。
+注册服务(addService)：Server进程要先注册Service到ServiceManager。该过程：Server是客户端，ServiceManager是服务端。
+获取服务(getService)：Client进程使用某个Service前，须先向ServiceManager中获取相应的Service。该过程：Client是客户端，ServiceManager是服务端。
+使用服务：Client根据得到的Service信息建立与Service所在的Server进程通信的通路，然后就可以直接与Service交互。该过程：client是客户端，server是服务端。
+图中的Client,Server,Service Manager之间交互都是虚线表示，是由于它们彼此之间不是直接交互的，而是都通过与Binder驱动进行交互的，从而实现IPC通信方式。其中Binder驱动位于内核空间，Client,Server,Service Manager位于用户空间。Binder驱动和Service Manager可以看做是Android平台的基础架构，而Client和Server是Android的应用层，开发人员只需自定义实现client、Server端，借助Android的基本平台架构便可以直接进行IPC通信。
+Binder运行的实例解释
+首先我们看看我们的程序跨进程调用系统服务的简单示例，实现浮动窗口部分代码：
+//获取WindowManager服务引用 WindowManager wm = (WindowManager)getSystemService(getApplication().WINDOW_SERVICE); //布局参数layoutParams相关设置略... View view=LayoutInflater.from(getApplication()).inflate(R.layout.float_layout, null); //添加view wm.addView(view, layoutParams); 注册服务(addService)：在Android开机启动过程中，Android会初始化系统的各种Service，并将这些Service向ServiceManager注册（即让ServiceManager管理）。这一步是系统自动完成的。
+获取服务(getService)：客户端想要得到具体的Service直接向ServiceManager要即可。客户端首先向ServiceManager查询得到具体的Service引用，通常是Service引用的代理对象，对数据进行一些处理操作。即第2行代码中，得到的wm是WindowManager对象的引用。
+使用服务：通过这个引用向具体的服务端发送请求，服务端执行完成后就返回。即第6行调用WindowManager的addView函数，将触发远程调用，调用的是运行在systemServer进程中的WindowManager的addView函数。
+使用服务的具体执行过程
+client通过获得一个server的代理接口，对server进行调用。代理接口中定义的方法与server中定义的方法时一一对应的。client调用某个代理接口中的方法时，代理接口的方法会将client传递的参数打包成Parcel对象。代理接口将Parcel发送给内核中的binder driver。server会读取binder driver中的请求数据，如果是发送给自己的，解包Parcel对象，处理并将结果返回。整个的调用过程是一个同步过程，在server处理的时候，client会block住。因此client调用过程不应在主线程。 以上就是Binder机制原理的简单介绍，后面会以AIDL来具体介绍Binder机制的使用，加深对其的了解。
+为了保护进程空间不被别的进程破坏或者干扰，Linux的进程是相互独立的（进程隔离），而且一个进程空间还分为用户空间和内核（Kernel）空间，相当于把Kernel和上层的应用程序抽像的隔离开。这里有两个隔离，一个进程间是相互隔离的，二是进程内有用户和内核的隔离。
+Binder框架定义了四个角色：Server，Client，ServiceManager以及Binder驱动。其中Server，Client，ServiceManager运行于用户空间，驱动运行于内核空间。这四个角色的关系类似：Server是服务器，Client是客户终端，ServiceManager是服务注册中心（类似房屋中介）。
+要进行Client-Server之间的通信，从面向对象的角度，在Server内部有一个Binder实体，在Client内部有一个Binder对象的引用，其实就是Binder的一个代理，Client通过对Binder引用间接的操作Server内部的Binder实体，这样就实现了通信。
+但是现在的问题是会有很多个提供不同服务的Server（比如有媒体播放服务，音视频捕获服务等），而且会有很多Client（比如多个应用都要调用媒体播放服务），那么我们怎么才能够实现正确的Client调用正确的Server呢？就好比房客怎么才能够租到自己想要租的房子（联系上房东），这个时候中介就起到重要作用，房东想要出租自己的房子就必须要到中介注册，房客想要租房子就要去中介那里找，同样的道理，这里Client就是房客，Server就是房东，ServiceManager就是房屋中介，每个Server如果要提供服务就必须要去ServiceManager那里去注册，ServiceManager在一张查找表中记录一个Server的名字，对应着Server的引用。Client想要获得Server，必须通过名字到ServiceManager取找Server的引用，获得这个Server的binder引用，通过这个binder引用去和Server通信。
+Binder机制 首先Binder是Android系统进程间通信(IPC)方式之一。
+Binder使用Client－Server通信方式。Binder框架定义了四个角色：Server,Client,ServiceManager以及Binder驱动。其中Server,Client,ServiceManager运行于用户空间，驱动运行于内核空间。Binder驱动程序提供设备文件/dev/binder与用户空间交互，Client、Server和Service Manager通过open和ioctl文件操作函数与Binder驱动程序进行通信。
+Server创建了Binder实体，为其取一个字符形式，可读易记的名字，将这个Binder连同名字以数据包的形式通过Binder驱动发送给ServiceManager，通知ServiceManager注册一个名字为XX的Binder，它位于Server中。驱动为这个穿过进程边界的Binder创建位于内核中的实体结点以及ServiceManager对实体的引用，将名字以及新建的引用打包给ServiceManager。ServiceManager收数据包后，从中取出名字和引用填入一张查找表中。但是一个Server若向ServiceManager注册自己Binder就必须通过0这个引用和ServiceManager的Binder通信。Server向ServiceManager注册了Binder实体及其名字后，Client就可以通过名字获得该Binder的引用了。Clent也利用保留的0号引用向ServiceManager请求访问某个Binder：我申请名字叫XX的Binder的引用。ServiceManager收到这个连接请求，从请求数据包里获得Binder的名字，在查找表里找到该名字对应的条目，从条目中取出Binder引用，将该引用作为回复发送给发起请求的Client。
+当然，不是所有的Binder都需要注册给ServiceManager广而告之的。Server端可以通过已经建立的Binder连接将创建的Binder实体传给Client，当然这条已经建立的Binder连接必须是通过实名Binder实现。由于这个Binder没有向ServiceManager注册名字，所以是匿名Binder。Client将会收到这个匿名Binder的引用，通过这个引用向位于Server中的实体发送请求。匿名Binder为通信双方建立一条私密通道，只要Server没有把匿名Binder发给别的进程，别的进程就无法通过穷举或猜测等任何方式获得该Binder的引用，向该Binder发送请求。
+###为什么Binder只进行了一次数据拷贝？
+Linux内核实际上没有从一个用户空间到另一个用户空间直接拷贝的函数，需要先用copy_from_user()拷贝到内核空间，再用copy_to_user()拷贝到另一个用户空间。为了实现用户空间到用户空间的拷贝，mmap()分配的内存除了映射进了接收方进程里，还映射进了内核空间。所以调用copy_from_user()将数据拷贝进内核空间也相当于拷贝进了接收方的用户空间，这就是Binder只需一次拷贝的‘秘密’。
+最底层的是Android的ashmen(Anonymous shared memory)机制，它负责辅助实现内存的分配，以及跨进程所需要的内存共享。AIDL(android interface definition language)对Binder的使用进行了封装，可以让开发者方便的进行方法的远程调用，后面会详细介绍。Intent是最高一层的抽象，方便开发者进行常用的跨进程调用。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/21ab7e83d54ade37ae79418e86cd5596/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2018-09-03T05:51:08+08:00" />
+<meta property="article:modified_time" content="2018-09-03T05:51:08+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">简单理解Binder机制的原理</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h4>一、概述</h4> 
+<p>Android系统中，涉及到多进程间的通信底层都是依赖于Binder IPC机制。例如当进程A中的Activity要向进程B中的Service通信，这便需要依赖于Binder IPC。不仅于此，整个Android系统架构中，大量采用了Binder机制作为IPC（进程间通信）方案。</p> 
+<p>当然也存在部分其他的IPC方式，如管道、SystemV、Socket等。那么Android为什么不使用这些原有的技术，而是要使开发一种新的叫Binder的进程间通信机制呢？</p> 
+<p>为什么要使用Binder？</p> 
+<p>性能方面</p> 
+<p>在移动设备上（性能受限制的设备，比如要省电），广泛地使用跨进程通信对通信机制的性能有严格的要求，Binder相对出传统的Socket方式，更加高效。Binder数据拷贝只需要一次，而管道、消息队列、Socket都需要2次，共享内存方式一次内存拷贝都不需要，但实现方式又比较复杂。</p> 
+<p>安全方面</p> 
+<p>传统的进程通信方式对于通信双方的身份并没有做出严格的验证，比如Socket通信ip地址是客户端手动填入，很容易进行伪造，而Binder机制从协议本身就支持对通信双方做身份校检，因而大大提升了安全性。</p> 
+<h4>二、 Binder</h4> 
+<p><strong>IPC原理</strong></p> 
+<p>从进程角度来看IPC机制</p> 
+<p><img alt="" class="has" src="https://images2.imgbox.com/71/e2/h7vYgb9V_o.jpg"></p> 
+<p>每个Android的进程，只能运行在自己进程所拥有的虚拟地址空间。对应一个4GB的虚拟地址空间，其中3GB是用户空间，1GB是内核空间，当然内核空间的大小是可以通过参数配置调整的。对于用户空间，不同进程之间彼此是不能共享的，而内核空间却是可共享的。Client进程向Server进程通信，恰恰是利用进程间可共享的内核内存空间来完成底层通信工作的，Client端与Server端进程往往采用ioctl等方法跟内核空间的驱动进行交互。</p> 
+<p><strong>Binder原理</strong></p> 
+<p>Binder通信采用C/S架构，从组件视角来说，包含Client、Server、ServiceManager以及binder驱动，其中ServiceManager用于管理系统中的各种服务。架构图如下所示：</p> 
+<p><img alt="" class="has" src="https://images2.imgbox.com/81/b4/Q9RzPIht_o.jpg"></p> 
+<p><strong>Binder通信的四个角色</strong><br><strong>Client进程：</strong>使用服务的进程。</p> 
+<p><strong>Server进程：</strong>提供服务的进程。</p> 
+<p><strong>ServiceManager进程：</strong>ServiceManager的作用是将字符形式的Binder名字转化成Client中对该Binder的引用，使得Client能够通过Binder名字获得对Server中Binder实体的引用。</p> 
+<p><strong>Binder驱动：</strong>驱动负责进程之间Binder通信的建立，Binder在进程之间的传递，Binder引用计数管理，数据包在进程之间的传递和交互等一系列底层支持。</p> 
+<p><strong>Binder运行机制</strong></p> 
+<p>图中Client/Server/ServiceManage之间的相互通信都是基于Binder机制。既然基于Binder机制通信，那么同样也是C/S架构，则图中的3大步骤都有相应的Client端与Server端。</p> 
+<p><strong>注册服务(addService)：</strong>Server进程要先注册Service到ServiceManager。该过程：Server是客户端，ServiceManager是服务端。</p> 
+<p><strong>获取服务(getService)：</strong>Client进程使用某个Service前，须先向ServiceManager中获取相应的Service。该过程：Client是客户端，ServiceManager是服务端。</p> 
+<p><strong>使用服务：</strong>Client根据得到的Service信息建立与Service所在的Server进程通信的通路，然后就可以直接与Service交互。该过程：client是客户端，server是服务端。</p> 
+<p>图中的Client,Server,Service Manager之间交互都是虚线表示，是由于它们彼此之间不是直接交互的，而是都通过与Binder驱动进行交互的，从而实现IPC通信方式。其中Binder驱动位于内核空间，Client,Server,Service Manager位于用户空间。Binder驱动和Service Manager可以看做是Android平台的基础架构，而Client和Server是Android的应用层，开发人员只需自定义实现client、Server端，借助Android的基本平台架构便可以直接进行IPC通信。</p> 
+<p><strong>Binder运行的实例解释</strong></p> 
+<p>首先我们看看我们的程序跨进程调用系统服务的简单示例，实现浮动窗口部分代码：</p> 
+<pre class="has"><code class="language-java">//获取WindowManager服务引用
+WindowManager wm = (WindowManager)getSystemService(getApplication().WINDOW_SERVICE);  
+//布局参数layoutParams相关设置略...
+View view=LayoutInflater.from(getApplication()).inflate(R.layout.float_layout, null);  
+//添加view
+wm.addView(view, layoutParams);</code></pre> 
+<p><strong>注册服务(addService)：</strong>在Android开机启动过程中，Android会初始化系统的各种Service，并将这些Service向ServiceManager注册（即让ServiceManager管理）。这一步是系统自动完成的。</p> 
+<p><strong>获取服务(getService)：</strong>客户端想要得到具体的Service直接向ServiceManager要即可。客户端首先向ServiceManager查询得到具体的Service引用，通常是Service引用的代理对象，对数据进行一些处理操作。即第2行代码中，得到的wm是WindowManager对象的引用。</p> 
+<p><strong>使用服务：</strong>通过这个引用向具体的服务端发送请求，服务端执行完成后就返回。即第6行调用WindowManager的addView函数，将触发远程调用，调用的是运行在systemServer进程中的WindowManager的addView函数。</p> 
+<p>使用服务的具体执行过程</p> 
+<p><img alt="" class="has" src="https://images2.imgbox.com/6c/b1/vBxC3vWX_o.jpg"></p> 
+<ul><li>client通过获得一个server的代理接口，对server进行调用。</li><li>代理接口中定义的方法与server中定义的方法时一一对应的。</li><li>client调用某个代理接口中的方法时，代理接口的方法会将client传递的参数打包成Parcel对象。</li><li>代理接口将Parcel发送给内核中的binder driver。</li><li>server会读取binder driver中的请求数据，如果是发送给自己的，解包Parcel对象，处理并将结果返回。</li><li>整个的调用过程是一个同步过程，在server处理的时候，client会block住。因此client调用过程不应在主线程。</li></ul> 
+<p>以上就是Binder机制原理的简单介绍，后面会以AIDL来具体介绍Binder机制的使用，加深对其的了解。</p> 
+<p>为了保护进程空间不被别的进程破坏或者干扰，Linux的进程是相互独立的（进程隔离），而且一个进程空间还分为用户空间和内核（Kernel）空间，相当于把Kernel和上层的应用程序抽像的隔离开。这里有两个隔离，一个进程间是相互隔离的，二是进程内有用户和内核的隔离。</p> 
+<p>Binder框架定义了四个角色：Server，Client，ServiceManager以及Binder驱动。其中Server，Client，ServiceManager运行于用户空间，驱动运行于内核空间。这四个角色的关系类似：Server是服务器，Client是客户终端，ServiceManager是服务注册中心（类似房屋中介）。</p> 
+<p>要进行Client-Server之间的通信，从面向对象的角度，在Server内部有一个Binder实体，在Client内部有一个Binder对象的引用，其实就是Binder的一个代理，Client通过对Binder引用间接的操作Server内部的Binder实体，这样就实现了通信。</p> 
+<p>但是现在的问题是会有很多个提供不同服务的Server（比如有媒体播放服务，音视频捕获服务等），而且会有很多Client（比如多个应用都要调用媒体播放服务），那么我们怎么才能够实现正确的Client调用正确的Server呢？就好比房客怎么才能够租到自己想要租的房子（联系上房东），这个时候中介就起到重要作用，房东想要出租自己的房子就必须要到中介注册，房客想要租房子就要去中介那里找，同样的道理，这里Client就是房客，Server就是房东，ServiceManager就是房屋中介，每个Server如果要提供服务就必须要去ServiceManager那里去注册，ServiceManager在一张查找表中记录一个Server的名字，对应着Server的引用。Client想要获得Server，必须通过名字到ServiceManager取找Server的引用，获得这个Server的binder引用，通过这个binder引用去和Server通信。</p> 
+<hr> 
+<h4>Binder机制</h4> 
+<p>首先Binder是Android系统进程间通信(IPC)方式之一。</p> 
+<p>Binder使用Client－Server通信方式。Binder框架定义了四个角色：Server,Client,ServiceManager以及Binder驱动。其中Server,Client,ServiceManager运行于用户空间，驱动运行于内核空间。Binder驱动程序提供设备文件/dev/binder与用户空间交互，Client、Server和Service Manager通过open和ioctl文件操作函数与Binder驱动程序进行通信。</p> 
+<p>Server创建了Binder实体，为其取一个字符形式，可读易记的名字，将这个Binder连同名字以数据包的形式通过Binder驱动发送给ServiceManager，通知ServiceManager注册一个名字为XX的Binder，它位于Server中。驱动为这个穿过进程边界的Binder创建位于内核中的实体结点以及ServiceManager对实体的引用，将名字以及新建的引用打包给ServiceManager。ServiceManager收数据包后，从中取出名字和引用填入一张查找表中。但是一个Server若向ServiceManager注册自己Binder就必须通过0这个引用和ServiceManager的Binder通信。Server向ServiceManager注册了Binder实体及其名字后，Client就可以通过名字获得该Binder的引用了。Clent也利用保留的0号引用向ServiceManager请求访问某个Binder：我申请名字叫XX的Binder的引用。ServiceManager收到这个连接请求，从请求数据包里获得Binder的名字，在查找表里找到该名字对应的条目，从条目中取出Binder引用，将该引用作为回复发送给发起请求的Client。</p> 
+<p>当然，不是所有的Binder都需要注册给ServiceManager广而告之的。Server端可以通过已经建立的Binder连接将创建的Binder实体传给Client，当然这条已经建立的Binder连接必须是通过实名Binder实现。由于这个Binder没有向ServiceManager注册名字，所以是匿名Binder。Client将会收到这个匿名Binder的引用，通过这个引用向位于Server中的实体发送请求。匿名Binder为通信双方建立一条私密通道，只要Server没有把匿名Binder发给别的进程，别的进程就无法通过穷举或猜测等任何方式获得该Binder的引用，向该Binder发送请求。</p> 
+<hr> 
+<p>###为什么Binder只进行了一次数据拷贝？</p> 
+<p>Linux内核实际上没有从一个用户空间到另一个用户空间直接拷贝的函数，需要先用copy_from_user()拷贝到内核空间，再用copy_to_user()拷贝到另一个用户空间。为了实现用户空间到用户空间的拷贝，mmap()分配的内存除了映射进了接收方进程里，还映射进了内核空间。所以调用copy_from_user()将数据拷贝进内核空间也相当于拷贝进了接收方的用户空间，这就是Binder只需一次拷贝的‘秘密’。</p> 
+<p>最底层的是Android的ashmen(Anonymous shared memory)机制，它负责辅助实现内存的分配，以及跨进程所需要的内存共享。AIDL(android interface definition language)对Binder的使用进行了封装，可以让开发者方便的进行方法的远程调用，后面会详细介绍。Intent是最高一层的抽象，方便开发者进行常用的跨进程调用。</p> 
+<p>从英文字面上意思看，Binder具有粘结剂的意思那么它是把什么东西粘接在一起呢？在Android系统的Binder机制中，由一系统组件组成，分别是Client、Server、Service Manager和Binder驱动，其中Client、Server、Service Manager运行在用户空间，Binder驱动程序运行内核空间。Binder就是一种把这四个组件粘合在一起的粘连剂了，其中，核心组件便是Binder驱动程序了，ServiceManager提供了辅助管理的功能，Client和Server正是Binder驱动和ServiceManager提供的基础设施上，进行Client-Server之间的通信。</p> 
+<ul><li>Client、Server和ServiceManager实现在用户空间中，Binder驱动实现在内核空间中</li><li>Binder驱动程序和ServiceManager在Android平台中已经实现，开发者只需要在用户空间实现自己的Client和Server</li><li>Binder驱动程序提供设备文件/dev/binder与用户空间交互，Client、Server和ServiceManager通过open和ioctl文件操作函数与Binder驱动程序进行通信</li><li>Client和Server之间的进程间通信通过Binder驱动程序间接实现</li><li>ServiceManager是一个守护进程，用来管理Server，并向Client提供查询Server接口的能力</li></ul> 
+<p><strong>服务器端：</strong>一个Binder服务器就是一个Binder类的对象。当创建一个Binder对象后，内部就会开启一个线程，这个线程用户接收binder驱动发送的消息，收到消息后，会执行相关的服务代码。</p> 
+<p><strong>Binder驱动：</strong>当服务端成功创建一个Binder对象后，Binder驱动也会相应创建一个mRemote对象，该对象的类型也是Binder类，客户就可以借助这个mRemote对象来访问远程服务。</p> 
+<p><strong>客户端：</strong>客户端要想访问Binder的远程服务，就必须获取远程服务的Binder对象在binder驱动层对应的binder驱动层对应的mRemote引用。当获取到mRemote对象的引用后，就可以调用相应Binde对象的服务了。</p> 
+<p>在这里我们可以看到，客户是通过Binder驱动来调用服务端的相关服务。首先，在服务端创建一个Binder对象，接着客户端通过获取Binder驱动中Binder对象的引用来调用服务端的服务。在Binder机制中正是借着Binder驱动将不同进程间的组件bind(粘连)在一起，实现通信。</p> 
+<p>mmap将一个文件或者其他对象映射进内存。文件被映射进内存。文件被映射到多个页上，如果文件的大小不是所有页的大小之和，最后一个页不被使用的空间将会凋零。munmap执行相反的操作，删除特定地址区域的对象映射。</p> 
+<p>当使用mmap映射文件到进程后，就可以直接操作这段虚拟地址进行文件的读写等操作，不必再调用read,write等系统调用。但需注意，直接对该段内存写时不会写入超过当前文件大小的内容。</p> 
+<p>使用共享内存通信的一个显而易见的好处是效率高，因为进程可以直接读写内存，而不需要任何数据的拷贝。对于像管道和消息队列等通信方式，则需要在内核和用户空间进行四次的数据拷贝，而共享内存则只拷贝两次内存数据：一次从输入文件到共享内存区，另一次从共享内存到输出文件。实际上，进程之间在共享内存时，并不总是读写少量数据后就解除映射，有新的通信时，再重新建立共享内存区域，而是保持共享区域，直到通信完成为止，这样，数据内容一直保存在共享内存中，并没有写回文件。共享内存中的内容往往是在解除内存映射时才写回文件的。因此，采用共享内存的通信方式效率是非常高的。</p> 
+<p>aidl主要就帮助了我们完成了包装数据和解包的过程，并调用了transact过程，而用来传递的数据包我们就称为parcel</p> 
+<p>AIDL:xxx.aidl -&gt; xxx.java ,注册service</p> 
+<p>用aidl定义需要被调用方法接口<br> 实现这些方法<br> 调用这些方法</p> 
+<p>原文链接：</p> 
+<p><a href="https://www.jianshu.com/p/4920c7781afe?from=jiantop.com" rel="nofollow">https://www.jianshu.com/p/4920c7781afe?from=jiantop.com</a></p> 
+<p><a href="https://github.com/francistao/LearningNotes/blob/master/Part1/Android/Binder%E6%9C%BA%E5%88%B6.md">https://github.com/francistao/LearningNotes/blob/master/Part1/Android/Binder%E6%9C%BA%E5%88%B6.md</a></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/60a74b5811eb53d0643ee03f63f8ce3c/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">HiBlock社区:区块链链上数据的认知与探索</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/d8a5c41be3109d4c639c457fec89c959/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">CFB模式解读</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

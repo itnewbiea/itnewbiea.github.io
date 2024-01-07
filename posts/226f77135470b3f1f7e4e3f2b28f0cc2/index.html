@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>简述离线数据处理流程 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="简述离线数据处理流程" />
+<meta property="og:description" content="之前也做过一段时间的大数据，自己一直记性不太好，怕遗忘所以捞一下~
+本质其实就是一个数据的流转问题。。
+目录 1.数据采集数据来源数据传输在数据采集时需要注意的一些问题 2.数据预处理3.数据入库(数仓)数仓建设1. 需求分析2. 维度建模（星型模型）3. 设计数仓分层架构（ods-dwd-dws-ads）4. 定制规范（命名规范、模型规范、开发规范、流程规范）5. 数据治理（数据质量，数据安全，元数据管理）6. 开工ETL/BI，迭代开发 1.数据采集 数据来源 主要分为两大块~
+数据库（结构化数据）：基本上就是后台产生的业务数据日志文件（半结构化数据）：比方说埋点产生的用户行为数据 数据传输 如果是数据库里的数据就比较简单了，直接上sqoop或者kettle将数据库里的数据导入hdfs.如果是日志文件的数据，基本上用的都是Flume &#43; Kafka的经典组合。Flume如果捕捉到有新的日志文件产生或者日志文件有新的数据产生会立即采集过来，所以一般数据量比较大，所以就需要kafka进行缓存（削峰），然后再定量或定时存入hdfs,大致流程如下：
+日志文件=&gt;Flume(Kafka生产者，日志采集)=&gt;Kafka(缓存)=&gt;Flume(Kafka消费者)=&gt;hdfs 在数据采集时需要注意的一些问题 保证数据采集稳定性（可靠性）：比方说采集过程中Flume突然down掉了该怎样处理避免数据的丢失或重复采集：Flume采集完一个文件后一般会给一个标注，比方说加一个completed的后缀名，那如果采集到一半down掉了，标记没有打上，然后重启flume后再采集就会造成重复采集的问题。数据源类型复杂：面对各种各样的数据源可能需要进行Sink的二次开发数据源结构有可能产生变化：数仓中的某些表结构会经常根据业务需求来变化，当我们sqoop从mysql导入到数仓的时候怎样去捕捉这个表结构的变化~ 2.数据预处理 去噪： 离群点异常值的处理，比方说年龄出现了1000岁这种数据的处理。去重：重复数据的去重处理。单位统一：数据有可能是多个部门开发的，会出现字段单位不一致的情况，汇集到一起进行单位的统一，包括时间或者时间戳的统一。 3.数据入库(数仓) 数仓建设 1. 需求分析 就是业务调研、需求调研开一大堆会讨论，然后划分主题域，确定主题，然后构建业务总线矩阵。
+这是数据仓库项目最重要的一个环节，数仓说到底还是服务于业务，支撑于业务，如果需求分析不准确，做了没人用，上了不好用，会直接影响业务/客户的使用，最终导致项目的失败。
+2. 维度建模（星型模型） 首先思考：
+1.）哪些维度对主题分析有用？
+2.）如何使用现有数据生成维表？
+3.) 用什么指标来&#34;度量&#34;主题？
+4.) 如何使用现有数据生成事实表？
+维度表：表示对分析主题所属类型的描述。比如&#34;昨天早上我在全家花费10元购买了一个鸡腿&#34;。那么以购买为主题进行分析，可从这段信息中提取三个维度：时间维度(昨天早上)，地点维度(全家), 商品维度(鸡腿)。通常来说维度表信息比较固定，且数据量小。
+事实表：表示对分析主题的度量。比如上面那个例子中，10元就是事实信息。事实表包含了与各维度表相关联的外码，并通过JOIN方式与维度表关联。事实表的度量通常是数值类型，且记录数会不断增加，表规模迅速增长。
+星形模式的维度建模由一个事实表和一组维度表组成，且具有以下特点：
+a. 维表只和事实表关联，维表之间没有关联；
+b. 每个维表的主码为单列，且该主码放置在事实表中，作为两边连接的外码；
+c. 以事实表为核心，维表围绕核心呈星形分布；
+3. 设计数仓分层架构（ods-dwd-dws-ads） ods: 原始数据，是业务数据流动过程的第一个存储区，实现了数据仓库从各个业务系统的数据源中将数据抽取出来，并且装载到ods层的这一过程，从而实现统一的全局的企业数据平台，为以后的数据抽取、清洗、转换过程打下坚实的基础。对于数据的数据源可以采用增量的方式进行抽取，对于经常变化更新的数据一般采用全量的方式进抽取。
+dwd: 结构与粒度原始表保持一致，对ods层数据进行清洗（去除空值、脏数据、超过极限范围的数据）同时，为了提高数据明细层的易用性，该层会将一些维度冗余到事实表中，减少事实表和维度的关联，提高查询效率.
+dws:又称做数据集市或者大宽表，比如：用户表、流量表、订单表等。一个表就会包含多个很多字段，涉及多个业务过程,用于提供后续的业务查询，OLAP分析，数据分发等.
+ads: 应用层是根据业务需要，由前面三层数据统计而出的结果，可以直接提供查询展现，或导入至Mysql中使用。
+4. 定制规范（命名规范、模型规范、开发规范、流程规范） 模型是整个数仓建设基石，规范是数仓建设的保障。
+(1) 词根
+词根是维度和指标管理的基础，划分为普通词根与专有词根，提高词根的易用性和关联性。
+普通词根：描述事物的最小单元体，如：交易-trade。
+专有词根：具备约定成俗或行业专属的描述体，如：美元-USD。
+(2) 表命名规范" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/226f77135470b3f1f7e4e3f2b28f0cc2/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-02-03T18:17:06+08:00" />
+<meta property="article:modified_time" content="2021-02-03T18:17:06+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">简述离线数据处理流程</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>之前也做过一段时间的大数据，自己一直记性不太好，怕遗忘所以捞一下~<br> 本质其实就是一个数据的流转问题。。<br> </p> 
+<div class="toc"> 
+ <h4>目录</h4> 
+ <ul><li><a href="#1_3" rel="nofollow">1.数据采集</a></li><li><ul><li><a href="#_4" rel="nofollow">数据来源</a></li><li><a href="#_8" rel="nofollow">数据传输</a></li><li><a href="#_12" rel="nofollow">在数据采集时需要注意的一些问题</a></li></ul> 
+  </li><li><a href="#2_17" rel="nofollow">2.数据预处理</a></li><li><a href="#3_21" rel="nofollow">3.数据入库(数仓)</a></li><li><ul><li><a href="#_22" rel="nofollow">数仓建设</a></li><li><ul><li><a href="#1__23" rel="nofollow">1. 需求分析</a></li><li><a href="#2__27" rel="nofollow">2. 维度建模（星型模型）</a></li><li><a href="#3_odsdwddwsads_43" rel="nofollow">3. 设计数仓分层架构（ods-dwd-dws-ads）</a></li><li><a href="#4__51" rel="nofollow">4. 定制规范（命名规范、模型规范、开发规范、流程规范）</a></li><li><a href="#5__67" rel="nofollow">5. 数据治理（数据质量，数据安全，元数据管理）</a></li><li><a href="#6_ETLBI_72" rel="nofollow">6. 开工ETL/BI，迭代开发</a></li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="1_3"></a>1.数据采集</h2> 
+<h3><a id="_4"></a>数据来源</h3> 
+<p>主要分为两大块~</p> 
+<ol><li>数据库（结构化数据）：基本上就是后台产生的业务数据</li><li>日志文件（半结构化数据）：比方说埋点产生的用户行为数据</li></ol> 
+<h3><a id="_8"></a>数据传输</h3> 
+<ol><li>如果是数据库里的数据就比较简单了，直接上sqoop或者kettle将数据库里的数据导入hdfs.</li><li>如果是日志文件的数据，基本上用的都是Flume + Kafka的经典组合。Flume如果捕捉到有新的日志文件产生或者日志文件有新的数据产生会立即采集过来，所以一般数据量比较大，所以就需要kafka进行缓存（削峰），然后再定量或定时存入hdfs,大致流程如下：<br> 日志文件=&gt;Flume(Kafka生产者，日志采集)=&gt;Kafka(缓存)=&gt;Flume(Kafka消费者)=&gt;hdfs</li></ol> 
+<h3><a id="_12"></a>在数据采集时需要注意的一些问题</h3> 
+<ol><li>保证数据采集稳定性（可靠性）：比方说采集过程中Flume突然down掉了该怎样处理</li><li>避免数据的丢失或重复采集：Flume采集完一个文件后一般会给一个标注，比方说加一个completed的后缀名，那如果采集到一半down掉了，标记没有打上，然后重启flume后再采集就会造成重复采集的问题。</li><li>数据源类型复杂：面对各种各样的数据源可能需要进行Sink的二次开发</li><li>数据源结构有可能产生变化：数仓中的某些表结构会经常根据业务需求来变化，当我们sqoop从mysql导入到数仓的时候怎样去捕捉这个表结构的变化~</li></ol> 
+<h2><a id="2_17"></a>2.数据预处理</h2> 
+<ol><li>去噪： 离群点异常值的处理，比方说年龄出现了1000岁这种数据的处理。</li><li>去重：重复数据的去重处理。</li><li>单位统一：数据有可能是多个部门开发的，会出现字段单位不一致的情况，汇集到一起进行单位的统一，包括时间或者时间戳的统一。</li></ol> 
+<h2><a id="3_21"></a>3.数据入库(数仓)</h2> 
+<h3><a id="_22"></a>数仓建设</h3> 
+<h4><a id="1__23"></a>1. 需求分析</h4> 
+<p>就是业务调研、需求调研开一大堆会讨论，然后划分主题域，确定主题，然后构建业务总线矩阵。<br> 这是数据仓库项目最重要的一个环节，数仓说到底还是服务于业务，支撑于业务，如果需求分析不准确，做了没人用，上了不好用，会直接影响业务/客户的使用，最终导致项目的失败。</p> 
+<h4><a id="2__27"></a>2. 维度建模（星型模型）</h4> 
+<p>首先思考：<br> 1.）哪些维度对主题分析有用？<br> 2.）如何使用现有数据生成维表？<br> 3.) 用什么指标来"度量"主题？<br> 4.) 如何使用现有数据生成事实表？</p> 
+<p>维度表：表示对分析主题所属类型的描述。比如"昨天早上我在全家花费10元购买了一个鸡腿"。那么以购买为主题进行分析，可从这段信息中提取三个维度：时间维度(昨天早上)，地点维度(全家), 商品维度(鸡腿)。通常来说维度表信息比较固定，且数据量小。</p> 
+<p>事实表：表示对分析主题的度量。比如上面那个例子中，10元就是事实信息。事实表包含了与各维度表相关联的外码，并通过JOIN方式与维度表关联。事实表的度量通常是数值类型，且记录数会不断增加，表规模迅速增长。</p> 
+<p>星形模式的维度建模由一个事实表和一组维度表组成，且具有以下特点：<br> a. 维表只和事实表关联，维表之间没有关联；<br> b. 每个维表的主码为单列，且该主码放置在事实表中，作为两边连接的外码；<br> c. 以事实表为核心，维表围绕核心呈星形分布；</p> 
+<h4><a id="3_odsdwddwsads_43"></a>3. 设计数仓分层架构（ods-dwd-dws-ads）</h4> 
+<p>ods: 原始数据，是业务数据流动过程的第一个存储区，实现了数据仓库从各个业务系统的数据源中将数据抽取出来，并且装载到ods层的这一过程，从而实现统一的全局的企业数据平台，为以后的数据抽取、清洗、转换过程打下坚实的基础。对于数据的数据源可以采用增量的方式进行抽取，对于经常变化更新的数据一般采用全量的方式进抽取。</p> 
+<p>dwd: 结构与粒度原始表保持一致，对ods层数据进行清洗（去除空值、脏数据、超过极限范围的数据）同时，为了提高数据明细层的易用性，该层会将一些维度冗余到事实表中，减少事实表和维度的关联，提高查询效率.</p> 
+<p>dws:又称做数据集市或者大宽表，比如：用户表、流量表、订单表等。一个表就会包含多个很多字段，涉及多个业务过程,用于提供后续的业务查询，OLAP分析，数据分发等.</p> 
+<p>ads: 应用层是根据业务需要，由前面三层数据统计而出的结果，可以直接提供查询展现，或导入至Mysql中使用。</p> 
+<h4><a id="4__51"></a>4. 定制规范（命名规范、模型规范、开发规范、流程规范）</h4> 
+<p>模型是整个数仓建设基石，规范是数仓建设的保障。<br> (1) 词根<br> 词根是维度和指标管理的基础，划分为普通词根与专有词根，提高词根的易用性和关联性。<br> 普通词根：描述事物的最小单元体，如：交易-trade。<br> 专有词根：具备约定成俗或行业专属的描述体，如：美元-USD。</p> 
+<p>(2) 表命名规范<br> 通用规范<br> 表名、字段名采用一个下划线分隔词根（示例：clienttype-&gt;client_type）。<br> 每部分使用小写英文单词，属于通用字段的必须满足通用字段信息的定义。<br> 表名、字段名需以字母为开头。<br> 表名、字段名最长不超过64个英文字符。<br> 优先使用词根中已有关键字（数仓标准配置中的词根管理），定期Review新增命名的不合理性。<br> 在表名自定义部分禁止采用非标准的缩写。</p> 
+<h4><a id="5__67"></a>5. 数据治理（数据质量，数据安全，元数据管理）</h4> 
+<p>统一指标管理，保证了指标定义、计算口径、数据来源的一致性。<br> 统一维度管理，保证了维度定义、维度值的一致性。<br> 统一数据出口，实现了维度和指标元数据信息的唯一出口，维值和指标数据的唯一出口。</p> 
+<h4><a id="6_ETLBI_72"></a>6. 开工ETL/BI，迭代开发</h4>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/867e21c1992fa823c8707c71e023dfb3/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">基于STM32和freeRTOS智能门锁设计方案</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/20d4286dfd6dbc6ca9672fdb13e23042/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">个人信息界面&#43;修改密码界面</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

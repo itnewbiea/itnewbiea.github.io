@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【Linux驱动】内核定时器控制 LED 闪烁 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【Linux驱动】内核定时器控制 LED 闪烁" />
+<meta property="og:description" content="Linux 提供了定时器，当超过预定时间时，就会触发回调函数，此外，Linux内核还提供了短延时函数，比如微秒、纳秒、毫秒延时函数。
+一、内核定时器API 1、节拍数 内核定时器是通过节拍数来计时的，节拍数与时间存在关联性，在 include/asm-generic/param.h 中定义了一秒会产生多少次节拍数。由图中可知，当前系统一秒产生的节拍数为 100 次。
+知道了节拍数的概念，接下来就不得不提一下全局变量 jiffies 了，jiffies 定义在文件 linux/jiffies.h 中，用于记录系统从启动以来的系统节拍数，类似于时间戳。由此可知定时器延时的基本原理，假设当前 jiffies = 1000，我们要延时2s（200次节拍），当 jiffies = 1000 &#43; 200 时，说明定时的时间到了，此时就会执行相应的回调函数。
+注意：jiffies既然是变量，那必然存在溢出的风险，溢出以后会 jiffies 重新从 0 开始计数
+2、定时器数据结构 Linux内核提供了 struct timer_list 类型来表示定时器，timer_list 定义在文件 linux/timer.h 中。
+struct timer_list { struct list_head entry; unsigned long expires; // 超时时间(单位: 节拍数) struct tvec_base *base; void (*function)(unsigned long); // 回调函数 unsigned long data; // 回调函数的参数 int slack; }; 超时时间: 超时时间其实是一个时间点，表示时间点的不是秒或者毫秒，而是触发回调的 jiffies 变量的值。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/b0bb2f037fcd1ef4af56462c6172a62f/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-12-27T19:40:03+08:00" />
+<meta property="article:modified_time" content="2023-12-27T19:40:03+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【Linux驱动】内核定时器控制 LED 闪烁</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>Linux 提供了定时器，当超过预定时间时，就会触发回调函数，此外，Linux内核还提供了短延时函数，比如微秒、纳秒、毫秒延时函数。</p> 
+<h2>一、内核定时器API</h2> 
+<h3>1、节拍数</h3> 
+<p>内核定时器是通过节拍数来计时的，节拍数与时间存在关联性，在 include/asm-generic/param.h  中定义了一秒会产生多少次节拍数。由图中可知，当前系统一秒产生的节拍数为 100 次。</p> 
+<p class="img-center"><img alt="" height="100" src="https://images2.imgbox.com/a1/97/i7gJoHn5_o.png" width="659"></p> 
+<p>知道了节拍数的概念，接下来就不得不提一下<span style="color:#fe2c24;">全局变量 jiffies </span>了，jiffies 定义在文件 linux/jiffies.h 中，用于记录系统从启动以来的系统节拍数，类似于时间戳。由此可知定时器延时的基本原理，假设当前 jiffies = 1000，我们要延时2s（200次节拍），当 jiffies = 1000 + 200 时，说明定时的时间到了，此时就会执行相应的回调函数。</p> 
+<p><span style="color:#fe2c24;"><strong>注意：</strong>jiffies既然是变量，那必然存在溢出的风险，溢出以后会 jiffies 重新从 0 开始计数</span></p> 
+<p></p> 
+<h3>2、定时器数据结构</h3> 
+<p>Linux内核提供了 struct timer_list 类型来表示定时器，timer_list 定义在文件 linux/timer.h 中。</p> 
+<pre><code class="language-cpp">struct timer_list {
+	struct list_head entry;
+	unsigned long expires;            // 超时时间(单位: 节拍数)
+	struct tvec_base *base;
+
+	void (*function)(unsigned long);  // 回调函数
+	unsigned long data;               // 回调函数的参数
+
+	int slack;
+};</code></pre> 
+<p><span style="color:#fe2c24;"><strong>超时时间: </strong></span></p> 
+<p>超时时间其实是一个时间点，表示时间点的不是秒或者毫秒，而是触发回调的 jiffies 变量的值。</p> 
+<p style="text-align:center;">超时时间点 = jiffies + &lt;delay&gt;</p> 
+<ul><li>jiffies：可以表示起始时间点</li><li>&lt;delay&gt;：延时节拍数，为了方便，Linux提供了将时间转换成节拍数的API</li></ul> 
+<table border="1" cellpadding="1" cellspacing="1" style="width:580px;"><tbody><tr><td style="width:171px;">API</td><td style="width:298px;">API声明</td><td style="width:120px;">解析</td></tr><tr><td style="width:171px;">msecs_to_jiffies</td><td style="width:298px;"><span style="color:#4da8ee;">long</span> <span style="color:#fe2c24;">msecs_to_jiffies</span><span style="color:#ff9900;">(const unsigned int m)</span></td><td style="width:120px;">ms  转 节拍数</td></tr><tr><td style="width:171px;">usecs_to_jiffies</td><td style="width:298px;"><span style="color:#4da8ee;">long</span> <span style="color:#fe2c24;">usecs_to_jiffies</span><span style="color:#ff9900;">(const unsigned int u)</span></td><td style="width:120px;">us  转 节拍数</td></tr><tr><td style="width:171px;">nsecs_to_jiffies</td><td style="width:298px;"><span style="color:#4da8ee;">unsigned long</span> <span style="color:#fe2c24;">nsecs_to_jiffies</span><span style="color:#ff9900;">(u64 n)</span></td><td style="width:120px;">ns  转 节拍数</td></tr></tbody></table> 
+<p><span style="color:#fe2c24;"><strong>回调函数: </strong></span></p> 
+<p>当 jiffies  到达目标节拍数时，就会触发回调函数</p> 
+<p></p> 
+<h3>3、初始化定时器</h3> 
+<p>定义了一个 timer_list 类型变量后必须使用 init_timer 进行初始化。init_timer 是一个宏，这里为了方便介绍以函数形式展现: </p> 
+<pre><code class="language-cpp">void init_timer(struct timer_list *timer);</code></pre> 
+<p> </p> 
+<h3>4、注册定时器</h3> 
+<p>add_timer 函数用于向 Linux 内核注册定时器，使用 add_timer 函数向内核注册定时器以后， 定时器就会开始运行。定时器不能多次注册</p> 
+<pre><code class="language-cpp">void add_timer(struct timer_list *timer);</code></pre> 
+<p></p> 
+<h3>5、删除定时器</h3> 
+<p>删除定时器可以使用 del_timer 或者 del_timer_sync</p> 
+<ul><li><span style="color:#0d0016;"><strong>del_timer</strong></span><span style="color:#494949;">：需要等待定时器退出处理函数才能调用 del_timer</span></li><li><span style="color:#0d0016;"><strong>del_timer_sync</strong></span><span style="color:#494949;">：del_timer的同步版，会自动等待定时器退出处理函数，然后执行删除操作</span></li></ul> 
+<pre><code class="language-cpp">/**
+ * @return 返回 0，表示定时器尚未启动；返回 1，表示定时器已启动
+ */
+int del_timer(struct timer_list * timer);
+int del_timer_sync(struct timer_list *timer);</code></pre> 
+<p></p> 
+<h3>6、修改定时器的超时时长</h3> 
+<p>mod_timer 函数用于修改定时值，即延迟多长时间后执行回调。如果定时器处于尚未启动的状态，mod_timer 函数会启动定时器。</p> 
+<pre><code class="language-cpp">/**
+ * @param timer:   要操作的定时器
+ * @param expires: 超时时间（下一次执行回调函数的时间）
+ * @return         返回 0，表示定时器尚未启动；返回 1，表示定时器已启动
+ */
+int mod_timer(struct timer_list *timer, unsigned long expires);</code></pre> 
+<p></p> 
+<h2>二、内核定时器控制LED</h2> 
+<p>这里重点介绍定时器相关内容，设备注册、驱动节点创建、设备树等内容暂不一一列举</p> 
+<h3>1、创建定时器并初始化</h3> 
+<p>在自定义的驱动结构体中声明一个定时器</p> 
+<pre><code class="language-cpp">struct chrdev_t 
+{
+	dev_t 	 			devid;				/* 设备号 */
+	uint32_t 			major;				/* 主设备号 */
+	uint32_t 			minor;				/* 次设备号 */
+	struct cdev 		dev;				/* 字符设备 */
+	struct class*   	class;				/* 设备节点所属类 */
+	struct device*  	driver_node;		/* 驱动文件节点 */ 
+	
+	struct timer_list   timer;				/* 内核定时器 */
+     uint32_t 			next_jiffies;	    /* 下一次定时器启动的jiffies节拍数 */     
+
+	struct device_node* gpioNode;			/* 设备树节点 */
+	uint32_t 			gpioNum;			/* gpio 引脚编号 */
+	uint8_t 			status;				/* LED 的状态 */
+};
+static struct chrdev_t chrdev;</code></pre> 
+<p>在驱动入口函数中初始化定时器</p> 
+<pre><code class="language-cpp">// 回调函数
+void timer_callback(unsigned long arg)
+{
+	struct chrdev_t* timerDev = (struct chrdev_t*)arg;
+    printk("LED状态: %d\n", timerDev-&gt;status);
+	// 反转 LED 状态
+	timerDev-&gt;status = !timerDev-&gt;status;
+    // 重新启动定时器
+	mod_timer(&amp;timerDev-&gt;timer, timerDev-&gt;next_jiffies);
+}
+
+// 驱动入口函数
+static int __init kerneltimer_init(void)
+{
+    // ... 
+
+	/* 初始化定时器 */
+	init_timer(&amp;chrdev.timer);
+	chrdev.timer.function = timer_callback;
+	chrdev.timer.data = (unsigned long)&amp;chrdev;
+
+    // ... 
+}
+
+// 驱动出口函数
+static void __exit kerneltimer_exit(void)
+{
+    // ...
+
+	/* 删除定时器 */
+	del_timer_sync(&amp;chrdev.timer);
+}</code></pre> 
+<h3>2、ioctl 驱动操作函数实现</h3> 
+<p>应用层推荐使用 ioctl 接口来传递延时时间，对应的内核驱动接口便是 unlocked_ioctl</p> 
+<pre><code class="language-cpp">static struct file_operations chrdev_fops = {
+	.owner = THIS_MODULE, 
+	.open = chrdev_open,
+	.unlocked_ioctl = chrdev_ioctl,        // 对应应用层的 ioctl 接口
+	.release = chrdev_release,
+};</code></pre> 
+<p>我们可以在 chrdev_ioctl 中启动定时器，这里我们使用 mod_timer，虽然 add_timer 可以启动定时器，但无法对同一个定时器注册多次。</p> 
+<pre><code class="language-cpp">// 超时时间 = 定时器启动时间点jiffies  + 延时时间 delay
+#define timer_delay(delay)		jiffies + msecs_to_jiffies(delay)
+
+static int chrdev_open(struct inode *pinode, struct file *pfile)
+{
+	printk("open timer\n");
+	pfile-&gt;private_data = &amp;chrdev;
+	return 0;
+}
+
+static long chrdev_ioctl(struct file * pfile, unsigned int cmd, unsigned long arg)
+{    
+    struct chrdev_t* timerDev = pfile-&gt;private_data;
+    // 使用 arg 来传递定时器的延时时间
+    unsigned long delayms = arg;
+    
+    mod_timer(&amp;timerDev-&gt;timer, timer_delay(delayms));
+    return 0;
+}</code></pre> 
+<p class="img-center"><img alt="" height="126" src="https://images2.imgbox.com/48/6a/qCJDmJ4e_o.png" width="533"></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/0d65064e496dc451f45d23d32d6b9c4c/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">在wps里导入Mathtype、改变字体</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f5dc20715438644920f1cb5364f07033/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">软件测试/测试开发丨Pytest 参数化用例</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

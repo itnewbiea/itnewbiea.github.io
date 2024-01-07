@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Elasticsearch索引(写入)速度优化 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Elasticsearch索引(写入)速度优化" />
+<meta property="og:description" content=" 1.缩减索引字段 es中只保留必要字段，缩减字段能有效缩减文档大小，提高写入速度。
+2.合理设置分片数和副本数 7.*默认1个分片1和副本。Elasticsearch官方建议一个分片的大小应该在20到40 GB左右，分片个数建议 &gt;= 集群节点的个数，但是当索引较小时（写入性能需求 &gt; 搜索性能需求时），可以使用1个分片，过多的分片也会影响写入性能。
+分片大小对于搜索查询非常重要。
+一方面， 如果分配给索引的分片太多，则Lucene分段会很小，从而导致开销增加。 当同时进行多个查询时，许多小分片也会降低查询吞吐量。另一方面，太大的分片会导致搜索性能下降和故障恢复时间更长。 在批量索引文档前可以将副本数设置为0，索引完成后恢复原来的值。
+&#34;number_of_replicas&#34;:1 &#34;number_of_shards&#34;:1 3.索引刷新间隔refresh_interval 默认情况下refresh_interval为1s，数据写入1秒后就可以被搜索到，每次索引的refresh会产生一个新的Lucene段，Lucene段即为segment，segment在复合一定条件后，会自动合并，因此这会导致频繁的segment merge行为，如果不需要特别高的搜索实时性，应该降低索引refresh周期。-1:禁止刷新。在批量索引文档前可以将refresh_interval设置为-1，完成后修改为默认值。由于我的场景是每天都会全量同步，此处将refresh_interval设置为120s
+&#34;refresh_interval&#34;: &#34;120s&#34; 假如refresh_interval设置为-1，只是es中的定时任务不会执行。但是es会根据一个versionMap去强制做一次refresh操作，缓冲区满的时候也会触发refresh操作。每30秒有个定时器去检查shardIndexingBufferSize大小，最终调用updateShardBuffers方法去refresh
+4.translog设置 随着translog文件越来越大时要考虑把内存中的数据刷新到磁盘中，这个过程称为flush。在默认设置下，translog的持久化策略为: request，每个请求 都“flush”，配置异步刷新，刷新时间120s。
+&#34;index.translog.durability&#34;: &#34;async&#34; &#34;index.translog.sync_interval&#34;: &#34;120s&#34; 5.线程池队列 当写入队列满时，es会拒绝接受索引事件，适当增加写入队列大小，默认为200。线程池大小官方不建议进行修改。
+thread_pool.write.queue_size: 500 6.使用es自动生成的id 无更新操作时，尽量使用es自动生成的id，当你index一个document使用特定的id，ES需要去检查是否在同一个shard存在相同的ID的文档，这是一个相当昂贵的操作，并且随着文档数量的增加，花费呈指数增长。如果使用自动生成id，ES会跳过这个检查，使得Index速度更快。但是当需要更新操作时不适用。
+7.Indexing 缓冲大小 在执行大量的索引操作时，indices.memory.index_buffer_size的默认 设置可能不够，这和可用堆内存、单节点上的shard数量相关，可以考虑适当增大该值，增大该值，减少segment，就会减少merge。默认大小为10% 48mb
+indices.memory.index_buffer_size: 20% indices.memory.min_index_buffer_size: 96mb 8.jvm.options Xmx和Xms的大小默认为1g，可以适当增加该值。
+-Xms2g -Xmx2g 9.禁用swapping 在ES的官方文档上，要求Disabled Swapping。执行swapoff -a暂时禁用，机器重启后会恢复。要永久的关闭swapping，需要编辑/etc/fstab文件，将包含swap的行的注释掉。
+参考文档：
+https://www.cnblogs.com/eviltuzki/p/8439036.htmlhttps://blog.csdn.net/wmj2004/article/details/80804411https://blog.csdn.net/u012133048/article/details/93408374?utm_medium=distribute.pc_relevant.none-task-blog-BlogCommendFromMachineLearnPai2-1.nonecase&amp;depth_1-utm_source=distribute.pc_relevant.none-task-blog-BlogCommendFromMachineLearnPai2-1.nonecasehttps://blog.csdn.net/HaixWang/article/details/80846749?utm_medium=distribute.pc_relevant.none-task-blog-BlogCommendFromMachineLearnPai2-1.nonecase&amp;depth_1-utm_source=distribute.pc_relevant.none-task-blog-BlogCommendFromMachineLearnPai2-1.nonecasehttps://www.cnblogs.com/MyOceansWeb/p/12653965.htmlhttps://blog.csdn.net/laoyang360/article/details/85109769https://blog.csdn.net/laoyang360/article/details/976959317.*官方文档 " />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/53e4d5d7462c0daccfac0b13b2c81121/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-06-11T16:37:29+08:00" />
+<meta property="article:modified_time" content="2020-06-11T16:37:29+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Elasticsearch索引(写入)速度优化</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h4>1.缩减索引字段</h4> 
+<p>es中只保留必要字段，缩减字段能有效缩减文档大小，提高写入速度。</p> 
+<h4>2.合理设置分片数和副本数</h4> 
+<p>7.*默认1个分片1和副本。Elasticsearch官方建议一个分片的大小应该在20到40 GB左右<code>，</code>分片个数建议 &gt;= 集群节点的个数，但是当索引较小时（写入性能需求 &gt; 搜索性能需求时），可以使用1个分片，过多的分片也会影响写入性能。</p> 
+<p>分片大小对于搜索查询非常重要。</p> 
+<ul><li>一方面， 如果分配给索引的分片太多，则Lucene分段会很小，从而导致开销增加。 当同时进行多个查询时，许多小分片也会降低查询吞吐量。</li><li>另一方面，太大的分片会导致搜索性能下降和故障恢复时间更长。</li></ul> 
+<p>在批量索引文档前可以将副本数设置为0，索引完成后恢复原来的值。</p> 
+<pre><code>"number_of_replicas":1
+"number_of_shards":1</code></pre> 
+<h4>3.索引刷新间隔refresh_interval</h4> 
+<p>默认情况下refresh_interval为1s，数据写入1秒后就可以被搜索到，每次索引的refresh会产生一个新的Lucene段，Lucene段即为segment，segment在复合一定条件后，会自动合并，因此这会导致频繁的segment merge行为，如果不需要特别高的搜索实时性，应该降低索引refresh周期。-1:禁止刷新。在批量索引文档前可以将refresh_interval设置为-1，完成后修改为默认值。由于我的场景是每天都会全量同步，此处将refresh_interval设置为120s</p> 
+<pre><code>"refresh_interval": "120s"</code></pre> 
+<p>假如refresh_interval设置为-1，只是es中的定时任务不会执行。但是es会根据一个versionMap去强制做一次refresh操作，缓冲区满的时候也会触发refresh操作。每30秒有个定时器去检查shardIndexingBufferSize大小，最终调用updateShardBuffers方法去refresh</p> 
+<h4>4.translog设置</h4> 
+<p>随着translog文件越来越大时要考虑把内存中的数据刷新到磁盘中，这个过程称为flush。在默认设置下，translog的持久化策略为: request，每个请求 都“flush”，配置异步刷新，刷新时间120s。</p> 
+<pre><code>"index.translog.durability": "async"
+"index.translog.sync_interval": "120s"</code></pre> 
+<h4>5.线程池队列</h4> 
+<p>当写入队列满时，es会拒绝接受索引事件，适当增加写入队列大小，默认为200。线程池大小官方不建议进行修改。</p> 
+<pre><code>thread_pool.write.queue_size: 500</code></pre> 
+<h4>6.使用es自动生成的id</h4> 
+<p>无更新操作时，尽量使用es自动生成的id，当你index一个document使用特定的id，ES需要去检查是否在同一个shard存在相同的ID的文档，这是一个相当昂贵的操作，并且随着文档数量的增加，花费呈指数增长。如果使用自动生成id，ES会跳过这个检查，使得Index速度更快。但是当需要更新操作时不适用。</p> 
+<h4>7.Indexing 缓冲大小</h4> 
+<p>在执行大量的索引操作时，indices.memory.index_buffer_size的默认 设置可能不够，这和可用堆内存、单节点上的shard数量相关，可以考虑适当增大该值，增大该值，减少segment，就会减少merge。默认大小为10% 48mb</p> 
+<pre><code>indices.memory.index_buffer_size: 20%
+indices.memory.min_index_buffer_size: 96mb</code></pre> 
+<h4>8.jvm.options</h4> 
+<p>Xmx和Xms的大小默认为1g，可以适当增加该值。</p> 
+<pre><code>-Xms2g
+-Xmx2g</code></pre> 
+<h4>9.禁用swapping</h4> 
+<p>在ES的官方文档上，要求<code>Disabled Swapping。</code>执行swapoff -a暂时禁用，机器重启后会恢复。要永久的关闭swapping，需要编辑<code>/etc/fstab</code>文件，将包含swap的行的注释掉。</p> 
+<p>参考文档：</p> 
+<ol><li><a href="https://www.cnblogs.com/eviltuzki/p/8439036.html" rel="nofollow">https://www.cnblogs.com/eviltuzki/p/8439036.html</a></li><li><a href="https://blog.csdn.net/wmj2004/article/details/80804411">https://blog.csdn.net/wmj2004/article/details/80804411</a></li><li><a href="https://blog.csdn.net/u012133048/article/details/93408374?utm_medium=distribute.pc_relevant.none-task-blog-BlogCommendFromMachineLearnPai2-1.nonecase&amp;depth_1-utm_source=distribute.pc_relevant.none-task-blog-BlogCommendFromMachineLearnPai2-1.nonecase">https://blog.csdn.net/u012133048/article/details/93408374?utm_medium=distribute.pc_relevant.none-task-blog-BlogCommendFromMachineLearnPai2-1.nonecase&amp;depth_1-utm_source=distribute.pc_relevant.none-task-blog-BlogCommendFromMachineLearnPai2-1.nonecase</a></li><li><a href="https://blog.csdn.net/HaixWang/article/details/80846749?utm_medium=distribute.pc_relevant.none-task-blog-BlogCommendFromMachineLearnPai2-1.nonecase&amp;depth_1-utm_source=distribute.pc_relevant.none-task-blog-BlogCommendFromMachineLearnPai2-1.nonecase">https://blog.csdn.net/HaixWang/article/details/80846749?utm_medium=distribute.pc_relevant.none-task-blog-BlogCommendFromMachineLearnPai2-1.nonecase&amp;depth_1-utm_source=distribute.pc_relevant.none-task-blog-BlogCommendFromMachineLearnPai2-1.nonecase</a></li><li><a href="https://www.cnblogs.com/MyOceansWeb/p/12653965.html" rel="nofollow">https://www.cnblogs.com/MyOceansWeb/p/12653965.html</a></li><li><a href="https://blog.csdn.net/laoyang360/article/details/85109769">https://blog.csdn.net/laoyang360/article/details/85109769</a></li><li><a href="https://blog.csdn.net/laoyang360/article/details/97695931">https://blog.csdn.net/laoyang360/article/details/97695931</a></li><li><a href="https://www.elastic.co/guide/en/elasticsearch/reference/7.x/modules-threadpool.html#node.processors" rel="nofollow">7.*官方文档</a></li></ol>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/2386e6e6ca48479cb3b20cb819499a76/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">oracle 数据库如何建立索引 如何用索引?</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/b479ec1fd1e5ad9ba9b8c1ba2e9f20eb/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">cas5.3.14三，TGT,Session的redis存储</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

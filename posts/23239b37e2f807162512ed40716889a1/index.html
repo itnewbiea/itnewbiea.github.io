@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>《深入理解JAVA虚拟机笔记》运行时栈帧、方法分派、动态类型 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="《深入理解JAVA虚拟机笔记》运行时栈帧、方法分派、动态类型" />
+<meta property="og:description" content="运行时栈帧结构 Java 虚拟机以方法作为最基本的执行单元，“栈帧”（Stack Frame）则是用于支持虚拟机进行方法调用和方法执行背后的数据结构，它也是虚拟机运行时数据区中的虚拟机栈的栈元素。栈帧存储了方法的局部变量表、操作数栈、动态连接和方法返回地址等信息。每一个方法从调用开始至执行结束的过程，都对应着一个栈帧在虚拟机栈里面从入栈到出栈的过程。
+每一个栈帧都包括了局部变量表、操作数栈、动态连接、方法返回地址和一些额外的附加信息。在 Java 编译程序代码时，栈帧中需要多大的局部变量表，需要多深的操作数栈就已经被分析计算出来，并且写入到方法表的 Code 属性之中。换言之，一个栈帧需要分配多少内存，并不会受到程序运行期变量数据的影响，而仅仅取决于程序源码和具体的虚拟机实现的内存布局形式。
+一个线程中的方法调用链可能会很长，以Java 程序的角度来看，同一时刻、同一条线程里面，在调用堆栈的所有方法都同时处于执行状态。而对于执行引擎来讲，在活动线程中，只有位于栈顶的方法才是在运行的、生效的，其被称为“当前栈帧（Current Stack Frame）”，与之关联的方法被称为“当前方法（Current Method）”。执行引擎所运行的所有字节码指令都只针对当前栈帧进行操作。栈帧结构如下图所示：
+局部变量表 局部变量表（Local Variables Table）是一组变量值的存储空间，用于存放方法参数和方法内部定义的局部变量。在Java程序被编译为Class文件时，就在方法表的Code属性的max_locals数据项中确定了该方法所需分配的局部变量表的最大容量。
+局部变量表的容量以变量槽（Variable Slot）为最小单位。《Java 虚拟机规范》中并没有明确指出一个变量槽应占应用的内存空间大小，只是很有导向性地说到每个变量槽都应该能存放一个boolean、 byte、char、short、int、float、reference或returnAddress类型的数据，这8种数据类型，都可以使用32位或更小的物理内存来存储，它允许变量槽的长度可以随着处理器、操作系统或虚拟机实现的不同而发生变化，保证了即使在64位虚拟机中使用了64位的物理内存空间去实现一个变量槽，虚拟机仍要使用对齐和补白的手段让变量槽在外观上看起来与32位虚拟机中的一致。
+一个变量槽可以存放一个32位以内的数据类型，Java中占用不超过32位存储空间的数据类型有boolean、byte、char、short、int、float、reference 和returnAddress这8种类型。前面6种不需要多加解释，读者可以按照Java语言中对应数据类型的概念去理解它们（仅是这样理解而已，Java语言和Java虚拟机中的基本数据类型是存在本质差别的），而第7种reference类型表示对一个对象实例的引用，《Java 虚拟机规范》既没有说明它的长度，也没有明确指出这种引用应有怎样的结构。但一般来说，虚拟机实现至少都应当能通过这个引用做到两件事情，一是根据引用直接或间接地查找到对象在Java堆中的数据存放的起始地址或索引，二是根据引用直接或间接地查找到对象所属数据类型在方法区中的存储的类型信息。第8种returnAddress类型目前已经很少见了，它是为字节码指令jsr、jsr_w和ret服务的，指向了一条字节码指令的地址，某些很古老的Java虚拟机曾经使用这几条指令来实现异常处理时的跳转，但现在也已经全部改为采用异常表来代替了。
+对于 64 位的数据类型，Java虚拟机会以高位对齐的方式为其分配两个连续的变量槽空间。Java 语言中明确的 64 位的数据类型只有 long 和 double 两种。这里把long和double数据类型分割存储的做法，与Java内存模型中“long和double的非原子性协定”，允许把一次long和double数据类型读写分割为两次 32 位读写的做法有些类似。不过，由于局部变量表是建立在线程堆栈中的，属于线程私有的数据，无论读写两个连续的变量槽是否为原子操作，都不会引起数据竞争和线程安全问题。
+Java虚拟机通过索引定位的方式使用局部变量表，索引值的范围是从0开始至局部变量表最大的变量槽数量。如果访问的是32位数据类型的变量，索引N就代表了使用第N个变量槽，如果访问的是64位数据类型的变量，则说明会同时使用第N和N&#43;1两个变量槽。对于两个相邻的共同存放一个64位数据的两个变量槽，虚拟机不允许采用任何方式单独访问其中的某一个，《Java虚拟机规范》中明确要求了如果遇到进行这种操作的字节码序列，虚拟机就应该在类加载的校验阶段中抛出异常。
+当一个方法被调用时，Java虚拟机会使用局部变量表来完成参数值到参数变量列表的传递过程，即实参到形参的传递。如果执行的是实例方法（没有被static修饰的方法），那局部变量表中第0位索引的变量槽默认是用于传递方法所属对象实例的引用，在方法中可以通过关键字“this”来访问这到这个隐含的参数。其余参数则按照参数表顺序排列，占用从1开始的局部变量槽，参数表分配完毕后，再根据方法体内部定义的变量顺序和作用域分配其余的变量槽。
+[隐式参数this][显示的参数列表][方法内的局部变量] 为了尽可能节省栈帧耗用的内存空间，局部变量表中的变量槽是可以重用的，方法体中定义的变量，其作用域不一定会覆盖整个方法体，如果当前字节码PC计数器的值已经超出了某个变量的作用域，那这个变量对应的变量槽就可以交给其他变量来重用。不过，这样的设计除了节省栈帧空间以外，还会伴随有少量额外的副作用，例如在某些情况下变量槽的复用会直接影响到系统的垃圾收集行为。
+// 代码清单 8—1 局部变量表槽复用对垃圾收集的影响之一 public static void main(String[] args) { byte[] placeholder = new byte[64 * 1024 * 1024]; System.gc(); // 没有回收上面的 64M 空间 } 代码清单 8-1 中的代码很简单，向内存中填充了64MB的数据，然后通知虚拟机进行垃圾收集。我们在虚拟机运行参数中加上 “-verbose:gc” 来看看垃圾收集的过程，发现在System." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/23239b37e2f807162512ed40716889a1/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-12-29T13:20:42+08:00" />
+<meta property="article:modified_time" content="2023-12-29T13:20:42+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">《深入理解JAVA虚拟机笔记》运行时栈帧、方法分派、动态类型</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="_0"></a><strong>运行时栈帧结构</strong></h2> 
+<p>Java 虚拟机以<strong>方法</strong>作为<strong>最基本的执行单元</strong>，“<strong>栈帧</strong>”（Stack Frame）则是用于支持虚拟机进行<strong>方法调用</strong>和<strong>方法执行</strong>背后的数据结构，它也是虚拟机运行时数据区中的虚拟机栈的栈元素。<strong>栈帧存储了方法的局部变量表、操作数栈、动态连接和方法返回地址等信息</strong>。<strong>每一个方法从调用开始至执行结束的过程，都对应着一个栈帧在虚拟机栈里面从入栈到出栈的过程。</strong></p> 
+<p>每一个<strong>栈帧</strong>都包括了<strong>局部变量表、操作数栈、动态连接、方法返回地址</strong>和一些额外的附加信息。<strong>在 Java 编译程序代码时，栈帧中需要多大的局部变量表，需要多深的操作数栈就已经被分析计算出来，并且写入到方法表的 Code 属性之中</strong>。换言之，<strong>一个栈帧需要分配多少内存，并不会受到程序运行期变量数据的影响，而仅仅取决于程序源码和具体的虚拟机实现的内存布局形式。</strong></p> 
+<p>一个线程中的方法调用链可能会很长，以Java 程序的角度来看，同一时刻、同一条线程里面，在调用堆栈的所有方法都同时处于执行状态。而<strong>对于执行引擎来讲，在活动线程中，只有位于栈顶的方法才是在运行的、生效的</strong>，其被称为“<strong>当前栈帧</strong>（Current Stack Frame）”，与之关联的方法被称为“<strong>当前方法</strong>（Current Method）”。<strong>执行引擎所运行的所有字节码指令</strong>都只针对<strong>当前栈帧</strong>进行操作。栈帧结构如下图所示：</p> 
+<p><img src="https://images2.imgbox.com/79/b7/ansEZYkX_o.png" alt="在这里插入图片描述" width="600"></p> 
+<h3><a id="_11"></a><strong>局部变量表</strong></h3> 
+<p>局部变量表（Local Variables Table）是一组变量值的存储空间，<strong>用于存放方法参数和方法内部定义的局部变量</strong>。<strong>在Java程序被编译为Class文件时，就在方法表的<code>Code</code>属性的<code>max_locals</code>数据项中确定了该方法所需分配的局部变量表的最大容量</strong>。</p> 
+<p><strong>局部变量表的容量以变量槽（Variable Slot）为最小单位</strong>。《Java 虚拟机规范》中并没有明确指出一个变量槽应占应用的内存空间大小，只是很有导向性地说到每个变量槽都应该能存放一个<code>boolean、 byte、char、short、int、float、reference</code>或<code>returnAddress</code>类型的数据，这8种数据类型，都可以使用32位或更小的物理内存来存储，它允许变量槽的长度可以随着处理器、操作系统或虚拟机实现的不同而发生变化，保证了即使在64位虚拟机中使用了64位的物理内存空间去实现一个变量槽，虚拟机仍要使用对齐和补白的手段让变量槽在外观上看起来与32位虚拟机中的一致。</p> 
+<p><strong>一个变量槽可以存放一个32位以内的数据类型</strong>，Java中占用不超过<strong>32位</strong>存储空间的数据类型有<code>boolean、byte、char、short、int、float、reference</code> 和<code>returnAddress</code>这8种类型。前面6种不需要多加解释，读者可以按照Java语言中对应数据类型的概念去理解它们（仅是这样理解而已，Java语言和Java虚拟机中的基本数据类型是存在本质差别的），而第7种<code>reference</code>类型表示<strong>对一个对象实例的引用</strong>，《Java 虚拟机规范》既没有说明它的长度，也没有明确指出这种引用应有怎样的结构。但一般来说，虚拟机实现至少都应当能通过这个引用做到两件事情，<strong>一是根据引用直接或间接地查找到对象在Java堆中的数据存放的起始地址或索引，二是根据引用直接或间接地查找到对象所属数据类型在方法区中的存储的类型信息</strong>。第8种<code>returnAddress</code>类型目前已经很少见了，它是为字节码指令jsr、jsr_w和ret服务的，指向了一条字节码指令的地址，某些很古老的Java虚拟机曾经使用这几条指令来实现异常处理时的跳转，但现在也已经全部改为采用异常表来代替了。</p> 
+<p><strong>对于 64 位的数据类型，Java虚拟机会以高位对齐的方式为其分配两个连续的变量槽空间。Java 语言中明确的 64 位的数据类型只有 <code>long</code> 和 <code>double</code> 两种</strong>。这里把<code>long</code>和<code>double</code>数据类型分割存储的做法，与Java内存模型中“<code>long</code>和<code>double</code>的非原子性协定”，允许把一次<code>long</code>和<code>double</code>数据类型读写分割为两次 32 位读写的做法有些类似。不过，<strong>由于局部变量表是建立在线程堆栈中的，属于线程私有的数据，无论读写两个连续的变量槽是否为原子操作，都不会引起数据竞争和线程安全问题</strong>。</p> 
+<p><strong>Java虚拟机通过索引定位的方式使用局部变量表，索引值的范围是从<code>0</code>开始至局部变量表最大的变量槽数量</strong>。如果访问的是<strong>32位</strong>数据类型的变量，索引<code>N</code>就代表了使用第<code>N</code>个变量槽，如果访问的是<strong>64位</strong>数据类型的变量，则说明会同时使用第<code>N</code>和<code>N+1</code>两个变量槽。对于两个相邻的共同存放一个64位数据的两个变量槽，虚拟机不允许采用任何方式单独访问其中的某一个，《Java虚拟机规范》中明确要求了如果遇到进行这种操作的字节码序列，虚拟机就应该在类加载的校验阶段中抛出异常。</p> 
+<p><strong>当一个方法被调用时，Java虚拟机会使用局部变量表来完成参数值到参数变量列表的传递过程，即实参到形参的传递。如果执行的是实例方法（没有被<code>static</code>修饰的方法），那局部变量表中第<code>0</code>位索引的变量槽默认是用于传递方法所属对象实例的引用，在方法中可以通过关键字“<code>this</code>”来访问这到这个隐含的参数。其余参数则按照参数表顺序排列，占用从<code>1</code>开始的局部变量槽，参数表分配完毕后，再根据方法体内部定义的变量顺序和作用域分配其余的变量槽。</strong></p> 
+<pre><code class="prism language-java"><span class="token punctuation">[</span>隐式参数<span class="token keyword">this</span><span class="token punctuation">]</span><span class="token punctuation">[</span>显示的参数列表<span class="token punctuation">]</span><span class="token punctuation">[</span>方法内的局部变量<span class="token punctuation">]</span>
+</code></pre> 
+<p><strong>为了尽可能节省栈帧耗用的内存空间，局部变量表中的变量槽是可以重用的</strong>，方法体中定义的变量，其作用域不一定会覆盖整个方法体，<strong>如果当前字节码PC计数器的值已经超出了某个变量的作用域，那这个变量对应的变量槽就可以交给其他变量来重用</strong>。不过，这样的设计除了节省栈帧空间以外，还会伴随有少量额外的<strong>副作用</strong>，例如在某些情况下变量槽的复用会直接<strong>影响到系统的垃圾收集行为</strong>。</p> 
+<pre><code class="prism language-java"><span class="token comment">// 代码清单 8—1 局部变量表槽复用对垃圾收集的影响之一</span>
+<span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token punctuation">]</span> placeholder <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token number">64</span> <span class="token operator">*</span> <span class="token number">1024</span> <span class="token operator">*</span> <span class="token number">1024</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+    <span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">gc</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 没有回收上面的 64M 空间</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>代码清单 8-1 中的代码很简单，向内存中填充了<code>64MB</code>的数据，然后通知虚拟机进行垃圾收集。我们在虚拟机运行参数中加上 “<code>-verbose:gc</code>” 来看看垃圾收集的过程，发现在<code>System.gc()</code>运行后并没有回收掉这<code>64MB</code>的内存，下面是运行的结果：</p> 
+<pre><code class="prism language-java"><span class="token punctuation">[</span><span class="token constant">GC</span> <span class="token punctuation">(</span><span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">gc</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token number">70792</span>K<span class="token operator">-&gt;</span><span class="token function">66352K</span><span class="token punctuation">(</span><span class="token number">251392</span>K<span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token number">0.0007000</span> secs<span class="token punctuation">]</span> 
+<span class="token punctuation">[</span><span class="token class-name">Full</span> <span class="token constant">GC</span> <span class="token punctuation">(</span><span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">gc</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token number">66352</span>K<span class="token operator">-&gt;</span><span class="token function">66212K</span><span class="token punctuation">(</span><span class="token number">251392</span>K<span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token number">0.0041151</span> secs<span class="token punctuation">]</span> 
+</code></pre> 
+<p>代码清单 8-1 的代码没有回收掉<code>placeholder</code>所占的内存是能说得过去，因为在执行<code>System.gc()</code>时，变量<code>placeholder</code>还处于作用域之内，虚拟机自然不敢回收掉<code>placeholder</code>的内存。那我们把代码修改一下，变成代码清单 8-2 的样子。</p> 
+<pre><code class="prism language-java"><span class="token comment">// 代码清单 8-2 局部变量表 Slot 复用对垃圾收集的影响之二</span>
+<span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token punctuation">]</span> placeholder <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token number">64</span> <span class="token operator">*</span> <span class="token number">1024</span> <span class="token operator">*</span> <span class="token number">1024</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">gc</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 没有回收上面的 64M 空间</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>下面是运行的结果：</p> 
+<pre><code class="prism language-java"><span class="token punctuation">[</span><span class="token constant">GC</span> <span class="token punctuation">(</span><span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">gc</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token number">70792</span>K<span class="token operator">-&gt;</span><span class="token function">66416K</span><span class="token punctuation">(</span><span class="token number">251392</span>K<span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token number">0.0007739</span> secs<span class="token punctuation">]</span> 
+<span class="token punctuation">[</span><span class="token class-name">Full</span> <span class="token constant">GC</span> <span class="token punctuation">(</span><span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">gc</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token number">66416</span>K<span class="token operator">-&gt;</span><span class="token function">66212K</span><span class="token punctuation">(</span><span class="token number">251392</span>K<span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token number">0.0044062</span> secs<span class="token punctuation">]</span> 
+</code></pre> 
+<p>加入了花括号之后，<code>placeholder</code>的作用域被限制在花括号以内，从代码逻辑上讲，在执行<code>System.gc()</code>的时候，<code>placeholder</code>已经不可能再被访问了，但执行这段程序，会发现运行结果如下，还是有<code>64MB</code>的内存没有被回收掉，这又是为什么呢？</p> 
+<p>在解释为什么之前，我们先对这段代码进行第二次修改，在调用<code>System.gc()</code>之前加入一行“<code>int a=0;</code>”，变成代码清单 8-3 的样子。</p> 
+<pre><code class="prism language-java"><span class="token comment">// 代码清单 8—3 局部变量表 Slot 复用对垃圾收集的影响之三</span>
+<span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token punctuation">]</span> placeholder <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token number">64</span> <span class="token operator">*</span> <span class="token number">1024</span> <span class="token operator">*</span> <span class="token number">1024</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">int</span> a <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">gc</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 回收了上面的 64M 空间</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>这个修改看起来很莫名其妙，但运行一下程序，却发现这次内存真的被正确回收了。</p> 
+<pre><code class="prism language-java"><span class="token punctuation">[</span><span class="token constant">GC</span> <span class="token punctuation">(</span><span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">gc</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token number">70792</span>K<span class="token operator">-&gt;</span><span class="token function">66400K</span><span class="token punctuation">(</span><span class="token number">251392</span>K<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">0.0008860</span> secs
+<span class="token punctuation">[</span><span class="token class-name">Full</span> <span class="token constant">GC</span> <span class="token punctuation">(</span><span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">gc</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token number">66400</span>K<span class="token operator">-&gt;</span><span class="token function">675K</span><span class="token punctuation">(</span><span class="token number">251392</span>K<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">0.0044742</span> secs<span class="token punctuation">]</span>
+</code></pre> 
+<p>代码清单8-1至8-3中，<code>placeholder</code>能否被回收的根本原因就是：<strong>局部变量表中的变量槽是否还存有关于<code>placeholder</code>数组对象的引用</strong>。第一次修改中，代码虽然已经离开了<code>placeholder</code>的作用域，但在此之后，再没有发生过任何对局部变量表的读写操作，<code>placeholder</code>原本所占用的变量槽还没有被其他变量所复用，所以作为 GC Roots 一部分的局部变量表仍然保持着对它的关联。这种关联没有被及时打断，绝大部分情况下影响都很轻微。但<strong>如果遇到一个方法，其后面的代码有一些耗时很长的操作，而前面又定义了占用了大量内存但实际上已经不会再使用的变量，手动将其设置为<code>null</code>值（用来代替那句<code>int a = 0</code>，把变量对应的局部变量槽清空） 便不见得是一个绝对无意义的操作，这种操作可以作为一种在极特殊情形（对象占用内存大、此方法的栈帧长时间不能被回收、方法调用次数达不到即时编译器的编译条件） 下的“奇技”来使用。</strong></p> 
+<blockquote> 
+ <p>注意：在 Android 的 Dalvik 和 ART 虚拟机中，由于使用寄存器代替了局部变量表和操作数栈的角色，所以也不存在上面变量槽复用的问题。在基于寄存器的虚拟机当中，变量会被复制给65536个可用寄存器中的任何一个，直接访问这些寄存器来存取局部变量。</p> 
+</blockquote> 
+<p>Java语言的一本非常著名的书籍《Practical Java》中将把 “<strong>不使用的对象应手动赋值为 null</strong>” 作为一条推荐的编码规则（笔者并不认同这条规则），但是并没有解释具体原因，很长时间里都有读者对这条规则感到疑惑。</p> 
+<p>虽然代码清单8-1至8-3的示例说明了赋<code>null</code>操作在某些极端情况下确实是有用的，但笔者的观点是不应当对赋<code>null</code>值操作有什么特别的依赖，更没有必要把它当作一个普遍的编码规则来推广。原因有两点：</p> 
+<ul><li><strong>从编码角度讲，以恰当的变量作用域来控制变量回收时间才是最优雅的解决方法</strong>，如代码清单 8-3 那样的场景除了做实验外几乎毫无用处。</li><li>更关键的是，<strong>从执行角度来讲，使用赋<code>null</code>操作来优化内存回收是建立在对字节码执行引擎概念模型的理解之上的，当虚拟机使用解释器执行时，通常与概念模型还会比较接近，但经过即时编译器施加了各种编译优化措施以后，两者的差异就会非常大</strong>，只保证程序执行的结果与概念一致。<strong>在实际情况中，即时编译(JIT)才是虚拟机执行代码的主要方式，赋<code>null</code>值的操作在经过即时编译优化后几乎是一定会被当作无效操作消除掉的，这时候将变量设置为<code>null</code>就是毫无意义的行为</strong>。字节码被即时编译为本地代码后，对 GC Roots 的枚举也与解释执行时期有显著差别，以前面的例子来看，经过第一次修改的代码清单8-2在经过即时编译后，<code>System.gc()</code>执行时就可以正确地回收内存，根本无须写成代码清单8-3的样子。</li></ul> 
+<p>关于局部变量表，还有一点可能会对实际开发产生影响，就是<strong>局部变量不像前面介绍的类变量那样存在“准备阶段”</strong>。我们知道<strong>类的字段变量有两次赋初始值的过程，一次在准备阶段，赋予系统初始值； 另外一次在初始化阶段，赋予程序员定义的初始值</strong>。<strong>因此即使在初始化阶段程序员没有为类变量赋值也没有关系，类变量仍然具有一个确定的初始值，不会产生歧义</strong>。<strong>但局部变量就不一样了，如果一个局部变量定义了但没有赋初始值，那它是完全不能使用的</strong>。<strong>所以不要认为Java中任何情况下都存在诸如整型变量默认为<code>0</code>、布尔型变量默认为<code>false</code>等这样的默认值规则</strong>。如代码8-4所示，这段代码在Java中其实并不能运行（ 但是在其他语言，譬如C和C++中类似的代码是可以运行的），所幸编译器能在编译期间就检查到并提示出这一点，即便编译能通过或者手动生成字节码的方式制造出下面代码的效果，字节码校验的时候也会被虚拟机发现而导致类加载失败。</p> 
+<pre><code class="prism language-java"><span class="token comment">// 代码清单 8—4 未赋值的局部变量</span>
+
+<span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">int</span> a<span class="token punctuation">;</span>
+	<span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span>a<span class="token punctuation">)</span><span class="token punctuation">;</span> 
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="_106"></a><strong>操作数栈</strong></h3> 
+<p>操作数栈（Operand Stack）也常被称为操作栈，它是一个<strong>后入先出栈</strong>（Last In First Out，LIFO）。<strong>同局部变量表一样，操作数栈的最大深度也在编译的时候被写入到Code属性的<code>max_stacks</code>数据项之中</strong>。操作数栈的每一个元素都可以是包括<code>long</code>和<code>double</code>在内的任意Java数据类型。32位数据类型所占的栈容量位<code>1</code>，64位数据类型所占的栈容量位<code>2</code>。Javac编译器的数据流分析工作保证了在方法执行的任何时候，操作栈数的深度都不会超过在<code>max_stacks</code>数据项中设定的最大值。</p> 
+<p><strong>当一个方法刚刚开始执行的时候，这个方法的操作数栈是空的，在方法的执行过程中，会有各种字节码指令往操作数栈中写入和提取内容，也就是出栈和入栈操作</strong>。譬如在做算术运算的时候是通过将运算涉及的操作数栈压入栈顶后调用运算指令来进行的，又譬如在调用其他方法的时候是通过操作数栈来进行方法参数的传递。</p> 
+<p>另外<strong>在概念模型中两个不同栈帧作为不同方法的虚拟机栈的元素，是完全相互独立的</strong>。但是<strong>在大多虚拟机的实现里都会进行一些优化处理，令两个栈帧出现一部分重叠</strong>。让下面栈帧的部分操作数栈与上面栈帧的部分局部变量表重叠在一起，这样做不仅节约了一些空间，更重要的是进行方法调用时可以直接共用一部分数据，无须进行额外的参数复制转递了，重叠的过程如下图所示：</p> 
+<p><img src="https://images2.imgbox.com/ee/d4/UyYTD7MA_o.png" alt="在这里插入图片描述" width="550"></p> 
+<h3><a id="_116"></a><strong>动态连接</strong></h3> 
+<p><strong>每个栈帧都包含一个指向运行时常量池中该栈帧所属方法的引用，持有这个引用是为了支持方法调用过程中的动态连接（Dynamic Linking）</strong>。Class文件的常量池中存有大量的符号引用，字节码中的方法调用指令就以常量池里指向方法的符号引用作为参数。<strong>这些符号引用一部分会在类加载阶段或者第一次使用的时候就被转化为直接引用。这种转化被称为静态解析。另外一部分将在每一次运行期间都转化为直接引用，这部分就称为动态连接。</strong></p> 
+<h3><a id="_120"></a><strong>方法返回地址</strong></h3> 
+<p>当一个方法开始执行后，只有<strong>两种方式退出</strong>这个方法。<strong>第一种方式是执行引擎遇到任意一个方法返回的字节码指令</strong>，这时候可能会有返回值传递给上层的方法调用者（调用当前方法的方法称为调用者或者主调方法），方法是否有返回值以及返回值的类型将根据遇到何种方法返回指令来决定，这种退出方法称为“<strong>正常调用完成</strong>”。</p> 
+<p><strong>另外一种退出方式是在方法执行的过程中遇到了异常，并且这个异常没有在方法体内得到妥善处理</strong>。无论是Java虚拟机内部产生的异常，还是代码中使用<code>athrow</code>字节码指令产生的异常，只要在本方法的异常表中没有搜索到匹配的异常处理器，就会导致方法退出，这种退出方法的方式称为“<strong>异常调用完成</strong>”。<strong>一个方法使用异常完成出口的方式退出，是不会给它的上层调用者提供任何返回值的。</strong></p> 
+<p><strong>无论采用何种退出方式，在方法退出之后，都必须返回到最初方法被调用时的位置，程序才能继续执行</strong>，方法返回时可能需要在栈帧中保存一些信息，用来帮助恢复它的上层主调方法的执行状态。 <strong>一般来说，方法正常退出时，主调方法的PC计数器的值就可以作为返回地址，栈帧中很可能会保存这个计数器值。而方法异常退出时，返回地址是要通过异常处理器表来确定的，栈帧中就一般不会保存这部分信息。</strong></p> 
+<p><strong>方法退出的过程实际上等同于把当前栈帧出栈</strong>，因此退出时<strong>可能</strong>执行的操作有：<strong>恢复上层方法的局部变量表和操作数栈</strong>，<strong>把返回值（如果有的话）压入调用者栈帧的操作数栈中</strong>，<strong>调整PC计数器的值以指向方法调用指令后面的一条指令</strong>等。这里说“<strong>可能</strong>”是由于这是<strong>基于概念模型</strong>的讨论，只有具体到某一款Java虚拟机实现，会执行哪些操作才能被确定下来。</p> 
+<h2><a id="_131"></a><strong>方法调用</strong></h2> 
+<p>调用不同类型的方法，字节码指令集里设计了不同的指令。在 Java 虚拟机支持以下 5 条方法调用字节码指令，分别是：</p> 
+<ul><li><strong><code>invokestatic</code></strong>，用于<strong>调用静态方法</strong>。</li><li><strong><code>invokespecial</code></strong>，用于<strong>调用实例构造器<code>&lt;init&gt;()</code>方法</strong>、<strong>私有方法</strong>和<strong>父类中的方法</strong>。</li><li><strong><code>invokevirtual</code></strong>，用于<strong>调用所有的虚方法</strong>。</li><li><strong><code>invokeinterface</code></strong>，用于<strong>调用接口方法</strong>，会<strong>在运行时再确定一个实现该接口的对象</strong>。</li><li><strong><code>invokedynamic</code></strong>，<strong>先在运行时动态解析出调用点限定符所引用的方法，然后再执行该方法</strong>。</li></ul> 
+<p>前面 4 条调用指令，分派逻辑都固化在Java虚拟机内部，而<code>invokedynamic</code>指令的分派逻辑是由用户设定的引导方法来决定的。</p> 
+<p><strong>只要能被 <code>invokestatic</code> 和 <code>invokespecial</code> 指令调用的方法，都可以在解析阶段中确定唯一的调用版本</strong>，Java 语言里符合这个条件的方法有：<strong>静态方法</strong>、<strong>私有方法</strong>、<strong>实例构造器</strong>、<strong>父类方法</strong> 4 种，再加上<strong>被 <code>final</code> 修饰的方法</strong>（尽管它使用 <code>invokevirtual</code> 指令调用），<strong>这 5 种方法调用会在类加载的时候就可以把符号引用解析为该方法的直接引用</strong>。这些方法统称为 “<strong>非虚方法</strong>”（<strong>Non-Virtual Method</strong>），与之相反，其他方法就被称为“<strong>虚方法</strong>”（<strong>Virtual Method</strong>）。</p> 
+<p>Java 中的<strong>非虚方法</strong>除了使用 <code>invokestatic</code>、<code>invokespecial</code> 调用的方法之外还有一种，就是被 <code>final</code> 修饰的实例方法。虽然由于历史设计的原因，<code>final</code>方法是使用<code>invokevirtual</code>指令来调用的，但是因为<strong>它也无法被覆盖，没有其他版本的可能</strong>，所以也<strong>无须对方法接收者进行多态选择</strong>，又或者说<strong>多态选择的结果肯定是唯一的</strong>。<strong>在《Java语言规范》中明确定义了被 <code>final</code> 修饰的方法是一种非虚方法。</strong></p> 
+<p><strong>解析调用一定是个静态的过程，在编译期间就完全确定</strong>，<strong>在类加载的解析阶段就会把涉及的符号引用全部转变为明确的直接引用，不必延迟到运行期再去完成</strong>。而另一种主要的方法调用形式：<strong>分派（Dispatch）调用</strong> 则要复杂许多，它可能是静态的也可能是动态的，按照分派依据的宗量数可分为单分派和多分派。</p> 
+<h3><a id="_149"></a><strong>静态分派</strong></h3> 
+<p>为了解释静态分派和重载（Overload），笔者准备了一段经常出现在面试题中的程序代码，读者不妨先看一遍，想一下程序的输出结果是什么。后面的话题将围绕这个类的方法来编写重载代码，以分析虚拟机和编译器确定方法版本的过程。程序如代码清单8-6所示。</p> 
+<pre><code class="prism language-java"><span class="token comment">// 代码清单 8—6 方法静态分派演示</span>
+<span class="token comment">/**
+ * 静态分派演示
+ */</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">StaticDispatch</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">static</span> <span class="token keyword">abstract</span> <span class="token keyword">class</span> <span class="token class-name">Human</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">static</span> <span class="token keyword">class</span> <span class="token class-name">Man</span> <span class="token keyword">extends</span> <span class="token class-name">Human</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">static</span> <span class="token keyword">class</span> <span class="token class-name">Woman</span> <span class="token keyword">extends</span> <span class="token class-name">Human</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">sayHello</span><span class="token punctuation">(</span><span class="token class-name">Human</span> guy<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"Hello, guy!"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">sayHello</span><span class="token punctuation">(</span><span class="token class-name">Man</span> guy<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"Hello, gentleman!"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">sayHello</span><span class="token punctuation">(</span><span class="token class-name">Woman</span> guy<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"Hello, lady!"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">Human</span> man <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Man</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">Human</span> woman <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Woman</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">StaticDispatch</span> sd <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">StaticDispatch</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        sd<span class="token punctuation">.</span><span class="token function">sayHello</span><span class="token punctuation">(</span>man<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        sd<span class="token punctuation">.</span><span class="token function">sayHello</span><span class="token punctuation">(</span>woman<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>运行结果：</p> 
+<pre><code class="prism language-java"><span class="token class-name">Hello</span><span class="token punctuation">,</span> guy<span class="token operator">!</span>
+<span class="token class-name">Hello</span><span class="token punctuation">,</span> guy<span class="token operator">!</span>
+</code></pre> 
+<p>代码清单 8-6 中的代码实际上是在考验阅读者对重载的理解程度，相信对 Java 稍有经验的程序员看完程序后都能得出正确的运行结果，但为什么虚拟机会选择执行参数类型为 <code>Human</code> 的重载版本呢？在解决这个问题之前，我们先通过如下代码来定义两个关键概念：</p> 
+<pre><code class="prism language-java"><span class="token class-name">Human</span> man <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Man</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>我们把上面代码中的<code>Human</code>称为变量的<strong>静态类型 (Static Type)</strong>，或者叫<strong>外观类型</strong>，后面的<code>Man</code>称为变量的<strong>实际类型</strong>或者叫<strong>运行时类型</strong> 。静态类型和实际类型在程序中都可能发生变化，区别是<strong>静态类型的变化仅仅在使用时发生</strong>，<strong>变量本身的静态类型不会被改变</strong>，<strong>并且最终的静态类型是编译期可知的</strong>；<strong>而实际类型变化的结果在运行期才可确定，编译器在编译程序的时候并不知道一个对象的实际类型是什么</strong>。</p> 
+<p>笔者猜想上面这段话读者大概会不太好理解，那不妨通过一段实际例子来解释，譬如有下面的代码：</p> 
+<pre><code class="prism language-java"><span class="token comment">// 实际类型变化</span>
+<span class="token class-name">Human</span> human <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">Random</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">nextBoolean</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">?</span> <span class="token keyword">new</span> <span class="token class-name">Man</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">:</span> <span class="token keyword">new</span> <span class="token class-name">Woman</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">// 静态类型变化</span>
+sd<span class="token punctuation">.</span><span class="token function">sayHello</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token class-name">Man</span><span class="token punctuation">)</span> human<span class="token punctuation">)</span><span class="token punctuation">;</span>
+sd<span class="token punctuation">.</span><span class="token function">sayHello</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token class-name">Woman</span><span class="token punctuation">)</span> human<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>而上面的代码中，对象<code>human</code>的<strong>实际类型是可变的</strong>，编译期间它完全是个“薛定谔的人”，到底是<code>Man</code>还是<code>Woman</code>，必须等到程序运行到这行时才能确定。而<code>human</code>的<strong>静态类型</strong>是<code>Human</code>，也可以在使用时强制转型临时改变这个类型，但这个改变仍是在编译期可知的，两次<code>sayHello()</code>方法的调用，在编译期完全可以明确转型的是 <code>Man</code> 还是 <code>Woman</code>。</p> 
+<p>解释清楚了静态类型与实际类型的概念，我们就把话题再转回到代码清单 8-6 的样例代码中。<code>main()</code> 里面两次<code>sayHello()</code>方法的调用，在方法接收者已经确定是对象<code>sd</code>的前提下，使用哪个重载版本，<strong>完全取绝于传入参数的数量和数据类型</strong>。代码中故意定义了两个静态类型相同，而实际类型不同的变量，但<strong>虚拟机（准确的说是编译器）在重载时是通过参数的静态类型而不是实际类型作为判定依据的</strong>。<strong>由于静态类型在编译期可知，所以在编译阶段，Javac 编译器就根据参数的静态类型决定了会使用哪个重载版本</strong>，因此选择了<code>sayHello(Human man)</code> 作为调用目标，并把这个方法的符号引用写到 <code>main()</code> 里的两条 <code>invokevirtual</code> 指令的参数中。</p> 
+<p><strong>所有依赖静态类型来决定方法执行版本的分派动作，称为静态分派</strong>。静态分派的最典型应用表现就是<strong>方法重载</strong>。<strong>静态分派发生在编译阶段</strong>，因此确定静态分派的动作实际上<strong>不是由虚拟机来执行的</strong>，这点也是为何一些资料选择把它归入“解析”而不是“分派”的原因。</p> 
+<p>需要注意 <strong>Javac 编译器虽然能确定出方法重载的版本，但在很多情况下这个重载版本并不是“唯一”的，往往只能确定一个“相对更合适的”版本</strong>。这种模糊的结论在由<code>0</code>和<code>1</code>构成的计算机世界中算是个比较稀罕的事件，产生这种模糊结论的主要原因是<strong>字面量天生的模糊性</strong>，它不需要定义，所以<strong>字面量就没有显式的静态类型，它的静态类型只能通过语言、语法的规则去理解和推断</strong>。代码清单8-7演示了何谓“更加合适的”版本。</p> 
+<pre><code class="prism language-java"><span class="token comment">// 代码清单 8—7 重载方法匹配优先级</span>
+<span class="token keyword">package</span> <span class="token namespace">org<span class="token punctuation">.</span>fenixsoft<span class="token punctuation">.</span>polymorphic</span><span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">java<span class="token punctuation">.</span>io<span class="token punctuation">.</span></span><span class="token class-name">Serializable</span></span><span class="token punctuation">;</span>
+
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">Overload</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">sayHello</span><span class="token punctuation">(</span><span class="token class-name">Object</span> arg<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"hello Object"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">sayHello</span><span class="token punctuation">(</span><span class="token keyword">int</span> arg<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"hello int"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">sayHello</span><span class="token punctuation">(</span><span class="token keyword">long</span> arg<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"hello long"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">sayHello</span><span class="token punctuation">(</span><span class="token class-name">Character</span> arg<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"hello Character"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">sayHello</span><span class="token punctuation">(</span><span class="token keyword">char</span> arg<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"hello char"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">sayHello</span><span class="token punctuation">(</span><span class="token keyword">char</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span> arg<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"hello char..."</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">sayHello</span><span class="token punctuation">(</span><span class="token class-name">Serializable</span> arg<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"hello Serializable"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">sayHello</span><span class="token punctuation">(</span><span class="token char">'a'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>上面的代码运行后会输出：</p> 
+<pre><code class="prism language-java">hello <span class="token keyword">char</span>
+</code></pre> 
+<p>这很好理解，‘<code>a</code>’是一个<code>char</code>类型的数据，自然会寻找参数类型为<code>char</code>的重载方法，如果注释掉<code>sayHello(char arg)</code> 方法，那输出会变为:</p> 
+<pre><code class="prism language-java">hello <span class="token keyword">int</span>
+</code></pre> 
+<p>这时发生了一次自动类型转换，’<code>a</code>’除了可以代表一个字符串，还可以代表数字<code>97</code> (字符<code>a</code>的<code>Unicode</code>数值为十进制数字<code>97</code> ) ，因此参数类型为<code>int</code>的重载也是合适的。我们继续注释掉<code>sayHello(int arg)</code>方法，那输出会变为:</p> 
+<pre><code class="prism language-java">hello <span class="token keyword">long</span>
+</code></pre> 
+<p>这时发生了两次自动类型转换，’<code>a</code>’转型为整数<code>97</code>之后 ，进一步转型为长整数<code>97L</code> ，匹配了参数类型为<code>long</code>的重载。笔者在代码中没有写其他的类型如<code>float、double</code>等的重载，不过实际上自动转型还能继续发生多次，按照<code>char-&gt;int-&gt; long-&gt; float-&gt; double</code>的顺序转型进行匹配。但不会匹配到<code>byte</code>和<code>short</code>类型的重载，因为<code>char</code>到<code>byte</code>或<code>short</code>的转型是不安全的。我们继续注释掉<code>sayHello(long arg)</code>方法，那输会变为:</p> 
+<pre><code class="prism language-java">hello <span class="token class-name">Character</span>
+</code></pre> 
+<p>这时发生了一次自动装箱，’<code>a</code>’被包装为它的封装类型<code>java.lang.Character</code> ，所以匹配到了参数类型为<code>Character</code>的重载，继续注释掉<code>sayHello(Character arg)</code> 方法，那输出会变为:</p> 
+<pre><code class="prism language-java">hello <span class="token class-name">Serializable</span>
+</code></pre> 
+<p>这个输出可能会让人感觉摸不着头脑，一个字符或数字与序列化有什么关系？出现<code>hello Serializable</code>，是因为<code>java.lang.Serializable</code>是<code>java.lang.Character</code>类实现的一个接口，当自动装箱之后发现还是找不到装箱类，但是找到了装箱类实现了的接口类型，所以紧接着又发生一次自动转型。<code>char</code>可以转型成<code>int</code>，但是<code>Character</code>是绝对不会转型为<code>Integer</code>的 ，它只能安全地转型为它实现的接口或父类。<code>Character</code>还实现了另外一个接口<code>java.lang.Comparable&lt;Character&gt;</code> ，如果同时出现两个参数分别为<code>Serializable</code>和<code>Comparable&lt;Character&gt;</code>的重载方法，那它们在此时的优先级是一样的。编译器无法确定要自动转型为哪种类型，会提示类型模糊，拒绝编译。程序必须在调用时显式地指定字面量的静态类型，如 : <code>sayHello((Comparable&lt;Character&gt;)’a’)</code> ，才能编译通过。下面继续注释掉<code>sayHello(Serializable arg)</code>方法，输出会变为:</p> 
+<pre><code class="prism language-java">hello <span class="token class-name">Object</span>
+</code></pre> 
+<p>这时是<code>char</code>装箱后转型为父类了，如果有多个父类，那将在继承关系中从下往上开始搜索，越接近上层的优先级越低。即使方法调用传入的参数值为<code>null</code>时 ，这个规则仍然适用。 我们把<code>sayHello(Object arg)</code> 也注释掉，输出将会变为:</p> 
+<pre><code class="prism language-java">hello <span class="token keyword">char</span> <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+</code></pre> 
+<p>7个重载方法已经被注释得只剩一个了，可见变长参数的重载优先级是最低的，这时候字符’<code>a</code>’被当做了一个数组元素。笔者使用的是<code>char</code>类型的变长参数，读者在验证时还可以选择<code>int</code>类型、<code>Character</code>类型、<code>Object</code>类型等的变长参数重载来把上面的过程重新演示一遍。但要注意的是，有一些在单个参数中能成立的自动转型，如<code>char</code>转型为<code>int</code>，在变长参数中是不成立的。</p> 
+<p>代码清单8-7演示了编译期间选择静态分派目标的过程，这个过程也是Java语言实现方法重载的本质。演示所用的这段程序属于很极端的例子，除了用做面试题为难求职者以外，在实际工作中几乎不可能有实际用途。笔者拿来做演示仅仅是用于讲解重载时目标方法选择的过程 ，大部分情况下进行这样极端的重载都可算是真正的 “关于茴香豆的茴有几种写法的研究”。无论对重载的认识有多么深刻，一个合格的程序员都不应该在实际应用中写出如此极端的重载代码。</p> 
+<p>另外还有一点读者可能比较容易混淆：笔者讲述的<strong>解析</strong>与<strong>分派</strong>这两者之间的关系<strong>并不是二选一的排他关系，它们是在不同层次上去筛选、确定目标方法的过程</strong>。例如，前面说过，静态方法会在类加载期就进行解析，而静态方法显然也是可以拥有重载版本的，选择重载版本的过程也是通过静态分派完成的。</p> 
+<h3><a id="_310"></a><strong>动态分派</strong></h3> 
+<pre><code class="prism language-java"><span class="token keyword">package</span> <span class="token namespace">org<span class="token punctuation">.</span>fenixsoft<span class="token punctuation">.</span>polymorphic</span><span class="token punctuation">;</span>
+
+<span class="token comment">/**
+ * 方法动态分派演示
+ */</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">DynamicDispatch</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">static</span> <span class="token keyword">abstract</span> <span class="token keyword">class</span> <span class="token class-name">Human</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">protected</span> <span class="token keyword">abstract</span> <span class="token keyword">void</span> <span class="token function">sayHello</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">static</span> <span class="token keyword">class</span> <span class="token class-name">Man</span> <span class="token keyword">extends</span> <span class="token class-name">Human</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token annotation punctuation">@Override</span>
+        <span class="token keyword">protected</span> <span class="token keyword">void</span> <span class="token function">sayHello</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"man say hello"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">static</span> <span class="token keyword">class</span> <span class="token class-name">Woman</span> <span class="token keyword">extends</span> <span class="token class-name">Human</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token annotation punctuation">@Override</span>
+        <span class="token keyword">protected</span> <span class="token keyword">void</span> <span class="token function">sayHello</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"woman say hello"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">Human</span> man <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Man</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">Human</span> woman <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Woman</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        man<span class="token punctuation">.</span><span class="token function">sayHello</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>  
+        woman<span class="token punctuation">.</span><span class="token function">sayHello</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>  
+
+        man <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Woman</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        man<span class="token punctuation">.</span><span class="token function">sayHello</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>  
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>运行结果:</p> 
+<pre><code class="prism language-java">man say hello
+woman say hello
+woman say hello
+</code></pre> 
+<p>这个运行结果相信不会出乎任何人的意料，对于习惯了面向对象思维的Java程序员会觉得这是完全理所当然的。现在的问题还是和前面的一样，虚拟机是如何知道要调用哪个方法的？</p> 
+<p>显然这里不可能再根据静态类型来决定，因为静态类型同样都是<code>Human</code>的两个变量<code>man</code>和<code>woman</code>在调用<code>sayHello()</code>方法时执行了不同的行为，并且变量<code>man</code>在两次调用中执行了不同的方法。导致这个现象的原因很明显，是<strong>这两个变量的实际类型不同</strong>，Java虚拟机是如何根据实际类型来分派方法执行版本的呢？我们使用<code>javap</code>命令输出这段代码的字节码，尝试从中寻找答案，输出结果如代码清单8-9所示。</p> 
+<pre><code class="prism language-java"><span class="token comment">// 代码清单 8—9 main() 方法的字节码</span>
+<span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token class-name"><span class="token namespace">java<span class="token punctuation">.</span>lang<span class="token punctuation">.</span></span>String</span><span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span> 
+  <span class="token class-name">Code</span><span class="token operator">:</span>
+   <span class="token class-name">Stack</span><span class="token operator">=</span><span class="token number">2</span><span class="token punctuation">,</span> <span class="token class-name">Locals</span><span class="token operator">=</span><span class="token number">3</span><span class="token punctuation">,</span> <span class="token class-name">Args_size</span><span class="token operator">=</span><span class="token number">1</span> 
+   <span class="token number">0</span><span class="token operator">:</span> <span class="token keyword">new</span> #<span class="token number">16</span><span class="token punctuation">;</span> <span class="token comment">// class org/fenixsoft/polymorphic/DynamicDispatch$Man</span>
+   <span class="token number">3</span><span class="token operator">:</span> dup 
+   <span class="token number">4</span><span class="token operator">:</span> invokespecial #<span class="token number">18</span><span class="token punctuation">;</span> <span class="token comment">// Method org/fenixsoft/polymorphic/Dynamic- Dispatch$Man."&lt;init&gt;":()V</span>
+   <span class="token number">7</span><span class="token operator">:</span> astore_1 
+   <span class="token number">8</span><span class="token operator">:</span> <span class="token keyword">new</span> #<span class="token number">19</span><span class="token punctuation">;</span> <span class="token comment">// class org/fenixsoft/polymorphic/DynamicDispatch$Woman</span>
+   <span class="token number">11</span><span class="token operator">:</span> dup 
+   <span class="token number">12</span><span class="token operator">:</span> invokespecial #<span class="token number">21</span><span class="token punctuation">;</span> <span class="token comment">// Method org/fenixsoft/polymorphic/DynamicDispatch$Woman."&lt;init&gt;":()V</span>
+   <span class="token number">15</span><span class="token operator">:</span> astore_2 
+   <span class="token number">16</span><span class="token operator">:</span> aload_1 
+   <span class="token number">17</span><span class="token operator">:</span> invokevirtual #<span class="token number">22</span><span class="token punctuation">;</span> <span class="token comment">// Method org/fenixsoft/polymorphic/DynamicDispatch$Human.sayHello:()V</span>
+   <span class="token number">20</span><span class="token operator">:</span> aload_2 
+   <span class="token number">21</span><span class="token operator">:</span> invokevirtual #<span class="token number">22</span><span class="token punctuation">;</span> <span class="token comment">// Method org/fenixsoft/polymorphic/DynamicDispatch$Human.sayHello:()V</span>
+   <span class="token number">24</span><span class="token operator">:</span> <span class="token keyword">new</span> #<span class="token number">19</span><span class="token punctuation">;</span> <span class="token comment">// class org/fenixsoft/polymorphic/DynamicDispatch$Woman</span>
+   <span class="token number">27</span><span class="token operator">:</span> dup 
+   <span class="token number">28</span><span class="token operator">:</span> invokespecial #<span class="token number">21</span><span class="token punctuation">;</span> <span class="token comment">// Method org/fenixsoft/polymorphic/DynamicDispatch$Woman."&lt;init&gt;":()V</span>
+   <span class="token number">31</span><span class="token operator">:</span> astore_1 
+   <span class="token number">32</span><span class="token operator">:</span> aload_1 
+   <span class="token number">33</span><span class="token operator">:</span> invokevirtual #<span class="token number">22</span><span class="token punctuation">;</span> <span class="token comment">// Method org/fenixsoft/polymorphic/ DynamicDispatch$Human.sayHello:()V</span>
+   <span class="token number">36</span><span class="token operator">:</span> <span class="token keyword">return</span> 
+</code></pre> 
+<p>0 ~15 行的字节码是准备动作，作用是建立<code>man</code>和<code>woman</code>的内存空间、调用<code>Man</code>和<code>Woman</code> 类型的实例构造器，将这两个实例的引用存放在第 1、2 个局部变量表 Slot 之中 ，这个动作也就对应了代码中的这两句:</p> 
+<pre><code class="prism language-java"><span class="token class-name">Human</span> man <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Man</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token class-name">Human</span> woman <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Woman</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>接下来的16~21句是关键部分，16、20 两句分别把刚刚创建的两个对象的引用压到栈顶，这两个对象是将要执行的<code>sayHello()</code>方法的所有者，称为接收者(Receiver) ; 17和21句是方法调用指令，这两条调用指令单从字节码角度来看，无论是指令(都是<code>invokevirtual</code>) 还是参数(都是常量池中第22项的常量，注释显示了这个常量是<code>Human.sayHello()</code>的符号引用)完全一样的，但是这两句指令最终执行的目标方法并不相同。</p> 
+<p>那看来解决问题的关键还必须从<code>invokevirtual</code>指令本身入手，要弄清楚它是如何确定调用方法版本、如何实现多态查找来着手分析才行。根据《Java 虚拟机规范》，<code>invokevirtual</code>指令的运行时解析过程大致分为以下几步:</p> 
+<ul><li>1 ) <strong>找到操作数栈顶的第一个元素所指向的对象的实际类型，记作 C。</strong></li><li>2 ) <strong>如果在类型C中找到与常量中的描述符和简单名称都相符的方法，则进行访问权限校验，如果通过则返回这个方法的直接引用，查找过程结束；如果不通过，则返回 <code>java.lang.IllegalAccessError</code>异常。</strong></li><li>3 ) <strong>否则，按照继承关系从下往上依次对C的各个父类进行第2步的搜索和验证过程。</strong></li><li>4 ) <strong>如果始终没有找到合适的方法，则拋出<code>java.lang.AbstractMethodError</code>异常。</strong></li></ul> 
+<p><strong>由于<code>invokevirtual</code>指令执行的第一步就是在运行期确定接收者的实际类型</strong>，所以两次调用中的 <strong><code>invokevirtual</code> 指令并不是把常量池中方法的符号引用解析到直接引用上就结束了，还会根据方法接受者的实际类型来选择方法版本</strong>， 这个过程就是Java语言中<strong>方法重写的本质</strong>。我们把这种<strong>在运行期根据实际类型确定方法执行版本的分派过程称为动态分派</strong>。</p> 
+<h3><a id="_408"></a><strong>字段永不参与多态</strong></h3> 
+<p>既然这种多态性的根源在于虚方法调用指令 <code>invokevirtual</code> 的执行逻辑，那自然我们得出的结论就<strong>只会对方法有效，对字段是无效的，因为字段不使用这条指令</strong>。事实上，<strong>在Java里面只有虚方法存在，字段永远不可能是虚的</strong>，换句话说，<strong>字段永远不参与多态</strong>，<strong>哪个类的方法访问某个名字的字段时，该名字指的就是这个类能看到的那个字段</strong>。<strong>当子类声明了与父类同名的字段时，虽然在子类的内存中两个字段都会存在，但是子类的字段会遮蔽父类的同名字段</strong>。为了加深理解，笔者又编撰了一份“劣质面试题式”的代码片段，请阅读代码，思考运行后会输出什么结果。</p> 
+<pre><code class="prism language-java"><span class="token comment">// 代码清单 8—10 字段没有多态性</span>
+<span class="token comment">/**
+ * 字段不参与多态
+ */</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">FieldHasNoPolymorphic</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">static</span> <span class="token keyword">class</span> <span class="token class-name">Father</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">public</span> <span class="token keyword">int</span> money <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">public</span> <span class="token class-name">Father</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            money <span class="token operator">=</span> <span class="token number">2</span><span class="token punctuation">;</span>
+            <span class="token function">showMeTheMoney</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">showMeTheMoney</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"I am Father, I have $"</span> <span class="token operator">+</span> money<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">static</span> <span class="token keyword">class</span> <span class="token class-name">Son</span> <span class="token keyword">extends</span> <span class="token class-name">Father</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">public</span> <span class="token keyword">int</span> money <span class="token operator">=</span> <span class="token number">3</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">public</span> <span class="token class-name">Son</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            money <span class="token operator">=</span> <span class="token number">4</span><span class="token punctuation">;</span>
+            <span class="token function">showMeTheMoney</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token annotation punctuation">@Override</span>
+        <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">showMeTheMoney</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"I am Son, I have $"</span> <span class="token operator">+</span> money<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">Father</span> guy <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Son</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"This guy has $"</span> <span class="token operator">+</span> guy<span class="token punctuation">.</span>money<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>运行后输出结果为：</p> 
+<pre><code class="prism language-java"><span class="token class-name">I</span> am <span class="token class-name">Son</span><span class="token punctuation">,</span> i have $<span class="token number">0</span> 
+<span class="token class-name">I</span> am <span class="token class-name">Son</span><span class="token punctuation">,</span> i have $<span class="token number">4</span>
+<span class="token class-name">This</span> guy has $<span class="token number">2</span> 
+</code></pre> 
+<p>输出两句都是 “<code>I am Son</code>”，这是因为<code>Son</code>类在创建的时候，首先隐式调用了<code>Father</code>的构造函数，而<code>Father</code>构造函数中对<code>showMeTheMoney()</code>的调用是一次虚方法调用，实际执行的版本是<code>Son::showMeTheMoney()</code>方法，所以输出的是“<code>I am Son</code>”，这点经过前面的分析相信读者是没有疑问的了。而这时候虽然父类的<code>money</code>字段已经被初始化成<code>2</code>了，但<code>Son::showMeTheMoney()</code>方法中访问的却是子类的<code>money</code>字段，这时候结果自然还是<code>0</code>，因为它要到子类的构造函数执行时才会被初始化。<code>main()</code>的最后一句通过静态类型访问到了父类中的<code>money</code>，输出了<code>2</code>。</p> 
+<h2><a id="_463"></a><strong>动态类型语言支持</strong></h2> 
+<p>Java虚拟机的字节码指令集的数量从Sun公司的第一款Java虚拟机问世至今，<strong>二十余年间只新增过一条指令</strong>，它是随着 <strong>JDK 7</strong> 的发布的字节码首位新成员—— <strong><code>invokedynamic</code></strong> 指令。这条新增加的指令是 JDK 7 的项目目标：实现“<strong>动态类型语言</strong>” (Dynamically Typed Language ) 支持而进行的改进之一，也是为 <strong>JDK 8</strong> 可以顺利实现<strong>Lambda</strong>表达式做技术准备。</p> 
+<p>何谓动态类型语言? <strong>动态类型语言的关键特征是它的类型检查的主体过程是在运行期而不是编译期进行的</strong>，满足这个特征的语言有很多，常用的包括：APL、Clojure、Erlang、 <strong>Groovy</strong>、<strong>JavaScript</strong>、Jython、Lisp、Lua、PHP、Prolog、<strong>Python</strong>、Ruby、Smalltalk和Tcl等。那相对地，<strong>在编译期就进行类型检查过程的语言</strong>，譬如 <strong>C++</strong> 和 <strong>Java</strong> 等就是最常用的<strong>静态类型语言</strong>。</p> 
+<p><strong>“变量无类型而变量值才有类型”</strong> 这个特点也是<strong>动态类型语言的一个重要特征</strong>。</p> 
+<p>了解了动态和静态类型语言的区别后，也许读者的下一个问题就是动态、静态类型语言两者谁更好，或者谁更加先进？这种比较不会有确切答案，因为它们都有自己的优点，选择哪种语言是需要经过权衡的。<strong>静态类型语言在编译期确定类型，最显著的好处是编译器可以提供严谨的类型检查，这样与类型相关的问题能在编码的时候就及时发现，利于稳定性及代码达到更大规模。而动态类型语言在运行期确定类型，这可以为开发人员提供更大的灵活性，某些在静态类型语言中需用大量“臃肿”代码来实现的功能，由动态类型语言来实现可能会更加清晰和简洁，清晰和简洁通常也就意味着开发效率的提升。</strong></p> 
+<h3><a id="javalanginvoke__474"></a><strong>java.lang.invoke 包</strong></h3> 
+<p><strong>JDK 1 .7</strong> 新加入的<code>java.lang.invoke</code>包是JSR-292的一个重要组成部分 , 这个包的主要目的是<strong>在之前单纯依靠符号引用来确定调用的目标方法这种方式以外，提供一种新的动态确定目标方法的机制</strong>，称为“<strong>方法句柄</strong>”（MethodHandle）。这个表达听起来也不好懂？那不妨把<strong>方法句柄</strong>与<strong>C/C++中的函数指针</strong>（Function Pointer），或者C#里面的委派（Delegate）互相类比一下来理解。</p> 
+<p>举个例子， 如果我们要实现一个带谓词（谓词就是由外部传入的排序时比较大小的动作）的排序函数，在C/C++中常用的做法是把谓词定义为函数，用函数指针把谓词传递到排序方法，如下 :</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">void</span> <span class="token function">sort</span><span class="token punctuation">(</span><span class="token keyword">int</span> list<span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">int</span> size<span class="token punctuation">,</span> <span class="token keyword">int</span><span class="token punctuation">(</span><span class="token operator">*</span>compare<span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token keyword">int</span><span class="token punctuation">,</span> <span class="token keyword">int</span><span class="token punctuation">)</span><span class="token punctuation">)</span> 
+</code></pre> 
+<p>但<strong>在Java语言做不到这一点</strong>，即<strong>没有办法单独地把一个函数作为参数进行传递</strong>。普遍的做法是<strong>设计一个带有<code>compare()</code>方法的<code>Comparator</code>接口</strong>，<strong>以实现了这个接口的对象作为参数</strong>，例如 Java 类库中的 <code>Collections.sort()</code> 就是这样定义的：</p> 
+<pre><code class="prism language-java"><span class="token keyword">void</span> <span class="token function">sort</span><span class="token punctuation">(</span><span class="token class-name">List</span> list<span class="token punctuation">,</span> <span class="token class-name">Comparator</span> c<span class="token punctuation">)</span> 
+</code></pre> 
+<p>不过，在拥有<strong>方法句柄</strong>之后，<strong>Java</strong> 语言也可以拥有类似于<strong>函数指针</strong>或者<strong>委托</strong>的方法别名的工具了。代码清单8-12演示了<code>MethodHandle</code>的基本用法，无论 <code>obj</code> 是何种类型（临时定义的<code>ClassA</code>或是实现<code>PrintStream</code>接口的实现类<code>System.out</code>），都可以正确地调用到<code>println()</code>方法。</p> 
+<pre><code class="prism language-java"><span class="token comment">// 代码清单 8—12 方法句柄演示</span>
+<span class="token keyword">import</span> <span class="token keyword">static</span> <span class="token import static"><span class="token namespace">java<span class="token punctuation">.</span>lang<span class="token punctuation">.</span>invoke<span class="token punctuation">.</span></span><span class="token class-name">MethodHandles</span><span class="token punctuation">.</span><span class="token static">lookup</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">java<span class="token punctuation">.</span>lang<span class="token punctuation">.</span>invoke<span class="token punctuation">.</span></span><span class="token class-name">MethodHandle</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">java<span class="token punctuation">.</span>lang<span class="token punctuation">.</span>invoke<span class="token punctuation">.</span></span><span class="token class-name">MethodType</span></span><span class="token punctuation">;</span>
+
+<span class="token comment">/**
+ * JSR 292 MethodHandle基础用法演示 
+ */</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">MethodHandleTest</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">static</span> <span class="token keyword">class</span> <span class="token class-name">ClassA</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">println</span><span class="token punctuation">(</span><span class="token class-name">String</span> s<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span>s<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Throwable</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">Object</span> obj <span class="token operator">=</span> <span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">%</span> <span class="token number">2</span> <span class="token operator">==</span> <span class="token number">0</span> <span class="token operator">?</span> <span class="token class-name">System</span><span class="token punctuation">.</span>out <span class="token operator">:</span> <span class="token keyword">new</span> <span class="token class-name">ClassA</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 无论 obj 最终是哪个实现类，下面这句都能正确调用到 println 方法。</span>
+        <span class="token function">getPrintlnMH</span><span class="token punctuation">(</span>obj<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">invokeExact</span><span class="token punctuation">(</span><span class="token string">"icyfenix"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">private</span> <span class="token keyword">static</span> <span class="token class-name">MethodHandle</span> <span class="token function">getPrintlnMH</span><span class="token punctuation">(</span><span class="token class-name">Object</span> receiver<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Throwable</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// MethodType 代表“方法类型”，包含了方法的返回值（methodType 的第一个参数）和</span>
+        <span class="token comment">// 具体参数（methodType 的第二个及以后的参数）。</span>
+        <span class="token class-name">MethodType</span> mt <span class="token operator">=</span> <span class="token class-name">MethodType</span><span class="token punctuation">.</span><span class="token function">methodType</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// lookup() 方法来自于 MethodHandles.lookup，这句的作用是在指定类中查找符合给定的方法名称、方法类型，</span>
+        <span class="token comment">// 并且符合调用权限的方法句柄。</span>
+        <span class="token comment">// 因为这里调用的是一个虚方法，按照 Java 语言的规则，方法第一个参数是隐式的，代表该方法的接收者，</span>
+        <span class="token comment">// 也即是 this 指向的对象，这个参数以前是放在参数列表中进行传递，现在提供了 bindTo() 方法来完成这件事情。</span>
+        <span class="token keyword">return</span> <span class="token function">lookup</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">findVirtual</span><span class="token punctuation">(</span>receiver<span class="token punctuation">.</span><span class="token function">getClass</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token string">"println"</span><span class="token punctuation">,</span> mt<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">bindTo</span><span class="token punctuation">(</span>receiver<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>方法<code>getPrintlnMH()</code>中实际上是<strong>模拟了 <code>invokevirtual</code> 指令的执行过程</strong>，只不过<strong>它的分派逻辑并非固化在<code>Class</code>文件的字节码上，而是通过一个具体方法来实现</strong>。而这个方法本身的返回值(<code>MethodHandle</code>对象)，可以视为对最终调用方法的一个“<strong>引用</strong>”。以此为基础，有了<code>MethodHandle</code>就可以写出类似于 <strong>C/C++</strong> 那样的函数声明了:</p> 
+<pre><code class="prism language-java"><span class="token keyword">void</span> sort <span class="token punctuation">(</span><span class="token class-name">List</span> list<span class="token punctuation">,</span> <span class="token class-name">MethodHandle</span> compare<span class="token punctuation">)</span> 
+</code></pre> 
+<p>从上面的例子可以看出，使用<code>MethodHandle</code>并没有什么困难，不过看完它的用法之后, 读者大概就会产生疑问，相同的事情，用<strong>反射</strong>不是早就可以实现了吗?</p> 
+<p>确实，仅站在 Java 语言的角度来看，<code>MethodHandle</code>的使用方法和效果与<code>Reflection</code>有众多相似之处，不过，它们还是有以下这些区别：</p> 
+<ul><li><strong><code>Reflection</code>和<code>MethodHandle</code>机制本质上都是在模拟方法调用，但<code>Reflection</code>是在模拟<code>Java</code>代码层次的方法调用，而<code>MethodHandle</code>是在模拟字节码层次的方法调用</strong>。在 <code>MethodHandles.lookup</code>中的3个方法——<code>findStatic()</code>、 <code>fmdVirtual()</code> 、 <code>fmdSpecial()</code> 正是为了对应于<code>invokestatic</code>、 <code>invokevirtual</code> (以及 <code>invokeinterface</code>)和<code>invokespecial</code> 这几条字节码指令的执行权限校验行为，而这些底层细节在使用 Reflection API 时是不需要关心的。</li><li><strong><code>Reflection</code>中的<code>java.lang.reflect.Method</code>对象远比<code>MethodHandle</code>机制中的 <code>java.lang.invoke.MethodHandle</code>对象所包含的信息多</strong>。<strong>前者是方法在Java端的全面映像</strong>，包含了方法的签名、描述符以及方法属性表中各种属性的Java端表示方式，还包含执行权限等的运行期信息。而<strong>后者仅包含执行该方法相关的信息</strong>。用通俗的话来讲，<strong><code>Reflection</code> 是重量级，而 <code>MethodHandle</code> 是轻量级。</strong></li><li>由于<code>MethodHandle</code>是对字节码的方法指令调用的模拟，所以理论上虚拟机在这方面做的各种优化(如方法内联)，在<code>MethodHandle</code>上也应当可以采用类似思路去支持(但目前实现还不完善)。而通过反射去调用方法则不行。</li></ul> 
+<p><strong><code>Reflection</code> API的设计目标是只为Java语言服务, 而<code>MethodHandle</code>则设计可服务于所有Java虚拟机之上的语言，其中也包括Java语言，而且Java在这里并不是主角。</strong></p> 
+<h3><a id="_544"></a><strong>实战：掌控方法分派规则</strong></h3> 
+<p><strong><code>invokedynamic</code>指令与前面 4 条传统的“<code>invoke</code>”指令的最大差别就是它的分派逻辑不是由虚拟机决定的，而是由程序员决定</strong>。在介绍Java虚拟机动态语言支持的最后一个小结中，笔者通过一个简单例子(如代码清单8-15所示 )，帮助读者理解程序员在可以掌控方法分派规则之后，能做什么以前无法做到的事情。</p> 
+<pre><code class="prism language-java"><span class="token comment">// 代码清单 8—15 方法调用问题</span>
+<span class="token keyword">class</span> <span class="token class-name">GrandFather</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">void</span> <span class="token function">thinking</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"I am grandfather"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">class</span> <span class="token class-name">Father</span> <span class="token keyword">extends</span> <span class="token class-name">GrandFather</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">void</span> <span class="token function">thinking</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"I am father"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">class</span> <span class="token class-name">Son</span> <span class="token keyword">extends</span> <span class="token class-name">Father</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">void</span> <span class="token function">thinking</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// 请读者在这里填入适当的代码（不能修改其他地方的代码）</span>
+        <span class="token comment">// 实现调用祖父类的 thinking() 方法，打印 "I am grandfather"</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>在Java程序中，可以通过“<code>super</code>”关键字很方便地调用到父类中的方法，但如果要访问<strong>祖类</strong>的方法呢？<strong>在 JDK 1.7 之前没有办法解决这个问题</strong>。</p> 
+<p>在拥有 <code>invokedynamic</code> 和 <code>java.lang.invoke</code> 包之前使用纯粹的Java语言很难处理这个问题（使用<code>ASM</code>等字节码工具直接生成字节码可以处理，但这已经是在字节码而不是Java语言层面），原因是在<code>Son</code>类的<code>thinking()</code>方法中根本无法获取到一个实际类型是<code>GrandFather</code>的对象引用，<strong>而<code>invokevirtual</code>指令的分派逻辑是固定的，只能按照方法接收者的实际类型进行分派，这个逻辑完全固化在虚拟机中，程序员无法改变。</strong></p> 
+<p>如果是 JDK7 Update9 之前，可使用以下代码来解决该问题。</p> 
+<pre><code class="prism language-java"><span class="token comment">// 代码清单 8-16 使用 MethodHandle 来解决问题</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">java<span class="token punctuation">.</span>lang<span class="token punctuation">.</span>invoke<span class="token punctuation">.</span></span><span class="token class-name">MethodHandle</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">java<span class="token punctuation">.</span>lang<span class="token punctuation">.</span>invoke<span class="token punctuation">.</span></span><span class="token class-name">MethodHandles</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">java<span class="token punctuation">.</span>lang<span class="token punctuation">.</span>invoke<span class="token punctuation">.</span></span><span class="token class-name">MethodType</span></span><span class="token punctuation">;</span>
+
+<span class="token keyword">class</span> <span class="token class-name">Test</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">class</span> <span class="token class-name">GrandFather</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">void</span> <span class="token function">thinking</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"I am grandfather"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">class</span> <span class="token class-name">Father</span> <span class="token keyword">extends</span> <span class="token class-name">GrandFather</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">void</span> <span class="token function">thinking</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"I am father"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">class</span> <span class="token class-name">Son</span> <span class="token keyword">extends</span> <span class="token class-name">Father</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">void</span> <span class="token function">thinking</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token class-name">MethodType</span> mt <span class="token operator">=</span> <span class="token class-name">MethodType</span><span class="token punctuation">.</span><span class="token function">methodType</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token comment">// 使用 MethodHandles.lookup().findSpecial 调用祖父类的虚方法</span>
+                <span class="token comment">// findSpecial 对应 invokeSpecial 字节码指令。</span>
+				<span class="token comment">// invokespecial 用于调用实例构造器 &lt;init&gt;() 方法、私有方法和父类中的方法。</span>
+                <span class="token class-name">MethodHandle</span> mh <span class="token operator">=</span> <span class="token class-name">MethodHandles</span><span class="token punctuation">.</span><span class="token function">lookup</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">findSpecial</span><span class="token punctuation">(</span>
+                        <span class="token class-name">GrandFather</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">,</span> <span class="token string">"thinking"</span><span class="token punctuation">,</span> mt<span class="token punctuation">,</span> <span class="token function">getClass</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                mh<span class="token punctuation">.</span><span class="token function">invoke</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Throwable</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                e<span class="token punctuation">.</span><span class="token function">printStackTrace</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">Test</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token keyword">new</span> <span class="token class-name">Son</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">thinking</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>使用 JDK 7 Update 9 之前的 HotSpot 虚拟机运行，会得到如下运行结果：</p> 
+<pre><code class="prism language-java">i am grandfather
+</code></pre> 
+<p>但是这个逻辑在 JDK7 Update9 之后被视作一个潜在的安全性缺陷修正了，原因是必须保证<code>findSpecial()</code>查找方法版本时受到的访问约束（如对访问控制的限制、对参数类型的限制）应与使用<code>invokespecial</code>指令一样，两者必须保持精确对等，包括在上面的场景中它只能访问到其父类中的方法版本。所以在 JDK7 Update10 修正之后，运行以上代码得到的结果如下：</p> 
+<pre><code class="prism language-java">i am father
+</code></pre> 
+<p>那在新版本的 JDK 中，上面的问题是否能够得到解决呢？答案是可以的，如果读者去查看<code>MethodHandles.Lookup</code>类的代码，将会发现需要进行哪些访问保护，在该API实现时是预留了后门的。访问保护是通过一个<code>allowedModes</code>的参数控制，而且这个参数可以被设置成“<code>TRUSTED</code>”来绕开所有的保护措施。尽管这个参数只是在Java类库本身使用，没有开放给外部设置，但我们通过<strong>反射</strong>可轻易打破这种限制。由此，我们可把代码修改成如下来解决问题：</p> 
+<pre><code class="prism language-java"><span class="token keyword">class</span> <span class="token class-name">Son</span> <span class="token keyword">extends</span> <span class="token class-name">Father</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">void</span> <span class="token function">thinking</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">MethodType</span> mt <span class="token operator">=</span> <span class="token class-name">MethodType</span><span class="token punctuation">.</span><span class="token function">methodType</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">// 通过反射获取 IMPL_LOOKUP 字段</span>
+            <span class="token class-name">Field</span> lookupIMPL <span class="token operator">=</span> <span class="token class-name">MethodHandles<span class="token punctuation">.</span>Lookup</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">.</span><span class="token function">getDeclaredField</span><span class="token punctuation">(</span><span class="token string">"IMPL_LOOKUP"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            lookupIMPL<span class="token punctuation">.</span><span class="token function">setAccessible</span><span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">// 使用 IMPL_LOOKUP 创建 MethodHandle</span>
+            <span class="token class-name">MethodHandle</span> mh <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token class-name">MethodHandles<span class="token punctuation">.</span>Lookup</span><span class="token punctuation">)</span> lookupIMPL<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token keyword">null</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+                    <span class="token punctuation">.</span><span class="token function">findSpecial</span><span class="token punctuation">(</span><span class="token class-name">GrandFather</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">,</span> <span class="token string">"thinking"</span><span class="token punctuation">,</span> mt<span class="token punctuation">,</span> <span class="token class-name">GrandFather</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">// 调用祖父类的虚方法</span>
+            mh<span class="token punctuation">.</span><span class="token function">invoke</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Throwable</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            e<span class="token punctuation">.</span><span class="token function">printStackTrace</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>当然，这里直接用反射也是可以的， <code>getClass().getSuperClass().getSuperClass().getDeclaredMethod("thinking")</code> 。</p> 
+<blockquote> 
+ <p>补充：如果想要在 <strong>Android</strong> 中使用 <code>MethodHandle</code> 则最低版本至少需要在 <code>Android 8.0</code>才可以（<code>minSdkVersion = 26</code>）</p> 
+</blockquote> 
+<h2><a id="_660"></a>基于栈的指令集与基于寄存器的指令集</h2> 
+<p><strong>Javac</strong> 编译器输出的字节码指令流，基本上是一种<strong>基于栈的指令集架构</strong>( Instruction Set Architecture, ISA ) , 字节码指令流中的指令大部分都是<strong>零地址指令</strong>，它们<strong>依赖操作数栈</strong>进行工作。与之相对的另外一套常用的指令集架构是<strong>基于寄存器的指令集</strong>，最典型的就是<strong>x86</strong>的二地址指令集，说得通俗一些，就是现在我们<strong>主流PC机中物理硬件直接支持的指令集架构</strong>，这些指令<strong>依赖寄存器</strong>进行工作。那么，<strong>基于栈的指令集</strong>与<strong>基于寄存器的指令集</strong>这两者之间有什么不同呢？</p> 
+<p>举个最简单的例子，分别使用这两种指令集计算 “1+1” 的结果，<strong>基于栈的指令集</strong>会是这样子的:</p> 
+<pre><code class="prism language-java">iconst_1
+iconst_1
+iadd
+istore_0
+</code></pre> 
+<p>两条 <code>iconst_1</code> 指令连续把两个常量 <code>1</code> 压入栈后，<code>iadd</code> 指令把栈顶的两个值出栈、相加，然后把结果放回栈顶，最后 <code>istore_0</code> 把栈顶的值放到局部变量表的第<code>0</code>个变量槽<code>Slot</code>中。<strong>这种指令流中的指令通常是不带参数的，使用操作数栈中的数据作为指令的运算输入，指令的运算结果也存储在操作数栈之中</strong>。</p> 
+<p>而如果用<strong>基于寄存器的指令集</strong>，那程序可能会是这个样子:</p> 
+<pre><code class="prism language-java">mov eax<span class="token punctuation">,</span> <span class="token number">1</span>
+add eax<span class="token punctuation">,</span> <span class="token number">1</span>
+</code></pre> 
+<p><code>mov</code> 指令把<code>EAX</code>寄存器的值设为 <code>1</code> ，然后<code>add</code>指令再把这个值加 <code>1</code> ，结果就保存在<code>EAX</code>寄存器里面。这种二地址指令是 <code>x86</code> 指令集中的主流，<strong>每个指令都包含两个单独的输入参数，依赖于寄存器来访问和存储数据</strong>。</p> 
+<p>这两套指令集谁更好一些呢?</p> 
+<p><strong>基于栈的指令集主要的优点就是可移植，因为寄存器由硬件直接提供，程序直接依赖这些硬件寄存器则不可避免地要受到硬件的约束</strong>。例如 ,现在32位80x86体系的处理器中提供了8 个32位的寄存器，而ARM体系的CPU ( 在当前的手机、PDA中相当流行的一种处理器)则提供了16个32位的通用寄存器。<strong>如果使用栈架构的指令集，用户程序不会直接使用这些寄存器，就可以由虚拟机实现来自行决定把一些访问最频繁的数据(程序计数器、栈顶缓存等) 放到寄存器中以获取尽量好的性能</strong>，这样实现起来也更加简单一些。</p> 
+<p>栈架构的指令集还有一 些其他的优点，如<strong>代码相对更加紧凑</strong>（字节码中每个字节就对应一条指令，而多地址指令集中还需要存放参数）、<strong>编译器实现更加简单</strong>（不需要考虑空间分配的问题，所需空间都在栈上操作）等。</p> 
+<p>栈架构指令集的主要<strong>缺点</strong>是理论上<strong>执行速度相对来说会稍慢一些，所有主流物理机的指令集都是寄存器架构也从侧面印证了这一点。</strong></p> 
+<p><strong>在解释执行时，栈架构指令集的代码虽然紧凑，但是完成相同功能所需的指令数量一般会比寄存器架构多，因为出栈、入栈操作本身就产生了相当大量的指令</strong>。更重要的是，<strong>栈实现在内存之中，频繁的栈访问也就意味着频繁的内存访问</strong>，相对于处理器来说，内存始终是执行速度的瓶颈。尽管虚拟机可以采取栈顶缓存的手段，把最常用的操作映射到寄存器中避免直接内存访问，但这也只能是优化措施而不是解决本质问题的方法。 <strong>由于指令数量和内存访问的原因，所以导致了栈架构指令集的执行速度会相对较慢。</strong></p> 
+<p>总而言之，就是<strong>基于栈的指令集可移植，不依赖硬件寄存器，但是速度慢，基于寄存器的执行速度快，但是依赖硬件约束。</strong></p> 
+<h2><a id="_695"></a><strong>基于栈的解释器执行过程</strong></h2> 
+<pre><code class="prism language-java"><span class="token comment">// 代码清单 8—17 一段简单的算术代码</span>
+<span class="token keyword">public</span> <span class="token keyword">int</span> <span class="token function">calc</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">int</span> a <span class="token operator">=</span> <span class="token number">100</span><span class="token punctuation">;</span>
+    <span class="token keyword">int</span> b <span class="token operator">=</span> <span class="token number">200</span><span class="token punctuation">;</span>
+    <span class="token keyword">int</span> c <span class="token operator">=</span> <span class="token number">300</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> <span class="token punctuation">(</span>a <span class="token operator">+</span> b<span class="token punctuation">)</span> <span class="token operator">*</span> c<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>这段代码从Java语言的角度来看没有任何解释的必要，直接使用<code>javap</code>命令看看它的字节码指令，如代码清单8-18所示。</p> 
+<pre><code class="prism language-java"><span class="token comment">// 代码清单 8—18 一段简单的算术代码的字节码表示</span>
+<span class="token keyword">public</span> <span class="token keyword">int</span> <span class="token function">calc</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token class-name">Code</span><span class="token operator">:</span>
+    <span class="token class-name">Stack</span><span class="token operator">=</span><span class="token number">2</span><span class="token punctuation">,</span> <span class="token class-name">Locals</span><span class="token operator">=</span><span class="token number">4</span><span class="token punctuation">,</span> <span class="token class-name">Args_size</span><span class="token operator">=</span><span class="token number">1</span> 
+    <span class="token number">0</span><span class="token operator">:</span> bipush <span class="token number">100</span> 
+    <span class="token number">2</span><span class="token operator">:</span> istore_1 
+    <span class="token number">3</span><span class="token operator">:</span> sipush <span class="token number">200</span> 
+    <span class="token number">6</span><span class="token operator">:</span> istore_2 
+    <span class="token number">7</span><span class="token operator">:</span> sipush <span class="token number">300</span> 
+    <span class="token number">10</span><span class="token operator">:</span> istore_3 
+    <span class="token number">11</span><span class="token operator">:</span> iload_1 
+    <span class="token number">12</span><span class="token operator">:</span> iload_2 
+    <span class="token number">13</span><span class="token operator">:</span> iadd 
+    <span class="token number">14</span><span class="token operator">:</span> iload_3 
+    <span class="token number">15</span><span class="token operator">:</span> imul 
+    <span class="token number">16</span><span class="token operator">:</span> ireturn 
+</code></pre> 
+<p>javap提示这段代码需要<strong>深度为 2 的操作数栈和 4 个 Slot 的局部变量空间</strong>，笔者根据这些信息画了图8-5~图8-11共7张图，用它们来描述代码清单8-17执行过程中的代码、操作数栈和局部变量表的变化情况。</p> 
+<p><img src="https://images2.imgbox.com/65/3c/dN6xN5Rj_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/b2/20/ru1xAtlO_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/be/6f/JVhpcy4i_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/b5/ef/22QjLtT3_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/96/82/XEPUfwzf_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/f3/2b/HJEL7j38_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/99/7b/xtPMbhFo_o.png" alt="在这里插入图片描述"></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/5b032d5d1971866757d3f238a3e0613f/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Ubuntu 20.04 上安装和使用 Docker</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a765ffd20345176c0176f2fac833f3f8/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">浏览器强缓存和协商缓存</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

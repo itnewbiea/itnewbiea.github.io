@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Java集群实战：单体架构升级到集群架构（六）分布式缓存REDIS - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Java集群实战：单体架构升级到集群架构（六）分布式缓存REDIS" />
+<meta property="og:description" content="系列文章目录 Java集群实战：单体架构升级到集群架构（一）使用NGINX建立集群
+Java集群实战：单体架构升级到集群架构（二）实现session共享
+Java集群实战：单体架构升级到集群架构（三）上传文件的共享
+Java集群实战：单体架构升级到集群架构（四）使用REDIS分布式锁
+Java集群实战：单体架构升级到集群架构（五）定时任务
+目录
+源码地址
+缓存有效期、缓存预热和缓存击穿
+缓存穿透
+热点数据重建缓存和双重检测锁
+双写不一致
+读写锁
+缓存雪崩
+​​​​​​​
+缓存在高并发的场景下可以大大提升读取数据的性能。缓存的工作原理是先从缓存中读取数据，如果有数据则直接返回给用户；如果没有数据则从数据库中读取实际数据并且将数据放入缓存，最后将数据返回给用户。
+在高并发场景下，缓存的使用有点复杂。我们这里写的代码比较适合高并发场景，如果您的业务没有高并发海量数据的话，就可以写简单一些。
+我们用一个简单的商品数据库为例子，来讨论缓存REDIS的使用。
+源码地址 整个项目的代码在GITHUB: https://github.com/Dengxd/JavaCluster 所有源码都在这里，GitHub经常连不上，要多刷新几次
+主要的业务功能都是在类GoodsServiceImpl中，所以我们重点介绍这个类
+缓存有效期、缓存预热和缓存击穿 先看代码，这是类GoodsServiceImpl中的一个方法：
+public static Integer getExp(){ Random r =new Random(); return REDIS_EXP&#43;r.nextInt(3600); } 这段代码生成一个36000到39600之间的随机数，做为缓存有效期，单位是秒。当然具体的数值大家可以根据自己的业务情况改变。
+数据库中，经常被访问的数据我们称为“热点数据”，没人访问的数据就称为“冷门数据”。缓存中的冷门数据过了有效期就被自动删除，而热点数据被访问的时候我们会更新它的有效期，所以保留在缓存中的大多数都是热点数据，这样可以节省空间。
+为什么使用随机数，不使用固定数值呢？一般我们在系统启动的时候，会把热点数据从数据库中读取出来，放到缓存中，这个叫做“缓存预热”。如果使用固定数值做为有效期，有效期一到，这些热点数据就可能同时被自动删除。那么大量访问热点数据的请求，都要去数据库中取数据，加大了数据库的压力。这个就是“缓存击穿”。缓存击穿指的是数据库中有数据，但是缓存中没有数据。如果使用随机数就不会在同一时刻出现大量的缓存击穿。
+缓存穿透 缓存穿透是指查询不存在的数据，因为缓存和数据库中都没有这个数据，所以缓存和数据库都要查一次。如果有黑客发出大量的这种查询请求，数据库可能就撑不住了。
+解决方法就是当数据库也找不到数据时，在缓存中加入一个空对象，如下所示：
+goods = this.getById(id); //到数据库中查找这个id if (goods != null) {//数据库找到数据 //加入缓存 bucket.set(JSON.toJSONString(goods), getExp(), TimeUnit.SECONDS); } else { //数据库中找不到数据 //对这个ID，在缓存中加入空对象“{}” bucket.set(NODATA, getNoDataExp(), TimeUnit.SECONDS); } 这段代码在类GoodsServiceImpl的get方法中。比如用户查询ID为0的商品，我们数据库中没有，我们就把ID为0空对象“{}”加入缓存中。
+下次用户再发起ID为0的查询请求，我们在缓存中找到这个ID，发现缓存中的数据是“{}”，我们就返回一个新对象，所有字段都是NULL，不用再去查数据库，减轻了数据库的负担。这段代码在类GoodsServiceImpl的getFromRedis方法中，如下所示：
+if(NODATA.equals(strGood)){ //缓存中的数据是“{}” bucket.expire(getNoDataExp(),TimeUnit.SECONDS);//更新有效期 return new Goods();//返回一个新对象，所有字段都是NULL } 热点数据重建缓存和双重检测锁 我们来考虑一个特殊场景，一个大V有众多粉丝，他向粉丝推荐了一款冷门商品（没在缓存中），成千上万的粉丝立刻查询这款商品，缓存查不到，于是都到数据库中查（又是缓存击穿），查到数据之后，再往缓存中写。同时来一千个用户，就查一千次数据库，再写一千次缓存，是不是很过份？所以我们要加一个分布式锁，只让第一个用户查数据库，写缓存，写完缓存之后，其他用户就全部到缓存中取数据了。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/2651ba13832016a4860d7c12bbabadd4/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-04-01T20:47:59+08:00" />
+<meta property="article:modified_time" content="2023-04-01T20:47:59+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Java集群实战：单体架构升级到集群架构（六）分布式缓存REDIS</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2 id="%E7%B3%BB%E5%88%97%E6%96%87%E7%AB%A0%E7%9B%AE%E5%BD%95"><a id="_0"></a>系列文章目录</h2> 
+<p><a class="link-info" href="https://blog.csdn.net/dengxiaodai/article/details/129707243?spm=1001.2014.3001.5501" title="Java集群实战：单体架构升级到集群架构（一）使用NGINX建立集群">Java集群实战：单体架构升级到集群架构（一）使用NGINX建立集群</a></p> 
+<p><a class="link-info" href="https://blog.csdn.net/dengxiaodai/article/details/129707451?spm=1001.2014.3001.5501" title="Java集群实战：单体架构升级到集群架构（二）实现session共享">Java集群实战：单体架构升级到集群架构（二）实现session共享</a></p> 
+<p><a class="link-info" href="https://blog.csdn.net/dengxiaodai/article/details/129707609?spm=1001.2014.3001.5501" title="Java集群实战：单体架构升级到集群架构（三）上传文件的共享">Java集群实战：单体架构升级到集群架构（三）上传文件的共享</a></p> 
+<p><a class="link-info" href="https://blog.csdn.net/dengxiaodai/article/details/129707740?spm=1001.2014.3001.5501" title="Java集群实战：单体架构升级到集群架构（四）使用REDIS分布式锁">Java集群实战：单体架构升级到集群架构（四）使用REDIS分布式锁</a></p> 
+<p><a class="link-info" href="https://blog.csdn.net/dengxiaodai/article/details/129707851?spm=1001.2014.3001.5501" title="Java集群实战：单体架构升级到集群架构（五）定时任务">Java集群实战：单体架构升级到集群架构（五）定时任务</a></p> 
+<p></p> 
+<hr> 
+<p></p> 
+<div> 
+ <p id="main-toc"><strong>目录</strong></p> 
+ <p id="%E7%B3%BB%E5%88%97%E6%96%87%E7%AB%A0%E7%9B%AE%E5%BD%95-toc" style="margin-left:0px;"><a href="#%E6%BA%90%E7%A0%81%E5%9C%B0%E5%9D%80" rel="nofollow">源码地址</a></p> 
+ <p id="%E7%BC%93%E5%AD%98%E6%9C%89%E6%95%88%E6%9C%9F%E3%80%81%E7%BC%93%E5%AD%98%E9%A2%84%E7%83%AD%E5%92%8C%E7%BC%93%E5%AD%98%E5%87%BB%E7%A9%BF-toc" style="margin-left:0px;"><a href="#%E7%BC%93%E5%AD%98%E6%9C%89%E6%95%88%E6%9C%9F%E3%80%81%E7%BC%93%E5%AD%98%E9%A2%84%E7%83%AD%E5%92%8C%E7%BC%93%E5%AD%98%E5%87%BB%E7%A9%BF" rel="nofollow">缓存有效期、缓存预热和缓存击穿</a></p> 
+ <p id="%E7%BC%93%E5%AD%98%E7%A9%BF%E9%80%8F-toc" style="margin-left:0px;"><a href="#%E7%BC%93%E5%AD%98%E7%A9%BF%E9%80%8F" rel="nofollow">缓存穿透</a></p> 
+ <p id="%E7%83%AD%E7%82%B9%E6%95%B0%E6%8D%AE%E9%87%8D%E5%BB%BA%E7%BC%93%E5%AD%98%E5%92%8C%E5%8F%8C%E9%87%8D%E6%A3%80%E6%B5%8B%E9%94%81-toc" style="margin-left:0px;"><a href="#%E7%83%AD%E7%82%B9%E6%95%B0%E6%8D%AE%E9%87%8D%E5%BB%BA%E7%BC%93%E5%AD%98%E5%92%8C%E5%8F%8C%E9%87%8D%E6%A3%80%E6%B5%8B%E9%94%81" rel="nofollow">热点数据重建缓存和双重检测锁</a></p> 
+ <p id="%E5%8F%8C%E5%86%99%E4%B8%8D%E4%B8%80%E8%87%B4-toc" style="margin-left:0px;"><a href="#%E5%8F%8C%E5%86%99%E4%B8%8D%E4%B8%80%E8%87%B4" rel="nofollow">双写不一致</a></p> 
+ <p id="%E8%AF%BB%E5%86%99%E9%94%81-toc" style="margin-left:0px;"><a href="#%E8%AF%BB%E5%86%99%E9%94%81" rel="nofollow">读写锁</a></p> 
+ <p id="%E7%BC%93%E5%AD%98%E9%9B%AA%E5%B4%A9-toc" style="margin-left:0px;"><a href="#%E7%BC%93%E5%AD%98%E9%9B%AA%E5%B4%A9" rel="nofollow">缓存雪崩</a></p> 
+ <p><a href="#_0" rel="nofollow">​​​​​​​</a></p> 
+</div> 
+<hr> 
+<h2><a id="_12"></a></h2> 
+<p>缓存在高并发的场景下可以大大提升读取数据的性能。缓存的工作原理是先从缓存中读取数据，如果有数据则直接返回给用户；如果没有数据则从数据库中读取实际数据并且将数据放入缓存，最后将数据返回给用户。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">在高并发场景下，缓存的使用有点复杂。我们这里写的代码比较适合高并发场景，如果您的业务没有高并发海量数据的话，就可以写简单一些。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">我们用一个简单的商品数据库为例子，来讨论缓存REDIS的使用。</p> 
+<h2 id="%E6%BA%90%E7%A0%81%E5%9C%B0%E5%9D%80" style="margin-left:.0001pt;text-align:justify;">源码地址</h2> 
+<p>整个项目的代码在GITHUB: <a class="link-info" href="https://github.com/Dengxd/JavaCluster" title="https://github.com/Dengxd/JavaCluster">https://github.com/Dengxd/JavaCluster</a>    <span style="color:#fe2c24;">所有源码都在这里，GitHub经常连不上，要多刷新几次</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;">主要的业务功能都是在类GoodsServiceImpl中，所以我们重点介绍这个类</p> 
+<h2 id="%E7%BC%93%E5%AD%98%E6%9C%89%E6%95%88%E6%9C%9F%E3%80%81%E7%BC%93%E5%AD%98%E9%A2%84%E7%83%AD%E5%92%8C%E7%BC%93%E5%AD%98%E5%87%BB%E7%A9%BF">缓存有效期、缓存预热和缓存击穿</h2> 
+<p>先看代码，这是类GoodsServiceImpl中的一个方法：</p> 
+<pre><code class="language-java">public static Integer getExp(){
+    Random r =new Random();
+    return  REDIS_EXP+r.nextInt(3600);
+}</code></pre> 
+<p style="margin-left:.0001pt;text-align:justify;">这段代码生成一个36000到39600之间的随机数，做为缓存有效期，单位是秒。当然具体的数值大家可以根据自己的业务情况改变。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">数据库中，经常被访问的数据我们称为“热点数据”，没人访问的数据就称为“冷门数据”。缓存中的冷门数据过了有效期就被自动删除，而热点数据被访问的时候我们会更新它的有效期，所以保留在缓存中的大多数都是热点数据，这样可以节省空间。</p> 
+<p>为什么使用随机数，不使用固定数值呢？一般我们在系统启动的时候，会把热点数据从数据库中读取出来，放到缓存中，这个叫做“缓存预热”。如果使用固定数值做为有效期，有效期一到，这些热点数据就可能同时被自动删除。那么大量访问热点数据的请求，都要去数据库中取数据，加大了数据库的压力。这个就是“缓存击穿”。缓存击穿指的是数据库中有数据，但是缓存中没有数据。如果使用随机数就不会在同一时刻出现大量的缓存击穿。</p> 
+<h2 id="%E7%BC%93%E5%AD%98%E7%A9%BF%E9%80%8F">缓存穿透</h2> 
+<p style="margin-left:.0001pt;text-align:justify;">缓存穿透是指查询不存在的数据，因为缓存和数据库中都没有这个数据，所以缓存和数据库都要查一次。如果有黑客发出大量的这种查询请求，数据库可能就撑不住了。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">解决方法就是当数据库也找不到数据时，在缓存中加入一个空对象，如下所示：</p> 
+<pre><code class="language-java">goods = this.getById(id); //到数据库中查找这个id
+if (goods != null) {//数据库找到数据
+    //加入缓存
+    bucket.set(JSON.toJSONString(goods), getExp(), TimeUnit.SECONDS);
+} else { //数据库中找不到数据
+    //对这个ID，在缓存中加入空对象“{}”
+    bucket.set(NODATA, getNoDataExp(), TimeUnit.SECONDS);
+}
+</code></pre> 
+<p style="margin-left:.0001pt;text-align:justify;">这段代码在类GoodsServiceImpl的get方法中。比如用户查询ID为0的商品，我们数据库中没有，我们就把ID为0空对象“{}”加入缓存中。<br> 下次用户再发起ID为0的查询请求，我们在缓存中找到这个ID，发现缓存中的数据是“{}”，我们就返回一个新对象，所有字段都是NULL，不用再去查数据库，减轻了数据库的负担。这段代码在类GoodsServiceImpl的getFromRedis方法中，如下所示：</p> 
+<pre><code class="language-Go">if(NODATA.equals(strGood)){  //缓存中的数据是“{}”
+    bucket.expire(getNoDataExp(),TimeUnit.SECONDS);//更新有效期
+    return new Goods();//返回一个新对象，所有字段都是NULL
+}
+</code></pre> 
+<h2 id="%E7%83%AD%E7%82%B9%E6%95%B0%E6%8D%AE%E9%87%8D%E5%BB%BA%E7%BC%93%E5%AD%98%E5%92%8C%E5%8F%8C%E9%87%8D%E6%A3%80%E6%B5%8B%E9%94%81">热点数据重建缓存和双重检测锁</h2> 
+<p>我们来考虑一个特殊场景，一个大V有众多粉丝，他向粉丝推荐了一款冷门商品（没在缓存中），成千上万的粉丝立刻查询这款商品，缓存查不到，于是都到数据库中查（又是缓存击穿），查到数据之后，再往缓存中写。同时来一千个用户，就查一千次数据库，再写一千次缓存，是不是很过份？所以我们要加一个分布式锁，只让第一个用户查数据库，写缓存，写完缓存之后，其他用户就全部到缓存中取数据了。<br> 这段代码在GoodsServiceImpl的get方法中:</p> 
+<pre><code class="language-java">goods=getFromRedis(bucket,key); 
+if(goods!=null){  //缓存中有数据
+    return goods;  //直接返回了
+}
+//缓存中没数据
+//加一个分布式锁，只让第一个用户查数据库，写缓存
+RLock createCacheLock=redissonClient.getLock(PREFIX_LOCK_CREATE_CACHE+id);
+createCacheLock.lock();
+try{
+    //因为第一个用户已经把数据加到缓存中了，
+    //所以第二个用户，第三个用户,……,第N个用户，
+    //得到锁之后，再到缓存中找一次
+    goods=getFromRedis(bucket,key);
+    if(goods!=null){  //缓存中已经有数据了
+        return goods; //直接返回
+    }
+//缓存中没找到数据，恭喜你，你是第一个用户，
+//下面的代码，查数据库，写缓存
+。。。。。。。。。。。。。。。
+。。。。。。。。。。。。。。。
+</code></pre> 
+<p style="margin-left:.0001pt;text-align:justify;">这个就是臭名昭著的双重检测锁，因为在上锁之前查一次缓存，得到锁之后还要再查一次缓存，所以叫双重检测。至于臭名昭著，那是因为它太难理解了，把很多童鞋绕得晕头转向。在没有互联网的年代，我只在操作系统的代码中看到过他。现在在互联网业务中看到他，我感觉我见到了下凡的神仙。</p> 
+<p>要是大家不理解也没关系，照抄就是了。这些代码就相当于一个模板，可以直接套用到我们自己的项目中。</p> 
+<h2 id="%E5%8F%8C%E5%86%99%E4%B8%8D%E4%B8%80%E8%87%B4">双写不一致</h2> 
+<p style="margin-left:.0001pt;text-align:justify;">“双写”指的是两个线程同时写数据库和缓存，“不一致”指的是缓存和数据库的内容不一致。看下面这张图：</p> 
+<p><img alt="" height="451" src="https://images2.imgbox.com/ce/9d/8rUtqSqb_o.png" width="415"></p> 
+<p> </p> 
+<p style="margin-left:.0001pt;text-align:justify;">两个线程都是先写数据库再更新缓存，假设线程1是把商品价格改为1元，线程2 是把商品价格改为2元。线程1先写数据库，把数据库中的价格改为1元，然后他卡顿了。这时线程2开始写数据库，把数据库中的价格改为2元，然后线程2更新缓存，把缓存中的价格改为2元。最后线程1不卡了，继续执行，把缓存中的价格改为1元。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">问题出现了，数据库中的价格是2元，缓存中的价格是1元，这就是双写不一致。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">如果您的业务可以容忍这种不一致，那么缓存一过期，缓存中的数据被清掉，就不存在不一致了。如果你的业务一定要保证数据库缓存一致，那么我们只好再加锁。</p> 
+<h2 id="%E8%AF%BB%E5%86%99%E9%94%81" style="margin-left:.0001pt;text-align:justify;">读写锁</h2> 
+<p style="margin-left:.0001pt;text-align:justify;">这回加的锁是读写锁，读写锁的好处是多个读锁可以一起执行，这比较适合读多写少的互联网应用。写锁和读锁是互斥的，写锁和写锁也是互斥的。也就是说，如果一个读锁得到了锁，其他读锁也可以继续执行，但是写锁就必须等待。如果一个写锁得到了锁，其他所有的锁都得等待。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">我们把读锁加在读数据库的地方，把写锁加在增加、修改、删除数据库的地方。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">读锁代码如下：</p> 
+<pre><code class="language-java">//读取数据库，用读锁
+RReadWriteLock updateLock=redissonClient.getReadWriteLock(PREFIX_LOCK_UPDATE+id);
+RLock rLock=updateLock.readLock();
+rLock.lock();
+</code></pre> 
+<p style="margin-left:.0001pt;text-align:justify;">写锁代码如下：</p> 
+<p></p> 
+<pre><code class="language-java">//修改数据库，用写锁
+RReadWriteLock updateLock=redissonClient.getReadWriteLock(PREFIX_LOCK_UPDATE+goods.getId());
+RLock wLock=updateLock.writeLock();
+wLock.lock();
+</code></pre> 
+<h2 id="%E7%BC%93%E5%AD%98%E9%9B%AA%E5%B4%A9">缓存雪崩</h2> 
+<p>缓存雪崩指的是缓存层支撑不住或宕掉后，大量请求都会打到存储层， 存储层的调用量会暴增，造成存储层也会级联宕机，那么依赖缓存和存储层的服务也会出现问题，就象雪崩一样，造成整个系统崩溃。常见的解决方法就是限流或使用缓存集群。</p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p id="main-toc"></p> 
+<hr id="hr-toc"> 
+<p></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/26c358d799b4959a7f6768ef2131a615/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">保存图片到MySQL&amp;从MySQL读取图片</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/b62002544d53f083658913c1dc88b4f0/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Matlab Runtime的使用入门</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Gateway限流的使用 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Gateway限流的使用" />
+<meta property="og:description" content="目录
+1. 限流的使用场景
+2. gateway限流实现
+2.1 前提：
+2.2 导入依赖包
+2.3 在项目配置文件中配置redis​编辑
+2.4 开发限流需要的Bean​编辑
+2.5 为服务配置限流参数
+2.6 压力测试
+3. 熔断
+3.1 熔断的使用场景
+1. 限流的使用场景 为什么限流 限流就是限制流量，因为服务器能处理的请求数有限，如果请求量特别大，我们需要做限流（要么就让请求等待，要么就把请求给扔了）， 限流可以保障我们的 API 服务对所有用户的可用性，也可以防止网络攻击。在高并发的应用中，限流是一个绕不开的话题。
+2）常见限流方式
+一般开发高并发系统常见的限流有：限制总并发数（比如数据库连接池、线程池）、限制瞬时并发数（如 nginx 的 limit_conn 模块，用来限制瞬时并发连接数）、限制时间窗口内的平均速率（如 Guava 的 RateLimiter、nginx 的 limit_req 模块，限制每秒的平均速率）；其他还有如限制远程接口调用速率、限制 MQ 的消费速率。另外还可以根据网络连接数、网络流量、CPU 或内存负载等来限流。
+本文讨论在gateway集成的实现
+3）限流算法：
+漏桶算法(Leaky Bucket) 思路: 水(请求)先进入到漏桶里,漏桶以一定的速度出水(接口有响应速率),当水流入速度过大会直接溢出(访问频率超过接口响应速率),然后就拒绝请求,可以看出漏桶算法能强行限制数据的传输速率.示意图如下:
+令牌桶算法(Token Bucket)
+随着时间流逝，系统会按恒定 1/QPS 时间间隔（如果 QPS=100，则间隔是 10ms）往桶里加入 Token（想象和漏洞漏水相反，有个水龙头在不断的加水），如果桶已经满了就不再加了。新请求来临时，会各自拿走一个 Token，如果没有 Token 可拿了就阻塞或者拒绝服务.
+2. gateway限流实现 2.1 前提： 先装好redis服务
+次要-- 网关需要配置好 (10条消息) SpringCloud Gateway网关的使用与介绍_嘴强程序员的博客-CSDN博客" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/59876c52cf1ae77c966fe2d75741c14f/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-12-13T23:07:50+08:00" />
+<meta property="article:modified_time" content="2022-12-13T23:07:50+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Gateway限流的使用</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p id="main-toc"><strong>目录</strong></p> 
+<p id="1.%20%E9%99%90%E6%B5%81%E7%9A%84%E4%BD%BF%E7%94%A8%E5%9C%BA%E6%99%AF-toc" style="margin-left:0px;"><a href="#1.%20%E9%99%90%E6%B5%81%E7%9A%84%E4%BD%BF%E7%94%A8%E5%9C%BA%E6%99%AF" rel="nofollow">1. 限流的使用场景</a></p> 
+<p id="2.%20gateway%E9%99%90%E6%B5%81%E5%AE%9E%E7%8E%B0-toc" style="margin-left:0px;"><a href="#2.%20gateway%E9%99%90%E6%B5%81%E5%AE%9E%E7%8E%B0" rel="nofollow">2. gateway限流实现</a></p> 
+<p id="2.1%20%E5%89%8D%E6%8F%90%EF%BC%9A-toc" style="margin-left:40px;"><a href="#2.1%20%E5%89%8D%E6%8F%90%EF%BC%9A" rel="nofollow">2.1 前提：</a></p> 
+<p id="2.2%20%E5%AF%BC%E5%85%A5%E4%BE%9D%E8%B5%96%E5%8C%85-toc" style="margin-left:40px;"><a href="#2.2%20%E5%AF%BC%E5%85%A5%E4%BE%9D%E8%B5%96%E5%8C%85" rel="nofollow">2.2 导入依赖包</a></p> 
+<p id="2.3%20%E5%9C%A8%E9%A1%B9%E7%9B%AE%E9%85%8D%E7%BD%AE%E6%96%87%E4%BB%B6%E4%B8%AD%E9%85%8D%E7%BD%AEredis%E2%80%8B%E7%BC%96%E8%BE%91-toc" style="margin-left:40px;"><a href="#2.3%20%E5%9C%A8%E9%A1%B9%E7%9B%AE%E9%85%8D%E7%BD%AE%E6%96%87%E4%BB%B6%E4%B8%AD%E9%85%8D%E7%BD%AEredis%E2%80%8B%E7%BC%96%E8%BE%91" rel="nofollow">2.3 在项目配置文件中配置redis​编辑</a></p> 
+<p id="2.4%20%E5%BC%80%E5%8F%91%E9%99%90%E6%B5%81%E9%9C%80%E8%A6%81%E7%9A%84Bean%E2%80%8B%E7%BC%96%E8%BE%91-toc" style="margin-left:40px;"><a href="#2.4%20%E5%BC%80%E5%8F%91%E9%99%90%E6%B5%81%E9%9C%80%E8%A6%81%E7%9A%84Bean%E2%80%8B%E7%BC%96%E8%BE%91" rel="nofollow">2.4 开发限流需要的Bean​编辑</a></p> 
+<p id="2.5%20%E4%B8%BA%E6%9C%8D%E5%8A%A1%E9%85%8D%E7%BD%AE%E9%99%90%E6%B5%81%E5%8F%82%E6%95%B0-toc" style="margin-left:40px;"><a href="#2.5%20%E4%B8%BA%E6%9C%8D%E5%8A%A1%E9%85%8D%E7%BD%AE%E9%99%90%E6%B5%81%E5%8F%82%E6%95%B0" rel="nofollow">2.5 为服务配置限流参数</a></p> 
+<p id="2.6%20%E5%8E%8B%E5%8A%9B%E6%B5%8B%E8%AF%95-toc" style="margin-left:40px;"><a href="#2.6%20%E5%8E%8B%E5%8A%9B%E6%B5%8B%E8%AF%95" rel="nofollow">2.6 压力测试</a></p> 
+<p id="%C2%A03.%20%E7%86%94%E6%96%AD-toc" style="margin-left:0px;"><a href="#%C2%A03.%20%E7%86%94%E6%96%AD" rel="nofollow"> 3. 熔断</a></p> 
+<p id="3.1%20%E7%86%94%E6%96%AD%E7%9A%84%E4%BD%BF%E7%94%A8%E5%9C%BA%E6%99%AF-toc" style="margin-left:40px;"><a href="#3.1%20%E7%86%94%E6%96%AD%E7%9A%84%E4%BD%BF%E7%94%A8%E5%9C%BA%E6%99%AF" rel="nofollow">3.1 熔断的使用场景</a></p> 
+<hr id="hr-toc"> 
+<p></p> 
+<h2>1. 限流的使用场景</h2> 
+<ol><li>为什么限流</li></ol> 
+<p>限流就是限制流量，因为服务器能处理的请求数有限，如果请求量特别大，我们需要做限流（要么就让请求等待，要么就把请求给扔了）， 限流可以保障我们的 API 服务对所有用户的可用性，也可以防止网络攻击。在高并发的应用中，限流是一个绕不开的话题。</p> 
+<p><img alt="" height="799" src="https://images2.imgbox.com/26/6b/wqpoczGS_o.png" width="1200"></p> 
+<p>2）常见限流方式</p> 
+<p>一般开发高并发系统常见的限流有：限制总并发数（比如数据库连接池、线程池）、限制瞬时并发数（如 nginx 的 limit_conn 模块，用来限制瞬时并发连接数）、限制时间窗口内的平均速率（如 Guava 的 RateLimiter、nginx 的 limit_req 模块，限制每秒的平均速率）；其他还有如限制远程接口调用速率、限制 MQ 的消费速率。另外还可以根据网络连接数、网络流量、CPU 或内存负载等来限流。</p> 
+<p>本文讨论在gateway集成的实现</p> 
+<p>3）限流算法：</p> 
+<ul><li>漏桶算法(Leaky Bucket)</li></ul> 
+<p>思路: 水(请求)先进入到漏桶里,漏桶以一定的速度出水(接口有响应速率),当水流入速度过大会直接溢出(访问频率超过接口响应速率),然后就拒绝请求,可以看出漏桶算法能强行限制数据的传输速率.示意图如下:</p> 
+<p><img alt="" height="344" src="https://images2.imgbox.com/c7/06/xA1uSaf8_o.png" width="541"></p> 
+<p>令牌桶算法(Token Bucket)</p> 
+<p>随着时间流逝，系统会按恒定 1/QPS 时间间隔（如果 QPS=100，则间隔是 10ms）往桶里加入 Token（想象和漏洞漏水相反，有个水龙头在不断的加水），如果桶已经满了就不再加了。新请求来临时，会各自拿走一个 Token，如果没有 Token 可拿了就阻塞或者拒绝服务.</p> 
+<p><img alt="" height="530" src="https://images2.imgbox.com/04/99/4w2vZCTQ_o.png" width="500"></p> 
+<h2 id="2.%20gateway%E9%99%90%E6%B5%81%E5%AE%9E%E7%8E%B0">2. gateway限流实现</h2> 
+<h3 id="2.1%20%E5%89%8D%E6%8F%90%EF%BC%9A">2.1 前提：</h3> 
+<p>先装好redis服务</p> 
+<p>次要-- 网关需要配置好  <a href="https://blog.csdn.net/qq_62898618/article/details/128268842?spm=1001.2014.3001.5501" title="(10条消息) SpringCloud Gateway网关的使用与介绍_嘴强程序员的博客-CSDN博客">(10条消息) SpringCloud Gateway网关的使用与介绍_嘴强程序员的博客-CSDN博客</a></p> 
+<h3 id="2.2%20%E5%AF%BC%E5%85%A5%E4%BE%9D%E8%B5%96%E5%8C%85">2.2 导入依赖包</h3> 
+<pre><code>   &lt;dependencies&gt;
+       
+       &lt;!-- gateway网关 --&gt;
+       &lt;dependency&gt;
+           &lt;groupId&gt;org.springframework.cloud&lt;/groupId&gt;
+           &lt;artifactId&gt;spring-cloud-starter-gateway&lt;/artifactId&gt;
+       &lt;/dependency&gt;
+
+       &lt;!-- 从注册中心进行服务发现 --&gt;
+       &lt;dependency&gt;
+           &lt;groupId&gt;com.alibaba.cloud&lt;/groupId&gt;
+           &lt;artifactId&gt;spring-cloud-starter-alibaba-nacos-discovery&lt;/artifactId&gt;
+       &lt;/dependency&gt;
+
+       &lt;!-- 限流需要的redis依赖 --&gt;
+       &lt;dependency&gt;
+           &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+           &lt;artifactId&gt;spring-boot-starter-data-redis-reactive&lt;/artifactId&gt;
+       &lt;/dependency&gt;
+
+       &lt;!-- 向注册中心进行服务注册 --&gt;
+       &lt;dependency&gt;
+           &lt;groupId&gt;com.alibaba.nacos&lt;/groupId&gt;
+           &lt;artifactId&gt;nacos-client&lt;/artifactId&gt;
+       &lt;/dependency&gt;
+       
+       &lt;!--处理json的工具包--&gt;
+       &lt;dependency&gt;
+           &lt;groupId&gt;com.alibaba&lt;/groupId&gt;
+           &lt;artifactId&gt;fastjson&lt;/artifactId&gt;
+           &lt;version&gt;1.2.73&lt;/version&gt;
+       &lt;/dependency&gt;
+
+       &lt;!-- https://mvnrepository.com/artifact/org.projectlombok/lombok --&gt;
+       &lt;dependency&gt;
+           &lt;groupId&gt;org.projectlombok&lt;/groupId&gt;
+           &lt;artifactId&gt;lombok&lt;/artifactId&gt;
+           &lt;version&gt;1.18.16&lt;/version&gt;
+           &lt;scope&gt;provided&lt;/scope&gt;
+       &lt;/dependency&gt;
+
+       &lt;dependency&gt;
+           &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+           &lt;artifactId&gt;spring-boot-starter-test&lt;/artifactId&gt;
+           &lt;scope&gt;test&lt;/scope&gt;
+           &lt;exclusions&gt;
+               &lt;exclusion&gt;
+                   &lt;groupId&gt;org.junit.vintage&lt;/groupId&gt;
+                   &lt;artifactId&gt;junit-vintage-engine&lt;/artifactId&gt;
+               &lt;/exclusion&gt;
+           &lt;/exclusions&gt;
+       &lt;/dependency&gt;
+
+   &lt;/dependencies&gt;
+</code></pre> 
+<h3 id="2.3%20%E5%9C%A8%E9%A1%B9%E7%9B%AE%E9%85%8D%E7%BD%AE%E6%96%87%E4%BB%B6%E4%B8%AD%E9%85%8D%E7%BD%AEredis%E2%80%8B%E7%BC%96%E8%BE%91">2.3 在项目配置文件中配置redis<img alt="" height="640" src="https://images2.imgbox.com/2f/b9/0o8WBRl4_o.png" width="1034"></h3> 
+<p></p> 
+<pre><code>spring:
+  application:
+    name: service-gateway
+  cloud:
+    nacos:
+      discovery:
+        server-addr: 127.0.0.1:8848
+    gateway:
+      discovery:
+        locator:
+          #开启服务发现功能，从注册中心获取服务列表，（nacos-&gt;服务管理-&gt;服务列表）
+          #默认服务名称需要为大写，可以通过配置lower-case-service-id: true 改变这一规则
+          enabled: false
+          #配置服务名使用小写
+          lower-case-service-id: true
+
+  redis:
+    host: localhost
+    port: 6379
+    database: 0
+    password: 123456</code></pre> 
+<p>redis的在gateway限流中起到存放令牌的作用</p> 
+<h3 id="2.4%20%E5%BC%80%E5%8F%91%E9%99%90%E6%B5%81%E9%9C%80%E8%A6%81%E7%9A%84Bean%E2%80%8B%E7%BC%96%E8%BE%91">2.4 开发限流需要的Bean<img alt="" height="984" src="https://images2.imgbox.com/c2/d4/jsMoHOMN_o.png" width="1200"></h3> 
+<p> 具体实现：</p> 
+<pre><code>/**
+ * 请求限流配置
+ */
+@Configuration
+public class RequestRateLimiterConfig {
+
+    /**
+     * 按IP来限流
+     */
+    @Bean
+    public KeyResolver ipAddrKeyResolver() {//JDK8的新特性——Lambda表达式
+        return exchange -&gt; Mono.just(exchange.getRequest().getRemoteAddress().getAddress().getHostAddress());
+    }
+
+    ///**
+    // * 按用户限流
+    // */
+    //@Bean
+    //KeyResolver userKeyResolver() {
+    //    return exchange -&gt; Mono.just(exchange.getRequest().getQueryParams().getFirst("user"));
+    //}
+
+    ///**
+    // * 按URL限流,即以每秒内请求数按URL分组统计，超出限流的url请求都将返回429状态
+    // *
+    // * @return
+    // */
+    //@Bean
+    //@Primary
+    //KeyResolver apiKeyResolver() {
+    //    return exchange -&gt; Mono.just(exchange.getRequest().getPath().toString());
+    //}
+}</code></pre> 
+<h3 id="2.5%20%E4%B8%BA%E6%9C%8D%E5%8A%A1%E9%85%8D%E7%BD%AE%E9%99%90%E6%B5%81%E5%8F%82%E6%95%B0">2.5 为服务配置限流参数</h3> 
+<p>修改网关中的路由配置文件，加入限流参数：<img alt="" height="485" src="https://images2.imgbox.com/8b/0d/nvvfWhfJ_o.png" width="1200"></p> 
+<p>原配置：</p> 
+<pre><code>[
+  {
+    "id": "service-consumer",
+    "predicates": [
+      {
+        "name": "Path",
+        "args": {
+        "_genkey_0": "/consumer/**"
+        }
+      }
+    ],
+    "filters": [
+      {
+        "name": "StripPrefix",
+        "args": {
+          "_genkey_0": "1"
+        }
+      }
+    ],
+    "uri": "lb://service-consumer",
+    "order": 0
+  }
+]
+</code></pre> 
+<p>加入限流配置（配置示例，请按自己的实际情况配置）：</p> 
+<p></p> 
+<pre><code>[
+  {
+    "id": "service-consumer",
+    "predicates": [
+      {
+        "name": "Path",
+        "args": {
+        "_genkey_0": "/consumer/**"
+        }
+      }
+    ],
+    "filters": [
+      {
+        "name": "StripPrefix",
+        "args": {
+          "_genkey_0": "1"
+        }
+      },
+        {
+            "name": "RequestRateLimiter",
+            "args": {
+               "key-resolver": "#{@ipAddrKeyResolver}",
+               "redis-rate-limiter.replenishRate": "10",
+               "redis-rate-limiter.burstCapacity": "20"
+            }
+        }
+    ],
+    "uri": "lb://service-consumer",
+    "order": 0
+  }
+  #可以配置别的路由 此处需要删除
+]
+</code></pre> 
+<ul><li>filter名称必须是RequestRateLimiter</li><li>redis-rate-limiter.replenishRate：允许用户每秒处理多少个请求</li><li>redis-rate-limiter.burstCapacity：令牌桶的容量，允许在一秒钟内完成的最大请求数</li><li>key-resolver：使用SpEL按名称引用bean</li></ul> 
+<h3 id="2.6%20%E5%8E%8B%E5%8A%9B%E6%B5%8B%E8%AF%95">2.6 压力测试</h3> 
+<p>1）配置postman 请求状态<img alt="" height="536" src="https://images2.imgbox.com/6b/ed/EnZ7SRBb_o.png" width="1182"></p> 
+<pre><code>pm.test("Status code is 200",function(){
+    pm.response.to.have.status(200);
+})</code></pre> 
+<p><img alt="" height="782" src="https://images2.imgbox.com/2c/14/wEmRRipe_o.png" width="1124"></p> 
+<pre><code>pm.test("Status code is 200",function(){
+    pm.expect(pm.response.responseTime).to.be.below(5)
+})</code></pre> 
+<p>3 进行压力测试<img alt="" height="782" src="https://images2.imgbox.com/fb/55/ZJRLHFc5_o.png" width="1124"></p> 
+<p><img alt="" height="782" src="https://images2.imgbox.com/1f/65/w4QkCbqy_o.png" width="1124"></p> 
+<p>设置好参数后 点击 Run压力测试11 开始测试</p> 
+<p>4）在没有加入限流的情况下的测试结果<img alt="" height="782" src="https://images2.imgbox.com/b3/fe/88V8WbPN_o.png" width="1124"></p> 
+<h2 id="%C2%A03.%20%E7%86%94%E6%96%AD"> 3. 熔断</h2> 
+<h3 id="3.1%20%E7%86%94%E6%96%AD%E7%9A%84%E4%BD%BF%E7%94%A8%E5%9C%BA%E6%99%AF">3.1 熔断的使用场景</h3> 
+<p>网关是所有请求的入口，如果部分后端服务延时严重，则可能导致大量请求堆积在网关上，拖垮网关进而瘫痪整个系统。这就需要对响应慢的服务做超时快速失败处理，即熔断。</p> 
+<p>常用的熔断组件：Hystrix与Sentinel，本课程以Hystrix讲述。</p> 
+<p>3.2 熔断配置</p> 
+<p>1）导入依赖</p> 
+<p>1）导入依赖</p> 
+<pre><code>&lt;dependency&gt;
+    &lt;groupId&gt;org.springframework.cloud&lt;/groupId&gt;
+    &lt;artifactId&gt;spring-cloud-starter-netflix-hystrix&lt;/artifactId&gt;
+&lt;/dependency&gt;</code></pre> 
+<p>2）编写熔断时的处理类</p> 
+<pre><code>@RestController
+public class FallBackController {
+
+    @GetMapping("/fallback")
+    public String fallback() {
+        return "服务熔断 ...... ";
+    }
+
+}
+</code></pre> 
+<p>3）为服务配置熔断</p> 
+<pre><code>[
+  {
+    "id": "service-consumer",
+    "predicates": [
+      {
+        "name": "Path",
+        "args": {
+        "_genkey_0": "/consumer/**"
+        }
+      }
+    ],
+    "filters": [
+      {
+        "name": "StripPrefix",
+        "args": {
+          "_genkey_0": "1"
+        }
+      },
+        {
+            "name": "RequestRateLimiter",
+            "args": {
+               "key-resolver": "#{@ipAddrKeyResolver}",
+               "redis-rate-limiter.replenishRate": "10",
+               "redis-rate-limiter.burstCapacity": "20"
+            }
+        },
+        {
+            "name": "Hystrix",
+            "args": {
+                "name": "fallback"
+                "fallbackUri": "forward:/fallback"
+            }
+        }
+    ],
+    "uri": "lb://service-consumer",
+    "order": 0
+  }
+]
+</code></pre> 
+<p>4） 启动服务，测试<img alt="" height="925" src="https://images2.imgbox.com/12/40/xgWah4H0_o.png" width="1200"></p> 
+<p> 调用接口测试：<img alt="" height="568" src="https://images2.imgbox.com/1e/2f/et4QcFH9_o.png" width="1025"></p> 
+<p>  停止consumer服务，再次调用：<img alt="" height="519" src="https://images2.imgbox.com/dc/28/Utl26wbR_o.png" width="863"></p> 
+<p> 5）配置熔断后，第一次请求容器超时问题</p> 
+<p>Spring Cloud项目启动后，首次使用 FeignClient 请求往往会消耗大量时间，并有一定概率因此导致请求超时(java.net.SocketTimeoutException: Read timed out)，因而有可能会触发熔断，这是由于在调用其他微服务接口前，会去请求该微服务的相关信息(地址、端口等)，并做一些初始化操作，由于默认的懒加载特性，导致了在第一次调用时，出现超时的情况。</p> 
+<p>解决方法：</p> 
+<ul><li>第一种办法是设置超时时间，具体设置成多少，因项目而异，配置如下</li></ul> 
+<p>#hystrix调用方法的超时时间，默认是1000毫秒</p> 
+<p>hystrix.command.default.execution.isolation.thread.timeoutInMilliseconds=5000</p> 
+<p>不推荐，容易导致有些服务已经不可用，但不用及时有效的熔断。</p> 
+<ul><li>配置ribbon立即加载</li></ul> 
+<p>服务之间的调用顺序为：gateway-&gt;消费者-&gt;生产者</p> 
+<p>接下来分两部分解决这个问题，一是服务之间调用Ribbon的饥饿加载，对应上面的测试为消费者调用生产者；二是网关的饥饿加载</p> 
+<p>消费者服务：</p> 
+<pre><code>ribbon:
+  eager-load:
+    enabled: true  #启用立即加载
+    clients: service-provider  #配置立即加载的服务名</code></pre> 
+<p>网关：</p> 
+<pre><code>ribbon:
+  eager-load:
+    enabled: true
+    clients: service-consumer</code></pre> 
+<p><img alt="" height="963" src="https://images2.imgbox.com/5c/75/Vvxc9FmG_o.png" width="1200"></p> 
+<p></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/7f2123c0508d63fc6f12acbc10c03817/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">npm ERR! Error while executing: npm ERR! C:\Program Files\Git\cmd\git.EXE ls-remote -h -t https://gi</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a81c0438ef98a2fd82b93fc180a30de8/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">android studio导入mysql jar包</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

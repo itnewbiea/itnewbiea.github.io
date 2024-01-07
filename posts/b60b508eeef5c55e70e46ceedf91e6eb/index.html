@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【探索 Kubernetes|作业管理篇 系列 15】DaemonSet 的”过人之处“ - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【探索 Kubernetes|作业管理篇 系列 15】DaemonSet 的”过人之处“" />
+<meta property="og:description" content="前言 大家好，我是秋意零。
+在上一篇中，我们讲解了 StatefulSet 的存储状态；我们发现，它的存储状态，就是利用了 PV 与 PVC 的设计。StatefulSet 自动为我们创建 PVC 并且以 &lt;pvc-name&gt;-&lt;pod-name&gt;-&lt;编号&gt;命名，从而始终与 Pod 编号名一致的绑定。
+需要注意的是：StatefulSet 的“滚动更新”是从最后一个 Pod 开始的，为了不破坏拓扑状态。如：主从数据库，主的 Pod 编号是 0，后面是从，如果先更新主数据库 0 编号，那么后面的从数据库就会出现问题。
+StatefulSet 的“滚动更新”还允许我们进行更精细的控制，比如：金丝雀发布（Canary Deploy）或者灰度发布，这意味着应用的多个实例中被指定的一部分不会被更新到最新的版本。
+StatefulSet 的 partition 字段设置为 2，那么编号小于 2 的 Pod 是不会进行镜像更新的。
+$ kubectl patch statefulset mysql -p &#39;{&#34;spec&#34;:{&#34;updateStrategy&#34;:{&#34;type&#34;:&#34;RollingUpdate&#34;,&#34;rollingUpdate&#34;:{&#34;partition&#34;:2}}}}&#39; statefulset.apps/mysql patched 今天的内容是 DaemonSet 控制器。
+👿 简介
+🏠 个人主页： 秋意零🧑 个人介绍：在校期间参与众多云计算相关比赛，如：🌟 “省赛”、“国赛”，并斩获多项奖项荣誉证书🎉 目前状况：24 届毕业生，拿到一家私有云（IAAS）公司 offer，暑假开始实习🔥 账号：各个平台， 秋意零 账号创作者、 云社区 创建者💕欢迎大家：欢迎大家一起学习云计算，走向年薪 30 万 系列文章目录 【云原生|探索 Kubernetes-1】容器的本质是进程
+【云原生|探索 Kubernetes-2】容器 Linux Cgroups 限制" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/b60b508eeef5c55e70e46ceedf91e6eb/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-06-29T13:49:44+08:00" />
+<meta property="article:modified_time" content="2023-06-29T13:49:44+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【探索 Kubernetes|作业管理篇 系列 15】DaemonSet 的”过人之处“</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2 id="df368884">前言</h2> 
+<p id="u53aeea5d"><strong>大家好，我是秋意零。</strong></p> 
+<p id="ueabba2cf">在上一篇中，我们讲解了 StatefulSet 的存储状态；我们发现，它的存储状态，就是利用了 PV 与 PVC 的设计。StatefulSet 自动为我们创建 PVC 并且以 <code>&lt;pvc-name&gt;-&lt;pod-name&gt;-&lt;编号&gt;</code>命名，从而始终与 Pod 编号名一致的绑定。</p> 
+<p id="u2bbd32cc"><strong>需要注意的是</strong>：StatefulSet 的“滚动更新”是从最后一个 Pod 开始的，为了不破坏拓扑状态。如：主从数据库，主的 Pod 编号是 0，后面是从，如果先更新主数据库 0 编号，那么后面的从数据库就会出现问题。</p> 
+<p id="uf7bc6d06">StatefulSet 的“滚动更新”还允许我们进行更精细的控制，比如：金丝雀发布（Canary Deploy）或者灰度发布，这意味着应用的多个实例中被指定的一部分不会被更新到最新的版本。</p> 
+<p id="ub6a46359"><strong>StatefulSet 的 partition 字段设置为 2，那么编号小于 2 的 Pod 是不会进行镜像更新的</strong>。</p> 
+<pre><code class="language-bash">$ kubectl patch statefulset mysql -p '{"spec":{"updateStrategy":{"type":"RollingUpdate","rollingUpdate":{"partition":2}}}}'
+statefulset.apps/mysql patched</code></pre> 
+<p id="u06648e2c"></p> 
+<p id="uf261cd94">今天的内容是 DaemonSet 控制器。</p> 
+<p id="u1225ed54"></p> 
+<p id="u8802129a"><strong>👿 简介</strong></p> 
+<p id="uf13e3d14"></p> 
+<ul><li id="u33070828">🏠 <strong>个人主页</strong>： <a href="https://blog.csdn.net/qq_48450494?spm=1000.2115.3001.5343" title="秋意零">秋意零</a></li><li id="uba5af928">🧑 <strong>个人介绍</strong>：在校期间参与众多云计算相关比赛，如：🌟 <strong>“省赛”、“国赛”</strong>，并斩获多项奖项荣誉证书</li><li id="ucfe7f57f">🎉 <strong>目前状况</strong>：24 届毕业生，拿到一家私有云（IAAS）公司 offer，暑假开始实习</li><li id="u7026d55f">🔥 <strong>账号</strong>：各个平台， <a href="https://blog.csdn.net/qq_48450494?spm=1000.2115.3001.5343" title="秋意零">秋意零</a> 账号创作者、 <a href="https://bbs.csdn.net/forums/CloudLog" title="云社区">云社区</a> 创建者</li><li id="u0ad186c9">💕<strong>欢迎大家</strong>：欢迎大家一起学习云计算，走向年薪 30 万</li></ul> 
+<p id="u735aab0a"></p> 
+<p id="u4428dba9"><img alt="" id="dk4Fb" src="https://images2.imgbox.com/04/5b/nrnT5AfL_o.png" width="129"></p> 
+<p id="u4f30bc34"></p> 
+<h2 id="ec31bbed">系列文章目录</h2> 
+<hr id="BwAn0"> 
+<p id="ubfb8b0c9"><a href="https://blog.csdn.net/qq_48450494/article/details/130378310" title="【云原生|探索 Kubernetes-1】容器的本质是进程">【云原生|探索 Kubernetes-1】容器的本质是进程</a><br><a href="https://blog.csdn.net/qq_48450494/article/details/130393338" title="【云原生|探索 Kubernetes-2】容器 Linux Cgroups 限制">【云原生|探索 Kubernetes-2】容器 Linux Cgroups 限制</a><br><a href="https://blog.csdn.net/qq_48450494/article/details/130761670" title="【云原生|探索 Kubernetes 系列 3】深入理解容器进程的文件系统">【云原生|探索 Kubernetes 系列 3】深入理解容器进程的文件系统</a><br><a href="https://blog.csdn.net/qq_48450494/article/details/130840896?spm=1001.2014.3001.5501" title="【云原生|探索 Kubernetes 系列 4】现代云原生时代的引擎">【云原生|探索 Kubernetes 系列 4】现代云原生时代的引擎</a><br><a href="https://blog.csdn.net/qq_48450494/article/details/130909845" title="【云原生|探索 Kubernetes 系列 5】简化 Kubernetes 的部署，深入解析其工作流程">【云原生|探索 Kubernetes 系列 5】简化 Kubernetes 的部署，深入解析其工作流程</a></p> 
+<hr id="LMCTu"> 
+<p id="u8778bc30"><strong>更多点击专栏查看</strong>：<a href="https://blog.csdn.net/qq_48450494/category_12302983.html?spm=1001.2014.3001.5482" title="深入探索 Kubernetes">深入探索 Kubernetes</a></p> 
+<p id="ua18d804e"></p> 
+<p id="u14c850e8"><strong>正文开始</strong>：</p> 
+<ul><li id="u1f43187b">快速上船，马上开始掌舵了（Kubernetes），距离开船还有 3s，2s，1s...</li></ul> 
+<p id="u5c400dd5"></p> 
+<p id="u852bb81d"><img alt="" id="JN22d" src="https://images2.imgbox.com/76/f8/1DOCPJci_o.png" width="134"></p> 
+<p id="main-toc"><strong>目录</strong></p> 
+<p id="df368884-toc" style="margin-left:0px;"><a href="#df368884" rel="nofollow">前言</a></p> 
+<p id="ec31bbed-toc" style="margin-left:0px;"><a href="#ec31bbed" rel="nofollow">系列文章目录</a></p> 
+<p id="U9qsZ-toc" style="margin-left:0px;"><a href="#U9qsZ" rel="nofollow">一、DaemonSet 介绍</a></p> 
+<p id="wIi8j-toc" style="margin-left:40px;"><a href="#wIi8j" rel="nofollow">Daemon Pod 的意义</a></p> 
+<p id="QlGIn-toc" style="margin-left:0px;"><a href="#QlGIn" rel="nofollow">二、DaemonSet 的“过人之处”</a></p> 
+<p id="SZ95A-toc" style="margin-left:0px;"><a href="#SZ95A" rel="nofollow">三、DaemonSet 的镜像版本如何维护</a></p> 
+<p id="JCUzq-toc" style="margin-left:40px;"><a href="#JCUzq" rel="nofollow">一切皆对象</a></p> 
+<p id="yvRV2-toc" style="margin-left:0px;"><a href="#yvRV2" rel="nofollow">总结</a></p> 
+<hr id="hr-toc"> 
+<p></p> 
+<h2 id="U9qsZ">一、DaemonSet 介绍</h2> 
+<p id="ufd53625b">DaemonSet 的主要作用，是在集群中运行一个类似守护进程的 Pod 服务（Daemon Pod）。</p> 
+<p id="u75f9d103"><strong>DaemonSet 管理 Pod 的三个特性：</strong></p> 
+<ul><li id="u1612040e">这个 Pod 运行在 Kubernetes 集群中，<strong>每一个节点（Node）上</strong>；</li><li id="u66271cdb">DaemonSet <strong>只会在每个节点创建一个 Pod</strong>（Daemon Pod）；</li><li id="uc36461fb">集群中有新节点加入时，DaemonSet 也会<strong>马上为这个新节点创建一个 Pod</strong>；当然当节点从集群中移除时，这个 Pod 也会回收。</li></ul> 
+<p id="u55f9e822"><strong>实际上就是为每个节点只创建一个 Pod，就是像所谓的守护程序。</strong></p> 
+<h3 id="wIi8j">Daemon Pod 的意义</h3> 
+<p id="u62ee30d7">DaemonSet<strong> </strong>机制听起来很简单，但是 Daemon Pod 的意义确实是非常重要的。如下：</p> 
+<ul><li id="ud771b36d">1.各种<strong>网络插件</strong>的 Agent 组件，<strong>用来处理这个节点上容器网络</strong>，必须运行在每一个节点上；</li><li id="u7a1e0956">2.各种<strong>存储插件</strong>的 Agent 组件，<strong>用来在这个节点上挂载远程存储目录，操作容器的 Volume 目录</strong>，也必须运行在每一个节点上；</li><li id="u002ddb05">3.各种<strong>监控组件和日志组件</strong>，负责这个<strong>节点上的监控信息和日志搜集</strong>，也必须运行在每一个节点上。</li></ul> 
+<p id="u70a0ec7a">需要注意的是，DaemonSet 运行的时机，很多时候比整个 Kubernetes 集群出现的时机都要早。</p> 
+<p id="u0c4df07f">这个乍一听起来可能有点儿奇怪。但其实你来想一下：如果这个 DaemonSet 正是一个网络插件的 Agent 组件呢？</p> 
+<ul><li id="u67f46fa3">首先要知道，在部署 Kubernetes 集群时，没有网络插件，节点的状态就会是 NotReady 状态（NetworkReady=false）。</li><li id="ua433756a">这个情况下，普通 Pod 是不能运行在集群中的。而为了让集群能正常运行 Pod 那么就需要使用 DaemonSet。</li></ul> 
+<p id="u261e4255">这里或许还有一个疑问，就是普通 Pod 在这种 NotReady 情况下不能运行，那 DaemonSet 就能运行吗？</p> 
+<h2 id="QlGIn">二、DaemonSet 的“过人之处”</h2> 
+<p id="u5975c692">要理解 DaemonSet 的“过人之处”。首先，要了解 DaemonSet 的工作过程。</p> 
+<p id="u20a275e5">来看一个 DaemonSet 的 YAML 文件：</p> 
+<ul><li id="uab1faa07">可以看到，<strong>DaemonSet 的 YAML 与 Deployment 的 YAML 文件</strong>可以说是<strong>几乎一模一样</strong>，<strong>只不过是没有 replicas 字段</strong><strong>。</strong>因为 DaemonSet 每个节点只需要一个副本，replicas 字段就没有必要存在了。</li></ul> 
+<pre><code class="language-bash">apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: example-daemonset
+  labels:
+    app: example
+spec:
+  selector:
+    matchLabels:
+      app: example
+  template:
+    metadata:
+      labels:
+        app: example
+    spec:
+      tolerations:
+      - key: node.kubernetes.io/unreachable
+        operator: Exists
+        effect: NoExecute
+      containers:
+      - name: example-container
+        image: nginx:latest</code></pre> 
+<p id="u592b8b40">那么，DaemonSet 又是如何保证每个 Node 节点上有且只有一个被管理的 Pod 的呢？这是一个典型的“控制器模型”能够处理的问题。</p> 
+<p id="u057b8b58"></p> 
+<p id="u4bb4b391"><strong>以上面 YAML 为例</strong>：</p> 
+<p id="u7adea226"><strong>1.DaemonSet Controller，首先从 Etcd 中获取所有 Node 列表，然后遍历所有的 Node，查找检查是否有 </strong><code><strong>app: example</strong></code><strong>标签的 Pod 在运行。</strong></p> 
+<p id="u55335311">这个查找检查过程有三种情况：</p> 
+<ul><li id="uf03df937">没有这种 Pod，那就需要在该 Node 节点上创建一个 Pod；</li><li id="uab7c46a6">有这种 Pod，需要判断是否为 1，大于 1 就删除；</li><li id="ue4700cfe">正好有这种 Pod，说明这个节点正常。</li></ul> 
+<p id="uc2eb776a"><strong>2.当查找到有这种 Pod 时，删除节点上多余的 Pod，很容易；当查找到没有这种 Pod 时，如何让 Pod 在指定 Node 节点上创建呢？</strong>通过两种方式：</p> 
+<p id="u34b45fe3"></p> 
+<p id="u214ba4ea"><strong>2.1. </strong>配置 DaemonSet 的节点亲和性（nodeAffinity）规则，指定它应该运行在哪些节点上。</p> 
+<p id="u07e7fab5"><strong>节点亲和性（nodeAffinity）</strong>：可以通俗的理解为，你更喜欢谁，就和谁靠的更近从而在一起（这属于调度内容，详细内容之后章节展开）。</p> 
+<p id="u9fb3d5ea"></p> 
+<p id="u504fac8d">Kubernetes 集群中的网络插件（calico）或者 kube-porxy 组件，它们都是 DaemonSet 控制器方式部署的。我们可以查看它们所管理的 Pod ，如图：</p> 
+<ul><li id="u440d923d">可以看到 <code>spec.affinity.nodeAffinity</code>这个字段是 DaemonSet 默认为 Pod 添加的字段，是它创建 Pod 的机制。</li><li id="uc86ec6bc"><code>requiredDuringSchedulingIgnoredDuringExecution</code>：它的意思是说，这个 nodeAffinity 必须在每次调度的时候予以考虑。</li></ul> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/6d/20/cz1V27xS_o.png"></p> 
+<p id="ud9f975ac">上图中的 matchFields 字段（匹配字段）是我们的匹配 Node 节点的机制，上图中 <code>key: metadata.name</code>和 <code>values: [master01]</code>配置的哪里？看下图，它匹配的是 Node 节点的 YAML 文件中的 <code>metadata.name</code>字段。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/fd/60/53oIWHxZ_o.png"></p> 
+<p id="u5e8861fe"></p> 
+<p id="ub760dd0f"><strong>2.2 </strong>此外，DaemonSet 还会给这个 Pod 自动加上另外一个与调度相关的字段，叫作 tolerations。这个字段意味着这个 Pod，会“容忍”（Toleration）某些 Node 的“污点”（Taint）。</p> 
+<p id="u8e77f5b7"><strong>Toleration 和 Taint（容忍和污点）</strong>：可以通俗的理解为，你能忍受理解某人的缺点，也就不在意它的缺点了。</p> 
+<p id="u2dc1e3bb">下面是 DaemonSet 自动生成的一组 tolerations 字段的完整格式：</p> 
+<pre><code class="language-bash">tolerations:
+- key: node.kubernetes.io/not-ready
+  operator: Exists
+  effect: NoExecute
+- key: node.kubernetes.io/unreachable
+  operator: Exists
+  effect: NoExecute
+- key: node.kubernetes.io/disk-pressure
+  operator: Exists
+  effect: NoSchedule
+- key: node.kubernetes.io/memory-pressure
+  operator: Exists
+  effect: NoSchedule
+- key: node.kubernetes.io/unschedulable
+  operator: Exists
+  effect: NoSchedule</code></pre> 
+<p id="u2d1b0d88">上述 tolerations 字段包含了一系列的 toleration 条目，每个条目描述了容忍一个特定污点的规则。例如：</p> 
+<p id="ucfc78b6c"><code><strong>operator: Exists</strong></code><strong> </strong>表示只要存在该污点，就容忍该节点。</p> 
+<p id="u9a7d2e2f"><code>effect: NoSchedule</code> 表示不在该节点上进行新的调度。可是，DaemonSet 自动地给被管理的 Pod 加上了这个特殊的 Toleration，就使得这些 Pod 可以忽略这个限制，继而保证每个节点上都会被调度一个 Pod。</p> 
+<ul><li id="u9ea5386f"><code><strong>node.kubernetes.io/not-ready</strong></code><strong> ：表示容忍 NotReady 状态的节点。</strong></li><li id="uf85eb60b"><code><strong>node.kubernetes.io/unreachable</strong></code><strong>：容忍节点处于 Unreachable 状态。 </strong></li><li id="u5229508a"><code><strong>node.kubernetes.io/disk-pressure</strong></code><strong>：容忍节点存在磁盘压力。 </strong></li><li id="u1249ebb6"><code><strong>node.kubernetes.io/memory-pressure</strong></code><strong>：容忍节点存在内存压力。 </strong></li><li id="uc0b4d1d5"><code><strong>node.kubernetes.io/unschedulable</strong></code><strong>：容忍节点标记为不可调度。 </strong></li></ul> 
+<p id="u1f454908">这些 tolerations 使得 DaemonSet 的 Pod 能够在带有这些污点的节点上正常运行。</p> 
+<p id="u59711450"><strong>查看 calico 网络插件 的 Pod 上的 </strong><strong>Toleration：</strong></p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/b8/2b/xru8zC7n_o.png"></p> 
+<p id="u3b06c1fa"></p> 
+<p id="u05303523"><strong>这时，你会想到，我在前面提到的 DaemonSet 的“过人之处”，其实就是依靠 Toleration 实现的。</strong></p> 
+<h2 id="SZ95A">三、DaemonSet 的镜像<strong>版本如何维护</strong></h2> 
+<ol><li id="u450e5c71">创建 DaemonSet 的 YAML 文件：</li></ol> 
+<pre><code class="language-bash">apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: example-daemonset
+  labels:
+    app: example
+spec:
+  selector:
+    matchLabels:
+      app: example
+  template:
+    metadata:
+      labels:
+        app: example
+    spec:
+      containers:
+      - name: example-container
+        image: nginx:latest
+        imagePullPolicy: IfNotPresent</code></pre> 
+<p id="ua146ab49">可以看到，现在每个 Node 节点上都有一个 example-daemonset（DaemonSet） 所管理的 Pod：</p> 
+<pre><code class="language-bash">[root@master01 ~]# kubectl apply -f daemonSet.yaml
+daemonset.apps/example-daemonset created
+
+[root@master01 ~]# kubectl get pod -owide
+NAME                      READY   STATUS    RESTARTS   AGE    IP              NODE       NOMINATED NODE   READINESS GATES
+example-daemonset-bmfs5   1/1     Running   0          2m5s   10.244.5.14     worker01   &lt;none&gt;           &lt;none&gt;
+example-daemonset-dgtp4   1/1     Running   0          2m5s   10.244.241.82   master01   &lt;none&gt;           &lt;none&gt;</code></pre> 
+<ol><li id="u2f26395f"><strong>镜像更新</strong></li></ol> 
+<p id="ueb9eacce">DaemonSet 与 Deployment 一样都能进行版本管理。使用 <code>kubectl rollout history</code>查看：</p> 
+<pre><code class="language-bash">[root@master01 ~]# kubectl rollout history daemonset example-daemonset
+daemonset.apps/example-daemonset
+REVISION  CHANGE-CAUSE
+1         &lt;none&gt;</code></pre> 
+<p id="u43897c83">使用 <code>kubectl set image</code>命令修改镜像版本：</p> 
+<pre><code class="language-bash">[root@master01 ~]# kubectl set image daemonset/example-daemonset --record example-container=nginx:alpine
+Flag --record has been deprecated, --record will be removed in the future
+daemonset.apps/example-daemonset image updated</code></pre> 
+<p id="u664f2dca">使用<code>kubectl rollout history</code>命令再次查看更新版本记录：</p> 
+<pre><code class="language-bash">[root@master01 ~]# kubectl rollout history daemonset example-daemonset
+daemonset.apps/example-daemonset
+REVISION  CHANGE-CAUSE
+1         &lt;none&gt;
+2         kubectl set image daemonset/example-daemonset example-container=nginx:alpine --record=true</code></pre> 
+<h3 id="JCUzq">一切皆对象</h3> 
+<p id="ua2dbdd12">Deployment 管理这些版本，靠的是“一个版本对应一个 ReplicaSet 对象”。可是，DaemonSet 控制器操作的直接就是 Pod。<strong>那么，它的这些版本又是如何维护的呢？</strong></p> 
+<p id="u5802930d">所谓，一切皆对象！</p> 
+<p id="ud067eba8">在 Kubernetes 项目中，任何你觉得需要记录下来的状态，都可以被用 API 对象的方式实现。当然，“版本”也不例外。</p> 
+<p id="u65dc6d0c">Kubernetes v1.7 之后添加了一个 API 对象，叫 ControllerRevision，专门用来记录某种 Controller 对象的版本。</p> 
+<pre><code class="language-bash">[root@master01 ~]# kubectl get controllerrevision
+NAME                          CONTROLLER                         REVISION   AGE
+example-daemonset-67d867976   daemonset.apps/example-daemonset   2          10m
+example-daemonset-d8494f4bd   daemonset.apps/example-daemonset   1          20m
+
+[root@master01 ~]# kubectl describe controllerrevision example-daemonset-67d867976</code></pre> 
+<p id="uac6e096c">我们查看版本 2 是否是我们对应的版本：</p> 
+<ul><li id="u034cde38">可以看到，Annotations 记录了，我们 kubectl 修改镜像版本的命令；以及 data 字段保存了该版本对应的完整的 DaemonSet 的 API 对象</li></ul> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/dc/f3/J6x5xFvi_o.png"></p> 
+<p id="u6de60f56">将 DaemonSet 回滚到 Revision=1 时的状态：</p> 
+<ul><li id="ue91069b9"><code>kubectl describe controllerrevision</code>可以看到它的 <code>Revision 字段</code>，而 <code>kubectl rollout undo</code>实际上读取到了 的 ControllerRevision 的对象保存的 Data 字段。而这个 Data 字段里保存的信息，就是 <code>Revision=1</code> 时这个 DaemonSet 的完整 API 对象。</li></ul> 
+<pre><code class="language-bash">[root@master01 ~]# kubectl rollout undo daemonset/example-daemonset --to-revision=1
+daemonset.apps/example-daemonset rolled back
+[root@master01 ~]#
+
+[root@master01 ~]# kubectl describe controllerrevision example-daemonset-d8494f4bd</code></pre> 
+<p id="u7ba894b1">在执行完这次回滚完成后，你会发现，DaemonSet 的 Revision 并不会从 Revision=2 退回到 1，而是会增加成 Revision=3。这是因为，一个新的 ControllerRevision 被创建了出来。</p> 
+<pre><code class="language-bash">[root@master01 ~]# kubectl rollout history daemonset/example-daemonset
+daemonset.apps/example-daemonset
+REVISION  CHANGE-CAUSE
+2         kubectl set image daemonset/example-daemonset example-container=nginx:alpine --record=true
+3         &lt;none&gt;
+
+[root@master01 ~]# kubectl get controllerrevision
+NAME                          CONTROLLER                         REVISION   AGE
+example-daemonset-67d867976   daemonset.apps/example-daemonset   2          31m
+example-daemonset-d8494f4bd   daemonset.apps/example-daemonset   3          41m</code></pre> 
+<h2 id="yvRV2">总结</h2> 
+<p id="ua6e771c6">通过上面的介绍，DaemonSet 的工作过程。</p> 
+<p id="ufba90d86">首先，是它的控制循环，查找检查所有 Node 节点上的 Pod 的情况，来决定是否创建或者删除一个 Pod；</p> 
+<p id="u54a15b73">其次，在创建 Pod 时，DaemonSet 会自动给这个 Pod 加上一个 nodeAffinity 和 Toleration，来保证 Pod 在指定节点运行，并且忽略 unschedulable “污点”；</p> 
+<p id="ube7f4fe6">最后，DaemonSet 使用 ControllerRevision，来保存和管理对应的“版本”。</p> 
+<p id="ucb822773"></p> 
+<p id="u6cde734d">StatefulSet 也是直接控制 Pod 对象的，那么它是不是也在使用 ControllerRevision 进行版本管理呢？</p> 
+<p id="u1735fa2f">没错。在 Kubernetes 项目里，ControllerRevision 其实是一个通用的版本管理对象。这样，Kubernetes 项目就巧妙地避免了每种控制器都要维护一套冗余的代码和逻辑的问题。</p> 
+<p id="ucf37c0a3"></p> 
+<p id="ua31fd52b"></p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/67/8c/sDYUEJX3_o.jpg"></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/dfa91830d15116ff17c5839eeb6a2de2/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">中安网星版大模型来了！三大关键能力，不输专业红队攻击手</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/58a78bf6e124952d2dfadf0cc1a30da7/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">vue集成海康威视H5视频播放器（H5player）开发包 V2.1.2</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

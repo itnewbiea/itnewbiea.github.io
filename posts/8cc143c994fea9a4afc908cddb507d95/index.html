@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Linux学习之悟空派上实现OLED的无线网IP及CPU温度显示【守护进程】 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Linux学习之悟空派上实现OLED的无线网IP及CPU温度显示【守护进程】" />
+<meta property="og:description" content="起因 最近各种网购平台似乎都在推送99元的悟空派全志H3的开发板，出于好奇就买了一块来试试水，由于这块板子基本上和orangepi-Zero的硬件结构一模一样，所以设备树、boot这些就用orangepi现成的部件了。
+因为本人比较喜欢使用SSH操作，但是在不同环境下使用连接的WiFi不一样，所以对应的IP地址也就不一样，所以我给悟空派弄了一个0.98寸的OLED，用来显示CPU温度和当前IP地址，并5秒会刷新一次数据内容，为我连接SSH提供了一定的帮助，但是由于该任务是开机启动的前台任务，就导致我的串口Shell始终处于显示该线程打印数据内容的状态下，导致我无法在新环境连接新WiFi，所以考虑如何解决该问题。
+处理方案 由于该任务我希望从设备启动时运行到设备关机时关闭，不希望其与终端产生关联，故在linux环境中找到较为合适的处理方案便为将守护进程。
+守护进程（Daemon） 代蒙（希腊文：δαίμων、拉丁文：Dæmon、英文：Daemon）是希腊神话中的一种介于神与人之间的精灵或妖魔。它们与神祇的区别在于精灵并不具有人的外貌，而是一种善恶并存的超自然存在。在罗马神话中，代蒙称为格尼烏斯（Genius）。
+代蒙无处不在，伴随着人的一生。 根据古希腊唯心主义哲学派的解释，人一生下来一直到死亡都有代蒙伴随并支配他的一切行动。
+从这个英文单词的意义可以得知，daemon在linux系统中就是伴随linux运行一生并支配其行动的东西，这个东西善恶并存，是否就可以理解成daemon的好坏取决于编写daemon的我们，且无论好坏都将伴随linux的整个运行周期。
+下面是标准理解，此处借鉴了大佬 JMW1407文章中 【Linux】守护进程（ Daemon）的定义，作用，创建流程_daemon的作用-CSDN博客
+1、定义 守护进程是运行在后台的一种特殊进程，它独立于控制终端并且周期性地执行某种任务或循环等待处理某些事件的发生；它不需要用户输入就能运行而且提供某种服务，不是对整个系统就是对某个用户程序提供服务。Linux系统的大多数服务器就是通过守护进程实现的。
+守护进程一般在系统启动时开始运行，除非强行终止，否则直到系统关机才随之一起停止运行；
+守护进程一般都以root用户权限运行，因为要使用某些特殊的端口（1-1024）或者资源；
+守护进程的父进程一般都是init进程，因为它真正的父进程在fork出守护进程后就直接退出了，所以守护进程都是孤儿进程，由init接管；
+守护进程是非交互式程序，没有控制终端，所以任何输出，无论是向标准输出设备stdout还是标准出错设备stderr的输出都需要特殊处理。
+守护进程的名称通常以d结尾，比如sshd、xinetd、crond等
+2、作用 守护进程是一个生存周期较长的进程，通常独立于控制终端并且周期性的执行某种任务或者等待处理某些待发生的事件大多数服务都是通过守护进程实现的关闭终端，相应的进程都会被关闭，而守护进程却能够突破这种限制 功能实现 基本源码 首先大家可以看一下我是如何在悟空派使用OLED显示IP地址和温度的，源代码如下
+#include &lt;errno.h&gt; #include &lt;string.h&gt; #include &lt;stdio.h&gt; #include &lt;stdlib.h&gt; #include &lt;time.h&gt; #include &lt;stdint.h&gt; #include &lt;sys/types.h&gt; #include &lt;sys/stat.h&gt; #include &lt;fcntl.h&gt; #include &lt;unistd.h&gt; #include &lt;signal.h&gt; #include &lt;sys/types.h&gt; #include &lt;sys/stat.h&gt; #include &lt;sys/param.h&gt; #include &lt;syslog.h&gt; #define MAXFILE 65535 #include &lt;netinet/in.h&gt; #include &lt;net/if.h&gt; #include &lt;sys/ioctl.h&gt; #include &lt;arpa/inet.h&gt; #include &#34;oled.h&#34; #include &#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/8cc143c994fea9a4afc908cddb507d95/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-10-04T23:30:05+08:00" />
+<meta property="article:modified_time" content="2023-10-04T23:30:05+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Linux学习之悟空派上实现OLED的无线网IP及CPU温度显示【守护进程】</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="_0"></a>起因</h2> 
+<p>最近各种网购平台似乎都在推送99元的悟空派全志H3的开发板，出于好奇就买了一块来试试水，由于这块板子基本上和orangepi-Zero的硬件结构一模一样，所以设备树、boot这些就用orangepi现成的部件了。<br> 因为本人比较喜欢使用SSH操作，但是在不同环境下使用连接的WiFi不一样，所以对应的IP地址也就不一样，所以我给悟空派弄了一个0.98寸的OLED，用来显示CPU温度和当前IP地址，并5秒会刷新一次数据内容，为我连接SSH提供了一定的帮助，但是由于该任务是开机启动的前台任务，就导致我的串口Shell始终处于显示该线程打印数据内容的状态下，导致我无法在新环境连接新WiFi，所以考虑如何解决该问题。</p> 
+<h2><a id="_7"></a>处理方案</h2> 
+<p>由于该任务我希望从设备启动时运行到设备关机时关闭，不希望其与终端产生关联，故在linux环境中找到较为合适的处理方案便为将守护进程。</p> 
+<h2><a id="Daemon_13"></a>守护进程（Daemon）</h2> 
+<p>代蒙（希腊文：δαίμων、拉丁文：Dæmon、英文：Daemon）是希腊神话中的一种介于神与人之间的精灵或妖魔。它们与神祇的区别在于精灵并不具有人的外貌，而是一种善恶并存的超自然存在。在罗马神话中，代蒙称为格尼烏斯（Genius）。</p> 
+<p>代蒙无处不在，伴随着人的一生。 根据古希腊唯心主义哲学派的解释，人一生下来一直到死亡都有代蒙伴随并支配他的一切行动。</p> 
+<p>从这个英文单词的意义可以得知，daemon在linux系统中就是伴随linux运行一生并支配其行动的东西，这个东西善恶并存，是否就可以理解成daemon的好坏取决于编写daemon的我们，且无论好坏都将伴随linux的整个运行周期。</p> 
+<p>下面是标准理解，此处借鉴了大佬 <a href="https://blog.csdn.net/JMW1407">JMW1407</a>文章中 <a href="https://blog.csdn.net/JMW1407/article/details/108412836">【Linux】守护进程（ Daemon）的定义，作用，创建流程_daemon的作用-CSDN博客</a></p> 
+<h3><a id="1_23"></a>1、定义</h3> 
+<p>守护进程是运行在后台的一种特殊进程，它独立于控制终端并且周期性地执行某种任务或循环等待处理某些事件的发生；它不需要用户输入就能运行而且提供某种服务，不是对整个系统就是对某个用户程序提供服务。Linux系统的大多数服务器就是通过守护进程实现的。<br> 守护进程一般在系统启动时开始运行，除非强行终止，否则直到系统关机才随之一起停止运行；<br> 守护进程一般都以root用户权限运行，因为要使用某些特殊的端口（1-1024）或者资源；<br> 守护进程的父进程一般都是init进程，因为它真正的父进程在fork出守护进程后就直接退出了，所以守护进程都是孤儿进程，由init接管；<br> 守护进程是非交互式程序，没有控制终端，所以任何输出，无论是向标准输出设备stdout还是标准出错设备stderr的输出都需要特殊处理。<br> 守护进程的名称通常以d结尾，比如sshd、xinetd、crond等</p> 
+<h3><a id="2_32"></a>2、作用</h3> 
+<ol><li>守护进程是一个生存周期较长的进程，通常独立于控制终端并且周期性的执行某种任务或者等待处理某些待发生的事件</li><li>大多数服务都是通过守护进程实现的</li><li>关闭终端，相应的进程都会被关闭，而守护进程却能够突破这种限制</li></ol> 
+<h2><a id="_40"></a>功能实现</h2> 
+<h3><a id="_42"></a>基本源码</h3> 
+<p>首先大家可以看一下我是如何在悟空派使用OLED显示IP地址和温度的，源代码如下</p> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;errno.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;string.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdio.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdlib.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;time.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdint.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/types.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/stat.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;fcntl.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;unistd.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;signal.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/types.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/stat.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/param.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;syslog.h&gt;</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">MAXFILE</span> <span class="token expression"><span class="token number">65535</span></span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;netinet/in.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;net/if.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/ioctl.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;arpa/inet.h&gt;</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"oled.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"font.h"</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">TEMP_PATH</span> <span class="token string">"/sys/class/thermal/thermal_zone0/temp"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">MAX_SIZE</span> <span class="token expression"><span class="token number">32</span></span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">ETH_NAME</span> <span class="token string">"wlan0"</span></span>
+
+<span class="token keyword">double</span> <span class="token function">temp_get</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">int</span> fd<span class="token punctuation">;</span>
+    <span class="token keyword">double</span> temp <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token keyword">char</span> buf<span class="token punctuation">[</span>MAX_SIZE<span class="token punctuation">]</span><span class="token punctuation">;</span>
+    <span class="token comment">// 开/sys/class/thermal/thermal_zoneo/temp</span>
+    fd <span class="token operator">=</span> <span class="token function">open</span><span class="token punctuation">(</span>TEMP_PATH<span class="token punctuation">,</span>O_RDONLY<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>fd <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">fprintf</span><span class="token punctuation">(</span><span class="token constant">stderr</span><span class="token punctuation">,</span><span class="token string">"failed to open thermal_zoneo/tempin"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">//读取内容</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token function">read</span><span class="token punctuation">(</span>fd<span class="token punctuation">,</span>buf<span class="token punctuation">,</span>MAX_SIZE<span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">fprintf</span><span class="token punctuation">(</span><span class="token constant">stderr</span><span class="token punctuation">,</span><span class="token string">"fatled to read tempin"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">// 转换为浮点数打印</span>
+    temp <span class="token operator">=</span> <span class="token function">atoi</span><span class="token punctuation">(</span>buf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        temp <span class="token operator">/=</span> <span class="token number">1000</span><span class="token punctuation">;</span>
+    <span class="token comment">// printf("temp: %.2f\n", temp);</span>
+    <span class="token comment">//关闭文件</span>
+    <span class="token function">close</span><span class="token punctuation">(</span>fd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> temp<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//获取当前IP地址</span>
+<span class="token keyword">char</span><span class="token operator">*</span> <span class="token function">get_local_ip</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">int</span> sock<span class="token punctuation">;</span>
+        <span class="token keyword">struct</span> <span class="token class-name">sockaddr_in</span> sin<span class="token punctuation">;</span>
+        <span class="token keyword">struct</span> <span class="token class-name">ifreq</span> ifr<span class="token punctuation">;</span>
+        sock <span class="token operator">=</span> <span class="token function">socket</span><span class="token punctuation">(</span>AF_INET<span class="token punctuation">,</span> SOCK_DGRAM<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>sock <span class="token operator">==</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token function">perror</span><span class="token punctuation">(</span><span class="token string">"socket"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">return</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token function">strncpy</span><span class="token punctuation">(</span>ifr<span class="token punctuation">.</span>ifr_name<span class="token punctuation">,</span> ETH_NAME<span class="token punctuation">,</span> IFNAMSIZ<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        ifr<span class="token punctuation">.</span>ifr_name<span class="token punctuation">[</span>IFNAMSIZ <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">ioctl</span><span class="token punctuation">(</span>sock<span class="token punctuation">,</span> SIOCGIFADDR<span class="token punctuation">,</span> <span class="token operator">&amp;</span>ifr<span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token function">perror</span><span class="token punctuation">(</span><span class="token string">"ioctl"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">return</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token function">memcpy</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>sin<span class="token punctuation">,</span> <span class="token operator">&amp;</span>ifr<span class="token punctuation">.</span>ifr_addr<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>sin<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token function">inet_ntoa</span><span class="token punctuation">(</span>sin<span class="token punctuation">.</span>sin_addr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//OLED显示的基本框架</span>
+<span class="token keyword">int</span> <span class="token function">oled_demo</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">display_info</span> <span class="token operator">*</span>disp<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">int</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+        <span class="token keyword">char</span> buf<span class="token punctuation">[</span><span class="token number">100</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+        <span class="token keyword">double</span> temp <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    	<span class="token comment">//从系统获取并在OLED上显示温度</span>
+        temp <span class="token operator">=</span> <span class="token function">temp_get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        disp<span class="token operator">-&gt;</span>font <span class="token operator">=</span> font3<span class="token punctuation">;</span>
+        <span class="token function">sprintf</span><span class="token punctuation">(</span>buf<span class="token punctuation">,</span> <span class="token string">"CPU-Temp: %.2f C"</span><span class="token punctuation">,</span> temp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">oled_putstrto</span><span class="token punctuation">(</span>disp<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> buf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    	<span class="token comment">//从系统中获取并在OLED显示当前IP地址</span>
+        <span class="token keyword">char</span><span class="token operator">*</span> local_ip <span class="token operator">=</span> <span class="token function">get_local_ip</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">sprintf</span><span class="token punctuation">(</span>buf<span class="token punctuation">,</span> <span class="token string">"WIP:%s"</span><span class="token punctuation">,</span> local_ip<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">oled_putstrto</span><span class="token punctuation">(</span>disp<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">10</span><span class="token punctuation">,</span> buf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    	<span class="token comment">//显示博主本人ID</span>
+        disp<span class="token operator">-&gt;</span>font <span class="token operator">=</span> font1<span class="token punctuation">;</span>
+        <span class="token function">oled_putstrto</span><span class="token punctuation">(</span>disp<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">20</span><span class="token punctuation">,</span> <span class="token string">"----ASWaterbenben----"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    	<span class="token comment">//打印分隔符</span>
+        disp<span class="token operator">-&gt;</span>font <span class="token operator">=</span> font2<span class="token punctuation">;</span>
+        <span class="token keyword">for</span><span class="token punctuation">(</span>i<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span>i<span class="token operator">&lt;</span><span class="token number">128</span><span class="token punctuation">;</span>i<span class="token operator">++</span><span class="token punctuation">)</span>
+                <span class="token function">oled_putpixel</span><span class="token punctuation">(</span>disp<span class="token punctuation">,</span> i<span class="token punctuation">,</span> <span class="token number">30</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">oled_putstrto</span><span class="token punctuation">(</span>disp<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">32</span><span class="token punctuation">,</span> <span class="token string">" "</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">oled_putstrto</span><span class="token punctuation">(</span>disp<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">37</span><span class="token punctuation">,</span> <span class="token string">"\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\ "</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    	<span class="token comment">//打印结束标记</span>
+        disp<span class="token operator">-&gt;</span>font <span class="token operator">=</span> font1<span class="token punctuation">;</span>
+        <span class="token function">oled_putstrto</span><span class="token punctuation">(</span>disp<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">54</span><span class="token punctuation">,</span> <span class="token string">"*********************"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">oled_send_buffer</span><span class="token punctuation">(</span>disp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//故障输出暂不启用</span>
+<span class="token keyword">void</span> <span class="token function">show_error</span><span class="token punctuation">(</span><span class="token keyword">int</span> err<span class="token punctuation">,</span> <span class="token keyword">int</span> add<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">//const gchar* errmsg;</span>
+        <span class="token comment">//errmsg = g_strerror(errno);</span>
+        <span class="token comment">// printf("\nERROR: %i, %i\n\n", err, add);</span>
+        <span class="token comment">//printf("\nERROR\n");</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//用户输出暂不启用</span>
+<span class="token keyword">void</span> <span class="token function">show_usage</span><span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span>progname<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// printf("\nUsage:\n%s &lt;I2C bus device node &gt;\n", progname);</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token keyword">int</span> argc<span class="token punctuation">,</span> <span class="token keyword">char</span> <span class="token operator">*</span><span class="token operator">*</span>argv<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">int</span> i<span class="token punctuation">;</span>
+        <span class="token keyword">int</span> e<span class="token punctuation">;</span>
+        <span class="token keyword">char</span> filename<span class="token punctuation">[</span><span class="token number">32</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+        <span class="token keyword">struct</span> <span class="token class-name">display_info</span> disp<span class="token punctuation">;</span>
+
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>argc <span class="token operator">&lt;</span> <span class="token number">2</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token function">show_usage</span><span class="token punctuation">(</span>argv<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+		<span class="token comment">//清空显示句柄</span>
+        <span class="token function">memset</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>disp<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>disp<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">sprintf</span><span class="token punctuation">(</span>filename<span class="token punctuation">,</span> <span class="token string">"%s"</span><span class="token punctuation">,</span> argv<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        disp<span class="token punctuation">.</span>address <span class="token operator">=</span> OLED_I2C_ADDR<span class="token punctuation">;</span>
+        disp<span class="token punctuation">.</span>font <span class="token operator">=</span> font2<span class="token punctuation">;</span>
+		<span class="token comment">//打开OLED的设备驱动</span>
+        e <span class="token operator">=</span> <span class="token function">oled_open</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>disp<span class="token punctuation">,</span> filename<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">char</span> <span class="token operator">*</span>buf <span class="token operator">=</span> <span class="token string">"OLED fresh\r\n"</span><span class="token punctuation">;</span>
+        <span class="token keyword">int</span> len <span class="token operator">=</span> <span class="token function">strlen</span><span class="token punctuation">(</span>buf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>e <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token function">show_error</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            	<span class="token comment">//OLED设备初始化</span>
+                e <span class="token operator">=</span> <span class="token function">oled_init</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>disp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>e <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token function">show_error</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+                <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                    	<span class="token comment">//循环每隔5秒显示一次DEMO</span>
+                        <span class="token keyword">while</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span>
+                        <span class="token punctuation">{<!-- --></span>
+                                <span class="token function">oled_demo</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>disp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                                <span class="token function">sleep</span><span class="token punctuation">(</span><span class="token number">5</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<h3><a id="_213"></a>显示效果</h3> 
+<p>效果如下图所示<br> <img src="https://images2.imgbox.com/b3/73/n4gb5Jl9_o.png" alt="在这里插入图片描述"></p> 
+<p>但是在终端启动该功能后，将终端关闭则该进程也就同时关闭，并未达到预期效果，故考虑使用守护进程的处理方法进行修改；</p> 
+<h3><a id="_224"></a>守护进程实现逻辑和源码</h3> 
+<h4><a id="_226"></a>脱离终端控制</h4> 
+<p>由于在终端中启动的进程寿命与终端一致。终端被关闭则进程也被关闭，故首先需要脱离终端控制；</p> 
+<p>使用umask(0);为当前进程获取最大访问权限<br> 使用fork();函数创建子进程，使用exit(0);退出父进程</p> 
+<p>完成上述操作后，终端认为父进程已退出，此时可继续进行终端操作。</p> 
+<h4><a id="_237"></a>独立进程</h4> 
+<p>父进程退出后虽然终端可以继续操作，但是新建的子进程依旧归属于父进程所在的进程组、会话期、控制终端。故需要是因setsid();函数将子进程从父进程组中独立出来。</p> 
+<p>由于此时没有终端作为进程状态输出界面，故需要以其他形式将当前进程反馈的信息打印并保存，便于后续检查线程的运行情况，故使用openlog(“daemon”, LOG_PID, LOG_DAEMON);打开日志服务；<br> 进程中调用 chdir() 函数，让<code>根目录 ”/”</code> 成为当前进程的工作目录 ，防止线程源文件所在位置是可卸载的存储介质，若介质被移除导致进程终端的问题。</p> 
+<h4><a id="_246"></a>进程垃圾处理</h4> 
+<p>清除父进程连带可能产生的已启动文件，由于父进程已经关闭，但是当前进程会继承父进程已经打开的文件，这些文件当前进程并未使用，则将所有继承下来已打开的进程完全关闭。</p> 
+<h4><a id="_252"></a>加入功能代码</h4> 
+<pre><code class="prism language-c"><span class="token comment">/*
+ * Copyright (c) 2015, Vladimir Komendantskiy
+ * MIT License
+ *
+ * SSD1306 demo of block and font drawing.
+ */</span>
+
+<span class="token comment">//</span>
+<span class="token comment">// fixed for OrangePiZero by HypHop</span>
+<span class="token comment">//</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;errno.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;string.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdio.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdlib.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;time.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdint.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/types.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/stat.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;fcntl.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;unistd.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;signal.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/types.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/stat.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/param.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;syslog.h&gt;</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">MAXFILE</span> <span class="token expression"><span class="token number">65535</span></span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;netinet/in.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;net/if.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/ioctl.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;arpa/inet.h&gt;</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"oled.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"font.h"</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">TEMP_PATH</span> <span class="token string">"/sys/class/thermal/thermal_zone0/temp"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">MAX_SIZE</span> <span class="token expression"><span class="token number">32</span></span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">ETH_NAME</span> <span class="token string">"wlan0"</span></span>
+
+<span class="token keyword">double</span> <span class="token function">temp_get</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">int</span> fd<span class="token punctuation">;</span>
+    <span class="token keyword">double</span> temp <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token keyword">char</span> buf<span class="token punctuation">[</span>MAX_SIZE<span class="token punctuation">]</span><span class="token punctuation">;</span>
+    <span class="token comment">// 开/sys/class/thermal/thermal_zoneo/temp</span>
+    fd <span class="token operator">=</span> <span class="token function">open</span><span class="token punctuation">(</span>TEMP_PATH<span class="token punctuation">,</span>O_RDONLY<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>fd <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">fprintf</span><span class="token punctuation">(</span><span class="token constant">stderr</span><span class="token punctuation">,</span><span class="token string">"failed to open thermal_zoneo/tempin"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">//读取内容</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token function">read</span><span class="token punctuation">(</span>fd<span class="token punctuation">,</span>buf<span class="token punctuation">,</span>MAX_SIZE<span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">fprintf</span><span class="token punctuation">(</span><span class="token constant">stderr</span><span class="token punctuation">,</span><span class="token string">"fatled to read tempin"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">// 转换为浮点数打印</span>
+    temp <span class="token operator">=</span> <span class="token function">atoi</span><span class="token punctuation">(</span>buf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        temp <span class="token operator">/=</span> <span class="token number">1000</span><span class="token punctuation">;</span>
+    <span class="token comment">// printf("temp: %.2f\n", temp);</span>
+    <span class="token comment">//关闭文件</span>
+    <span class="token function">close</span><span class="token punctuation">(</span>fd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> temp<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+
+<span class="token keyword">char</span><span class="token operator">*</span> <span class="token function">get_local_ip</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">int</span> sock<span class="token punctuation">;</span>
+        <span class="token keyword">struct</span> <span class="token class-name">sockaddr_in</span> sin<span class="token punctuation">;</span>
+        <span class="token keyword">struct</span> <span class="token class-name">ifreq</span> ifr<span class="token punctuation">;</span>
+        sock <span class="token operator">=</span> <span class="token function">socket</span><span class="token punctuation">(</span>AF_INET<span class="token punctuation">,</span> SOCK_DGRAM<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>sock <span class="token operator">==</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token function">perror</span><span class="token punctuation">(</span><span class="token string">"socket"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">return</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token function">strncpy</span><span class="token punctuation">(</span>ifr<span class="token punctuation">.</span>ifr_name<span class="token punctuation">,</span> ETH_NAME<span class="token punctuation">,</span> IFNAMSIZ<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        ifr<span class="token punctuation">.</span>ifr_name<span class="token punctuation">[</span>IFNAMSIZ <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">ioctl</span><span class="token punctuation">(</span>sock<span class="token punctuation">,</span> SIOCGIFADDR<span class="token punctuation">,</span> <span class="token operator">&amp;</span>ifr<span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token function">perror</span><span class="token punctuation">(</span><span class="token string">"ioctl"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">return</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token function">memcpy</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>sin<span class="token punctuation">,</span> <span class="token operator">&amp;</span>ifr<span class="token punctuation">.</span>ifr_addr<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>sin<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token function">inet_ntoa</span><span class="token punctuation">(</span>sin<span class="token punctuation">.</span>sin_addr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+
+<span class="token keyword">int</span> <span class="token function">oled_demo</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">display_info</span> <span class="token operator">*</span>disp<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">int</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+        <span class="token keyword">char</span> buf<span class="token punctuation">[</span><span class="token number">100</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+        <span class="token keyword">double</span> temp <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+        temp <span class="token operator">=</span> <span class="token function">temp_get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        disp<span class="token operator">-&gt;</span>font <span class="token operator">=</span> font3<span class="token punctuation">;</span>
+        <span class="token function">sprintf</span><span class="token punctuation">(</span>buf<span class="token punctuation">,</span> <span class="token string">"CPU-Temp: %.2f C"</span><span class="token punctuation">,</span> temp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">oled_putstrto</span><span class="token punctuation">(</span>disp<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> buf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//putstrto(disp, 0, 0, "Spnd spd  2468 rpm");</span>
+        <span class="token comment">//      oled_putstrto(disp, 0, 9+1, "Spnd cur  0.46 A");</span>
+        <span class="token keyword">char</span><span class="token operator">*</span> local_ip <span class="token operator">=</span> <span class="token function">get_local_ip</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">sprintf</span><span class="token punctuation">(</span>buf<span class="token punctuation">,</span> <span class="token string">"WIP:%s"</span><span class="token punctuation">,</span> local_ip<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">oled_putstrto</span><span class="token punctuation">(</span>disp<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">10</span><span class="token punctuation">,</span> buf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        disp<span class="token operator">-&gt;</span>font <span class="token operator">=</span> font1<span class="token punctuation">;</span>
+        <span class="token comment">//      oled_putstrto(disp, 0, 18+2, "Spnd tmp    53 C");</span>
+        <span class="token function">oled_putstrto</span><span class="token punctuation">(</span>disp<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">20</span><span class="token punctuation">,</span> <span class="token string">"----ASWaterbenben----"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        disp<span class="token operator">-&gt;</span>font <span class="token operator">=</span> font2<span class="token punctuation">;</span>
+        <span class="token comment">//      oled_putstrto(disp, 0, 27+3, "DrvX tmp    64 C");</span>
+        <span class="token keyword">for</span><span class="token punctuation">(</span>i<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span>i<span class="token operator">&lt;</span><span class="token number">128</span><span class="token punctuation">;</span>i<span class="token operator">++</span><span class="token punctuation">)</span>
+                <span class="token function">oled_putpixel</span><span class="token punctuation">(</span>disp<span class="token punctuation">,</span> i<span class="token punctuation">,</span> <span class="token number">30</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">oled_putstrto</span><span class="token punctuation">(</span>disp<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">32</span><span class="token punctuation">,</span> <span class="token string">" "</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">oled_putstrto</span><span class="token punctuation">(</span>disp<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">37</span><span class="token punctuation">,</span> <span class="token string">"\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\ "</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        disp<span class="token operator">-&gt;</span>font <span class="token operator">=</span> font1<span class="token punctuation">;</span>
+        <span class="token comment">//      oled_putstrto(disp, 0, 54, "Total cur  2.36 A");</span>
+        <span class="token function">oled_putstrto</span><span class="token punctuation">(</span>disp<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">54</span><span class="token punctuation">,</span> <span class="token string">"*********************"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">oled_send_buffer</span><span class="token punctuation">(</span>disp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        disp<span class="token operator">-&gt;</span>font <span class="token operator">=</span> font3<span class="token punctuation">;</span>
+        <span class="token comment">// for (i=0; i&lt;100; i++) {<!-- --></span>
+        <span class="token comment">//      sprintf(buf, "Spnd spd  %d rpm", i);</span>
+        <span class="token comment">//      oled_putstrto(disp, 0, 0, buf);</span>
+        <span class="token comment">//      oled_putstrto(disp, 135-i, 36+4, "===");</span>
+        <span class="token comment">//      oled_putstrto(disp, 100, 0+i/2, ".");</span>
+        <span class="token comment">//      oled_send_buffer(disp);</span>
+        <span class="token comment">// }</span>
+        <span class="token comment">//oled_putpixel(disp, 60, 45);</span>
+        <span class="token comment">//oled_putstr(disp, 1, "hello");</span>
+
+<span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token function">show_error</span><span class="token punctuation">(</span><span class="token keyword">int</span> err<span class="token punctuation">,</span> <span class="token keyword">int</span> add<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">//const gchar* errmsg;</span>
+        <span class="token comment">//errmsg = g_strerror(errno);</span>
+        <span class="token comment">// printf("\nERROR: %i, %i\n\n", err, add);</span>
+        <span class="token comment">//printf("\nERROR\n");</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token function">show_usage</span><span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span>progname<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// printf("\nUsage:\n%s &lt;I2C bus device node &gt;\n", progname);</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token keyword">int</span> argc<span class="token punctuation">,</span> <span class="token keyword">char</span> <span class="token operator">*</span><span class="token operator">*</span>argv<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+        <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"pid = %d\n"</span><span class="token punctuation">,</span> <span class="token function">getpid</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">int</span> i<span class="token punctuation">;</span>
+        <span class="token keyword">int</span> fd<span class="token punctuation">;</span>
+        <span class="token class-name">pid_t</span> pid<span class="token punctuation">;</span>
+
+        <span class="token comment">// 第一步</span>
+        <span class="token function">umask</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 第二步</span>
+        pid <span class="token operator">=</span> <span class="token function">fork</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>pid <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token function">perror</span><span class="token punctuation">(</span><span class="token string">"fork error!"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token function">exit</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span>pid <span class="token operator">&gt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token function">exit</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token comment">// 打开系统日志服务</span>
+        <span class="token function">openlog</span><span class="token punctuation">(</span><span class="token string">"daemon"</span><span class="token punctuation">,</span> LOG_PID<span class="token punctuation">,</span> LOG_DAEMON<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 第三步</span>
+        <span class="token function">setsid</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// 第四步</span>
+        <span class="token function">chdir</span><span class="token punctuation">(</span><span class="token string">"/"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// 第五步</span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> MAXFILE<span class="token punctuation">;</span> <span class="token operator">++</span>i<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token function">close</span><span class="token punctuation">(</span>i<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token function">signal</span><span class="token punctuation">(</span>SIGCHLD<span class="token punctuation">,</span>SIG_IGN<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+
+        <span class="token keyword">int</span> e<span class="token punctuation">;</span>
+        <span class="token keyword">char</span> filename<span class="token punctuation">[</span><span class="token number">32</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+        <span class="token keyword">struct</span> <span class="token class-name">display_info</span> disp<span class="token punctuation">;</span>
+
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>argc <span class="token operator">&lt;</span> <span class="token number">2</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token function">show_usage</span><span class="token punctuation">(</span>argv<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+                <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token function">memset</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>disp<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>disp<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">sprintf</span><span class="token punctuation">(</span>filename<span class="token punctuation">,</span> <span class="token string">"%s"</span><span class="token punctuation">,</span> argv<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        disp<span class="token punctuation">.</span>address <span class="token operator">=</span> OLED_I2C_ADDR<span class="token punctuation">;</span>
+        disp<span class="token punctuation">.</span>font <span class="token operator">=</span> font2<span class="token punctuation">;</span>
+
+        e <span class="token operator">=</span> <span class="token function">oled_open</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>disp<span class="token punctuation">,</span> filename<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">char</span> <span class="token operator">*</span>buf <span class="token operator">=</span> <span class="token string">"OLED fresh\r\n"</span><span class="token punctuation">;</span>
+        <span class="token keyword">int</span> len <span class="token operator">=</span> <span class="token function">strlen</span><span class="token punctuation">(</span>buf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>e <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token function">show_error</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                e <span class="token operator">=</span> <span class="token function">oled_init</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>disp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>e <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token function">show_error</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+                <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token keyword">while</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span>
+                        <span class="token punctuation">{<!-- --></span>
+                                <span class="token function">oled_demo</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>disp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                                fd <span class="token operator">=</span> <span class="token function">open</span><span class="token punctuation">(</span><span class="token string">"/tmp/deamon.log"</span><span class="token punctuation">,</span> O_CREAT<span class="token operator">|</span>O_WRONLY<span class="token operator">|</span>O_
+                                <span class="token keyword">if</span> <span class="token punctuation">(</span>fd <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                                        <span class="token function">syslog</span><span class="token punctuation">(</span>LOG_ERR<span class="token punctuation">,</span> <span class="token string">"open"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                                        <span class="token function">exit</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                                <span class="token punctuation">}</span>
+                                <span class="token function">write</span><span class="token punctuation">(</span>fd<span class="token punctuation">,</span> buf<span class="token punctuation">,</span> len<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                                <span class="token function">close</span><span class="token punctuation">(</span>fd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                                <span class="token function">sleep</span><span class="token punctuation">(</span><span class="token number">5</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+        <span class="token function">closelog</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="_478"></a>编译与执行</h3> 
+<p>使用gcc命令将修改好的c文件编译为out文件，并将out文件加入到开机自启任务中</p> 
+<p>即在 /etc/rc.local中的exit(0);前添加/home/orangepi/Cprogram/temp/oled.sh（oled.sh为已经授权的sh运行脚本，运行脚本核心是将编译完成的执行文件带入硬件固有的I2C硬件接口），oled.sh内容如下：</p> 
+<pre><code class="prism language-shell"><span class="token shebang important">#!/bin/bash</span>
+<span class="token builtin class-name">cd</span> /home/orangepi/Cprogram/temp
+./oled_demo /dev/i2c-0
+</code></pre> 
+<p>/home/orangepi/Cprogram/temp为执行文件所在路径</p> 
+<p>oled_demo就是编译完成的执行文件，/dev/i2c-0为OLED屏幕当前使用的硬件I2C接口。</p> 
+<h2><a id="_496"></a>效果</h2> 
+<p>效果就不太好展示了，大概口头说一下，就是我的悟空派在启动后OLED就被点亮，并在屏幕上显示当前CPU温度、当前无线网IP地址，同时串口终端也成正常终端的状态，每次屏幕内容刷新都会在/tmp/deamon.log日志文件中打印一条消息OLED fresh。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/fdfd941cdbcd2038a3dc5b57808d8830/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">selenium查找网页如何处理网站资源一直加载非常卡或者失败的情况</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/c82cf583304451dbf2b9af3a91d9b61f/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">新手学习Python用哪个软件比较好？</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

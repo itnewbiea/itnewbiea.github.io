@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>mmrotate：详细解读eval_map.py里面的计算TP和FP的代码，并计算虚警率和漏警率 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="mmrotate：详细解读eval_map.py里面的计算TP和FP的代码，并计算虚警率和漏警率" />
+<meta property="og:description" content="如果需要计算虚警率和漏警率，那么就需要详细了解这个函数：tpfp_default。
+在原始的代码中写了注释，方便大家阅读：
+def tpfp_default(det_bboxes, gt_bboxes, gt_bboxes_ignore=None, iou_thr=0.5, area_ranges=None): &#34;&#34;&#34;Check if detected bboxes are true positive or false positive. 先明白，这里的det已经是检测框了！这里的框已经经过了nms，也就是已经被nms的阈值过了一遍了，已经是最终结果了！所以这里的框要不就是对的，要不就是错的，不存在没用的这个选项！ Args: det_bboxes (ndarray): Detected bboxes of this image, of shape (m, 6). gt_bboxes (ndarray): GT bboxes of this image, of shape (n, 5). gt_bboxes_ignore (ndarray): Ignored gt bboxes of this image, of shape (k, 5). Default: None iou_thr (float): IoU threshold to be considered as matched. Default: 0.5. area_ranges (list[tuple] | None): Range of bbox areas to be evaluated, in the format [(min1, max1), (min2, max2), ." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/537d00f0f43648f62751b30bb4985e01/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-03-31T10:55:33+08:00" />
+<meta property="article:modified_time" content="2023-03-31T10:55:33+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">mmrotate：详细解读eval_map.py里面的计算TP和FP的代码，并计算虚警率和漏警率</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>        如果需要计算虚警率和漏警率，那么就需要详细了解这个函数：tpfp_default。</p> 
+<p>        在原始的代码中写了注释，方便大家阅读：</p> 
+<pre><code class="language-python">def tpfp_default(det_bboxes,
+                 gt_bboxes,
+                 gt_bboxes_ignore=None,
+                 iou_thr=0.5,
+                 area_ranges=None):
+    """Check if detected bboxes are true positive or false positive.
+	先明白，这里的det已经是检测框了！这里的框已经经过了nms，也就是已经被nms的阈值过了一遍了，已经是最终结果了！所以这里的框要不就是对的，要不就是错的，不存在没用的这个选项！
+    Args:
+        det_bboxes (ndarray): Detected bboxes of this image, of shape (m, 6).
+        gt_bboxes (ndarray): GT bboxes of this image, of shape (n, 5).
+        gt_bboxes_ignore (ndarray): Ignored gt bboxes of this image,
+            of shape (k, 5). Default: None
+        iou_thr (float): IoU threshold to be considered as matched.
+            Default: 0.5.
+        area_ranges (list[tuple] | None): Range of bbox areas to be evaluated,
+            in the format [(min1, max1), (min2, max2), ...]. Default: None.
+
+    Returns:
+        tuple[np.ndarray]: (tp, fp) whose elements are 0 and 1. The shape of
+            each array is (num_scales, m).
+    """
+    # an indicator of ignored gts
+    det_bboxes = np.array(det_bboxes)
+    gt_ignore_inds = np.concatenate(
+        (np.zeros(gt_bboxes.shape[0], dtype=np.bool),
+         np.ones(gt_bboxes_ignore.shape[0], dtype=np.bool)))
+    # stack gt_bboxes and gt_bboxes_ignore for convenience
+    gt_bboxes = np.vstack((gt_bboxes, gt_bboxes_ignore))
+
+    num_dets = det_bboxes.shape[0]
+    num_gts = gt_bboxes.shape[0]
+    if area_ranges is None:
+        area_ranges = [(None, None)]
+    num_scales = len(area_ranges)
+    # tp and fp are of shape (num_scales, num_gts), each row is tp or fp of
+    # a certain scale
+    tp = np.zeros((num_scales, num_dets), dtype=np.float32) #这个float类型！之后会变成0和1-----tp
+    fp = np.zeros((num_scales, num_dets), dtype=np.float32) #这个float类型！之后会变成0和1-----fp
+
+    # if there is no gt bboxes in this image, then all det bboxes
+    # within area range are false positives
+    if gt_bboxes.shape[0] == 0:
+        if area_ranges == [(None, None)]:
+            fp[...] = 1
+        else:
+            raise NotImplementedError
+        return tp, fp
+
+    ious = box_iou_rotated(
+        torch.from_numpy(det_bboxes).float(),
+        torch.from_numpy(gt_bboxes).float()).numpy() # 这个就是计算IOU，IOU是一个位于（0，1）之间的float类型的东西
+    ious_max = ious.max(axis=1) # 每一个检测框与所有gt比较，得到的最大IOU，这个是一个位于（0，1）之间的float类型的东西，也就是说，对于第i个det的最大iou就是ious[i]
+    ious_argmax = ious.argmax(axis=1) # 对于找到的那个最大的IOU，看看是哪个gt与之匹配，这应该是那个gt对应的id，反正就是一个指示是哪一个gt的identity，长度和gt一样
+    sort_inds = np.argsort(-det_bboxes[:, -1]) # 对于所有的预测框，按照分数进行降序排序，先从分最高的开始
+    for k, (min_area, max_area) in enumerate(area_ranges):
+        gt_covered = np.zeros(num_gts, dtype=bool) # 这个是某一个gt是否为cover到，也就是是否被预测到了，是一个bool类型的，与之前的gt_bboxes一一对应
+        # if no area range is specified, gt_area_ignore is all False
+        if min_area is None:
+            gt_area_ignore = np.zeros_like(gt_ignore_inds, dtype=bool) 
+        else:
+            raise NotImplementedError
+        for i in sort_inds:
+            if ious_max[i] &gt;= iou_thr:  #就是，能进入这个if的，都已经是positive了，如果小于，那就认为是negetive(包括TN和PN)
+			matched_gt = ious_argmax[i] # 这个是匹配的gt的identity，这里是det匹配上的那【一个】gt,一个det只能有一个gt匹配上，但是一个gt可能不止被一个det盯上
+                if not (gt_ignore_inds[matched_gt]
+                        or gt_area_ignore[matched_gt]):
+							if not gt_covered[matched_gt]: # 把当前的gt的id(也就是matched_gt)所对应的gt找到，如果这个gt没被标注过
+							gt_covered[matched_gt] = True # 那么这个gt就是和det匹配的，并记下这个gt是被匹配上了，后面的det如果也想找它匹配的话就都是FP!
+                        tp[k, i] = 1 # 这个k是1，记录下当前这个det是TP
+                    else: # 如果之前score更大的det已经找到了这个gt了（之前那个已经被标注成TP），那么这个就不对了，那就是FP！
+                        fp[k, i] = 1 # 这个k是1，记录下当前这个det是FP
+            elif min_area is None:
+                fp[k, i] = 1
+            else:
+                bbox = det_bboxes[i, :5]
+                area = bbox[2] * bbox[3]
+                if area &gt;= min_area and area &lt; max_area:
+                    fp[k, i] = 1
+    return tp, fp</code></pre> 
+<p>        简单来说：如果一个det的IOU大于阈值，那么就先认为它是True，但有可能nms那一步的时候，用score筛选得不是很好，以至于好几个det同时框在了一个gt上，所以那些框的不是很好的det即使大于了iou阈值，也要被划成fp；另外，对于那些小于iou阈值的det，就全部划成了fp。对于那些置信度本来就小于score的det，就认为是negetive，也就是fp和tp全部赋为0。如果需要计算fn，那就用gt的数量减去tp就好~</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/fef495d6e4c01f242c678cd216d94b85/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">React 中 setState 对数组、对象更改数据的操作</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/b0851b885dc9a4f2b224dfe23b734e50/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">前端面试题整理（Vue篇）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

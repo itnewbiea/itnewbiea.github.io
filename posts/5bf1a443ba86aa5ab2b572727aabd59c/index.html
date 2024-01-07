@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>nginx ingress最后的倔强: admission webhook - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="nginx ingress最后的倔强: admission webhook" />
+<meta property="og:description" content="背景 k8s中大多使用nginx-ingress-controller来实现ingress, 但是脆弱的nginx-controller通过ingress解析出nginx配置, 对于某些annotation会reload nignx配置失败, 然后controller就卡死了, 不断重启, 除非删除对应的ingress.
+问题复现 创建有问题的ingress
+apiVersion: extensions/v1beta1 kind: Ingress metadata: annotations: nginx.ingress.kubernetes.io/auth-tls-pass-certificate-to-upstream: &#34;false&#34; nginx.ingress.kubernetes.io/auth-tls-verify-client: optional nginx.ingress.kubernetes.io/auth-tls-verify-depth: &#34;1&#34; nginx.ingress.kubernetes.io/configuration-snippet: | proxy_set_header Host $targethost; proxy_buffering off; proxy_pass http://$targetbackend; proxy_next_upstream error timeout invalid_header http_500 http_502 http_503 http_504; proxy_redirect off; proxy_set_header X-SSL-Client-Verify $ssl_client_verify; proxy_set_header X-SSL-Client-DN $ssl_client_s_dn; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; creationTimestamp: &#34;2020-03-23T04:57:22Z&#34; generation: 1 name: example-ingress namespace: kube-system resourceVersion: &#34;57681168&#34; selfLink: /apis/extensions/v1beta1/namespaces/kube-system/ingresses/example-ingress uid: c7f66385-6cc2-11ea-b6a8-246e96d4b538 spec: rules: - host: example." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/5bf1a443ba86aa5ab2b572727aabd59c/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-04-11T15:32:02+08:00" />
+<meta property="article:modified_time" content="2020-04-11T15:32:02+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">nginx ingress最后的倔强: admission webhook</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h3><a id="_0"></a>背景</h3> 
+<p>k8s中大多使用nginx-ingress-controller来实现ingress, 但是脆弱的nginx-controller通过ingress解析出nginx配置, 对于某些annotation会reload nignx配置失败, 然后controller就卡死了, 不断重启, 除非删除对应的ingress.</p> 
+<h4><a id="_3"></a>问题复现</h4> 
+<p>创建有问题的<code>ingress</code></p> 
+<pre><code class="prism language-yaml"><span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> extensions/v1beta1
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> Ingress
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">annotations</span><span class="token punctuation">:</span>
+    <span class="token key atrule">nginx.ingress.kubernetes.io/auth-tls-pass-certificate-to-upstream</span><span class="token punctuation">:</span> <span class="token string">"false"</span>
+    <span class="token key atrule">nginx.ingress.kubernetes.io/auth-tls-verify-client</span><span class="token punctuation">:</span> optional
+    <span class="token key atrule">nginx.ingress.kubernetes.io/auth-tls-verify-depth</span><span class="token punctuation">:</span> <span class="token string">"1"</span>
+    <span class="token key atrule">nginx.ingress.kubernetes.io/configuration-snippet</span><span class="token punctuation">:</span> <span class="token punctuation">|</span><span class="token scalar string">
+      proxy_set_header Host $targethost;
+      proxy_buffering     off;
+      proxy_pass          http://$targetbackend;
+      proxy_next_upstream error timeout invalid_header http_500 http_502 http_503 http_504;
+      proxy_redirect      off;
+      proxy_set_header    X-SSL-Client-Verify $ssl_client_verify;
+      proxy_set_header    X-SSL-Client-DN $ssl_client_s_dn;
+      proxy_set_header    X-Real-IP       $remote_addr;
+      proxy_set_header    X-Forwarded-For $proxy_add_x_forwarded_for;</span>
+  <span class="token key atrule">creationTimestamp</span><span class="token punctuation">:</span> <span class="token string">"2020-03-23T04:57:22Z"</span>
+  <span class="token key atrule">generation</span><span class="token punctuation">:</span> <span class="token number">1</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> example<span class="token punctuation">-</span>ingress
+  <span class="token key atrule">namespace</span><span class="token punctuation">:</span> kube<span class="token punctuation">-</span>system
+  <span class="token key atrule">resourceVersion</span><span class="token punctuation">:</span> <span class="token string">"57681168"</span>
+  <span class="token key atrule">selfLink</span><span class="token punctuation">:</span> /apis/extensions/v1beta1/namespaces/kube<span class="token punctuation">-</span>system/ingresses/example<span class="token punctuation">-</span>ingress
+  <span class="token key atrule">uid</span><span class="token punctuation">:</span> c7f66385<span class="token punctuation">-</span>6cc2<span class="token punctuation">-</span>11ea<span class="token punctuation">-</span>b6a8<span class="token punctuation">-</span>246e96d4b538
+<span class="token key atrule">spec</span><span class="token punctuation">:</span>
+  <span class="token key atrule">rules</span><span class="token punctuation">:</span>
+  <span class="token punctuation">-</span> <span class="token key atrule">host</span><span class="token punctuation">:</span> example.com
+    <span class="token key atrule">http</span><span class="token punctuation">:</span>
+      <span class="token key atrule">paths</span><span class="token punctuation">:</span>
+      <span class="token punctuation">-</span> <span class="token key atrule">backend</span><span class="token punctuation">:</span>
+          <span class="token key atrule">serviceName</span><span class="token punctuation">:</span> example<span class="token punctuation">-</span>svc
+          <span class="token key atrule">servicePort</span><span class="token punctuation">:</span> <span class="token number">8008</span>
+        <span class="token key atrule">path</span><span class="token punctuation">:</span> /
+  <span class="token key atrule">tls</span><span class="token punctuation">:</span>
+  <span class="token punctuation">-</span> <span class="token key atrule">hosts</span><span class="token punctuation">:</span>
+    <span class="token punctuation">-</span> example.com
+    <span class="token key atrule">secretName</span><span class="token punctuation">:</span> example<span class="token punctuation">-</span>tls
+<span class="token key atrule">status</span><span class="token punctuation">:</span>
+  <span class="token key atrule">loadBalancer</span><span class="token punctuation">:</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+</code></pre> 
+<p>查看<code>nginx-ingress-controller</code>状态全部为<code>CrashLoopBackOff</code></p> 
+<pre><code class="prism language-bash"><span class="token comment"># kubectl get po -n kube-system -owide |grep ingress</span>
+nginx-ingress-controller-ftfbg                        1/2     CrashLoopBackOff   6          8m27s
+nginx-ingress-controller-hp4pf                        1/2     CrashLoopBackOff   11         24m  
+nginx-ingress-controller-qlb4l                        1/2     CrashLoopBackOff   11         24m   
+</code></pre> 
+<p>查看<code>nginx-ingress-controller</code>日志, 显示reload失败<code>"proxy_pass" directive is duplicate in /tmp/nginx-cfg911768424:822</code></p> 
+<pre><code class="prism language-bash">-------------------------------------------------------------------------------
+W0403 10:26:14.716246       1 queue.go:130<span class="token punctuation">]</span> requeuing kube-system/nginx-ingress-controller-4txfk, err 
+-------------------------------------------------------------------------------
+Error: <span class="token keyword">exit</span> status 1
+2020/04/03 10:26:14 <span class="token punctuation">[</span>notice<span class="token punctuation">]</span> 137<span class="token comment">#137: ModSecurity-nginx v1.0.0</span>
+2020/04/03 10:26:14 <span class="token punctuation">[</span>warn<span class="token punctuation">]</span> 137<span class="token comment">#137: duplicate value "error" in /tmp/nginx-cfg911768424:815</span>
+nginx: <span class="token punctuation">[</span>warn<span class="token punctuation">]</span> duplicate value <span class="token string">"error"</span> <span class="token keyword">in</span> /tmp/nginx-cfg911768424:815
+2020/04/03 10:26:14 <span class="token punctuation">[</span>warn<span class="token punctuation">]</span> 137<span class="token comment">#137: duplicate value "timeout" in /tmp/nginx-cfg911768424:815</span>
+nginx: <span class="token punctuation">[</span>warn<span class="token punctuation">]</span> duplicate value <span class="token string">"timeout"</span> <span class="token keyword">in</span> /tmp/nginx-cfg911768424:815
+2020/04/03 10:26:14 <span class="token punctuation">[</span>emerg<span class="token punctuation">]</span> 137<span class="token comment">#137: "proxy_pass" directive is duplicate in /tmp/nginx-cfg911768424:822</span>
+nginx: <span class="token punctuation">[</span>emerg<span class="token punctuation">]</span> <span class="token string">"proxy_pass"</span> directive is duplicate <span class="token keyword">in</span> /tmp/nginx-cfg911768424:822
+nginx: configuration <span class="token function">file</span> /tmp/nginx-cfg911768424 <span class="token function">test</span> failed
+
+-------------------------------------------------------------------------------
+W0403 10:26:16.998897       1 nginx_status.go:207<span class="token punctuation">]</span> unexpected error obtaining nginx status info: unexpected error scraping nginx status page: unexpected error scraping nginx <span class="token keyword">:</span> Get http://0.0.0.0:18080/nginx_status: dial tcp 0.0.0.0:18080: connect: connection refused
+I0403 10:26:17.526801       1 main.go:167<span class="token punctuation">]</span> Received SIGTERM, shutting down
+I0403 10:26:17.526827       1 nginx.go:364<span class="token punctuation">]</span> Shutting down controller queues
+I0403 10:26:17.526845       1 status.go:200<span class="token punctuation">]</span> updating status of Ingress rules <span class="token punctuation">(</span>remove<span class="token punctuation">)</span>
+I0403 10:26:17.537511       1 status.go:219<span class="token punctuation">]</span> removing address from ingress status <span class="token punctuation">(</span><span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">)</span>
+I0403 10:26:17.537593       1 nginx.go:372<span class="token punctuation">]</span> Stopping NGINX process
+2020/04/03 10:26:17 <span class="token punctuation">[</span>notice<span class="token punctuation">]</span> 141<span class="token comment">#141: signal process started</span>
+I0403 10:26:20.547669       1 nginx.go:385<span class="token punctuation">]</span> NGINX process has stopped
+I0403 10:26:20.547692       1 main.go:175<span class="token punctuation">]</span> Handled quit, awaiting Pod deletion
+I0403 10:26:30.547824       1 main.go:178<span class="token punctuation">]</span> Exiting with 0
+</code></pre> 
+<h3><a id="_87"></a>解决方案</h3> 
+<p>创建一个有问题的ingress, 会影响所有新创建的ingress规则, 又一个集群级别的Bug诞生了.那么有没有办法, 提前检验ingress配置, 有问题就不去reload. 那验证步骤肯定要在请求到达nginx-controller之前来做, 是不是想到了<a href="https://kubernetes.io/zh/docs/reference/access-authn-authz/extensible-admission-controllers/" rel="nofollow">k8s-admission-webhook</a>, 可以在apiserver持久化对象前拦截请求, 去实现自定义的验证规则. 好在新版本的nginx-ingress-controller(v0.25.0+)已经实现了相关的功能, 只需开启对应配置就行.</p> 
+<h4><a id="ApiServer_91"></a>ApiServer配置</h4> 
+<p>Apiserver开启webhook相关配置, 必须包含<code>MutatingAdmissionWebhook</code>与<code>ValidatingAdmissionWebhook</code></p> 
+<pre><code>--admission-control=MutatingAdmissionWebhook,ValidatingAdmissionWebhook
+</code></pre> 
+<h4><a id="webhook_97"></a>创建webhook相关配置</h4> 
+<p>启用ValidatingAdmissionWebhook必须使用https, 需要配置对应证书</p> 
+<ul><li>手动生成:<pre><code class="prism language-bash">openssl req -x509 -newkey rsa:2048 -keyout certificate.pem -out key.pem -days 365 -nodes -subj <span class="token string">"/CN=ingress-validation-webhook.ingress-nginx.svc"</span>
+</code></pre> </li><li>CertificateSigningRequest<br> 通过k8s <code>CertificateSigningRequest</code>来创建(controller-manager需要开启<code>--cluster-signing-cert-file</code>与<code>--cluster-signing-key-file</code>)<br> 可通过如下脚本创建, namespace与service替换成自己的<pre><code class="prism language-bash">SERVICE_NAME<span class="token operator">=</span>ingress-nginx
+NAMESPACE<span class="token operator">=</span>ingress-nginx
+
+TEMP_DIRECTORY<span class="token operator">=</span><span class="token variable"><span class="token variable">$(</span>mktemp -d<span class="token variable">)</span></span>
+<span class="token keyword">echo</span> <span class="token string">"creating certs in directory <span class="token variable">${TEMP_DIRECTORY}</span>"</span>
+
+<span class="token function">cat</span> <span class="token operator">&lt;&lt;</span>EOF <span class="token operator">&gt;&gt;</span> <span class="token variable">${TEMP_DIRECTORY}</span>/csr.conf
+<span class="token punctuation">[</span>req<span class="token punctuation">]</span>
+req_extensions <span class="token operator">=</span> v3_req
+distinguished_name <span class="token operator">=</span> req_distinguished_name
+<span class="token punctuation">[</span>req_distinguished_name<span class="token punctuation">]</span>
+<span class="token punctuation">[</span> v3_req <span class="token punctuation">]</span>
+basicConstraints <span class="token operator">=</span> CA:FALSE
+keyUsage <span class="token operator">=</span> nonRepudiation, digitalSignature, keyEncipherment
+extendedKeyUsage <span class="token operator">=</span> serverAuth
+subjectAltName <span class="token operator">=</span> @alt_names
+<span class="token punctuation">[</span>alt_names<span class="token punctuation">]</span>
+DNS.1 <span class="token operator">=</span> <span class="token variable">${SERVICE_NAME}</span>
+DNS.2 <span class="token operator">=</span> <span class="token variable">${SERVICE_NAME}</span><span class="token keyword">.</span><span class="token variable">${NAMESPACE}</span>
+DNS.3 <span class="token operator">=</span> <span class="token variable">${SERVICE_NAME}</span><span class="token keyword">.</span><span class="token variable">${NAMESPACE}</span>.svc
+EOF
+
+openssl genrsa -out <span class="token variable">${TEMP_DIRECTORY}</span>/server-key.pem 2048
+openssl req -new -key <span class="token variable">${TEMP_DIRECTORY}</span>/server-key.pem \
+    -subj <span class="token string">"/CN=<span class="token variable">${SERVICE_NAME}</span>.<span class="token variable">${NAMESPACE}</span>.svc"</span> \
+    -out <span class="token variable">${TEMP_DIRECTORY}</span>/server.csr \
+    -config <span class="token variable">${TEMP_DIRECTORY}</span>/csr.conf
+
+<span class="token function">cat</span> <span class="token operator">&lt;&lt;</span>EOF <span class="token operator">|</span> kubectl create -f -
+apiVersion: certificates.k8s.io/v1beta1
+kind: CertificateSigningRequest
+metadata:
+  name: <span class="token variable">${SERVICE_NAME}</span><span class="token keyword">.</span><span class="token variable">${NAMESPACE}</span>.svc
+spec:
+  request: <span class="token variable"><span class="token variable">$(</span><span class="token function">cat</span> $<span class="token punctuation">{<!-- --></span>TEMP_DIRECTORY<span class="token punctuation">}</span>/server.csr <span class="token operator">|</span> base64 <span class="token operator">|</span> <span class="token function">tr</span> -d <span class="token string">'\n'</span><span class="token variable">)</span></span>
+  usages:
+  - digital signature
+  - key encipherment
+  - server auth
+EOF
+
+kubectl certificate approve <span class="token variable">${SERVICE_NAME}</span><span class="token keyword">.</span><span class="token variable">${NAMESPACE}</span>.svc
+
+<span class="token keyword">for</span> x <span class="token keyword">in</span> <span class="token variable"><span class="token variable">$(</span><span class="token function">seq</span> 10<span class="token variable">)</span></span><span class="token punctuation">;</span> <span class="token keyword">do</span>
+    SERVER_CERT<span class="token operator">=</span><span class="token variable"><span class="token variable">$(</span>kubectl get csr $<span class="token punctuation">{<!-- --></span>SERVICE_NAME<span class="token punctuation">}</span>.$<span class="token punctuation">{<!-- --></span>NAMESPACE<span class="token punctuation">}</span>.svc -o jsonpath<span class="token operator">=</span><span class="token string">'{.status.certificate}'</span><span class="token variable">)</span></span>
+    <span class="token keyword">if</span> <span class="token punctuation">[</span><span class="token punctuation">[</span> <span class="token variable">${SERVER_CERT}</span> <span class="token operator">!=</span> <span class="token string">''</span> <span class="token punctuation">]</span><span class="token punctuation">]</span><span class="token punctuation">;</span> <span class="token keyword">then</span>
+        <span class="token keyword">break</span>
+    <span class="token keyword">fi</span>
+    <span class="token function">sleep</span> 1
+<span class="token keyword">done</span>
+<span class="token keyword">if</span> <span class="token punctuation">[</span><span class="token punctuation">[</span> <span class="token variable">${SERVER_CERT}</span> <span class="token operator">==</span> <span class="token string">''</span> <span class="token punctuation">]</span><span class="token punctuation">]</span><span class="token punctuation">;</span> <span class="token keyword">then</span>
+    <span class="token keyword">echo</span> <span class="token string">"ERROR: After approving csr <span class="token variable">${SERVICE_NAME}</span>.<span class="token variable">${NAMESPACE}</span>.svc, the signed certificate did not appear on the resource. Giving up after 10 attempts."</span> <span class="token operator">&gt;</span><span class="token operator">&amp;</span>2
+    <span class="token keyword">exit</span> 1
+<span class="token keyword">fi</span>
+<span class="token keyword">echo</span> <span class="token variable">${SERVER_CERT}</span> <span class="token operator">|</span> openssl base64 -d -A -out <span class="token variable">${TEMP_DIRECTORY}</span>/server-cert.pem
+
+kubectl create secret generic ingress-nginx.svc \
+    --from-file<span class="token operator">=</span>key.pem<span class="token operator">=</span><span class="token variable">${TEMP_DIRECTORY}</span>/server-key.pem \
+    --from-file<span class="token operator">=</span>cert.pem<span class="token operator">=</span><span class="token variable">${TEMP_DIRECTORY}</span>/server-cert.pem \
+    -n <span class="token variable">${NAMESPACE}</span>
+</code></pre> </li></ul> 
+<h4><a id="ingress_controller_170"></a>配置ingress controller</h4> 
+<p>ingress controller需要启用如下参数, 挂载需要的tls证书</p> 
+<table><thead><tr><th>flag</th><th>description</th><th>example usage</th></tr></thead><tbody><tr><td><code>--validating-webhook</code></td><td>admission webhook的地址</td><td><code>:8080</code></td></tr><tr><td><code>--validating-webhook-certificate</code></td><td>webhook证书</td><td><code>/usr/local/certificates/validating-webhook.pem</code></td></tr><tr><td><code>--validating-webhook-key</code></td><td>webhook私钥</td><td><code>/usr/local/certificates/validating-webhook-key.pem</code></td></tr></tbody></table> 
+<h3><a id="_179"></a>验证</h3> 
+<p>更新后, 创建有问题的ingress则会拦截, 符合预期</p> 
+<pre><code class="prism language-bash"><span class="token comment"># kubectl apply -f ing.yaml</span>
+Error from server: error when creating <span class="token string">"ing.yaml"</span><span class="token keyword">:</span> admission webhook <span class="token string">"validate.nginx.ingress.kubernetes.io"</span> denied the request: 
+-------------------------------------------------------------------------------
+Error: <span class="token keyword">exit</span> status 1
+2020/04/02 10:26:04 <span class="token punctuation">[</span>emerg<span class="token punctuation">]</span> 331<span class="token comment">#331: directive "proxy_pass" is not terminated by ";" in /tmp/nginx-cfg461116913:2165</span>
+nginx: <span class="token punctuation">[</span>emerg<span class="token punctuation">]</span> directive <span class="token string">"proxy_pass"</span> is not terminated by <span class="token string">";"</span> <span class="token keyword">in</span> /tmp/nginx-cfg461116913:2165
+nginx: configuration <span class="token function">file</span> /tmp/nginx-cfg461116913 <span class="token function">test</span> failed
+</code></pre> 
+<h3><a id="_194"></a>引用</h3> 
+<ul><li>https://kubernetes.io/zh/docs/reference/access-authn-authz/extensible-admission-controllers/</li><li>https://kubernetes.github.io/ingress-nginx/deploy/validating-webhook/</li><li>https://qingwave.github.io/ingress-nginx-controller-admission-webhook/</li></ul> 
+<hr> 
+<blockquote> 
+ <p>更多文章见 <a href="https://qingwave.github.io/" rel="nofollow">Qinng’s Blog</a></p> 
+</blockquote>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/86287d70ed5a5f731926bdd89cf0da1b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">直播与云聊天</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/8a047bc0b828beae0573d471143855b4/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Unity 自定义日志输出（基于DebugConsole)</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

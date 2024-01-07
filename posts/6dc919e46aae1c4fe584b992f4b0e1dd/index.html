@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>HPACK和twitter hpack源码解析 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="HPACK和twitter hpack源码解析" />
+<meta property="og:description" content="HPACK和twitter hpack源码解析 HPACK是用于压缩HTTP/2中header信息的压缩算法。
+引言 在HTTP/1.x中，header信息以字符串的方式进行传输，随着大量并发的网络请求，冗余的header字段会造成没必要的带宽浪费，从而增加网络时延。
+HTTP/2的对这个问题进行了优化，它对header信息进行压缩编码，提高了的带宽利用率，其中的压缩编码规范就是HPACK。
+HPACK中将 header 字段列表视为 name-value 对的有序集合，其中可以包括重复的对。名称和值被认为是八位字节的不透明序列，并且 header 字段的顺序在压缩和解压缩后保持不变。
+Static Table Definition IndexHeader NameHeader Value1:authority2:methodGET3:methodPOST4:path/5:path/index.html6:schemehttp7:schemehttps8:status2009:status20410:status20611:status30412:status40013:status40414:status50015accept-charset16accept-encodinggzip, deflate17accept-language18accept-ranges19accept20access-control-allow-origin21age22allow23authorization24cache-control25content-disposition26content-encoding27content-language28content-length29content-location30content-range31content-type32cookie33date34etag35expect36expires37from38host39if-match40if-modified-since41if-none-match42if-range43if-unmodified-since44last-modified45link46location47max-forwards48proxy-authenticate49proxy-authorization50range51referer52refresh53retry-after54server55set-cookie56strict-transport-security57transfer-encoding58user-agent59vary60via61www-authenticate 从Static Table可以看出压缩的核心之一就是把http协议中常用的字符串用数字来代替，以此来减少header中的字节数。
+编号的范围是1-61，很容易想到用一个8bit的byte来表示就可以了，但是实际上像1这种数字我们用1bit也可以表示，由此引入了霍夫曼编码，编码的作用就是使用频次高的数字用更少的字节来表示，这样可以使总体的字节数更少。
+Dynamic Table Dynamic Table是可以看做是一个先进先出的队列，新加入的entry的index最小，最早的entry的index最大。
+Dynamic Table初始是空的。当每个header块被解压缩时，将添加条目。Dynamic Table有容量限制，当容量不足以添加新的条目时会将按照最老的条目先移除的顺序移除条目，直到容量足够添加新的条目为止，如果新添加条目比Dynamic Table最大容量还要大，那么清空Dynamic Table。
+Dynamic Table是针对一个连接的，因此HTTP/2提倡使用尽可能少的连接头，这样Dynamic Table会更全，头部压缩效果更好。
+Index Address Space Static table和Dynamic Table组成了一个连续的地址空间，如下所示。
+&lt;---------- Index Address Space ----------&gt; &lt;-- Static Table --&gt; &lt;-- Dynamic Table --&gt; &#43;---&#43;-----------&#43;---&#43; &#43;---&#43;-----------&#43;---&#43; | 1 | ... | s | |s&#43;1| ... |s&#43;k| &#43;---&#43;-----------&#43;---&#43; &#43;---&#43;-----------&#43;---&#43; ^ | | V Insertion Point Dropping Point Index Address Space Header Filed Representation 编码的header字段可以表示为index或者literal，index为static table或者dynamic table中的引用；header字段name可以用literal形式表示，也可以作为static table或者dynamic table中的引用。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/6dc919e46aae1c4fe584b992f4b0e1dd/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-09-03T09:13:57+08:00" />
+<meta property="article:modified_time" content="2020-09-03T09:13:57+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">HPACK和twitter hpack源码解析</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="HPACKtwitter_hpack_1"></a>HPACK和twitter hpack源码解析</h2> 
+<p>HPACK是用于压缩HTTP/2中header信息的压缩算法。</p> 
+<h3><a id="_5"></a>引言</h3> 
+<p>在HTTP/1.x中，header信息以字符串的方式进行传输，随着大量并发的网络请求，冗余的header字段会造成没必要的带宽浪费，从而增加网络时延。</p> 
+<p>HTTP/2的对这个问题进行了优化，它对header信息进行压缩编码，提高了的带宽利用率，其中的压缩编码规范就是<code>HPACK</code>。</p> 
+<p><code>HPACK</code>中将 header 字段列表视为 <code>name-value</code> 对的有序集合，其中可以包括重复的对。名称和值被认为是八位字节的不透明序列，并且 header 字段的顺序在压缩和解压缩后保持不变。</p> 
+<h3><a id="Static_Table_Definition_15"></a>Static Table Definition</h3> 
+<table><thead><tr><th>Index</th><th>Header Name</th><th>Header Value</th></tr></thead><tbody><tr><td>1</td><td>:authority</td><td></td></tr><tr><td>2</td><td>:method</td><td>GET</td></tr><tr><td>3</td><td>:method</td><td>POST</td></tr><tr><td>4</td><td>:path</td><td>/</td></tr><tr><td>5</td><td>:path</td><td>/index.html</td></tr><tr><td>6</td><td>:scheme</td><td>http</td></tr><tr><td>7</td><td>:scheme</td><td>https</td></tr><tr><td>8</td><td>:status</td><td>200</td></tr><tr><td>9</td><td>:status</td><td>204</td></tr><tr><td>10</td><td>:status</td><td>206</td></tr><tr><td>11</td><td>:status</td><td>304</td></tr><tr><td>12</td><td>:status</td><td>400</td></tr><tr><td>13</td><td>:status</td><td>404</td></tr><tr><td>14</td><td>:status</td><td>500</td></tr><tr><td>15</td><td>accept-charset</td><td></td></tr><tr><td>16</td><td>accept-encoding</td><td>gzip, deflate</td></tr><tr><td>17</td><td>accept-language</td><td></td></tr><tr><td>18</td><td>accept-ranges</td><td></td></tr><tr><td>19</td><td>accept</td><td></td></tr><tr><td>20</td><td>access-control-allow-origin</td><td></td></tr><tr><td>21</td><td>age</td><td></td></tr><tr><td>22</td><td>allow</td><td></td></tr><tr><td>23</td><td>authorization</td><td></td></tr><tr><td>24</td><td>cache-control</td><td></td></tr><tr><td>25</td><td>content-disposition</td><td></td></tr><tr><td>26</td><td>content-encoding</td><td></td></tr><tr><td>27</td><td>content-language</td><td></td></tr><tr><td>28</td><td>content-length</td><td></td></tr><tr><td>29</td><td>content-location</td><td></td></tr><tr><td>30</td><td>content-range</td><td></td></tr><tr><td>31</td><td>content-type</td><td></td></tr><tr><td>32</td><td>cookie</td><td></td></tr><tr><td>33</td><td>date</td><td></td></tr><tr><td>34</td><td>etag</td><td></td></tr><tr><td>35</td><td>expect</td><td></td></tr><tr><td>36</td><td>expires</td><td></td></tr><tr><td>37</td><td>from</td><td></td></tr><tr><td>38</td><td>host</td><td></td></tr><tr><td>39</td><td>if-match</td><td></td></tr><tr><td>40</td><td>if-modified-since</td><td></td></tr><tr><td>41</td><td>if-none-match</td><td></td></tr><tr><td>42</td><td>if-range</td><td></td></tr><tr><td>43</td><td>if-unmodified-since</td><td></td></tr><tr><td>44</td><td>last-modified</td><td></td></tr><tr><td>45</td><td>link</td><td></td></tr><tr><td>46</td><td>location</td><td></td></tr><tr><td>47</td><td>max-forwards</td><td></td></tr><tr><td>48</td><td>proxy-authenticate</td><td></td></tr><tr><td>49</td><td>proxy-authorization</td><td></td></tr><tr><td>50</td><td>range</td><td></td></tr><tr><td>51</td><td>referer</td><td></td></tr><tr><td>52</td><td>refresh</td><td></td></tr><tr><td>53</td><td>retry-after</td><td></td></tr><tr><td>54</td><td>server</td><td></td></tr><tr><td>55</td><td>set-cookie</td><td></td></tr><tr><td>56</td><td>strict-transport-security</td><td></td></tr><tr><td>57</td><td>transfer-encoding</td><td></td></tr><tr><td>58</td><td>user-agent</td><td></td></tr><tr><td>59</td><td>vary</td><td></td></tr><tr><td>60</td><td>via</td><td></td></tr><tr><td>61</td><td>www-authenticate</td><td></td></tr></tbody></table> 
+<p>从Static Table可以看出压缩的核心之一就是把http协议中常用的字符串用数字来代替，以此来减少header中的字节数。</p> 
+<p>编号的范围是1-61，很容易想到用一个8bit的byte来表示就可以了，但是实际上像1这种数字我们用1bit也可以表示，由此引入了霍夫曼编码，编码的作用就是使用频次高的数字用更少的字节来表示，这样可以使总体的字节数更少。</p> 
+<h3><a id="Dynamic_Table_88"></a>Dynamic Table</h3> 
+<p>Dynamic Table是可以看做是一个先进先出的队列，新加入的entry的index最小，最早的entry的index最大。</p> 
+<p>Dynamic Table初始是空的。当每个header块被解压缩时，将添加条目。Dynamic Table有容量限制，当容量不足以添加新的条目时会将按照最老的条目先移除的顺序移除条目，直到容量足够添加新的条目为止，如果新添加条目比Dynamic Table最大容量还要大，那么清空Dynamic Table。</p> 
+<p>Dynamic Table是针对一个连接的，因此HTTP/2提倡使用尽可能少的连接头，这样Dynamic Table会更全，头部压缩效果更好。</p> 
+<h3><a id="Index_Address_Space_96"></a>Index Address Space</h3> 
+<p>Static table和Dynamic Table组成了一个连续的地址空间，如下所示。</p> 
+<pre><code>       &lt;----------  Index Address Space ----------&gt;
+       &lt;-- Static  Table --&gt;  &lt;-- Dynamic Table --&gt;
+       +---+-----------+---+  +---+-----------+---+
+       | 1 |    ...    | s |  |s+1|    ...    |s+k|
+       +---+-----------+---+  +---+-----------+---+
+                              ^                   |
+                              |                   V
+                       Insertion Point      Dropping Point
+
+                   Index Address Space
+</code></pre> 
+<h3><a id="Header_Filed_Representation_115"></a>Header Filed Representation</h3> 
+<p>编码的header字段可以表示为index或者literal，index为static table或者dynamic table中的引用；header字段name可以用literal形式表示，也可以作为static table或者dynamic table中的引用。</p> 
+<p>3中不同的literal表示定义：<br> 1. 在dynamic table开头添加header字段作为新条目的literal<br> 2. 不将header字段添加到dynamic table<br> 3. 不将header字段添加到dynamic table，并且规定header字段时钟使用literal presentation。</p> 
+<p>header字段name或者value可以直接或者使用Huffman对8位字节序列进行编码。</p> 
+<h3><a id="Primitive_Type_Representations_126"></a>Primitive Type Representations</h3> 
+<p>HPACK使用两种编码类型：无符号可变长整数和8位的字节串</p> 
+<h4><a id="1_Integer_representation_130"></a>1. Integer representation</h4> 
+<p>整数用于表示name索引，header字段索引或字符串长度。整数表示可以在8位字节内的任何位置开始。为了优化处理，整数表示总是在8位字节的末尾结束。</p> 
+<p>整数表示分为两个部分：填充8位字节的前缀和可选的8位字节列表，如果整数值不适合该前缀，则使用这些可选的8位字节。前缀的位数（N）是整数表示的参数。</p> 
+<p>如果整数小于2^N-1，则将其编码在N位前缀中</p> 
+<pre><code>   0   1   2   3   4   5   6   7
+   +---+---+---+---+---+---+---+---+
+   | ? | ? | ? |       Value       |
+   +---+---+---+-------------------+
+   
+   Integer Value Encoded within the Prefix (Shown for N = 5)
+</code></pre> 
+<p>否则，将前缀的所有位设置为1，并使用多个连续的8位字节列表对减少了2^N-1的值进行编码。每个8位字节列表的最高位除了最后一个是0，其它全部设置为1，剩余的7位用来表示减少后的整数。</p> 
+<pre><code>  0   1   2   3   4   5   6   7
+   +---+---+---+---+---+---+---+---+
+   | ? | ? | ? | 1   1   1   1   1 |
+   +---+---+---+-------------------+
+   | 1 |    Value-(2^N-1) LSB      |
+   +---+---------------------------+
+                  ...
+   +---+---------------------------+
+   | 0 |    Value-(2^N-1) MSB      |
+   +---+---------------------------+
+
+    Integer Value Encoded after the Prefix (Shown for N = 5)
+</code></pre> 
+<p>表示整数I的伪代码如下：</p> 
+<pre><code> if I &lt; 2^N - 1, encode I on N bits
+   else
+       encode (2^N - 1) on N bits
+       I = I - (2^N - 1)
+       while I &gt;= 128
+            encode (I % 128 + 128) on 8 bits
+            I = I / 128
+       encode I on 8 bits
+</code></pre> 
+<h5><a id="For_example_176"></a>For example</h5> 
+<pre><code>   1. i = 10,N = 5;
+   i &lt; 31(2^5-1)
+
+   0   1   2   3   4   5   6   7
+   +---+---+---+---+---+---+---+---+
+   | X | X | X | 0 | 1 | 0 | 1 | 0 |   10 stored on 5 bits
+   +---+---+---+---+---+---+---+---+
+   
+   2. i = 1337,N = 5;
+   i &gt; 31(2^5-1)
+   i = 1337-(2^5-1) = 1306 &gt; 31
+   encode i%128 + 128 = 154
+   i = 1306/128 = 10
+   
+      0   1   2   3   4   5   6   7
+   +---+---+---+---+---+---+---+---+
+   | X | X | X | 1 | 1 | 1 | 1 | 1 |  Prefix = 31, I = 1306
+   | 1 | 0 | 0 | 1 | 1 | 0 | 1 | 0 |  1306&gt;=128, encode(154), I=1306/128
+   | 0 | 0 | 0 | 0 | 1 | 0 | 1 | 0 |  10&lt;128, encode(10), done
+   +---+---+---+---+---+---+---+---+
+   
+</code></pre> 
+<p>从下一个N bits中解码I的伪代码：</p> 
+<pre><code>if I &lt; 2^N - 1, return I
+   else
+       M = 0
+       repeat
+           B = next octet
+           I = I + (B &amp; 127) * 2^M
+           M = M + 7
+       while B &amp; 128 == 128
+       return I
+</code></pre> 
+<h4><a id="2_String_Literal_Representation_217"></a>2. String Literal Representation</h4> 
+<p>Header字段的name和value可以使用字符串字面量。一个字符串可以使用8位字节或使用Huffman编码将字符串编码成8位字节序列。</p> 
+<p>String Literal编码按照<a href="https://tools.ietf.org/html/rfc7541#appendix-B" rel="nofollow">Appendix B</a>中所定义Huffman编码进行编码。</p> 
+<p>由于Huffman编码的数据并不总是在8位字节的边界结束，因此在其后插入EOS(end of string)符号对应的最高有效位。</p> 
+<p>解码时，编码数据末尾的不完整数据被当做填充和丢弃。大于7 bits长度的填充被当做解码错误，与EOS 符号的代码的最高有效位不对应的填充必须被视为解码错误。包含EOS符号的霍夫曼编码的字符串字面必须被视为解码错误。</p> 
+<pre><code>  0   1   2   3   4   5   6   7
+   +---+---+---+---+---+---+---+---+
+   | H |    String Length (7+)     |
+   +---+---------------------------+
+   |  String Data (Length octets)  |
+   +-------------------------------+
+   
+   String Literal Representation
+</code></pre> 
+<p>如上图，H是String Data是否使用Huffman编码的标志，如果H等于0则使用原始字符串，如果H等于1，则使用Huffman编码。</p> 
+<h3><a id="Binary_Format_240"></a>Binary Format</h3> 
+<h4><a id="1_Header_242"></a>1. 索引Header字段表示</h4> 
+<p>索引header字段表示可表示static Table或者dynamic table中的条目。</p> 
+<pre><code>   0   1   2   3   4   5   6   7
+   +---+---+---+---+---+---+---+---+
+   | 1 |        Index (7+)         |
+   +---+---------------------------+
+   
+        Indexed Header Field
+</code></pre> 
+<p>如果index为0，则解码错误。</p> 
+<h4><a id="2_header_258"></a>2. 字面量header字段表示</h4> 
+<h5><a id="21_header_260"></a>2.1 带有增加索引的字面量header字段</h5> 
+<pre><code>  0   1   2   3   4   5   6   7
+   +---+---+---+---+---+---+---+---+
+   | 0 | 1 |      Index (6+)       |
+   +---+---+-----------------------+
+   | H |     Value Length (7+)     |
+   +---+---------------------------+
+   | Value String (Length octets)  |
+   +-------------------------------+
+   
+   Literal Header Field with Incremental Indexing -- Indexed
+                                   Name
+   
+</code></pre> 
+<p>前两个bit为<code>01</code>为标识，通过index从index address space中获取到name，会将解码的结果加入到解码header列表并插入到dynamic table中。</p> 
+<pre><code>   0   1   2   3   4   5   6   7
+   +---+---+---+---+---+---+---+---+
+   | 0 | 1 |           0           |
+   +---+---+-----------------------+
+   | H |     Name Length (7+)      |
+   +---+---------------------------+
+   |  Name String (Length octets)  |
+   +---+---------------------------+
+   | H |     Value Length (7+)     |
+   +---+---------------------------+
+   | Value String (Length octets)  |
+   +-------------------------------+
+   
+   Literal Header Field with Incremental Indexing -- New Name
+</code></pre> 
+<p>如果index值为0，那么接下来的字节表示的是name的String Literal Representation。</p> 
+<h5><a id="22_header_296"></a>2.2 没有索引的字面header字段</h5> 
+<pre><code>     0   1   2   3   4   5   6   7
+   +---+---+---+---+---+---+---+---+
+   | 0 | 0 | 0 | 0 |  Index (4+)   |
+   +---+---+-----------------------+
+   | H |     Value Length (7+)     |
+   +---+---------------------------+
+   | Value String (Length octets)  |
+   +-------------------------------+
+   
+   Literal Header Field without Indexing -- Indexed Name
+</code></pre> 
+<pre><code>   0   1   2   3   4   5   6   7
+   +---+---+---+---+---+---+---+---+
+   | 0 | 0 | 0 | 0 |       0       |
+   +---+---+-----------------------+
+   | H |     Name Length (7+)      |
+   +---+---------------------------+
+   |  Name String (Length octets)  |
+   +---+---------------------------+
+   | H |     Value Length (7+)     |
+   +---+---------------------------+
+   | Value String (Length octets)  |
+   +-------------------------------+
+   
+   Literal Header Field without Indexing -- New Name
+
+</code></pre> 
+<p>前4个bit<code>0000</code>为标识。</p> 
+<p>同<code>带有增加索引的字面量header字段</code>的区别就是不会加入到dynamic table中。</p> 
+<h5><a id="23_header_332"></a>2.3 从不索引的字面header字段</h5> 
+<pre><code>  0   1   2   3   4   5   6   7
+   +---+---+---+---+---+---+---+---+
+   | 0 | 0 | 0 | 1 |  Index (4+)   |
+   +---+---+-----------------------+
+   | H |     Value Length (7+)     |
+   +---+---------------------------+
+   | Value String (Length octets)  |
+   +-------------------------------+
+   Literal Header Field Never Indexed -- Indexed Name
+</code></pre> 
+<pre><code>  0   1   2   3   4   5   6   7
+   +---+---+---+---+---+---+---+---+
+   | 0 | 0 | 0 | 1 |       0       |
+   +---+---+-----------------------+
+   | H |     Name Length (7+)      |
+   +---+---------------------------+
+   |  Name String (Length octets)  |
+   +---+---------------------------+
+   | H |     Value Length (7+)     |
+   +---+---------------------------+
+   | Value String (Length octets)  |
+   +-------------------------------+
+
+    Literal Header Field Never Indexed -- New Name
+</code></pre> 
+<p>前4bit<code>0001</code>为标识，编码格式同<code>没有索引的字面header字段</code>相同。</p> 
+<h3><a id="dynmic_table_update_365"></a>dynmic table update</h3> 
+<p>设置dynamic table max size。</p> 
+<pre><code>  0   1   2   3   4   5   6   7
+   +---+---+---+---+---+---+---+---+
+   | 0 | 0 | 1 |   Max size (5+)   |
+   +---+---------------------------+
+    Maximum Dynamic Table Size Change
+</code></pre> 
+<p>前3bit<code>001</code>为标识。</p> 
+<h3><a id="twitter_hpack_379"></a>twitter hpack</h3> 
+<p>twitter hpack是twitter团队用java实现的hpack</p> 
+<p>其所有的类如下：</p> 
+<pre><code>com/twitter/hpack/
+ - Decoder
+ - DynamicTable
+ - Encoder
+ - HeaderField
+ - HeaderListener
+ - HpackUtil
+ - Huffman
+ - HuffmanDecoder
+ - HuffmanEncoder
+ - StaticTable
+</code></pre> 
+<p>使用流程如下:</p> 
+<pre><code class="prism language-java"><span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token keyword">int</span> maxHeaderSize <span class="token operator">=</span> <span class="token number">4096</span><span class="token punctuation">;</span>
+  <span class="token keyword">int</span> maxHeaderTableSize <span class="token operator">=</span> <span class="token number">4096</span><span class="token punctuation">;</span>
+  <span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token punctuation">]</span> name <span class="token operator">=</span> <span class="token string">"name"</span><span class="token punctuation">.</span><span class="token function">getBytes</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token punctuation">]</span> value <span class="token operator">=</span> <span class="token string">"value"</span><span class="token punctuation">.</span><span class="token function">getBytes</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token keyword">boolean</span> sensitive <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+
+  ByteArrayOutputStream out <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ByteArrayOutputStream</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token comment">// encode header list into header block</span>
+  Encoder encoder <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Encoder</span><span class="token punctuation">(</span>maxHeaderTableSize<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  encoder<span class="token punctuation">.</span><span class="token function">encodeHeader</span><span class="token punctuation">(</span>out<span class="token punctuation">,</span> name<span class="token punctuation">,</span> value<span class="token punctuation">,</span> sensitive<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  ByteArrayInputStream in <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ByteArrayInputStream</span><span class="token punctuation">(</span>out<span class="token punctuation">.</span><span class="token function">toByteArray</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  HeaderListener listener <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">HeaderListener</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">addHeader</span><span class="token punctuation">(</span><span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token punctuation">]</span> name<span class="token punctuation">,</span> <span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token punctuation">]</span> value<span class="token punctuation">,</span> <span class="token keyword">boolean</span> sensitive<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token comment">// handle header field</span>
+    <span class="token punctuation">}</span>
+  <span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+  <span class="token comment">// decode header list from header block</span>
+  Decoder decoder <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Decoder</span><span class="token punctuation">(</span>maxHeaderSize<span class="token punctuation">,</span> maxHeaderTableSize<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  decoder<span class="token punctuation">.</span><span class="token function">decode</span><span class="token punctuation">(</span>in<span class="token punctuation">,</span> listener<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  decoder<span class="token punctuation">.</span><span class="token function">endHeaderBlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">IOException</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token comment">// handle exception</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>encodeHeader源码解析</p> 
+<pre><code class="prism language-java"><span class="token comment">//Encoder.java</span>
+
+ <span class="token comment">/**
+   * Encode the header field into the header block.
+   */</span>
+  <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">encodeHeader</span><span class="token punctuation">(</span>OutputStream out<span class="token punctuation">,</span> <span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token punctuation">]</span> name<span class="token punctuation">,</span> <span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token punctuation">]</span> value<span class="token punctuation">,</span> <span class="token keyword">boolean</span> sensitive<span class="token punctuation">)</span> <span class="token keyword">throws</span> IOException <span class="token punctuation">{<!-- --></span>
+
+    <span class="token comment">// If the header value is sensitive then it must never be indexed</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>sensitive<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> <span class="token comment">//判断是否是敏感字符，敏感字符就使用 从不索引的字面header字段</span>
+      <span class="token keyword">int</span> nameIndex <span class="token operator">=</span> <span class="token function">getNameIndex</span><span class="token punctuation">(</span>name<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//从Static table或者dynamic table中获取name对应的索引</span>
+      <span class="token function">encodeLiteral</span><span class="token punctuation">(</span>out<span class="token punctuation">,</span> name<span class="token punctuation">,</span> value<span class="token punctuation">,</span> IndexType<span class="token punctuation">.</span>NEVER<span class="token punctuation">,</span> nameIndex<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token keyword">return</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// If the peer will only use the static table</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>capacity <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span><span class="token comment">//只使用Static table</span>
+      <span class="token keyword">int</span> staticTableIndex <span class="token operator">=</span> StaticTable<span class="token punctuation">.</span><span class="token function">getIndex</span><span class="token punctuation">(</span>name<span class="token punctuation">,</span> value<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token keyword">if</span> <span class="token punctuation">(</span>staticTableIndex <span class="token operator">==</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span><span class="token comment">//由于static table有些value预定义时为空字符，增加自定义value时会找不到对应的条目，所以要将value也添加到压缩数据中</span>
+        <span class="token keyword">int</span> nameIndex <span class="token operator">=</span> StaticTable<span class="token punctuation">.</span><span class="token function">getIndex</span><span class="token punctuation">(</span>name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">encodeLiteral</span><span class="token punctuation">(</span>out<span class="token punctuation">,</span> name<span class="token punctuation">,</span> value<span class="token punctuation">,</span> IndexType<span class="token punctuation">.</span>NONE<span class="token punctuation">,</span> nameIndex<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//由于只使用static table，所以这里选择 没有索引的字面header字段</span>
+      <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span><span class="token comment">//static table中可以找到对应的name-value键值对，直接写入索引就可以</span>
+        <span class="token function">encodeInteger</span><span class="token punctuation">(</span>out<span class="token punctuation">,</span> <span class="token number">0x80</span><span class="token punctuation">,</span> <span class="token number">7</span><span class="token punctuation">,</span> staticTableIndex<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span>
+      <span class="token keyword">return</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">int</span> headerSize <span class="token operator">=</span> HeaderField<span class="token punctuation">.</span><span class="token function">sizeOf</span><span class="token punctuation">(</span>name<span class="token punctuation">,</span> value<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// If the headerSize is greater than the max table size then it must be encoded literally</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>headerSize <span class="token operator">&gt;</span> capacity<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">int</span> nameIndex <span class="token operator">=</span> <span class="token function">getNameIndex</span><span class="token punctuation">(</span>name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token function">encodeLiteral</span><span class="token punctuation">(</span>out<span class="token punctuation">,</span> name<span class="token punctuation">,</span> value<span class="token punctuation">,</span> IndexType<span class="token punctuation">.</span>NONE<span class="token punctuation">,</span> nameIndex<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token keyword">return</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    HeaderEntry headerField <span class="token operator">=</span> <span class="token function">getEntry</span><span class="token punctuation">(</span>name<span class="token punctuation">,</span> value<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//从dynamic table找对应的name-value</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>headerField <span class="token operator">!=</span> null<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span><span class="token comment">//找到了就将在dynamic table的index+static table的长度写入压缩pack</span>
+      <span class="token keyword">int</span> index <span class="token operator">=</span> <span class="token function">getIndex</span><span class="token punctuation">(</span>headerField<span class="token punctuation">.</span>index<span class="token punctuation">)</span> <span class="token operator">+</span> StaticTable<span class="token punctuation">.</span>length<span class="token punctuation">;</span>
+      <span class="token comment">// Section 6.1. Indexed Header Field Representation</span>
+      <span class="token function">encodeInteger</span><span class="token punctuation">(</span>out<span class="token punctuation">,</span> <span class="token number">0x80</span><span class="token punctuation">,</span> <span class="token number">7</span><span class="token punctuation">,</span> index<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span><span class="token comment">//dynamic table中没有找到再从static table中查找</span>
+      <span class="token keyword">int</span> staticTableIndex <span class="token operator">=</span> StaticTable<span class="token punctuation">.</span><span class="token function">getIndex</span><span class="token punctuation">(</span>name<span class="token punctuation">,</span> value<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token keyword">if</span> <span class="token punctuation">(</span>staticTableIndex <span class="token operator">!=</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// Section 6.1. Indexed Header Field Representation</span>
+        <span class="token function">encodeInteger</span><span class="token punctuation">(</span>out<span class="token punctuation">,</span> <span class="token number">0x80</span><span class="token punctuation">,</span> <span class="token number">7</span><span class="token punctuation">,</span> staticTableIndex<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">int</span> nameIndex <span class="token operator">=</span> <span class="token function">getNameIndex</span><span class="token punctuation">(</span>name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>useIndexing<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span><span class="token comment">//使用 带有增加索引的字面量header字段</span>
+          <span class="token function">ensureCapacity</span><span class="token punctuation">(</span>headerSize<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">//确定dynamic table是否有足够的空间存入该header filed，不够会溢出最老的header</span>
+        <span class="token punctuation">}</span>
+        IndexType indexType <span class="token operator">=</span> useIndexing <span class="token operator">?</span> IndexType<span class="token punctuation">.</span>INCREMENTAL <span class="token operator">:</span> IndexType<span class="token punctuation">.</span>NONE<span class="token punctuation">;</span>
+        <span class="token function">encodeLiteral</span><span class="token punctuation">(</span>out<span class="token punctuation">,</span> name<span class="token punctuation">,</span> value<span class="token punctuation">,</span> indexType<span class="token punctuation">,</span> nameIndex<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>useIndexing<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span><span class="token comment">//添加到dynamic table中</span>
+          <span class="token function">add</span><span class="token punctuation">(</span>name<span class="token punctuation">,</span> value<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+      <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+  <span class="token punctuation">}</span>
+  
+  <span class="token comment">/**
+   * Encode literal header field according to Section 6.2.
+   */</span>
+  <span class="token keyword">private</span> <span class="token keyword">void</span> <span class="token function">encodeLiteral</span><span class="token punctuation">(</span>OutputStream out<span class="token punctuation">,</span> <span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token punctuation">]</span> name<span class="token punctuation">,</span> <span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token punctuation">]</span> value<span class="token punctuation">,</span> IndexType indexType<span class="token punctuation">,</span> <span class="token keyword">int</span> nameIndex<span class="token punctuation">)</span>
+      <span class="token keyword">throws</span> IOException <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">int</span> mask<span class="token punctuation">;</span>
+    <span class="token keyword">int</span> prefixBits<span class="token punctuation">;</span>
+    <span class="token keyword">switch</span><span class="token punctuation">(</span>indexType<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">case</span> INCREMENTAL<span class="token operator">:</span><span class="token operator">/</span><span class="token operator">/</span>带有增加索引的字面量header字段
+      mask <span class="token operator">=</span> <span class="token number">0x40</span><span class="token punctuation">;</span> <span class="token comment">//01 xxxxxx</span>
+      prefixBits <span class="token operator">=</span> <span class="token number">6</span><span class="token punctuation">;</span>
+      <span class="token keyword">break</span><span class="token punctuation">;</span>
+    <span class="token keyword">case</span> NONE<span class="token operator">:</span><span class="token operator">/</span><span class="token operator">/</span>没有索引的字面header字段
+      mask <span class="token operator">=</span> <span class="token number">0x00</span><span class="token punctuation">;</span> <span class="token comment">// 0000 xxxx</span>
+      prefixBits <span class="token operator">=</span> <span class="token number">4</span><span class="token punctuation">;</span>
+      <span class="token keyword">break</span><span class="token punctuation">;</span>
+    <span class="token keyword">case</span> NEVER<span class="token operator">:</span><span class="token operator">/</span><span class="token operator">/</span>从不索引的字面header字段
+      mask <span class="token operator">=</span> <span class="token number">0x10</span><span class="token punctuation">;</span> <span class="token comment">// 0001 xxxx</span>
+      prefixBits <span class="token operator">=</span> <span class="token number">4</span><span class="token punctuation">;</span>
+      <span class="token keyword">break</span><span class="token punctuation">;</span>
+    <span class="token keyword">default</span><span class="token operator">:</span>
+      <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">IllegalStateException</span><span class="token punctuation">(</span><span class="token string">"should not reach here"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token function">encodeInteger</span><span class="token punctuation">(</span>out<span class="token punctuation">,</span> mask<span class="token punctuation">,</span> prefixBits<span class="token punctuation">,</span> nameIndex <span class="token operator">==</span> <span class="token operator">-</span><span class="token number">1</span> <span class="token operator">?</span> <span class="token number">0</span> <span class="token operator">:</span> nameIndex<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//编码整数,nameIndex为整数</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>nameIndex <span class="token operator">==</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span><span class="token comment">//如果nameIndex == -1，即索引表中没有name，那么就使用字面量的方式将那么增加到压缩数据中</span>
+      <span class="token function">encodeStringLiteral</span><span class="token punctuation">(</span>out<span class="token punctuation">,</span> name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token function">encodeStringLiteral</span><span class="token punctuation">(</span>out<span class="token punctuation">,</span> value<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//编码value</span>
+  <span class="token punctuation">}</span>
+
+  <span class="token keyword">private</span> <span class="token keyword">int</span> <span class="token function">getNameIndex</span><span class="token punctuation">(</span><span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token punctuation">]</span> name<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">int</span> index <span class="token operator">=</span> StaticTable<span class="token punctuation">.</span><span class="token function">getIndex</span><span class="token punctuation">(</span>name<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//从Static table中获取索引</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>index <span class="token operator">==</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      index <span class="token operator">=</span> <span class="token function">getIndex</span><span class="token punctuation">(</span>name<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">//从dynamic table中获取索引</span>
+      <span class="token keyword">if</span> <span class="token punctuation">(</span>index <span class="token operator">&gt;=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        index <span class="token operator">+=</span> StaticTable<span class="token punctuation">.</span>length<span class="token punctuation">;</span><span class="token comment">//dynamic中的索引加上static table的长度</span>
+      <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">return</span> index<span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+  
+   <span class="token comment">/**
+   * Encode integer according to Section 5.1.
+   */</span>
+  <span class="token keyword">private</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">encodeInteger</span><span class="token punctuation">(</span>OutputStream out<span class="token punctuation">,</span> <span class="token keyword">int</span> mask<span class="token punctuation">,</span> <span class="token keyword">int</span> n<span class="token punctuation">,</span> <span class="token keyword">int</span> i<span class="token punctuation">)</span> <span class="token keyword">throws</span> IOException <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>n <span class="token operator">&lt;</span> <span class="token number">0</span> <span class="token operator">||</span> n <span class="token operator">&gt;</span> <span class="token number">8</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">IllegalArgumentException</span><span class="token punctuation">(</span><span class="token string">"N: "</span> <span class="token operator">+</span> n<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">int</span> nbits <span class="token operator">=</span> <span class="token number">0xFF</span> <span class="token operator">&gt;&gt;&gt;</span> <span class="token punctuation">(</span><span class="token number">8</span> <span class="token operator">-</span> n<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">//等价于 nbits = 2^n-1</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>i <span class="token operator">&lt;</span> nbits<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      out<span class="token punctuation">.</span><span class="token function">write</span><span class="token punctuation">(</span>mask <span class="token operator">|</span> i<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+      out<span class="token punctuation">.</span><span class="token function">write</span><span class="token punctuation">(</span>mask <span class="token operator">|</span> nbits<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token keyword">int</span> length <span class="token operator">=</span> i <span class="token operator">-</span> nbits<span class="token punctuation">;</span>
+      <span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>length <span class="token operator">&amp;</span> <span class="token operator">~</span><span class="token number">0x7F</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> <span class="token comment">//等价于 length&gt;=128</span>
+          out<span class="token punctuation">.</span><span class="token function">write</span><span class="token punctuation">(</span>length<span class="token punctuation">)</span><span class="token punctuation">;</span>
+          <span class="token keyword">return</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+          out<span class="token punctuation">.</span><span class="token function">write</span><span class="token punctuation">(</span><span class="token punctuation">(</span>length <span class="token operator">&amp;</span> <span class="token number">0x7F</span><span class="token punctuation">)</span> <span class="token operator">|</span> <span class="token number">0x80</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">//等价于 (I % 128 + 128)</span>
+          length <span class="token operator">&gt;&gt;&gt;=</span> <span class="token number">7</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+      <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<p>decode源码解析</p> 
+<p>由于decode就是encode的逆过程，看懂了encode，看decode会轻松一些，因此以下只是部分代码解析</p> 
+<pre><code class="prism language-java"><span class="token comment">//decoder.java</span>
+
+<span class="token comment">// state初始化为READ_HEADER_REPRESENTATION</span>
+<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">decode</span><span class="token punctuation">(</span>InputStream in<span class="token punctuation">,</span> HeaderListener headerListener<span class="token punctuation">)</span> <span class="token keyword">throws</span> IOException <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">while</span> <span class="token punctuation">(</span>in<span class="token punctuation">.</span><span class="token function">available</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&gt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">switch</span><span class="token punctuation">(</span>state<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">case</span> READ_HEADER_REPRESENTATION<span class="token operator">:</span>
+        <span class="token keyword">byte</span> b <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token keyword">byte</span><span class="token punctuation">)</span> in<span class="token punctuation">.</span><span class="token function">read</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>maxDynamicTableSizeChangeRequired <span class="token operator">&amp;&amp;</span> <span class="token punctuation">(</span>b <span class="token operator">&amp;</span> <span class="token number">0xE0</span><span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token number">0x20</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span><span class="token comment">//dynamic stable size update的前3bit为001，将0xE0和0x20转成2进制很容看出</span>
+          <span class="token comment">// Encoder MUST signal maximum dynamic table size change</span>
+          <span class="token keyword">throw</span> MAX_DYNAMIC_TABLE_SIZE_CHANGE_REQUIRED<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>b <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span><span class="token comment">//b &lt; 0 说明最高位为1，说明是Indexed Header Filed</span>
+          <span class="token comment">// Indexed Header Field</span>
+          index <span class="token operator">=</span> b <span class="token operator">&amp;</span> <span class="token number">0x7F</span><span class="token punctuation">;</span><span class="token comment">//获取低7位的值</span>
+          <span class="token keyword">if</span> <span class="token punctuation">(</span>index <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">throw</span> ILLEGAL_INDEX_VALUE<span class="token punctuation">;</span>
+          <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>index <span class="token operator">==</span> <span class="token number">0x7F</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span><span class="token comment">//低7位全是1，说明index &gt; 2^7 - 1，需要从后续的流中继续解码</span>
+            state <span class="token operator">=</span> State<span class="token punctuation">.</span>READ_INDEXED_HEADER<span class="token punctuation">;</span>
+          <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span><span class="token comment">//index &lt; 2^7 - 1，直接从index address space(static table + dynamic table)中查询出来</span>
+            <span class="token function">indexHeader</span><span class="token punctuation">(</span>index<span class="token punctuation">,</span> headerListener<span class="token punctuation">)</span><span class="token punctuation">;</span>
+          <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>b <span class="token operator">&amp;</span> <span class="token number">0x40</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0x40</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span><span class="token comment">// 01 xxxxxx,带有增加索引的字面量header字段</span>
+          <span class="token comment">// Literal Header Field with Incremental Indexing</span>
+          indexType <span class="token operator">=</span> IndexType<span class="token punctuation">.</span>INCREMENTAL<span class="token punctuation">;</span>
+          index <span class="token operator">=</span> b <span class="token operator">&amp;</span> <span class="token number">0x3F</span><span class="token punctuation">;</span><span class="token comment">//获取低6位的值</span>
+          <span class="token keyword">if</span> <span class="token punctuation">(</span>index <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span><span class="token comment">//有new name</span>
+            state <span class="token operator">=</span> State<span class="token punctuation">.</span>READ_LITERAL_HEADER_NAME_LENGTH_PREFIX<span class="token punctuation">;</span>
+          <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>index <span class="token operator">==</span> <span class="token number">0x3F</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> <span class="token comment">//低6位全是1，说明index &gt; 2^6 - 1，需要从后续的流中继续解码</span>
+            state <span class="token operator">=</span> State<span class="token punctuation">.</span>READ_INDEXED_HEADER_NAME<span class="token punctuation">;</span>
+          <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span><span class="token comment">//index &lt; 2^6 - 1，直接从index address space(static table + dynamic table)中查询出来</span>
+            <span class="token comment">// Index was stored as the prefix</span>
+            <span class="token function">readName</span><span class="token punctuation">(</span>index<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            state <span class="token operator">=</span> State<span class="token punctuation">.</span>READ_LITERAL_HEADER_VALUE_LENGTH_PREFIX<span class="token punctuation">;</span><span class="token comment">//接着获取value字符的长度</span>
+          <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>b <span class="token operator">&amp;</span> <span class="token number">0x20</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0x20</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span><span class="token comment">//001 00000，更新dynamic table size</span>
+          <span class="token comment">// Dynamic Table Size Update</span>
+          index <span class="token operator">=</span> b <span class="token operator">&amp;</span> <span class="token number">0x1F</span><span class="token punctuation">;</span>
+          <span class="token keyword">if</span> <span class="token punctuation">(</span>index <span class="token operator">==</span> <span class="token number">0x1F</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            state <span class="token operator">=</span> State<span class="token punctuation">.</span>READ_MAX_DYNAMIC_TABLE_SIZE<span class="token punctuation">;</span>
+          <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token function">setDynamicTableSize</span><span class="token punctuation">(</span>index<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            state <span class="token operator">=</span> State<span class="token punctuation">.</span>READ_HEADER_REPRESENTATION<span class="token punctuation">;</span>
+          <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span><span class="token comment">//由于 从不索引的字面header字段和没有索引的字面header字段的编码规则一样，所以放到一起</span>
+          <span class="token comment">// Literal Header Field without Indexing / never Indexed</span>
+          indexType <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>b <span class="token operator">&amp;</span> <span class="token number">0x10</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0x10</span><span class="token punctuation">)</span> <span class="token operator">?</span> IndexType<span class="token punctuation">.</span>NEVER <span class="token operator">:</span> IndexType<span class="token punctuation">.</span>NONE<span class="token punctuation">;</span>
+          index <span class="token operator">=</span> b <span class="token operator">&amp;</span> <span class="token number">0x0F</span><span class="token punctuation">;</span>
+          <span class="token keyword">if</span> <span class="token punctuation">(</span>index <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            state <span class="token operator">=</span> State<span class="token punctuation">.</span>READ_LITERAL_HEADER_NAME_LENGTH_PREFIX<span class="token punctuation">;</span>
+          <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>index <span class="token operator">==</span> <span class="token number">0x0F</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            state <span class="token operator">=</span> State<span class="token punctuation">.</span>READ_INDEXED_HEADER_NAME<span class="token punctuation">;</span>
+          <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// Index was stored as the prefix</span>
+            <span class="token function">readName</span><span class="token punctuation">(</span>index<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            state <span class="token operator">=</span> State<span class="token punctuation">.</span>READ_LITERAL_HEADER_VALUE_LENGTH_PREFIX<span class="token punctuation">;</span>
+          <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">break</span><span class="token punctuation">;</span>
+
+      <span class="token keyword">default</span><span class="token operator">:</span>
+        <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">IllegalStateException</span><span class="token punctuation">(</span><span class="token string">"should not reach here"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+  <span class="token punctuation">}</span>
+</code></pre>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/d5d4d1758d4b47da42f7ad4869806936/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">go-zero微服务框架入门教程</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/6f0b3acb615e5cfd8c375af775242397/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">idea显示Services工具栏方案</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

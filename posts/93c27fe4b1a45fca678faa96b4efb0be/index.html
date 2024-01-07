@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Flink SQL深度篇 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Flink SQL深度篇" />
+<meta property="og:description" content="Flink SQL深度篇 问题导读 怎样优化Logical Plan?怎样优化Stream Graph?TimeWindow, EventTime, ProcessTime 和 Watermark 四者之间的关系是什么? 序言 时效性提升数据的价值, 所以 Flink 这样的流式 (Streaming) 计算系统应用得越来越广泛.
+广大的普通用户决定一个产品的界面和接口. ETL开发者需要简单而有效的开发工具, 从而把更多时间花在理业务和对口径上. 因此流式计算系统都趋同以 SQL 作为唯一开发语言, 让用户以 Table 形式操作 Stream.
+程序开发三部曲：First make it work, then make it right, and, finally, make it fast.
+让程序运行起来
+开发者能用 SQL 方便地表达问题.开发者能通过任务管理系统一体化地管理任务, 如：开发, 上线, 调优, 监控和排查任务. 让程序运行正确
+简单数据清洗之外的流计算开发需求通常会涉及到 Streaming SQL 的两个核心扩展：Window 和 Emit.开发者深入理解 Window 和 Emit 的语义是正确实现这些业务需求的关键,否则无法在数据时效性和数据准确性上做适合各个业务场景的决策和折中. 让程序运行越来越快
+流计算系统每年也会有很大的性能提升和功能扩展, 但想要深入调优及排错, 还是要学习分布式系统的各个组件及原理, 各种算子实现方法, 性能优化技术等知识.
+以后, 随着系统的进一步成熟和完善, 开发者在性能优化上的负担会越来越低, 无需了解底层技术实现细节和手动配置各种参数, 就能享受性能和稳定性的逐步提升." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/93c27fe4b1a45fca678faa96b4efb0be/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-11-23T17:52:03+08:00" />
+<meta property="article:modified_time" content="2020-11-23T17:52:03+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Flink SQL深度篇</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="Flink_SQL_0"></a>Flink SQL深度篇</h2> 
+<h2><a id="_2"></a>问题导读</h2> 
+<ol><li>怎样优化Logical Plan?</li><li>怎样优化Stream Graph?</li><li>TimeWindow, EventTime, ProcessTime 和 Watermark 四者之间的关系是什么?</li></ol> 
+<h2><a id="_8"></a>序言</h2> 
+<p>时效性提升数据的价值, 所以 Flink 这样的流式 (Streaming) 计算系统应用得越来越广泛.</p> 
+<p>广大的普通用户决定一个产品的界面和接口. ETL开发者需要简单而有效的开发工具, 从而把更多时间花在理业务和对口径上. 因此流式计算系统都趋同以 SQL 作为唯一开发语言, 让用户以 Table 形式操作 Stream.</p> 
+<p>程序开发三部曲：First make it work, then make it right, and, finally, make it fast.</p> 
+<p><strong>让程序运行起来</strong></p> 
+<ul><li>开发者能用 SQL 方便地表达问题.</li><li>开发者能通过任务管理系统一体化地管理任务, 如：开发, 上线, 调优, 监控和排查任务.</li></ul> 
+<p><strong>让程序运行正确</strong></p> 
+<ul><li>简单数据清洗之外的流计算开发需求通常会涉及到 Streaming SQL 的两个核心扩展：Window 和 Emit.</li><li>开发者深入理解 Window 和 Emit 的语义是正确实现这些业务需求的关键,</li><li>否则无法在数据时效性和数据准确性上做适合各个业务场景的决策和折中.</li></ul> 
+<p><strong>让程序运行越来越快</strong></p> 
+<p>流计算系统每年也会有很大的性能提升和功能扩展, 但想要深入调优及排错, 还是要学习分布式系统的各个组件及原理, 各种算子实现方法, 性能优化技术等知识.</p> 
+<p>以后, 随着系统的进一步成熟和完善, 开发者在性能优化上的负担会越来越低, 无需了解底层技术实现细节和手动配置各种参数, 就能享受性能和稳定性的逐步提升.</p> 
+<p>**分布式系统的一致性和可用性是一对矛盾, 流计算系统的数据准确性和数据时效性也是一对矛盾. ** 应用开发者都需要认识到这些矛盾, 并且知道自己在什么场景下该作何种取舍.</p> 
+<p>本文希望通过剖析Flink Streaming SQL的三个具体例子：Union, Group By 和 Join , 来依次阐述流式计算模型的核心概念: What, Where, When, How . 以便开发者加深对 Streaming SQL 的 Window 和 Emit 语义的理解, 从而能在<strong>数据准确性</strong>和<strong>数据时效性</strong>上做适合业务场景的折中和取舍, 也顺带介绍 **Streaming SQL 的底层实现, 以便于 SQL 任务的开发和调优. **</p> 
+<h2><a id="Union_37"></a>Union</h2> 
+<h3><a id="_39"></a>代码</h3> 
+<p>通过这个例子来阐述 Streaming SQL 的底层实现和优化手段：Logical Plan Optimization 和 Operator Chaining.</p> 
+<p>例子改编自 Flink StreamSQLExample . 只在最外层加了一个Filter, 以便触发Filter下推及合并.</p> 
+<p>Code:</p> 
+<pre><code>package com.atguigu.tableapi
+
+import com.atguigu.bean.Order
+import org.apache.flink.streaming.api.scala._
+import org.apache.flink.table.api.Table
+import org.apache.flink.table.api.scala._
+
+object UnionTest {
+  def main(args: Array[String]): Unit = {
+    val env: StreamExecutionEnvironment = StreamExecutionEnvironment.getExecutionEnvironment
+    val tEnv: StreamTableEnvironment = StreamTableEnvironment.create(env)
+    val orderA: DataStream[Order] = env.fromCollection(Seq(
+      Order(1L, "bear", 3),
+      Order(1L, "diaper", 4),
+      Order(3L, "rubber", 2)
+    ))
+    val orderB: DataStream[Order] = env.fromCollection(Seq(
+      Order(2L, "pen", 3),
+      Order(2L, "rubber", 3),
+      Order(4L, "bear", 1)
+    ))
+    // 以流注册表
+    tEnv.createTemporaryView("OrderA", orderA)
+    tEnv.createTemporaryView("OrderB", orderB)
+    // sql
+    val sql =
+      """
+        |select *
+        |from (
+        |    select *
+        |    from OrderA
+        |    where user &lt; 3
+        |    union all
+        |    select *
+        |    from OrderB
+        |where product &lt;&gt; 'rubber') OrderAll
+        |where amount &gt; 2
+        |""".stripMargin
+
+    val result: Table = tEnv.sqlQuery(sql)
+
+    result.toAppendStream[Order].print()
+    env.execute()
+  }
+}
+</code></pre> 
+<p>运行结果:</p> 
+<pre><code>5&gt; Order(1,diaper,4)
+9&gt; Order(2,pen,3)
+4&gt; Order(1,bear,3)
+</code></pre> 
+<p><strong>转换 Table 为 Stream</strong>: Flink 会把基于 Table 的 Streaming SQL 转为基于 Stream 的底层算子, 并同时完成 Logical Plan 及 Operator Chaining 等优化</p> 
+<h3><a id="_Logical_Plan_105"></a>转为逻辑计划 Logical Plan</h3> 
+<p>上述 UNION ALL SQL 依据 Relational Algebra 转换为下面的逻辑计划:</p> 
+<pre><code>LogicalProject(user=[$0], product=[$1], amount=[$2])
+	LogicalFilter(condition=[&gt;($2, 2)])
+		LogicalUnion(all=[true])
+			LogicalProject(user=[$0], product=[$1], amount=[$2])
+				LogicalFilter(condition=[&lt;($0, 3)])
+					LogicalTableScan(table=[[OrderA]])
+            LogicalProject(user=[$0], product=[$1], amount=[$2])
+				LogicalFilter(condition=[&lt;&gt;($1, _UTF-16LE'rubber')])
+					LogicalTableScan(table=[[OrderB]])
+</code></pre> 
+<p>SQL字段与逻辑计划有如下的对应关系：</p> 
+<p><img src="https://images2.imgbox.com/76/bf/mU3O3DBZ_o.png" alt="SQL字段与逻辑计划"></p> 
+<h3><a id="Logical_Plan__125"></a>Logical Plan 优化</h3> 
+<h4><a id="_127"></a>理论基础</h4> 
+<h5><a id="_129"></a>幂等</h5> 
+<pre><code>数学:  19 * 10 * 1  * 1 = 19 * 10 = 190
+SQL:  SELECT * FROM (SELECT user, product FROM OrderA) =  SELECT user, product FROM OrderA
+</code></pre> 
+<h5><a id="_136"></a>交换律</h5> 
+<pre><code>数学：10 * 19 = 19 * 10 = 190
+SQL:   tableA UNION ALL tableB  = tableB UNION ALL tableA
+</code></pre> 
+<h5><a id="_143"></a>结合律</h5> 
+<pre><code>数学:
+(1900 * 0.5)* 0.2 = 1900 * (0.5 * 0.2) = 190                       
+1900 * (1.0 + 0.01) = 1900 * 1.0 + 1900 * 0.01 = 1919
+SQL:
+SELECT * FROM (SELECT user, amount FROM OrderA) WHERE amount &gt; 2
+SELECT * FROM (SELECT user, amount FROM OrderA WHERE amount &gt; 2)
+</code></pre> 
+<h4><a id="_156"></a>优化过程</h4> 
+<p>Flink 的逻辑计划优化规则清单请见: <a href="https://github.com/apache/flink/blob/c58d37ed6dc6284ed22d50ec7c244215470afadb/flink-libraries/flink-table/src/main/scala/org/apache/flink/table/plan/rules/FlinkRuleSets.scala">FlinkRuleSets</a>.</p> 
+<p>此 Union All 例子根据幂等, 交换律和结合律来完成以下三步优化:</p> 
+<h5><a id="Project_162"></a>消除冗余的Project</h5> 
+<p>利用幂等特性, 消除冗余的 Project:</p> 
+<p><img src="https://images2.imgbox.com/8f/dc/ELEEam6X_o.png" alt="消除冗余的Project"></p> 
+<h5><a id="Filter_168"></a>下推Filter</h5> 
+<p>利用交换率和结合律特性, 下推 Filter:</p> 
+<p><img src="https://images2.imgbox.com/2f/d1/r8CBGlUB_o.png" alt="下推Filter"></p> 
+<h5><a id="Filter_174"></a>合并Filter</h5> 
+<p>利用结合律, 合并 Filter:</p> 
+<p><img src="https://images2.imgbox.com/fc/77/7B61PaMR_o.png" alt="合并Filter"></p> 
+<h3><a id="_Physical_Plan_180"></a>转为物理计划 Physical Plan</h3> 
+<p>转换后的 Flink 的物理执行计划如下:</p> 
+<pre><code>DataStreamUnion(all=[true], union all=[user, product, amount])
+	DataStreamcCalc(select][user, product, amount], where=[AND(&lt;(user, 3), &gt;(amount, 2))])
+		DataStreamScan(table=[[OrderA]])
+	DataStreamcCalc(select][user, product, amount], where=[AND(&lt;&gt;(product, _UTF-16LE'rubber'), &gt;(amount, 2))])
+		DataStreamScan(table=[[OrderB]])
+</code></pre> 
+<h3><a id="_Physical_Plan_192"></a>优化 Physical Plan</h3> 
+<p>有 Physical Plan 优化这一步骤, 但对以上例子没有效果, 所以忽略.</p> 
+<h3><a id="_Stream_Graph_196"></a>优化 Stream Graph</h3> 
+<h4><a id="Stream_Graph_198"></a>Stream Graph</h4> 
+<p>这样, 加上 Source 和 Sink, 产生了如下的 Stream Graph:</p> 
+<p><img src="https://images2.imgbox.com/4a/06/0sO7ZSSO_o.png" alt="Stream Graph"></p> 
+<p>通过 <a href="https://ci.apache.org/projects/flink/flink-docs-stable/dev/stream/operators/#task-chaining-and-resource-groups" rel="nofollow">Task Chaining</a> 来减少上下游算子的数据传输消耗, 从而提高性能:</p> 
+<h4><a id="Chaining__206"></a>Chaining 判断条件</h4> 
+<pre><code>private boolean isChainable(StreamEdge edge, boolean isChainingEnabled, StreamGraph streamGraph) {
+		StreamNode upStreamVertex = streamGraph.getSourceVertex(edge);
+		StreamNode downStreamVertex = streamGraph.getTargetVertex(edge);
+
+		StreamOperatorFactory&lt;?&gt; headOperator = upStreamVertex.getOperatorFactory();
+		StreamOperatorFactory&lt;?&gt; outOperator = downStreamVertex.getOperatorFactory();
+
+		return downStreamVertex.getInEdges().size() == 1
+				&amp;&amp; outOperator != null
+				&amp;&amp; headOperator != null
+				&amp;&amp; upStreamVertex.isSameSlotSharingGroup(downStreamVertex)
+				&amp;&amp; outOperator.getChainingStrategy() == ChainingStrategy.ALWAYS
+				&amp;&amp; (headOperator.getChainingStrategy() == ChainingStrategy.HEAD ||
+				headOperator.getChainingStrategy() == ChainingStrategy.ALWAYS)
+				&amp;&amp; (edge.getPartitioner() instanceof ForwardPartitioner)
+				&amp;&amp; upStreamVertex.getParallelism() == downStreamVertex.getParallelism()
+				&amp;&amp; isChainingEnabled;
+	}
+</code></pre> 
+<h4><a id="Chaining__229"></a>Chaining 结果</h4> 
+<p><strong>按深度优先的顺序遍历 Stream Graph</strong>, 最终产生 5 个 Task 任务:</p> 
+<p><img src="https://images2.imgbox.com/ec/3e/T6GhLT7Q_o.png" alt="295c1a4b79a8ca16453d882d540771ca"></p> 
+<h2><a id="Group_By_235"></a>Group By</h2> 
+<h3><a id="_237"></a>代码</h3> 
+<pre><code>package com.atguigu.tableapi
+
+import java.sql.Timestamp
+import java.text.SimpleDateFormat
+import java.util.TimeZone
+import com.atguigu.bean.OrderT
+import org.apache.flink.streaming.api.TimeCharacteristic
+import org.apache.flink.streaming.api.functions.timestamps.BoundedOutOfOrdernessTimestampExtractor
+import org.apache.flink.streaming.api.scala._
+import org.apache.flink.streaming.api.windowing.time.Time
+import org.apache.flink.table.api.Table
+import org.apache.flink.table.api.scala._
+import org.apache.flink.types.Row
+
+
+/**
+ * &lt;p&gt;Title: &lt;/p&gt;
+ *
+ * &lt;p&gt;Description: &lt;/p&gt;
+ *
+ * @author Zhang Chao
+ * @version java_day
+ * @date 2020/10/28 4:15 下午
+ */
+object GroupByTest {
+  def main(args: Array[String]): Unit = {
+    val env: StreamExecutionEnvironment = StreamExecutionEnvironment.getExecutionEnvironment
+    env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime)
+    val tEnv: StreamTableEnvironment = StreamTableEnvironment.create(env)
+
+    val orderA: DataStream[OrderT] = env.fromCollection(Seq(
+      OrderT(1L, "bear", 3, Timestamp.valueOf("2020-10-10 2:11:00")),
+      OrderT(3L, "rubber", 2,Timestamp.valueOf("2020-10-10 2:38:35")),
+      OrderT(1L, "diaper", 4, Timestamp.valueOf("2020-10-10 3:11:03")),
+      OrderT(1L, "diaper", 1, Timestamp.valueOf("2020-10-10 2:48:05"))
+    )).assignTimestampsAndWatermarks(new BoundedOutOfOrdernessTimestampExtractor[OrderT](Time.milliseconds(3000)) {
+      override def extractTimestamp(element: OrderT) = {
+        val dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
+        dateFormat.setTimeZone(TimeZone.getTimeZone("GMT"+8))
+        dateFormat.parse(element.rowtime.toString).getTime
+      }
+    })
+
+    // 以流注册表
+    tEnv.createTemporaryView("OrderA", orderA, 'user, 'product, 'amount, 'rowtime.rowtime)
+    // sql
+    val sql =
+      """
+        |select
+        |    user,
+        |    TUMBLE_START(rowtime, INTERVAL '1' HOUR) AS startDate,
+        |    SUM(amount) AS totalAmount
+        |FROM
+        |    OrderA
+        |GROUP BY user, tumble(rowtime, INTERVAL '1' HOUR)
+        |""".stripMargin
+
+    val result: Table = tEnv.sqlQuery(sql)
+
+    result.toAppendStream[Row].print()
+    env.execute()
+  }
+}
+</code></pre> 
+<p>输出:</p> 
+<pre><code>12&gt; 3,2020-10-10 02:00:00.0,2
+4&gt; 1,2020-10-10 02:00:00.0,4
+4&gt; 1,2020-10-10 03:00:00.0,4
+</code></pre> 
+<p><strong>转换Table为Stream</strong>: 因为 Union All 例子比较详细地阐述了转换规则, 此处只讨论特殊之处.</p> 
+<h3><a id="_Logical_Plan_315"></a>转为逻辑计划 Logical Plan</h3> 
+<pre><code>LogicalProject(user=[$0], startDate=[TUMBLE_START($1)], totalAmount=[$2])
+	LogicalAggregate(group=[{0, 1}], totalAmount=[SUM($2)])
+		LogicalProject(user=[$0], $f1=[TUMBLE($4, 86400000)], amount=[$2])
+			LogicalTableScan(table=[[OrderA]])
+</code></pre> 
+<h3><a id="_Logical_Plan_324"></a>优化 Logical Plan</h3> 
+<pre><code>FlinkLogicalCalc(expr#0..5=[{inputs}], user=[$t0], rowtime=[$t2],amount=[$t1])
+	FlinkLogicalWindowAggregate(group=[{0}], totalAmount=[SUM($2)])
+		FlinkLogicalCalc(expr#0..4=[{inputs}], user=[$t0], rowtime=[$t4],amount=[$t2])
+			FlinkLogicalNativeTableScan(table=[[OrderA]])
+</code></pre> 
+<p>GROUP BY 优化: 把 <code>{"User + Window" -&gt; SUM}</code> 转为 <code>{User -&gt; {Window -&gt; SUM}}</code>.</p> 
+<p>新的数据结构确保同一 User 下所有 Window 都会被分配到同一个 Operator, 以便实现 SessionWindow 的 Merge 功能:</p> 
+<p><img src="https://images2.imgbox.com/2b/01/OyRB1TBH_o.png" alt="54f3eed484858eefe4ee26138d60923a"></p> 
+<h3><a id="_Physical_Plan_339"></a>转为物理计划 Physical Plan</h3> 
+<pre><code>DataStreamCala(select=[user, w$start AS startDate, totalAmount])
+	DataStreamGroupWindowAggregate(
+		groupBy=[user],
+		window=[TumblingGroupWindow('w$, 'rowtime, 86400000.millis)],
+		select=[user, 
+				SUM(amount) AS totalAmount, 
+				start('w$') AS w$start, 
+				end('w$') AS w$end,
+				rowtime('w$') AS w$rowtime,
+				proctime('W$) AS w$proctime])
+		DataStreamCalc(select=[user, rowtime, amount])
+			DataStreamScan(table=[[OrderA]])
+</code></pre> 
+<h3><a id="_Stream_Graph_356"></a>优化 Stream Graph</h3> 
+<p>经过 Task Chaining 优化后, 最终生成 3 个 Task:</p> 
+<p><img src="https://images2.imgbox.com/d9/bc/WsxGZxXh_o.png" alt="Stream Graph"></p> 
+<h2><a id="Streaming__362"></a>Streaming 各基本概念之间的联系</h2> 
+<p>此处希望以图表的形式阐述各个概念之间的关系:</p> 
+<h3><a id="Window__EventTime_366"></a>Window 和 EventTime</h3> 
+<p>Flink 支持三种 Window 类型: Tumbling Windows , Sliding Windows 和 Session Windows.</p> 
+<p>每个事件的 EventTime 决定事件会落到哪些 TimeWindow, 但只有 Window 的第一个数据来到时, Window 才会被真正创建.</p> 
+<p><img src="https://images2.imgbox.com/5e/8e/S551t046_o.png" alt="ba5e7299f01c1b3c4a165e9cb8ad6811"></p> 
+<h3><a id="Window__WaterMark_374"></a>Window 和 WaterMark</h3> 
+<p>可以设置 TimeWindow 的 AllowedLateness, 从而使 Window 可以处理延时数据.</p> 
+<p>只有当 WaterMark 超过 TimeWindow.end + AllowedLateness 时, Window 才会被销毁.</p> 
+<p><img src="https://images2.imgbox.com/a7/50/9Jgsx6el_o.png" alt="aa51c6feb90576f028fd8206423a2b18"></p> 
+<h3><a id="TimeWindow_EventTime_ProcessTime__Watermark_382"></a>TimeWindow, EventTime, ProcessTime 和 Watermark</h3> 
+<p>我们以 WaterMark 的推进图来阐述这四者之间的关系.</p> 
+<p>Window 为 TumbleWindow, 窗口大小为 1 小时, 允许的数据延迟为 1 小时:</p> 
+<p><img src="https://images2.imgbox.com/14/88/ltHUQRsE_o.png" alt="9885133eafb4e84d966ca12e0121516e"></p> 
+<p>WaterMark 和 EventTime: <strong>新数据的最新 Eventime 推进 WaterMark</strong></p> 
+<p>TimeWindow 的生命周期:</p> 
+<p>以下三条数据的 EventTime 决定 TimeWindow 的状态转换.</p> 
+<p>数据 1 的 Eventtime 属于 Window[10:00, 11,00), 因为Window不存在, 所以创建此 Window.</p> 
+<p>数据 2 的 Eventime 推进 WaterMark 超过11:00 (Window.end), 所以触发Pass End.</p> 
+<p>数据 3 的 Eventime 推进 WaterMark 超过 12:00 (Window.end + allowedLateness), 所以关闭此Window.</p> 
+<p>TimeWindow 的结果输出：</p> 
+<p>用户可以通过 Trigger 来控制窗口结果的输出, 按窗口的状态类型有以下三种 Trigger.</p> 
+<p><img src="https://images2.imgbox.com/a2/82/ER7M6eDk_o.png" alt="5731e70f3413728bb0c8678290fde03a"></p> 
+<p>Flink 的 Streaming SQL 目前只支持 PassEnd Trigger, 且默认 AllowedLateness = 0.</p> 
+<p>如果触发频率是 Repeated, 比如：每分钟, 往下游输出一次. 那么这个时间只能是 ProcessTime.</p> 
+<p>因为 WarkMark 在不同场景下会有不同推进速度, 比如处理一小时的数据,</p> 
+<p>可能只需十分钟 (重跑), 一个小时(正常运行) 或 大于1小时（积压) .</p> 
+<p><strong>运行结果:</strong></p> 
+<p>允许数据乱序是分布式系统能够并发处理消息的前提.</p> 
+<p>当前这个例子, 数据如果乱序可以产生不同的输出结果.</p> 
+<p><strong>数据有序SUM算子接收到的数据</strong></p> 
+<p>数据的 Eventtime 按升序排列:</p> 
+<pre><code>OrderT(1L, "bear", 3, Timestamp.valueOf("2020-10-10 2:11:00"))
+OrderT(3L, "rubber", 2,Timestamp.valueOf("2020-10-10 2:38:35"))
+OrderT(1L, "diaper", 1, Timestamp.valueOf("2020-10-10 2:48:05"))
+OrderT(1L, "diaper", 4, Timestamp.valueOf("2020-10-10 3:11:03"))
+</code></pre> 
+<p>WarterMark推进图</p> 
+<p>每条新数据都能推进 Watermark:</p> 
+<p><img src="https://images2.imgbox.com/44/11/Ts9ABZh3_o.png" alt="ae0c9902f95b86961093a573b9e3b1dd"></p> 
+<p><strong>结果输出</strong></p> 
+<p>所有数据都被处理, 没有数据被丢弃:</p> 
+<pre><code>12&gt; 3,2020-10-10 02:00:00.0,2
+4&gt; 1,2020-10-10 02:00:00.0,4
+4&gt; 1,2020-10-10 03:00:00.0,4
+</code></pre> 
+<p><strong>数据乱序SUM算子接收到的数据</strong></p> 
+<p>第四条事件延时到来:</p> 
+<pre><code>OrderT(1L, "bear", 3, Timestamp.valueOf("2020-10-10 2:11:00"))
+OrderT(3L, "rubber", 2,Timestamp.valueOf("2020-10-10 2:38:35"))
+OrderT(1L, "diaper", 4, Timestamp.valueOf("2020-10-10 3:11:03"))
+OrderT(1L, "diaper", 1, Timestamp.valueOf("2020-10-10 2:48:05"))
+</code></pre> 
+<p><strong>WarterMark 推进图</strong></p> 
+<p>延迟的数据不会推进WaterMark, 且被丢弃.</p> 
+<p><img src="https://images2.imgbox.com/1c/cb/Mv9z8GKY_o.png" alt="6a8882bea053aba0b0da69ed28867a1f"></p> 
+<p>输出结果</p> 
+<p>没有统计因延迟被丢弃的第四条事件:</p> 
+<pre><code>12&gt; 3,2020-10-10 02:00:00.0,2
+4&gt; 1,2020-10-10 02:00:00.0,3
+4&gt; 1,2020-10-10 03:00:00.0,4
+</code></pre> 
+<h2><a id="Join_476"></a>Join</h2> 
+<h3><a id="_478"></a>代码</h3> 
+<pre><code>package com.atguigu.tableapi
+
+import org.apache.flink.streaming.api.scala._
+import org.apache.flink.table.api.Table
+import org.apache.flink.table.api.scala._
+import java.sql.Timestamp
+
+import org.apache.flink.types.Row
+
+case class Show(var impressionId: String, var name: String, eventTime: String)
+case class Click(var impressionId: String, var name: String, eventTime: String)
+object JoinTest {
+  def main(args: Array[String]): Unit = {
+    val env: StreamExecutionEnvironment = StreamExecutionEnvironment.getExecutionEnvironment
+    val tEnv: StreamTableEnvironment = StreamTableEnvironment.create(env)
+    val showAd: DataStream[Show] = env.fromCollection(Seq(
+      Show("1", "show", "2020-10-10 10:10:10"),
+      Show("2", "show", "2020-10-10 10:11:10"),
+      Show("3", "show", "2020-10-10 10:12:10")
+    ))
+    Thread.sleep(1000)
+    val clickAd: DataStream[Click] = env.fromCollection(Seq(
+      Click("1", "click", "2020-10-10 10:13:11"),
+      Click("3", "click", "2020-10-10 10:12:33"),
+    ))
+    // 以流注册表
+    tEnv.createTemporaryView("ShowAd", showAd, 'impressionId, 'name, 'eventTime)
+    tEnv.createTemporaryView("ClickAd", clickAd, 'impressionId, 'name, 'eventTime)
+    // sql
+    val sql =
+      """
+        |select
+        |    ShowAd.impressionId AS impressionId,
+        |    ShowAd.eventTime As showTime,
+        |    CASE WHEN ClickAd.eventTime &lt;&gt; '' THEN 'clicked' ELSE 'showed' END AS status
+        |FROM ShowAd
+        |LEFT JOIN ClickAd ON ShowAd.impressionId = ClickAd.impressionId
+        |""".stripMargin
+
+    val result: Table = tEnv.sqlQuery(sql)
+
+    result.toRetractStream[Row].print()
+    env.execute()
+  }
+}
+</code></pre> 
+<h3><a id="_Logical_Plan_528"></a>转为逻辑计划 Logical Plan</h3> 
+<pre><code>LogicalProject(impressId=[$0], showTime=[$2], clickTime=[$5])
+	LogicalJoin(condition=[=($0, $3)], joinType=[left])
+		LogicalTableScan(table=[[ShowAd]])
+		LogicalTableScan(table=[[ClickAd]])
+</code></pre> 
+<h3><a id="_Logical_Plan_537"></a>优化 Logical Plan</h3> 
+<pre><code>LogicalProject(impressId=[$0], showTime=[$2], clickTime=[$5])
+	LogicalJoin(condition=[=($0, $3)], joinType=[left])
+		LogicalTableScan(table=[[ShowAd]])
+		LogicalTableScan(table=[[ClickAd]])
+</code></pre> 
+<h3><a id="_Physical_Plan_546"></a>转为物理计划 Physical Plan</h3> 
+<pre><code>DataStreamCalc(Select=[impressionId AS impressId, eventTime AS showTime, eventTime0 AS clickTime])
+	DataStreamJoin(where=[=(impressionId, impressionId0)], join=[impressionId, eventTime, impressionId0, eventTime0], joinType=[LeftOuterJoin])
+		DataStreamCalc(select=[impressionId, eventTime])
+			DataStreamScan(table=[[ShowAd]])
+		DataStreamCalc(select=[impressionId, eventTime])
+			DataStreamScan(table=[[ClickAd]])
+</code></pre> 
+<h3><a id="_Stream_Graph_557"></a>优化 Stream Graph</h3> 
+<p><img src="https://images2.imgbox.com/e2/1b/vCYbryWE_o.png" alt="e2338ec636e24e636374ec5ff5569b37"></p> 
+<h3><a id="_561"></a>运行结果</h3> 
+<pre><code>1&gt; (true,2,2020-10-10 10:11:10,showed )
+11&gt; (true,3,2020-10-10 10:12:10,showed )
+11&gt; (false,3,2020-10-10 10:12:10,showed )
+11&gt; (true,3,2020-10-10 10:12:10,clicked)
+11&gt; (true,1,2020-10-10 10:10:10,showed )
+11&gt; (false,1,2020-10-10 10:10:10,showed )
+11&gt; (true,1,2020-10-10 10:10:10,clicked)
+</code></pre> 
+<h3><a id="Retraction_Stream_573"></a>Retraction Stream</h3> 
+<p>虽然 Retraction 机制最多增加一倍的数据传输量, 但能降低下游算子的存储负担和撤销实现难度.</p> 
+<p>我们在 Left Join 的输出流后加一个 GROUP BY, 以观察 Retraction 流的后续算子的输出:</p> 
+<pre><code>val sql2 = "select status, count(1) from (" + sql + ") impressionStatus group by status"
+</code></pre> 
+<p>输出:</p> 
+<pre><code>5&gt; (true,showed ,1)
+4&gt; (true,clicked,1)
+4&gt; (false,clicked,1)
+4&gt; (true,clicked,2)
+5&gt; (false,showed ,1)
+5&gt; (true,showed ,2)
+5&gt; (false,showed ,2)
+5&gt; (true,showed ,1)
+5&gt; (false,showed ,1)
+5&gt; (true,showed ,2)
+5&gt; (false,showed ,2)
+5&gt; (true,showed ,1)
+</code></pre> 
+<p>由此可见, Retraction 具有传递性, RetractStream 的后续的 Stream 也会是RetractionStream.</p> 
+<h4><a id="_602"></a>终止</h4> 
+<p>最终需要支持 Retraction 的 Sink 来终止 RetractionStream, 比如：</p> 
+<pre><code>class RetractingSink extends RichSinkFunction[(Boolean, Row)] {
+  val retractedResults = scala.collection.mutable.Map[String, String]()
+  override def invoke(value: (Boolean, Row)): Unit = {
+    retractedResults.synchronized{
+      val flag = value._1
+      val status = value._2.getField(0).toString
+      val count = value._2.getField(1).toString
+
+      if(flag == false){
+        retractedResults -= status
+      }else{
+        retractedResults += (status -&gt; count)
+      }
+    }
+  }
+
+  override def close(): Unit = println(retractedResults)
+}
+
+result.toRetractStream[Row].addSink(new RetractingSink).setParallelism(1)
+</code></pre> 
+<p>最终输出 retractedResults:</p> 
+<pre><code>Map(showed  -&gt; 1, clicked -&gt; 2)
+</code></pre> 
+<h4><a id="_635"></a>存储</h4> 
+<p>只有外部存储支持 UPDATE 或 DELETE 操作时, 才能实现 RetractionSink, 常见的KV 存储和数据库, 如HBase, Mysql 都可实现 RetractionSink.</p> 
+<p>后续程序总能从这些存储中读取最新数据, 上游是否是 Retraction 流对用户是透明的.</p> 
+<p>常见的消息队列, 如Kafka, 只支持 APPEND 操作, 则不能实现 RetractionSink.</p> 
+<p>后续程序从这些消息队列可能会读到重复数据, 因此用户需要在后续程序中处理重复数据.</p> 
+<h2><a id="_645"></a>总结</h2> 
+<p>Flink Streaming SQL的实现从上到下共有三层：</p> 
+<ol><li><a href="https://ci.apache.org/projects/flink/flink-docs-release-1.11/dev/table/sql/index.html" rel="nofollow">Streaming SQL</a></li><li><a href="https://ci.apache.org/projects/flink/flink-docs-stable/dev/datastream_api.html" rel="nofollow">Streaming</a> 和 <a href="https://ci.apache.org/projects/flink/flink-docs-stable/dev/stream/operators/windows.html" rel="nofollow">Window</a></li><li>Distributed Snapshots</li></ol> 
+<p>其中 Streaming Data Model 和 Distributed Snapshot 是 Flink 这个分布式流计算系统的核心架构设计.</p> 
+<p>Streaming Data Model 的 What, Where, When, How 明确了流计算系统的表达能力及预期应用场景.</p> 
+<p>Distributed Snapshots 针对预期的应用场景在数据准确性, 系统稳定性和运行性能上做了合适的折中.</p> 
+<p>操作, 则不能实现 RetractionSink.</p> 
+<p>后续程序从这些消息队列可能会读到重复数据, 因此用户需要在后续程序中处理重复数据.</p> 
+<h2><a id="_663"></a>总结</h2> 
+<p>Flink Streaming SQL的实现从上到下共有三层：</p> 
+<ol><li><a href="https://ci.apache.org/projects/flink/flink-docs-release-1.11/dev/table/sql/index.html" rel="nofollow">Streaming SQL</a></li><li><a href="https://ci.apache.org/projects/flink/flink-docs-stable/dev/datastream_api.html" rel="nofollow">Streaming</a> 和 <a href="https://ci.apache.org/projects/flink/flink-docs-stable/dev/stream/operators/windows.html" rel="nofollow">Window</a></li><li>Distributed Snapshots</li></ol> 
+<p>其中 Streaming Data Model 和 Distributed Snapshot 是 Flink 这个分布式流计算系统的核心架构设计.</p> 
+<p>Streaming Data Model 的 What, Where, When, How 明确了流计算系统的表达能力及预期应用场景.</p> 
+<p>Distributed Snapshots 针对预期的应用场景在数据准确性, 系统稳定性和运行性能上做了合适的折中.</p> 
+<p>本文通过实例阐述了流计算开发者需要了解的最上面两层的概念和原理, 以便流计算开发者能在数据准确性和数据时效性上做适合业务场景的折中和取舍.</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/b3a0c7675e5e3d9c533cb29e55a33e62/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">python没有错误但是不显示结果_【Python错误总结】</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/60c7403ef47c33afea9027637146e0ba/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">python用户界面画图_使用Tkinter绘制GUI并结合Matplotlib实现交互式绘图</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

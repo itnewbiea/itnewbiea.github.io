@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>android架构组件之paging源码解析 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="android架构组件之paging源码解析" />
+<meta property="og:description" content="RecyclerView使用paging就是多了对数据的拉取，使得RecyclerView的数据和显示更加的解耦，RecyclerView对paging的使用多了如下几步：
+instance = CustomAdapter.getInstance(this); factory = new CustomPageDataSourceFactory&lt;&gt;(); build = new LivePagedListBuilder&lt;Integer, String&gt;(factory, new PagedList.Config.Builder().setPageSize(20).setInitialLoadSizeHint(20) .setPrefetchDistance(3).build()).setInitialLoadKey(4).build(); build.observe(this, it -&gt; instance.submitList(it)); 也就是将数据设置到adapter中，看到这，我们该想paging的源码该从哪里入手呢？想想就应该知道应该是从LivePagedListBuilder入手，好的，那就从LivePagedListBuilder的build（）方法中去看看：
+LivePagedListBuilder的build()方法：
+public LiveData&lt;PagedList&lt;Value&gt;&gt; build() { return create(mInitialLoadKey, mConfig, mBoundaryCallback, mDataSourceFactory, ArchTaskExecutor.getMainThreadExecutor(), mFetchExecutor); } 就是简单调用了它的create()方法，那就看下它的create（）方法：
+private static &lt;Key, Value&gt; LiveData&lt;PagedList&lt;Value&gt;&gt; create( @Nullable final Key initialLoadKey,//ItemKeyedDataSource会用到 @NonNull final PagedList.Config config,//加载数据时的一些配置信息，比如初始加载多少，每页加载多少 @Nullable final PagedList.BoundaryCallback boundaryCallback, @NonNull final DataSource.Factory&lt;Key, Value&gt; dataSourceFactory, @NonNull final Executor notifyExecutor, @NonNull final Executor fetchExecutor//获取数据的线程池) { return new ComputableLiveData&lt;PagedList&lt;Value&gt;&gt;(fetchExecutor) { @Nullable private PagedList&lt;Value&gt; mList; @Nullable private DataSource&lt;Key, Value&gt; mDataSource; private final DataSource." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/409615bf22da09a4640f6781f964cc67/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2019-09-05T15:29:03+08:00" />
+<meta property="article:modified_time" content="2019-09-05T15:29:03+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">android架构组件之paging源码解析</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p style="text-indent:33px;">RecyclerView使用paging就是多了对数据的拉取，使得RecyclerView的数据和显示更加的解耦，RecyclerView对paging的使用多了如下几步：</p> 
+<pre class="has"><code class="language-java">        instance = CustomAdapter.getInstance(this);
+        factory = new CustomPageDataSourceFactory&lt;&gt;();
+        build = new LivePagedListBuilder&lt;Integer, String&gt;(factory,
+                new PagedList.Config.Builder().setPageSize(20).setInitialLoadSizeHint(20)
+                        .setPrefetchDistance(3).build()).setInitialLoadKey(4).build();
+        build.observe(this, it -&gt; instance.submitList(it));</code></pre> 
+<p>也就是将数据设置到adapter中，看到这，我们该想paging的源码该从哪里入手呢？想想就应该知道应该是从LivePagedListBuilder入手，好的，那就从LivePagedListBuilder的build（）方法中去看看：</p> 
+<p>LivePagedListBuilder的build()方法：</p> 
+<pre class="has"><code class="language-java">    public LiveData&lt;PagedList&lt;Value&gt;&gt; build() {
+        return create(mInitialLoadKey, mConfig, mBoundaryCallback, mDataSourceFactory,
+                ArchTaskExecutor.getMainThreadExecutor(), mFetchExecutor);
+    }</code></pre> 
+<p>就是简单调用了它的create()方法，那就看下它的create（）方法：</p> 
+<pre class="has"><code class="language-java">    private static &lt;Key, Value&gt; LiveData&lt;PagedList&lt;Value&gt;&gt; create(
+            @Nullable final Key initialLoadKey,//ItemKeyedDataSource会用到
+            @NonNull final PagedList.Config config,//加载数据时的一些配置信息，比如初始加载多少，每页加载多少
+            @Nullable final PagedList.BoundaryCallback boundaryCallback,
+            @NonNull final DataSource.Factory&lt;Key, Value&gt; dataSourceFactory,
+            @NonNull final Executor notifyExecutor,
+            @NonNull final Executor fetchExecutor//获取数据的线程池) {
+        return new ComputableLiveData&lt;PagedList&lt;Value&gt;&gt;(fetchExecutor) {
+            @Nullable
+            private PagedList&lt;Value&gt; mList;
+            @Nullable
+            private DataSource&lt;Key, Value&gt; mDataSource;
+
+            private final DataSource.InvalidatedCallback mCallback =
+                    new DataSource.InvalidatedCallback() {
+                        @Override
+                        public void onInvalidated() {
+                            invalidate();
+                        }
+                    };
+
+            @Override
+            protected PagedList&lt;Value&gt; compute() {
+                @Nullable Key initializeKey = initialLoadKey;
+                if (mList != null) {
+                    //noinspection unchecked
+                    initializeKey = (Key) mList.getLastKey();
+                }
+
+                do {
+                    if (mDataSource != null) {
+                        mDataSource.removeInvalidatedCallback(mCallback);
+                    }
+
+                    mDataSource = dataSourceFactory.create();
+                    mDataSource.addInvalidatedCallback(mCallback);
+
+                    mList = new PagedList.Builder&lt;&gt;(mDataSource, config)
+                            .setNotifyExecutor(notifyExecutor)
+                            .setFetchExecutor(fetchExecutor)
+                            .setBoundaryCallback(boundaryCallback)
+                            .setInitialKey(initializeKey)
+                            .build();
+                } while (mList.isDetached());
+                return mList;
+            }
+        }.getLiveData();
+    }</code></pre> 
+<p>构建了一个ComputableLiveData对象，并把拉取数据的线程池传递进去，同时调用它的getLiveData（）方法，接下来就去看下ComputableLiveData的构造方法：</p> 
+<pre class="has"><code class="language-java">    public ComputableLiveData(@NonNull Executor executor) {
+        mExecutor = executor;
+        mLiveData = new LiveData&lt;T&gt;() {
+            @Override
+            protected void onActive() {
+                mExecutor.execute(mRefreshRunnable);
+            }
+        };
+    }</code></pre> 
+<p>这里了创建了一个LiveData对象，并在它的onActive（）方法中在传进来的线程池执行了mRefreshRunnable任务，这里就来看下这个任务里面执行了什么：</p> 
+<pre class="has"><code class="language-java">final Runnable mRefreshRunnable = new Runnable() {
+        @WorkerThread
+        @Override
+        public void run() {
+            boolean computed;
+            do {
+                computed = false;
+                // compute can happen only in 1 thread but no reason to lock others.
+                if (mComputing.compareAndSet(false, true)) {
+                    // as long as it is invalid, keep computing.
+                    try {
+                        T value = null;
+                        while (mInvalid.compareAndSet(true, false)) {
+                            computed = true;
+                            //调用了compute（）方法，这个方法在构建它对象的时候有实现
+                            value = compute();
+                        }
+                        if (computed) {
+                            //这里将获取到的值传递出去，
+                            mLiveData.postValue(value);
+                        }
+                    } finally {
+                        // release compute lock
+                        mComputing.set(false);
+                    }
+                }
+                // check invalid after releasing compute lock to avoid the following scenario.
+                // Thread A runs compute()
+                // Thread A checks invalid, it is false
+                // Main thread sets invalid to true
+                // Thread B runs, fails to acquire compute lock and skips
+                // Thread A releases compute lock
+                // We've left invalid in set state. The check below recovers.
+            } while (computed &amp;&amp; mInvalid.get());
+        }
+    };</code></pre> 
+<p>这里再来细细看下它的compute（）方法：</p> 
+<pre class="has"><code class="language-java">@Override
+            protected PagedList&lt;Value&gt; compute() {
+                @Nullable Key initializeKey = initialLoadKey;
+                if (mList != null) {
+                    //noinspection unchecked
+                    initializeKey = (Key) mList.getLastKey();
+                }
+
+                do {
+                    if (mDataSource != null) {
+                        mDataSource.removeInvalidatedCallback(mCallback);
+                    }
+
+                    mDataSource = dataSourceFactory.create();
+                    mDataSource.addInvalidatedCallback(mCallback);
+
+                    mList = new PagedList.Builder&lt;&gt;(mDataSource, config)
+                            .setNotifyExecutor(notifyExecutor)
+                            .setFetchExecutor(fetchExecutor)
+                            .setBoundaryCallback(boundaryCallback)
+                            .setInitialKey(initializeKey)
+                            .build();
+                } while (mList.isDetached());
+                return mList;
+            }</code></pre> 
+<p>这里的initializeKey一是在ItemKeyedDataSource中会用到，在使用DataSource.Factory是，里面的create（）方法就是这个时候调用的，可以看出这个方法只调用了一次，接下来就是创建一个PageList对象，这个对象就会通过LiveDate设置到adapter中去，到现在为止，还没给adapter设置数据，别急，接着往下看，PageList是通过Builder创建，最终调用的是PageList的create（）方法，先来看看看：</p> 
+<pre class="has"><code class="language-java">    private static &lt;K, T&gt; PagedList&lt;T&gt; create(@NonNull DataSource&lt;K, T&gt; dataSource,
+            @NonNull Executor notifyExecutor,
+            @NonNull Executor fetchExecutor,
+            @Nullable BoundaryCallback&lt;T&gt; boundaryCallback,
+            @NonNull Config config,
+            @Nullable K key) {
+        if (dataSource.isContiguous() || !config.enablePlaceholders) {
+            int lastLoad = ContiguousPagedList.LAST_LOAD_UNSPECIFIED;
+            if (!dataSource.isContiguous()) {
+                //noinspection unchecked
+                dataSource = (DataSource&lt;K, T&gt;) ((PositionalDataSource&lt;T&gt;) dataSource)
+                        .wrapAsContiguousWithoutPlaceholders();
+                if (key != null) {
+                    lastLoad = (int) key;
+                }
+            }
+            ContiguousDataSource&lt;K, T&gt; contigDataSource = (ContiguousDataSource&lt;K, T&gt;) dataSource;
+            return new ContiguousPagedList&lt;&gt;(contigDataSource,
+                    notifyExecutor,
+                    fetchExecutor,
+                    boundaryCallback,
+                    config,
+                    key,
+                    lastLoad);
+        } else {
+            return new TiledPagedList&lt;&gt;((PositionalDataSource&lt;T&gt;) dataSource,
+                    notifyExecutor,
+                    fetchExecutor,
+                    boundaryCallback,
+                    config,
+                    (key != null) ? (Integer) key : 0);
+        }
+    }</code></pre> 
+<p>通常创建的是ContiguousPagedList对象，创建这个对象所传的参数都是一开始创建的参数，先来看看这个对象的构造函数做了什么：</p> 
+<pre class="has"><code class="language-java">ContiguousPagedList(
+            @NonNull ContiguousDataSource&lt;K, V&gt; dataSource,
+            @NonNull Executor mainThreadExecutor,
+            @NonNull Executor backgroundThreadExecutor,
+            @Nullable BoundaryCallback&lt;V&gt; boundaryCallback,
+            @NonNull Config config,
+            final @Nullable K key,
+            int lastLoad) {
+        super(new PagedStorage&lt;V&gt;(), mainThreadExecutor, backgroundThreadExecutor,
+                boundaryCallback, config);
+        mDataSource = dataSource;
+        mLastLoad = lastLoad;
+
+        if (mDataSource.isInvalid()) {
+            detach();
+        } else {
+            mDataSource.dispatchLoadInitial(key,
+                    mConfig.initialLoadSizeHint,
+                    mConfig.pageSize,
+                    mConfig.enablePlaceholders,
+                    mMainThreadExecutor,
+                    mReceiver);
+        }
+    }</code></pre> 
+<p>这里的mDataSource就是通过DataSource.Factory的create（）创建的，这里会调用到它的dispatchLoadInitial（）方法，DataSource有三个子类，这里就只看PageKeyedDataSource，其他的两个类似：</p> 
+<pre class="has"><code class="language-java">    @Override
+    final void dispatchLoadInitial(@Nullable Key key, int initialLoadSize, int pageSize,
+            boolean enablePlaceholders, @NonNull Executor mainThreadExecutor,
+            @NonNull PageResult.Receiver&lt;Value&gt; receiver) {
+        LoadInitialCallbackImpl&lt;Key, Value&gt; callback =
+                new LoadInitialCallbackImpl&lt;&gt;(this, enablePlaceholders, receiver);
+        loadInitial(new LoadInitialParams&lt;Key&gt;(initialLoadSize, enablePlaceholders), callback);
+
+        // If initialLoad's callback is not called within the body, we force any following calls
+        // to post to the UI thread. This constructor may be run on a background thread, but
+        // after constructor, mutation must happen on UI thread.
+        callback.mCallbackHelper.setPostExecutor(mainThreadExecutor);
+    }</code></pre> 
+<p>可以看到一开始传递进来的参数这里封装到LoadInitialParams对象中去了，对于PageKeyedDataSource的loadInitial（）方法主要是用于一开初始化的数据，一开始设置的参数传递给最终去请求数据。数据请求成功后会调用到callback对象的result（）方法，最终反馈到adapter中刷新界面，result（）方法里主要做的将线程切换到主线程中来，最后调用的是PageResult.Receiver的onPageResult方法，PageResult.Receiver是一个抽象类，在ContiguousPagedList实现并传递过去的，这里就来看下这里面做了什么：</p> 
+<pre class="has"><code class="language-java">private PageResult.Receiver&lt;V&gt; mReceiver = new PageResult.Receiver&lt;V&gt;() {
+        // Creation thread for initial synchronous load, otherwise main thread
+        // Safe to access main thread only state - no other thread has reference during construction
+        @AnyThread
+        @Override
+        public void onPageResult(@PageResult.ResultType int resultType,
+                @NonNull PageResult&lt;V&gt; pageResult) {
+            if (pageResult.isInvalid()) {
+                detach();
+                return;
+            }
+
+            if (isDetached()) {
+                // No op, have detached
+                return;
+            }
+            //存储的是加载请求后的数据
+            List&lt;V&gt; page = pageResult.page;
+            //初始化数据时会回调到这里
+            if (resultType == PageResult.INIT) {
+                mStorage.init(pageResult.leadingNulls, page, pageResult.trailingNulls,
+                        pageResult.positionOffset, ContiguousPagedList.this);
+                if (mLastLoad == LAST_LOAD_UNSPECIFIED) {
+                    // Because the ContiguousPagedList wasn't initialized with a last load position,
+                    // initialize it to the middle of the initial load
+                    mLastLoad =
+                            pageResult.leadingNulls + pageResult.positionOffset + page.size() / 2;
+                }
+            } else if (resultType == PageResult.APPEND) {
+                //加载初始化之前的数据会执行
+                mStorage.appendPage(page, ContiguousPagedList.this);
+            } else if (resultType == PageResult.PREPEND) {
+                //加载初始化之后的数据会执行
+                mStorage.prependPage(page, ContiguousPagedList.this);
+            } else {
+                throw new IllegalArgumentException("unexpected resultType " + resultType);
+            }
+
+
+            if (mBoundaryCallback != null) {
+                boolean deferEmpty = mStorage.size() == 0;
+                boolean deferBegin = !deferEmpty
+                        &amp;&amp; resultType == PageResult.PREPEND
+                        &amp;&amp; pageResult.page.size() == 0;
+                boolean deferEnd = !deferEmpty
+                        &amp;&amp; resultType == PageResult.APPEND
+                        &amp;&amp; pageResult.page.size() == 0;
+                deferBoundaryCallbacks(deferEmpty, deferBegin, deferEnd);
+            }
+        }
+    };</code></pre> 
+<p>返回的数据在这里取出来了，并传递到mStorage中去了，这是一个PagedStorage对象，那就在跟到PagedStorage去看看它的init（）方法，其他的两个方法类似，感兴趣的可以自己去看下：</p> 
+<pre class="has"><code class="language-java">    void init(int leadingNulls, @NonNull List&lt;T&gt; page, int trailingNulls, int positionOffset,
+            @NonNull Callback callback) {
+        init(leadingNulls, page, trailingNulls, positionOffset);
+        callback.onInitialized(size());
+    }
+    private void init(int leadingNulls, List&lt;T&gt; page, int trailingNulls, int positionOffset) {
+        mLeadingNullCount = leadingNulls;
+        mPages.clear();
+        mPages.add(page);
+        mTrailingNullCount = trailingNulls;
+
+        mPositionOffset = positionOffset;
+        mStorageCount = page.size();
+
+        // initialized as tiled. There may be 3 nulls, 2 items, but we still call this tiled
+        // even if it will break if nulls convert.
+        mPageSize = page.size();
+
+        mNumberPrepended = 0;
+        mNumberAppended = 0;
+    }
+
+</code></pre> 
+<p>这里存储数据的是mPages是一个ArrayList&lt;List&lt;T&gt;&gt;对象，其他的变量存储的是一些相关的数据，接着调用到了callback的onInitialized（）方法，这个方法在ContiguousPagedList有实现：</p> 
+<pre class="has"><code class="language-java">public void onInitialized(int count) {
+        notifyInserted(0, count);
+    }</code></pre> 
+<p>很简单就是调用了他自己的notifyInserted（）方法：</p> 
+<pre class="has"><code class="language-java">    void notifyInserted(int position, int count) {
+        if (count != 0) {
+            for (int i = mCallbacks.size() - 1; i &gt;= 0; i--) {
+                Callback callback = mCallbacks.get(i).get();
+                if (callback != null) {
+                    callback.onInserted(position, count);
+                }
+            }
+        }
+    }</code></pre> 
+<p>仔细一瞧，又是一个回调，那这个回调是哪里添加进来的呢？还记得PagedListAdapter的submitList么，对了，就是在这个方法里面添加的回调，PagedListAdapter里面使用的是代理模式，实际的功能是AsyncPagedListDiffer来处理的，所以这里就来看看AsyncPagedListDiffer的submitList()方法：</p> 
+<pre class="has"><code class="language-java">    public void submitList(final PagedList&lt;T&gt; pagedList) {
+        if (pagedList != null) {
+            if (mPagedList == null &amp;&amp; mSnapshot == null) {
+                mIsContiguous = pagedList.isContiguous();
+            } else {
+                if (pagedList.isContiguous() != mIsContiguous) {
+                    throw new IllegalArgumentException("AsyncPagedListDiffer cannot handle both"
+                            + " contiguous and non-contiguous lists.");
+                }
+            }
+        }
+        //pagedList如果是同一个是不会往下执行的，所以下拉刷新数据是必须要替换掉pagedList 
+        if (pagedList == mPagedList) {
+            // nothing to do
+            return;
+        }
+
+        // incrementing generation means any currently-running diffs are discarded when they finish
+        final int runGeneration = ++mMaxScheduledGeneration;
+        //传进来的pageList为null，会将之前传进来的pageList置为null，如果不置为null那么新传进来的pageList就会与之前的pageList的数据进行对比，将有变化的item数据进行更新
+        if (pagedList == null) {
+            int removedCount = getItemCount();
+            if (mPagedList != null) {
+                //清除数据传进来的回调
+                mPagedList.removeWeakCallback(mPagedListCallback);
+                mPagedList = null;
+            } else if (mSnapshot != null) {
+                mSnapshot = null;
+            }
+            // dispatch update callback after updating mPagedList/mSnapshot
+            mUpdateCallback.onRemoved(0, removedCount);
+            if (mListener != null) {
+                mListener.onCurrentListChanged(null);
+            }
+            return;
+        }
+        //首次添加进来的时候会执行到这里，
+        if (mPagedList == null &amp;&amp; mSnapshot == null) {
+            // fast simple first insert
+            mPagedList = pagedList;
+            //这里就是重点了，请求到的数据和界面刷新就是通过添加的这个回调来关联起来的
+            pagedList.addWeakCallback(null, mPagedListCallback);
+
+            // dispatch update callback after updating mPagedList/mSnapshot
+            mUpdateCallback.onInserted(0, pagedList.size());
+
+            if (mListener != null) {
+                mListener.onCurrentListChanged(pagedList);
+            }
+            return;
+        }
+        //传进来pageList时，已经有一个已经存在的pageList了，这时就会将之前的pageList拷贝一份出来，同时将回调清空掉
+        if (mPagedList != null) {
+            // first update scheduled on this list, so capture mPages as a snapshot, removing
+            // callbacks so we don't have resolve updates against a moving target
+            mPagedList.removeWeakCallback(mPagedListCallback);
+            mSnapshot = (PagedList&lt;T&gt;) mPagedList.snapshot();
+            mPagedList = null;
+        }
+
+        if (mSnapshot == null || mPagedList != null) {
+            throw new IllegalStateException("must be in snapshot state to diff");
+        }
+
+        final PagedList&lt;T&gt; oldSnapshot = mSnapshot;
+        final PagedList&lt;T&gt; newSnapshot = (PagedList&lt;T&gt;) pagedList.snapshot();
+        //有两个pageList时，会执行到这里，将对比的任务放到子线程去执行
+        mConfig.getBackgroundThreadExecutor().execute(new Runnable() {
+            @Override
+            public void run() {
+                final DiffUtil.DiffResult result;
+                result = PagedStorageDiffHelper.computeDiff(
+                        oldSnapshot.mStorage,
+                        newSnapshot.mStorage,
+                        mConfig.getDiffCallback());
+
+                mMainThreadExecutor.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (mMaxScheduledGeneration == runGeneration) {
+                            latchPagedList(pagedList, newSnapshot, result);
+                        }
+                    }
+                });
+            }
+        });
+    }</code></pre> 
+<p>上面有个方法需要注意，pagedList.addWeakCallback（），在这里添加了一格回调，这个回调就是前面说到的，当数据请求完成时，就会调用到这个回调，现在就来看下在这个回调里面具体做了什么：</p> 
+<pre class="has"><code class="language-java">    private PagedList.Callback mPagedListCallback = new PagedList.Callback() {
+        @Override
+        public void onInserted(int position, int count) {
+            mUpdateCallback.onInserted(position, count);
+        }
+
+        @Override
+        public void onRemoved(int position, int count) {
+            mUpdateCallback.onRemoved(position, count);
+        }
+
+        @Override
+        public void onChanged(int position, int count) {
+            // NOTE: pass a null payload to convey null -&gt; item
+            mUpdateCallback.onChanged(position, count, null);
+        }
+    };</code></pre> 
+<p>使用的也是代理，具体的操作交给了AdapterListUpdateCallback去执行，来看看这里面做了些什么东西：</p> 
+<pre class="has"><code class="language-java">public final class AdapterListUpdateCallback implements ListUpdateCallback {
+    @NonNull
+    private final Adapter mAdapter;
+
+    public AdapterListUpdateCallback(@NonNull Adapter adapter) {
+        this.mAdapter = adapter;
+    }
+
+    public void onInserted(int position, int count) {
+        this.mAdapter.notifyItemRangeInserted(position, count);
+    }
+
+    public void onRemoved(int position, int count) {
+        this.mAdapter.notifyItemRangeRemoved(position, count);
+    }
+
+    public void onMoved(int fromPosition, int toPosition) {
+        this.mAdapter.notifyItemMoved(fromPosition, toPosition);
+    }
+
+    public void onChanged(int position, int count, Object payload) {
+        this.mAdapter.notifyItemRangeChanged(position, count, payload);
+    }
+}</code></pre> 
+<p>这一看就能明白，调用的是RecyclerView.Adapter的方法，也就是去刷新界面了，到这初始加载数据的流程就已经走完了一遍，接下来还有一个问题，那就是paging是如何是实现自动加载数据的，要想明白这个问题，那就得先来看看adapter的getItem（）方法了，这个方法是获取对应item的数据，先来看看：</p> 
+<pre class="has"><code class="language-java">    public T getItem(int index) {
+        if (mPagedList == null) {
+            if (mSnapshot == null) {
+                throw new IndexOutOfBoundsException(
+                        "Item count is zero, getItem() call is invalid");
+            } else {
+                return mSnapshot.get(index);
+            }
+        }
+
+        mPagedList.loadAround(index);
+        return mPagedList.get(index);
+    }</code></pre> 
+<p>这里有个PageList的loadAround（）方法，在这个方法里面就会去判断当前需不需要去加载数据，在PagedList.Config.Builder里面有个setPrefetchDistance（）方法，这个方法就是设置距离边界还有多少个item就会开始去加载数据，这里就不在跟着进去了，好了，到这就结束了。</p> 
+<p> </p> 
+<p> </p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/53635893aedfee77ae8a083bdfe940cf/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Go1.13 errors包用法</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/30c5b6f6b3cd8d9616980a276370213b/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">MQTT抓包数据及分析</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>测试Web应用程序中的竞争条件 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="测试Web应用程序中的竞争条件" />
+<meta property="og:description" content="转载自：http://www.freebuf.com/articles/network/107077.html
+此篇文章主要介绍了一下什么是“竞争条件”漏洞以及介绍了一下如何使用Burp来实现该漏洞的利用。
+在对一个应用程序进行黑盒/灰盒安全测试时，我们一般都把精力集中在OWASP TOP10上，而很少去测试“竞争条件”（race condition）问题。有一个共识是使用黑盒/灰盒方法进行“竞争条件”漏洞的挖掘是非常不靠谱的，一般都会通过对代码进行审计来发现此类问题。但是话又说回来了，随着技术的发展和工具的日趋先进，使用黑盒/灰盒测试方法来实现“竞争条件”漏洞的挖掘的可能性大大增加。
+在本篇文章中我们将会对“竞争条件”漏洞是什么和该类漏洞可能出现的场景进行讨论，并且会使用Burp来模拟整个流程。
+“竞争条件”是什么 “竞争条件”发生在多个线程同时访问同一个共享代码、变量、文件等没有进行锁操作或者同步操作的场景中。
+——Wikipedia-computer_science
+开发者在进行代码开发时常常倾向于认为代码会以线性的方式执行，而且他们忽视了并行服务器会并发执行多个线程，这就会导致意想不到的结果。
+线程同步机制确保两个及以上的并发进程或线程不同时执行某些特定的程序段，也被称之为临界区（critical section），如果没有应用好同步技术则会发生“竞争条件”问题。下图为3个进程同时访问一个程序段。
+Java Web应用程序内部 在传统的客户端-服务器模型中，浏览器会将http请求发送至web服务器，然后呈现从服务器接收到的数据。当用户尝试通过浏览器向web应用程序发起多个并发请求时，浏览器并不会如实照做，下图为servlets中的多线程处理。
+设想一个基于Java的web应用运行在Apache Tomcat上，该应用包含一个与Java servlet进行交互的容器组件，这个组件负责servlet的生命周期管理，并且负责将url映射到对应的servlet。当web服务器接收到请求时，它会将该请求转发给对应的容器，容器将会创建一个线程来处理该请求，创建一个HTTP请求和响应对象，并将这些对象传递给一个线程。
+在我们假设的场景中，该容器并没有顾及到线程安全（当一段代码能够在多个线程同时访问时还能保证自由竞争条件，我们就说它是线程安全的，线程安全应该由开发人员来处理）。
+攻击者使用自动化脚本同时向服务器发起多个请求，这会导致容器生成多个线程，而且这些线程是并行执行的，开发人员在进行代码开发时是很难考虑到这些并行执行的线程将会导致结果的复杂性，所以说线程安全是一个应用必须要满足的。（在多线程环境下，容器不会创建一个servlet的多个实例，这些servlet成员会共享所有运行的并发的线程。如果开发人员使用servlet成员来执行操作，则会造成“竞争条件”问题。）
+案例分析 假设一个银行应用的场景：一笔交易需要从ACC_Form转移到ACC_TO。如下为实现转账功能的伪代码。
+在这段伪代码中，钱从账户ACC_From转移到ACC_TO，应用程序会验证账户是否有足够的资金用于转账。但是通过发送多个并发请求（使用自动化脚本），攻击者可以实现向ACC_TO转超过自己余额的金钱。
+这种行为发生的原因是服务器上的多个线程同时执行，if的判断条件被多次判定为真，导致代码多次执行，这也就导致了“竞争条件”问题，因为转账的钱可能超过了可用余额。需要注意的是，这种行为非常依赖于网络延迟、程序负载等环境变量。
+在进行渗透测试时，安全研究人员需要分析整个应用程序并找出应用程序做了哪些限制，以及是否能够通过同时发送多个请求来绕过这些限制。
+使用Burp来找出“竞争条件”问题 渗透测试人员可以使用Burp的intruder功能来实现发送多个并发请求，我们利用上面的伪代码搭建了一个演示的应用程序。
+假设一个客户将钱从账户888转移到账户999：
+源账户 888 ，余额：1美元。
+目标账户 999 ，余额：29,999美元。
+现在我们尝试给账户999转账2美元，但是实际上我们只有1美元。
+程序返回“Transaction Failed”（转账失败），因为要转账的金额超出了我们的余额。
+我们将转账的金额改成1美元，然后发起转账请求。正常情况下，源账户888的余额会变成0，目标账户999的余额会变成30,000美金。
+漏洞利用 1、截断转账的请求，并发送至intruder中。
+2、进入到“Options”选项中，将线程设置成25（默认为5），因为我们要发送很多并发请求。
+3、在“Payloads”选项中选择“Null payloads” ，因为我们只需要重复发包即可。
+4、开始发起攻击并观察结果，我们可以看到源账户的余额变成了负数：
+源账户余额：-2美元
+目标账户金额：30,002美元
+挑战 “竞争条件”漏洞有时很难通过黑盒/灰盒的方法来进行挖掘，因为这个漏洞很受环境因素的影响。比如网络延迟、服务器的处理能力等。
+参考文献 https://en.wikipedia.org/wiki/Race_condition#Computing
+https://en.wikipedia.org/wiki/Thread_safety
+https://en.wikipedia.org/wiki/Synchronization_(computer_science)
+http://roberto.greyhats.it/pubs/dimva08-web.pdf
+http://www.slideshare.net/timtowtdi/1-java-servlets-and-jsp" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/2ef8c9a30534f97c408d1ad82258550f/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2018-10-17T23:28:00+08:00" />
+<meta property="article:modified_time" content="2018-10-17T23:28:00+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">测试Web应用程序中的竞争条件</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>转载自：<a href="http://www.freebuf.com/articles/network/107077.html" rel="nofollow">http://www.freebuf.com/articles/network/107077.html</a></p> 
+<p><strong>此篇文章主要介绍了一下什么是“竞争条件”漏洞以及介绍了一下如何使用Burp来实现该漏洞的利用。</strong></p> 
+<p>在对一个应用程序进行黑盒/灰盒安全测试时，我们一般都把精力集中在OWASP TOP10上，而很少去测试“竞争条件”（race condition）问题。有一个共识是使用黑盒/灰盒方法进行“竞争条件”漏洞的挖掘是非常不靠谱的，一般都会通过对代码进行审计来发现此类问题。但是话又说回来了，随着技术的发展和工具的日趋先进，使用黑盒/灰盒测试方法来实现“竞争条件”漏洞的挖掘的可能性大大增加。</p> 
+<p>在本篇文章中我们将会对“竞争条件”漏洞是什么和该类漏洞可能出现的场景进行讨论，并且会使用Burp来模拟整个流程。</p> 
+<h3>“竞争条件”是什么</h3> 
+<blockquote> 
+ <p>“竞争条件”发生在多个线程同时访问同一个共享代码、变量、文件等没有进行锁操作或者同步操作的场景中。</p> 
+ <p>——<a href="https://en.wikipedia.org/wiki/Synchronization_" rel="nofollow">Wikipedia-computer_science</a></p> 
+</blockquote> 
+<p>开发者在进行代码开发时常常倾向于认为代码会以线性的方式执行，而且他们忽视了并行服务器会并发执行多个线程，这就会导致意想不到的结果。</p> 
+<p>线程同步机制确保两个及以上的并发进程或线程不同时执行某些特定的程序段，也被称之为临界区（critical section），如果没有应用好同步技术则会发生“竞争条件”问题。下图为3个进程同时访问一个程序段。</p> 
+<p><a href="http://image.3001.net/images/20160616/14660906102194.png" rel="nofollow"><img alt="图片7.png" class="has" src="https://images2.imgbox.com/6a/6e/3SrrHAif_o.jpg" width="450"></a></p> 
+<h3>Java Web应用程序内部</h3> 
+<p>在传统的客户端-服务器模型中，浏览器会将http请求发送至web服务器，然后呈现从服务器接收到的数据。当用户尝试通过浏览器向web应用程序发起多个并发请求时，浏览器并不会如实照做，下图为servlets中的多线程处理。</p> 
+<p><a href="http://image.3001.net/images/20160616/14660906272970.png" rel="nofollow"><img alt="图片8.png" class="has" src="https://images2.imgbox.com/25/7d/ZcjYH5R7_o.jpg" width="558"></a></p> 
+<p>设想一个基于Java的web应用运行在Apache Tomcat上，该应用包含一个与Java servlet进行交互的容器组件，这个组件负责servlet的生命周期管理，并且负责将url映射到对应的servlet。当web服务器接收到请求时，它会将该请求转发给对应的容器，容器将会创建一个线程来处理该请求，创建一个HTTP请求和响应对象，并将这些对象传递给一个线程。</p> 
+<p>在我们假设的场景中，该容器并没有顾及到线程安全（当一段代码能够在多个线程同时访问时还能保证自由竞争条件，我们就说它是线程安全的，线程安全应该由开发人员来处理）。</p> 
+<p>攻击者使用自动化脚本同时向服务器发起多个请求，这会导致容器生成多个线程，而且这些线程是并行执行的，开发人员在进行代码开发时是很难考虑到这些并行执行的线程将会导致结果的复杂性，所以说线程安全是一个应用必须要满足的。（在多线程环境下，容器不会创建一个servlet的多个实例，这些servlet成员会共享所有运行的并发的线程。如果开发人员使用servlet成员来执行操作，则会造成“竞争条件”问题。）</p> 
+<h3>案例分析</h3> 
+<p>假设一个银行应用的场景：一笔交易需要从ACC_Form转移到ACC_TO。如下为实现转账功能的伪代码。</p> 
+<h3> </h3> 
+<p><a href="http://image.3001.net/images/20160616/14660907269469.png" rel="nofollow"><img alt="图片9.png" class="has" src="https://images2.imgbox.com/eb/27/sfMQwyAV_o.jpg" width="382"></a></p> 
+<p>在这段伪代码中，钱从账户ACC_From转移到ACC_TO，应用程序会验证账户是否有足够的资金用于转账。但是通过发送多个并发请求（使用自动化脚本），攻击者可以实现向ACC_TO转超过自己余额的金钱。</p> 
+<p>这种行为发生的原因是服务器上的多个线程同时执行，if的判断条件被多次判定为真，导致代码多次执行，这也就导致了“竞争条件”问题，因为转账的钱可能超过了可用余额。需要注意的是，这种行为非常依赖于网络延迟、程序负载等环境变量。</p> 
+<p>在进行渗透测试时，安全研究人员需要分析整个应用程序并找出应用程序做了哪些限制，以及是否能够通过同时发送多个请求来绕过这些限制。</p> 
+<h3>使用Burp来找出“竞争条件”问题</h3> 
+<p>渗透测试人员可以使用Burp的<a href="https://portswigger.net/burp/help/intruder_options.html" rel="nofollow">intruder</a>功能来实现发送多个并发请求，我们利用上面的伪代码搭建了一个演示的应用程序。</p> 
+<blockquote> 
+ <p>假设一个客户将钱从账户888转移到账户999：</p> 
+ <p>源账户 888 ，余额：1美元。</p> 
+ <p>目标账户 999 ，余额：29,999美元。</p> 
+</blockquote> 
+<p><a href="http://image.3001.net/images/20160616/14660910332848.png" rel="nofollow"><img alt="图片10.png" class="has" src="https://images2.imgbox.com/5a/7b/nnfBVT2L_o.jpg" width="690"></a></p> 
+<p>现在我们尝试给账户999转账2美元，但是实际上我们只有1美元。</p> 
+<p><a href="http://image.3001.net/images/20160616/14660910479326.png" rel="nofollow"><img alt="图片11.png" class="has" src="https://images2.imgbox.com/0e/ab/FMav04ql_o.jpg" width="690"></a></p> 
+<p>程序返回“Transaction Failed”（转账失败），因为要转账的金额超出了我们的余额。</p> 
+<p><a href="http://image.3001.net/images/20160616/14660910557171.png" rel="nofollow"><img alt="图片12.png" class="has" src="https://images2.imgbox.com/43/7d/0fs6EB2s_o.jpg" width="690"></a></p> 
+<p>我们将转账的金额改成1美元，然后发起转账请求。正常情况下，源账户888的余额会变成0，目标账户999的余额会变成30,000美金。</p> 
+<h3>漏洞利用</h3> 
+<p>1、截断转账的请求，并发送至intruder中。</p> 
+<p><a href="http://image.3001.net/images/20160616/14660909634431.png" rel="nofollow"><img alt="图片13.png" class="has" src="https://images2.imgbox.com/16/8b/Wj4ht13y_o.jpg" width="690"></a></p> 
+<p>2、进入到“Options”选项中，将线程设置成25（默认为5），因为我们要发送很多并发请求。</p> 
+<p><a href="http://image.3001.net/images/20160616/1466091069566.png" rel="nofollow"><img alt="图片14.png" class="has" src="https://images2.imgbox.com/08/fe/BND34DzG_o.jpg" width="670"></a></p> 
+<p>3、在“Payloads”选项中选择“Null payloads” ，因为我们只需要重复发包即可。</p> 
+<p><a href="http://image.3001.net/images/20160616/14660909486909.png" rel="nofollow"><img alt="图片15.png" class="has" src="https://images2.imgbox.com/85/60/X1N9MtcD_o.jpg" width="480"></a></p> 
+<p>4、开始发起攻击并观察结果，我们可以看到源账户的余额变成了负数：</p> 
+<p>源账户余额：-2美元</p> 
+<p>目标账户金额：30,002美元</p> 
+<p><a href="http://image.3001.net/images/20160616/14660910781344.png" rel="nofollow"><img alt="图片16.png" class="has" src="https://images2.imgbox.com/e7/bf/skXw0t9t_o.jpg" width="543"></a></p> 
+<h3>挑战</h3> 
+<p>“竞争条件”漏洞有时很难通过黑盒/灰盒的方法来进行挖掘，因为这个漏洞很受环境因素的影响。比如网络延迟、服务器的处理能力等。</p> 
+<h2><strong>参考文献</strong></h2> 
+<p><a href="https://en.wikipedia.org/wiki/Race_condition#Computing" rel="nofollow">https://en.wikipedia.org/wiki/Race_condition#Computing</a></p> 
+<p><a href="https://en.wikipedia.org/wiki/Thread_safety" rel="nofollow">https://en.wikipedia.org/wiki/Thread_safety</a></p> 
+<p><a href="https://en.wikipedia.org/wiki/Synchronization_" rel="nofollow">https://en.wikipedia.org/wiki/Synchronization_</a>(computer_science)</p> 
+<p><a href="http://roberto.greyhats.it/pubs/dimva08-web.pdf" rel="nofollow">http://roberto.greyhats.it/pubs/dimva08-web.pdf</a></p> 
+<p><a href="http://www.slideshare.net/timtowtdi/1-java-servlets-and-jsp" rel="nofollow">http://www.slideshare.net/timtowtdi/1-java-servlets-and-jsp</a></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/c2bcbdbffb5709aead2f2f6e276e8377/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">关于javascript的数组与二维数组、关联数组</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/c4e9f0092d2737214e0518fd88020d3b/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">c&#43;&#43;——左值、右值、左值引用、右值引用</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

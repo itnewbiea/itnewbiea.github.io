@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>1176拆机 mac mini_为Mac扩容——FreeNAS搭建后的碎碎念 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="1176拆机 mac mini_为Mac扩容——FreeNAS搭建后的碎碎念" />
+<meta property="og:description" content="前言 笔者目前的主力电脑是MacBook Pro 15-inch（2018）的乞丐版，仅有256GB硬盘还完全焊死在主板上无法更换，十分D区。由于FCPX和虚拟机的使用加之各种文稿愈来愈多，硬盘空间已经所剩无几，也用过外接硬盘存放视频素材和工程文件之类。本以为就可以这样凑合用下去，却因无意撤掉硬盘线导致硬盘分区表损坏，哪怕用“30分钟大法”也没能恢复，约60GB的素材和工程文件消失地彻彻底底……为了避免再一次发生这种惨剧，便着手搭建起了自己的NAS。
+硬件选择 搭建NAS，从两方面考虑，硬件和软件。由于家里还有一台母上不用的老笔记本，从中拆出了如下部件：
+CPU：奔腾B970（2.3GHz，双核双线，Sandy Bridge架构，PGA 988插槽）
+内存：三星4GB DDR3 1666MHz
+硬盘：希捷OEM机械硬盘500G
+其余又购入了华擎的QM77芯片组ITX工控主板，有SATA2和SATA3各2个，以及一个全长的PCI-Express x16接口，日后有需求的话Ivy Bridge的CPU也可以换上去（ん？唐突白学），上4C8T的i7以后还可以跑跑Docker什么的，也可以上万兆网卡（然而对应的ThunderBolt3转万兆口穷学生真的买不起x）。电源选择了外置的DC 12V供电，台达的240W带这个足够了。机箱则是某宝上的工控机箱，可以装四个2.5寸硬盘，携带起来还算方便。
+之前在挑主板时没注意区分上面的那个接口到底是mSATA还是mini-PCIe，结果原来买的mSATA工控硬盘没法用，只好暂时将系统盘通过USB 3.0挂在主机上。原本打算用手里空的一块WD 3D Blue SSD，结果写入系统后根本无法启动，后来看到翼王的视频，可能的原因是FreeNAS与SSD主控八字不合，国外论坛上是有人遇上SanDisk的不能用，想起来WD做起固态是因为收购了哪家嗯……
+翼王视频中关于SSD的踩雷 所以最终的配置：
+CPU：奔腾B970
+主板：华擎IMB-170-V，QM77芯片组
+内存：三星4G DDR3 1666MHz * 2
+硬盘：希捷 * 1，西数 * 3，都是500G
+全塞小盒子里啦wwwww 软件配置 系统安装 装机完成后准备装系统，笔者选择的是基于FreeBSD的FreeNAS并使用ZFS文件系统创建RAID-Z1。没有选择黑群晖基本上是担心这套配置出各种奇怪问题，如果是用J1900那些的倒是可以考虑，以及笔者折腾过一段时间FreeBSD系统，相对安逸一点（其实就是为了尽可能利用拆机货省钱）。系统安装也比较简单，从官方网站上下载所需的映像，用UltraISO软件以RAW格式写入启动U盘。进入BIOS的启动选项，从U盘启动，一路走下去，安装完成后拔掉安装盘重启即可。启动后回跳出欢迎文字，可以在设置中自行修改，（笔者更换成了「お帰りなさい、ご主人さま！」，四宅蒸鹅心.jpg），并显示连接到NAS的IP地址（只有连接上网线才可以获得）。
+进入安装程序，就是拿FreeBSD改的（ 安装选项 设置root账户密码 安装完成啦！ 初次启动 到此处为止，就可以不用在NAS主机上连接显示器和键盘了，直接一根网线即可。在另一台电脑的浏览器里通过IP地址连接到NAS上，输入账号密码即可进行配置（玩过树莓派的孩子大概很熟悉）。
+Web管理登入 基础设置：更改语言，键盘布局和时区 系统配置 接下来主要有以下几点配置：存储池组建RAID，用户用户组及权限设置，文件夹共享设置和相关服务功能开启。
+存储池（Zpool）是ZFS文件系统下的用来管理物理存储空间的概念，不像Windows一样将物理磁盘分别进行管理，存储池中每个“池”中可以由若干个设备组成，可以是单个磁盘，也可以是RAID阵列，ZFS可以利用Zpool中所有设备的总存储容量。创建存储池的方法：FreeNAS网络管理界面→存储器→卷管理器→填写综卷名称/挂载目标位置/选择磁盘。/选择类型→确认。注意：此时盘内所有资料将会被清空。创建好存储池后添加数据集，数据集理解为*NIX系统下的目录就行。笔者在此使用了四个500G硬盘组RAID-Z1，可用空间为4-1个硬盘容量，即1.5TB。
+创建存储池 存储池管理 用户用户组及权限设置对有BSD和Linux基础的使用者而言可以说是轻车熟路的，账户→用户组→添加用户组→所有用户→添加用户→将用户添加到创设的用户组中。另外说几句，FreeNAS本身是一个成熟的企业级存储方案，如果是影音工作室使用，可以在为各个组分别划出共享文件夹使用；个人用户相对而言就比较简单，只需要添加自己的用户和用户组即可，这里并不建议图省事个人用户直接以root账户使用NAS，root账户应当只用来管理NAS使用。接下里对之前创建数据集编辑权限，需要分享给那个用户用就将他的权限加上即可，在同一用户组下的用户权限可以进行微调，不再赘述。
+添加用户组 添加用户 设置用户用户组权限 至于共享，FreeNAS对于多种操作系统后都比较友好，支持的有Apple的AFP，UNIX的NFS和Windows的SMB等。添加共享的方法（以AFP为例）：共享→Apple（AFP）→添加AFP共享→选择数据集/设置名称/选择是否开启时间机器→保存。将Mac与NAS直连或连接到同一路由器下，Finder→⌘&#43;K连接服务器→填写登入Web管理界面的IP→填写账户密码→选择连接数据集。若开启了时间机器功能，可以在时间机器选择磁盘时选择FreeNAS.local，在NAS上备份。笔者采用的千兆口通过超五类直连，顺序读写可以达到约100MB/s，算是可以满足在线剪辑视频的需求了，然而还不是得转码创建代理XD。
+选择共享数据集 共享管理 FreeNAS自带了一些服务，笔者开启了AFP，S.M.A.R.T.和SSH。通过macOS自带的Terminal的SSH到 NAS上，虽然已经有图形界面来着，但是命令行毕竟也不能少嗯。还可以自定义安装一些插件吗，把NAS利用起来搭建mc服务器之类。另外Jails，VMs都是比较有用的功能，VMs可选搭建虚拟机还是Docker，笔者暂时还没有精力，等以后再折腾。
+开启SSH服务后远程连接 注：笔者至此的教程都是在虚拟机上搭建，上面那个IP登着玩也没用（但不排除您本地局域网有设备使用这个IP而导致奇奇怪怪的后果，出问题笔者概不负责） 小结 总结一下体验吧，这是笔者装过的第三台机器，相比常规的Windows PC来说还是有点意思，以及以后又有可以瞎折腾的玩意了（大雾）。用起来还算比较满意，不足的地方也有几处，CPU过于孱弱，还不支持Intel虚拟化虚拟化技术，等以后上了i7-3720QM这种再在上面折腾插件和Docker吧。至于一直吊在机箱外面的系统盘看起来真的难受，每次插拔线的时候都会担心不小心碰掉，打算接下来利用mini-PCIe转SATA将两个硬盘挂上去，让出原生SATA口用来启动系统。至于读写缓存盘暂时不打算加，毕竟千兆上限也就100MB/s左右嘛。
+自己NAS的磁盘一览 网络位置上的FreeNAS 搭配时间机器食用（ 最后的话 祝愿看了这篇文章的服务器永不宕机，不管是自己的NAS还是公司的Server（逃" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/909dbf5fd7421c5af6a28eb5cb84dfda/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-12-05T19:37:19+08:00" />
+<meta property="article:modified_time" content="2020-12-05T19:37:19+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">1176拆机 mac mini_为Mac扩容——FreeNAS搭建后的碎碎念</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div> 
+ <h3>前言 </h3> 
+ <p> 笔者目前的主力电脑是MacBook Pro 15-inch（2018）的乞丐版，仅有256GB硬盘还完全焊死在主板上无法更换，十分D区。由于FCPX和虚拟机的使用加之各种文稿愈来愈多，硬盘空间已经所剩无几，也用过外接硬盘存放视频素材和工程文件之类。本以为就可以这样凑合用下去，却因无意撤掉硬盘线导致硬盘分区表损坏，哪怕用“30分钟大法”也没能恢复，约60GB的素材和工程文件消失地彻彻底底……为了避免再一次发生这种惨剧，便着手搭建起了自己的NAS。</p> 
+ <h3>硬件选择 </h3> 
+ <p> 搭建NAS，从两方面考虑，硬件和软件。由于家里还有一台母上不用的老笔记本，从中拆出了如下部件：</p> 
+ <p> CPU：奔腾B970（2.3GHz，双核双线，Sandy Bridge架构，PGA 988插槽）</p> 
+ <p> 内存：三星4GB DDR3 1666MHz</p> 
+ <p> 硬盘：希捷OEM机械硬盘500G</p> 
+ <p> 其余又购入了华擎的QM77芯片组ITX工控主板，有SATA2和SATA3各2个，以及一个全长的PCI-Express x16接口，日后有需求的话Ivy Bridge的CPU也可以换上去（ん？唐突白学），上4C8T的i7以后还可以跑跑Docker什么的，也可以上万兆网卡（然而对应的ThunderBolt3转万兆口穷学生真的买不起x）。电源选择了外置的DC 12V供电，台达的240W带这个足够了。机箱则是某宝上的工控机箱，可以装四个2.5寸硬盘，携带起来还算方便。</p> 
+ <p> 之前在挑主板时没注意区分上面的那个接口到底是mSATA还是mini-PCIe，结果原来买的mSATA工控硬盘没法用，只好暂时将系统盘通过USB 3.0挂在主机上。原本打算用手里空的一块WD 3D Blue SSD，结果写入系统后根本无法启动，后来看到翼王的视频，可能的原因是FreeNAS与SSD主控八字不合，国外论坛上是有人遇上SanDisk的不能用，想起来WD做起固态是因为收购了哪家嗯……</p> 
+ <p></p> 
+ <div style="text-align:center;"> 
+  <img src="https://images2.imgbox.com/38/b7/KwpkgpOZ_o.png" alt="3e0a7d1c86ca2b5de8514cfbff4b773b.png"> 
+ </div> 
+ <figcaption>
+   翼王视频中关于SSD的踩雷 
+ </figcaption> 
+ <p> 所以最终的配置：</p> 
+ <p> CPU：奔腾B970</p> 
+ <p> 主板：华擎IMB-170-V，QM77芯片组</p> 
+ <p> 内存：三星4G DDR3 1666MHz * 2</p> 
+ <p> 硬盘：希捷 * 1，西数 * 3，都是500G</p> 
+ <p></p> 
+ <div style="text-align:center;"> 
+  <img src="https://images2.imgbox.com/c7/fb/urowSjHY_o.png" alt="c0f77fb63f5bcf6bfb4c14b9a382d55d.png"> 
+ </div> 
+ <figcaption>
+   全塞小盒子里啦wwwww 
+ </figcaption> 
+ <h3>软件配置</h3> 
+ <h4> 系统安装</h4> 
+ <p> 装机完成后准备装系统，笔者选择的是基于FreeBSD的FreeNAS并使用ZFS文件系统创建RAID-Z1。没有选择黑群晖基本上是担心这套配置出各种奇怪问题，如果是用J1900那些的倒是可以考虑，以及笔者折腾过一段时间FreeBSD系统，相对安逸一点（其实就是为了尽可能利用拆机货省钱）。系统安装也比较简单，从官方网站上下载所需的映像，用UltraISO软件以RAW格式写入启动U盘。进入BIOS的启动选项，从U盘启动，一路走下去，安装完成后拔掉安装盘重启即可。启动后回跳出欢迎文字，可以在设置中自行修改，（笔者更换成了「お帰りなさい、ご主人さま！」，四宅蒸鹅心.jpg），并显示连接到NAS的IP地址（只有连接上网线才可以获得）。</p> 
+ <p></p> 
+ <div style="text-align:center;"> 
+  <img src="https://images2.imgbox.com/9e/29/fPKevkpz_o.png" alt="970cd7a974a9b3e47af89906b345a7bb.png"> 
+ </div> 
+ <figcaption>
+   进入安装程序，就是拿FreeBSD改的（ 
+ </figcaption> 
+ <p></p> 
+ <div style="text-align:center;"> 
+  <img src="https://images2.imgbox.com/79/96/HyfJ8FYp_o.png" alt="a64e1e2b603d506514080b7199ade1e6.png"> 
+ </div> 
+ <figcaption>
+   安装选项 
+ </figcaption> 
+ <p></p> 
+ <div style="text-align:center;"> 
+  <img src="https://images2.imgbox.com/51/13/DhfJkTqO_o.png" alt="83980a8680f55aff37743b6ebedc49e8.png"> 
+ </div> 
+ <figcaption>
+   设置root账户密码 
+ </figcaption> 
+ <p></p> 
+ <div style="text-align:center;"> 
+  <img src="https://images2.imgbox.com/95/82/y8inNn9y_o.png" alt="d11267a56487f8ca9e9effe5b50e53ec.png"> 
+ </div> 
+ <figcaption>
+   安装完成啦！ 
+ </figcaption> 
+ <p></p> 
+ <div style="text-align:center;"> 
+  <img src="https://images2.imgbox.com/81/4a/ORWDzqy2_o.png" alt="e57058324fc1581deb32b82b72a2bd2c.png"> 
+ </div> 
+ <figcaption>
+   初次启动 
+ </figcaption> 
+ <p> 到此处为止，就可以不用在NAS主机上连接显示器和键盘了，直接一根网线即可。在另一台电脑的浏览器里通过IP地址连接到NAS上，输入账号密码即可进行配置（玩过树莓派的孩子大概很熟悉）。</p> 
+ <p></p> 
+ <div style="text-align:center;"> 
+  <img src="https://images2.imgbox.com/c2/6c/h49KjqPF_o.png" alt="6126a316bcdbac0352a2eac4fb8ab202.png"> 
+ </div> 
+ <figcaption>
+   Web管理登入 
+ </figcaption> 
+ <p></p> 
+ <div style="text-align:center;"> 
+  <img src="https://images2.imgbox.com/06/90/R4uTAveC_o.png" alt="33e59c352b2b9770dc98feb80c909dd6.png"> 
+ </div> 
+ <figcaption>
+   基础设置：更改语言，键盘布局和时区 
+ </figcaption> 
+ <h4> 系统配置</h4> 
+ <p> 接下来主要有以下几点配置：存储池组建RAID，用户用户组及权限设置，文件夹共享设置和相关服务功能开启。</p> 
+ <p> 存储池（Zpool）是ZFS文件系统下的用来管理物理存储空间的概念，不像Windows一样将物理磁盘分别进行管理，存储池中每个“池”中可以由若干个设备组成，可以是单个磁盘，也可以是RAID阵列，ZFS可以利用Zpool中所有设备的总存储容量。创建存储池的方法：FreeNAS网络管理界面→存储器→卷管理器→填写综卷名称/挂载目标位置/选择磁盘。/选择类型→确认。注意：此时盘内所有资料将会被清空。创建好存储池后添加数据集，数据集理解为*NIX系统下的目录就行。笔者在此使用了四个500G硬盘组RAID-Z1，可用空间为4-1个硬盘容量，即1.5TB。</p> 
+ <p></p> 
+ <div style="text-align:center;"> 
+  <img src="https://images2.imgbox.com/25/fa/7ai0hFsx_o.png" alt="722ec06eefdffb5f5d8e9288f1118e11.png"> 
+ </div> 
+ <figcaption>
+   创建存储池 
+ </figcaption> 
+ <p></p> 
+ <div style="text-align:center;"> 
+  <img src="https://images2.imgbox.com/60/35/k0HTXaUk_o.png" alt="a8afbbaa4027cc07295d97d6c0a204ea.png"> 
+ </div> 
+ <figcaption>
+   存储池管理 
+ </figcaption> 
+ <p> 用户用户组及权限设置对有BSD和Linux基础的使用者而言可以说是轻车熟路的，账户→用户组→添加用户组→所有用户→添加用户→将用户添加到创设的用户组中。另外说几句，FreeNAS本身是一个成熟的企业级存储方案，如果是影音工作室使用，可以在为各个组分别划出共享文件夹使用；个人用户相对而言就比较简单，只需要添加自己的用户和用户组即可，这里并不建议图省事个人用户直接以root账户使用NAS，root账户应当只用来管理NAS使用。接下里对之前创建数据集编辑权限，需要分享给那个用户用就将他的权限加上即可，在同一用户组下的用户权限可以进行微调，不再赘述。</p> 
+ <p></p> 
+ <div style="text-align:center;"> 
+  <img src="https://images2.imgbox.com/96/b7/lM6MdGUg_o.png" alt="761dfe7e3c66a49ad294839af57ef6b4.png"> 
+ </div> 
+ <figcaption>
+   添加用户组 
+ </figcaption> 
+ <p></p> 
+ <div style="text-align:center;"> 
+  <img src="https://images2.imgbox.com/02/73/v5xT4MfW_o.png" alt="9d150ca7ab5c3ccccfd82ac78fa2e29a.png"> 
+ </div> 
+ <figcaption>
+   添加用户 
+ </figcaption> 
+ <p></p> 
+ <div style="text-align:center;"> 
+  <img src="https://images2.imgbox.com/85/1d/qfVvN8lG_o.png" alt="a9afd8fa449e0218893ed6ec4d682282.png"> 
+ </div> 
+ <figcaption>
+   设置用户用户组权限 
+ </figcaption> 
+ <p> 至于共享，FreeNAS对于多种操作系统后都比较友好，支持的有Apple的AFP，UNIX的NFS和Windows的SMB等。添加共享的方法（以AFP为例）：共享→Apple（AFP）→添加AFP共享→选择数据集/设置名称/选择是否开启时间机器→保存。将Mac与NAS直连或连接到同一路由器下，Finder→⌘+K连接服务器→填写登入Web管理界面的IP→填写账户密码→选择连接数据集。若开启了时间机器功能，可以在时间机器选择磁盘时选择FreeNAS.local，在NAS上备份。笔者采用的千兆口通过超五类直连，顺序读写可以达到约100MB/s，算是可以满足在线剪辑视频的需求了，然而还不是得转码创建代理XD。</p> 
+ <p></p> 
+ <div style="text-align:center;"> 
+  <img src="https://images2.imgbox.com/93/ba/CNLb4uAd_o.png" alt="7ad3fa9dd8973d5d94e407042e117c92.png"> 
+ </div> 
+ <figcaption>
+   选择共享数据集 
+ </figcaption> 
+ <p></p> 
+ <div style="text-align:center;"> 
+  <img src="https://images2.imgbox.com/01/b2/7qmYpQfE_o.png" alt="740c40ddcfaf8be5fec39496cffa39ab.png"> 
+ </div> 
+ <figcaption>
+   共享管理 
+ </figcaption> 
+ <p> FreeNAS自带了一些服务，笔者开启了AFP，S.M.A.R.T.和SSH。通过macOS自带的Terminal的SSH到 NAS上，虽然已经有图形界面来着，但是命令行毕竟也不能少嗯。还可以自定义安装一些插件吗，把NAS利用起来搭建mc服务器之类。另外Jails，VMs都是比较有用的功能，VMs可选搭建虚拟机还是Docker，笔者暂时还没有精力，等以后再折腾。</p> 
+ <p></p> 
+ <div style="text-align:center;"> 
+  <img src="https://images2.imgbox.com/14/e6/NaCLgRSt_o.png" alt="90301d14566b9a27ef3cf769ff74a1a5.png"> 
+ </div> 
+ <figcaption>
+   开启SSH服务后远程连接 
+ </figcaption> 
+ <h3><b>注：笔者至此的教程都是在虚拟机上搭建，上面那个IP登着玩也没用（但不排除您本地局域网有设备使用这个IP而导致奇奇怪怪的后果，出问题笔者概不负责）</b></h3> 
+ <h3>小结</h3> 
+ <p> 总结一下体验吧，这是笔者装过的第三台机器，相比常规的Windows PC来说还是有点意思，以及以后又有可以瞎折腾的玩意了（大雾）。用起来还算比较满意，不足的地方也有几处，CPU过于孱弱，还不支持Intel虚拟化虚拟化技术，等以后上了i7-3720QM这种再在上面折腾插件和Docker吧。至于一直吊在机箱外面的系统盘看起来真的难受，每次插拔线的时候都会担心不小心碰掉，打算接下来利用mini-PCIe转SATA将两个硬盘挂上去，让出原生SATA口用来启动系统。至于读写缓存盘暂时不打算加，毕竟千兆上限也就100MB/s左右嘛。</p> 
+ <p></p> 
+ <div style="text-align:center;"> 
+  <img src="https://images2.imgbox.com/3f/58/xGbORnpM_o.png" alt="edcf13ac09584ae8432e0c6535bcbd2a.png"> 
+ </div> 
+ <figcaption>
+   自己NAS的磁盘一览 
+ </figcaption> 
+ <p></p> 
+ <div style="text-align:center;"> 
+  <img src="https://images2.imgbox.com/ea/ec/yppnkxmw_o.png" alt="132d65e119c5e7aa268b337e017b054b.png"> 
+ </div> 
+ <figcaption>
+   网络位置上的FreeNAS 
+ </figcaption> 
+ <p></p> 
+ <div style="text-align:center;"> 
+  <img src="https://images2.imgbox.com/9f/12/cTpobh71_o.png" alt="b26e72f87afa0d2aa144cce21b909401.png"> 
+ </div> 
+ <figcaption>
+   搭配时间机器食用（ 
+ </figcaption> 
+ <h3>最后的话</h3> 
+ <p> 祝愿看了这篇文章的服务器永不宕机，不管是自己的NAS还是公司的Server（逃</p> 
+</div>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/ecfcf239883df5ca6656bf0d3673c358/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Chrome之js断点调试方法</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/afaf3fc9253dd4c37a7256a558ce967c/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">centos7.8上安装cuda10.1输入nvidia-smi一直显示no devices were found</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

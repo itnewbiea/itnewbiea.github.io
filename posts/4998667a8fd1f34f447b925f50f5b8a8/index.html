@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>CTF-虚拟机-QEMU-前置知识-操作流程与源码阅读 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="CTF-虚拟机-QEMU-前置知识-操作流程与源码阅读" />
+<meta property="og:description" content="文章目录 总览内存PCI设备PCI配置空间前64个字节对应源码Memorry空间的BARIO空间的BAR MMIOPMIOIspci访问PCI设备配置空间中的Memory空间和IO空间MMIOPMIO QQM（qemu object model）简洁概要将 TypeInfo 注册 TypeImpl：ObjectClass的初始化：实例化 Instance(Object)准备自己写mini版QEMU吧，不然实在迷糊 吹爆这篇博客，写得巨好 总览 QEMU能够为用户进程进行CPU仿真提供环境
+一个QEMU进程提供一种环境可启动一个虚拟机
+KVM是在内核中运行的，让QEMU启动的虚拟机能直接在host的CPU上安全地执行guest的代码，作用为负责虚拟机的创建，虚拟内存的分配，虚拟CPU
+// 第一步，获取到 KVM 句柄 kvmfd = open(&#34;/dev/kvm&#34;, O_RDWR); // 第二步，创建虚拟机，获取到虚拟机句柄。 vmfd = ioctl(kvmfd, KVM_CREATE_VM, 0); // 第三步，为虚拟机映射内存，还有其他的 PCI，信号处理的初始化。 ioctl(kvmfd, KVM_SET_USER_MEMORY_REGION, &amp;mem); // 第四步，将虚拟机镜像映射到内存，相当于物理机的 boot 过程，把镜像映射到内存。 // 第五步，创建 vCPU，并为 vCPU 分配内存空间。 ioctl(kvmfd, KVM_CREATE_VCPU, vcpuid); vcpu-&gt;kvm_run_mmap_size = ioctl(kvm-&gt;dev_fd, KVM_GET_VCPU_MMAP_SIZE, 0); // 第五步，创建 vCPU 个数的线程并运行虚拟机。 ioctl(kvm-&gt;vcpus-&gt;vcpu_fd, KVM_RUN, 0); // 第六步，线程进入循环，并捕获虚拟机退出原因，做相应的处理。 for (;;) { ioctl(KVM_RUN) switch (exit_reason) { case KVM_EXIT_IO: /* ." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/4998667a8fd1f34f447b925f50f5b8a8/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-12-04T18:44:35+08:00" />
+<meta property="article:modified_time" content="2023-12-04T18:44:35+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">CTF-虚拟机-QEMU-前置知识-操作流程与源码阅读</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#_3" rel="nofollow">总览</a></li><li><a href="#_35" rel="nofollow">内存</a></li><li><a href="#PCI_143" rel="nofollow">PCI设备</a></li><li><ul><li><a href="#PCI64_150" rel="nofollow">PCI配置空间前64个字节</a></li><li><a href="#_152" rel="nofollow">对应源码</a></li><li><a href="#MemorryBAR_181" rel="nofollow">Memorry空间的BAR</a></li><li><a href="#IOBAR_187" rel="nofollow">IO空间的BAR</a></li></ul> 
+  </li><li><a href="#MMIO_189" rel="nofollow">MMIO</a></li><li><a href="#PMIO_192" rel="nofollow">PMIO</a></li><li><a href="#Ispci_196" rel="nofollow">Ispci</a></li><li><a href="#PCIMemoryIO_227" rel="nofollow">访问PCI设备配置空间中的Memory空间和IO空间</a></li><li><ul><li><a href="#MMIO_228" rel="nofollow">MMIO</a></li><li><a href="#PMIO_289" rel="nofollow">PMIO</a></li></ul> 
+  </li><li><a href="#QQMqemu_object_model_309" rel="nofollow">QQM（qemu object model）</a></li><li><a href="#_323" rel="nofollow">简洁概要</a></li><li><ul><li><a href="#_TypeInfo__TypeImpl_325" rel="nofollow">将 TypeInfo 注册 TypeImpl：</a></li><li><a href="#ObjectClass_331" rel="nofollow">ObjectClass的初始化：</a></li><li><a href="#_InstanceObject_337" rel="nofollow">实例化 Instance(Object)</a></li><li><a href="#miniQEMU_343" rel="nofollow">准备自己写mini版QEMU吧，不然实在迷糊</a></li></ul> 
+ </li></ul> 
+</div> 
+<br> 
+<a href="https://www.giantbranch.cn/2020/01/05/QEMU%20%E7%9A%84%E4%B8%80%E4%BA%9B%E5%9F%BA%E7%A1%80%E7%9F%A5%E8%AF%86%E5%8F%8AQOM%28Qemu%20Object%20Model%29%E7%9A%84%E9%83%A8%E5%88%86%E7%9B%B8%E5%85%B3%E6%BA%90%E7%A0%81%E9%98%85%E8%AF%BB/" rel="nofollow">吹爆这篇博客，写得巨好</a> 
+<p></p> 
+<h2><a id="_3"></a>总览</h2> 
+<p>QEMU能够为用户进程进行CPU仿真提供环境<br> 一个QEMU进程提供一种环境可启动一个虚拟机</p> 
+<p>KVM是在内核中运行的，让QEMU启动的虚拟机能直接在host的CPU上安全地执行guest的代码，作用为负责虚拟机的创建，虚拟内存的分配，虚拟CPU</p> 
+<pre><code class="prism language-c"><span class="token comment">// 第一步，获取到 KVM 句柄</span>
+kvmfd <span class="token operator">=</span> <span class="token function">open</span><span class="token punctuation">(</span><span class="token string">"/dev/kvm"</span><span class="token punctuation">,</span> O_RDWR<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">// 第二步，创建虚拟机，获取到虚拟机句柄。</span>
+vmfd <span class="token operator">=</span> <span class="token function">ioctl</span><span class="token punctuation">(</span>kvmfd<span class="token punctuation">,</span> KVM_CREATE_VM<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">// 第三步，为虚拟机映射内存，还有其他的 PCI，信号处理的初始化。</span>
+<span class="token function">ioctl</span><span class="token punctuation">(</span>kvmfd<span class="token punctuation">,</span> KVM_SET_USER_MEMORY_REGION<span class="token punctuation">,</span> <span class="token operator">&amp;</span>mem<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">// 第四步，将虚拟机镜像映射到内存，相当于物理机的 boot 过程，把镜像映射到内存。</span>
+<span class="token comment">// 第五步，创建 vCPU，并为 vCPU 分配内存空间。</span>
+<span class="token function">ioctl</span><span class="token punctuation">(</span>kvmfd<span class="token punctuation">,</span> KVM_CREATE_VCPU<span class="token punctuation">,</span> vcpuid<span class="token punctuation">)</span><span class="token punctuation">;</span>
+vcpu<span class="token operator">-&gt;</span>kvm_run_mmap_size <span class="token operator">=</span> <span class="token function">ioctl</span><span class="token punctuation">(</span>kvm<span class="token operator">-&gt;</span>dev_fd<span class="token punctuation">,</span> KVM_GET_VCPU_MMAP_SIZE<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">// 第五步，创建 vCPU 个数的线程并运行虚拟机。</span>
+<span class="token function">ioctl</span><span class="token punctuation">(</span>kvm<span class="token operator">-&gt;</span>vcpus<span class="token operator">-&gt;</span>vcpu_fd<span class="token punctuation">,</span> KVM_RUN<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">// 第六步，线程进入循环，并捕获虚拟机退出原因，做相应的处理。</span>
+<span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token punctuation">;</span><span class="token punctuation">;</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token function">ioctl</span><span class="token punctuation">(</span>KVM_RUN<span class="token punctuation">)</span>
+  <span class="token keyword">switch</span> <span class="token punctuation">(</span>exit_reason<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">case</span> KVM_EXIT_IO<span class="token operator">:</span>  <span class="token comment">/* ... */</span>
+      <span class="token keyword">case</span> KVM_EXIT_HLT<span class="token operator">:</span> <span class="token comment">/* ... */</span>
+  <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+<span class="token comment">// 这里的退出并不一定是虚拟机关机，</span>
+<span class="token comment">// 虚拟机如果遇到 I/O 操作，访问硬件设备，缺页中断等都会退出执行，</span>
+<span class="token comment">// 退出执行可以理解为将 CPU 执行上下文返回到 Qemu。</span>
+</code></pre> 
+<p>退出时判断原因，可能由KVM执行也有可能由QEMU执行</p> 
+<h2><a id="_35"></a>内存</h2> 
+<p>可以这么认为，guest所使用的物理内存，实际上是对应的启动它的那个QEMU的虚拟内存的一部分。即该部分可能是对应gust的物理内存是从0开始的（guest视角）</p> 
+<p>两层转换</p> 
+<ol><li>从guest的虚拟地址转换到guest的物理地址<br> 相当于从页表得到物理地址</li><li>从guest的物理地址转换到host的QEMU进程中的虚拟地址<br> 该物理地址再加上guest对应在host的QEMU进程中的虚拟地址中起始地址的就是对应的host的虚拟地址了</li></ol> 
+<p>第一层转换。用pagemap的页面映射文件来转换</p> 
+<ol><li>虚拟地址对应的pagemap中的偏移（此时为pagemap中第几个）乘8可得到在pagemap中的偏移（此时为pagemap中对应的地址）</li></ol> 
+<p><img src="https://images2.imgbox.com/ae/52/WWI5Dp1D_o.png" alt="在这里插入图片描述"></p> 
+<ol start="2"><li>读取后判断内容是否存在并且判断最高位是否1，为1则代表页面存在，然后将读取的内容左移12位得到低52位（物理页的地址）再或上原虚拟地址的低12位的页内偏移就是guest的物理地址了</li></ol> 
+<p>用QEMU运行下列代码</p> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdio.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;string.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdint.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdlib.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;fcntl.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;assert.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;inttypes.h&gt;</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">PAGE_SHIFT</span>  <span class="token expression"><span class="token number">12</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">PAGE_SIZE</span>   <span class="token expression"><span class="token punctuation">(</span><span class="token number">1</span> <span class="token operator">&lt;&lt;</span> PAGE_SHIFT<span class="token punctuation">)</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">PFN_PRESENT</span> <span class="token expression"><span class="token punctuation">(</span><span class="token number">1ull</span> <span class="token operator">&lt;&lt;</span> <span class="token number">63</span><span class="token punctuation">)</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">PFN_PFN</span>     <span class="token expression"><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token number">1ull</span> <span class="token operator">&lt;&lt;</span> <span class="token number">55</span><span class="token punctuation">)</span> <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">)</span></span></span>
+
+<span class="token keyword">int</span> fd<span class="token punctuation">;</span>
+<span class="token comment">// 获取页内偏移</span>
+<span class="token class-name">uint32_t</span> <span class="token function">page_offset</span><span class="token punctuation">(</span><span class="token class-name">uint32_t</span> addr<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token comment">// addr &amp; 0xfff</span>
+    <span class="token keyword">return</span> addr <span class="token operator">&amp;</span> <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token number">1</span> <span class="token operator">&lt;&lt;</span> PAGE_SHIFT<span class="token punctuation">)</span> <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token class-name">uint64_t</span> <span class="token function">gva_to_gfn</span><span class="token punctuation">(</span><span class="token keyword">void</span> <span class="token operator">*</span>addr<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token class-name">uint64_t</span> pme<span class="token punctuation">,</span> gfn<span class="token punctuation">;</span>
+    <span class="token class-name">size_t</span> offset<span class="token punctuation">;</span>
+
+    <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"pfn_item_offset : %p\n"</span><span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token class-name">uintptr_t</span><span class="token punctuation">)</span>addr <span class="token operator">&gt;&gt;</span> <span class="token number">9</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    offset <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token class-name">uintptr_t</span><span class="token punctuation">)</span>addr <span class="token operator">&gt;&gt;</span> <span class="token number">9</span><span class="token punctuation">)</span> <span class="token operator">&amp;</span> <span class="token operator">~</span><span class="token number">7</span><span class="token punctuation">;</span>
+
+    <span class="token comment">下面是网上其他人的代码，只是为了理解上面的代码</span>
+    <span class="token comment">//一开始除以 0x1000  （getpagesize=0x1000，4k对齐，而且本来低12位就是页内索引，需要去掉），即除以2**12, 这就获取了页号了，</span>
+    <span class="token comment">//pagemap中一个地址64位，即8字节，也即sizeof(uint64_t)，所以有了页号后，我们需要乘以8去找到对应的偏移从而获得对应的物理地址</span>
+    <span class="token comment">//最终  vir/2^12 * 8 = (vir / 2^9) &amp; ~7 </span>
+    <span class="token comment">//这跟上面的右移9正好对应，但是为什么要 &amp; ~7 ,因为你  vir &gt;&gt; 12 &lt;&lt; 3 , 跟vir &gt;&gt; 9 是有区别的，vir &gt;&gt; 12 &lt;&lt; 3低3位肯定是0，所以通过&amp; ~7将低3位置0</span>
+    <span class="token comment">// int page_size=getpagesize();</span>
+    <span class="token comment">// unsigned long vir_page_idx = vir/page_size;</span>
+    <span class="token comment">// unsigned long pfn_item_offset = vir_page_idx*sizeof(uint64_t);</span>
+
+    <span class="token function">lseek</span><span class="token punctuation">(</span>fd<span class="token punctuation">,</span> offset<span class="token punctuation">,</span> <span class="token constant">SEEK_SET</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">read</span><span class="token punctuation">(</span>fd<span class="token punctuation">,</span> <span class="token operator">&amp;</span>pme<span class="token punctuation">,</span> <span class="token number">8</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 确保页面存在——page is present.</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token punctuation">(</span>pme <span class="token operator">&amp;</span> PFN_PRESENT<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token comment">//同时判断</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token comment">// physical frame number </span>
+    gfn <span class="token operator">=</span> pme <span class="token operator">&amp;</span> PFN_PFN<span class="token punctuation">;</span> <span class="token comment">//取低52位</span>
+    <span class="token keyword">return</span> gfn<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token class-name">uint64_t</span> <span class="token function">gva_to_gpa</span><span class="token punctuation">(</span><span class="token keyword">void</span> <span class="token operator">*</span>addr<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token class-name">uint64_t</span> gfn <span class="token operator">=</span> <span class="token function">gva_to_gfn</span><span class="token punctuation">(</span>addr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">assert</span><span class="token punctuation">(</span>gfn <span class="token operator">!=</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> <span class="token punctuation">(</span>gfn <span class="token operator">&lt;&lt;</span> PAGE_SHIFT<span class="token punctuation">)</span> <span class="token operator">|</span> <span class="token function">page_offset</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token class-name">uint64_t</span><span class="token punctuation">)</span>addr<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//合并</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token class-name">uint8_t</span> <span class="token operator">*</span>ptr<span class="token punctuation">;</span>
+    <span class="token class-name">uint64_t</span> ptr_mem<span class="token punctuation">;</span>
+    
+    fd <span class="token operator">=</span> <span class="token function">open</span><span class="token punctuation">(</span><span class="token string">"/proc/self/pagemap"</span><span class="token punctuation">,</span> O_RDONLY<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>fd <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">perror</span><span class="token punctuation">(</span><span class="token string">"open"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">exit</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    
+    ptr <span class="token operator">=</span> <span class="token function">malloc</span><span class="token punctuation">(</span><span class="token number">256</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">strcpy</span><span class="token punctuation">(</span>ptr<span class="token punctuation">,</span> <span class="token string">"Where am I?"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"%s\n"</span><span class="token punctuation">,</span> ptr<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">//此时ptr是guest中虚拟地址</span>
+    ptr_mem <span class="token operator">=</span> <span class="token function">gva_to_gpa</span><span class="token punctuation">(</span>ptr<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">//此时转换成了guest中物理地址</span>
+    <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"Your physical address is at 0x%"</span>PRIx64<span class="token string">"\n"</span><span class="token punctuation">,</span> ptr_mem<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token function">getchar</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>此时</p> 
+<pre><code class="prism language-bash"> printf<span class="token punctuation">(</span><span class="token string">"Your physical address is at 0x%"</span>PRIx64<span class="token string">"<span class="token entity" title="\n">\n</span>"</span>, ptr_mem<span class="token punctuation">)</span><span class="token punctuation">;</span>
+ ptr_mem输出为0x68cf0010
+ 0x7fcddc000000  为guest的物理地址在host视角下的起始地址
+ 0x7fcddc000000+0x68cf0010即对应where am I?
+</code></pre> 
+<h2><a id="PCI_143"></a>PCI设备</h2> 
+<p>PCI是一个外部链接（Peripheral Component Interconnect）标准，PCI设备就是符合这个标准的设备，且连接到PCI总线上。而PCI总线是CPU与外部设备沟通的桥梁。</p> 
+<p>符合 PCI 总线标准的设备就被称为 PCI 设备<br> PCI 设备同时也分为主设备和目标设备两种，主设备是一次访问操作的发起者，而目标设备则是被访问者。</p> 
+<p>每个PCI设备对应备一个PCI配置空间(PCI Configuration Space)，它记录了关于此设备的信息。PCI配置空间最大256个字节，其中前64字节都是预定义好的标准。</p> 
+<h3><a id="PCI64_150"></a>PCI配置空间前64个字节</h3> 
+<p><img src="https://images2.imgbox.com/7a/a4/z7ACVDFu_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="_152"></a>对应源码</h3> 
+<pre><code class="prism language-c"><span class="token keyword">typedef</span> <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+   WORD   wBusNum<span class="token punctuation">;</span>		<span class="token comment">// Bus No. input field</span>
+   WORD   wDeviceNum<span class="token punctuation">;</span>		<span class="token comment">// Device No. input field</span>
+   WORD   wFunction<span class="token punctuation">;</span>		<span class="token comment">// Function No. input field</span>
+   WORD   wVendorId<span class="token punctuation">;</span>		<span class="token comment">// Vendor ID input field</span>
+   WORD   wDeviceId<span class="token punctuation">;</span>		<span class="token comment">// Device ID input field</span>
+   WORD   wDeviceIndex<span class="token punctuation">;</span> 	<span class="token comment">// Device Search No. input field</span>
+   WORD   wCommand<span class="token punctuation">;</span>             <span class="token comment">// Command</span>
+   WORD   wClassId<span class="token punctuation">;</span> 		<span class="token comment">// Class ID</span>
+   BYTE   byInterfaceId<span class="token punctuation">;</span>        <span class="token comment">// Interface ID</span>
+   BYTE   byRevId<span class="token punctuation">;</span>              <span class="token comment">// Revision ID</span>
+   BYTE   byCLS<span class="token punctuation">;</span>                <span class="token comment">// Cache Line Size</span>
+   BYTE   byLatency<span class="token punctuation">;</span>            <span class="token comment">// Latency Timer</span>
+   DWORD  dwBaseAddr<span class="token punctuation">[</span><span class="token number">6</span><span class="token punctuation">]</span><span class="token punctuation">;</span>        <span class="token comment">// 6个Base Address Register为32位</span>
+   DWORD  dwCIS<span class="token punctuation">;</span>
+   WORD   wSubSystemVendorId<span class="token punctuation">;</span>
+   WORD   wSubSystemId<span class="token punctuation">;</span>
+   DWORD  dwRomBaseAddr<span class="token punctuation">;</span>        <span class="token comment">// Extension ROM Base Address</span>
+   BYTE   byIntLine<span class="token punctuation">;</span>            <span class="token comment">// Interrupt Line</span>
+   BYTE   byIntPin<span class="token punctuation">;</span>             <span class="token comment">// Interrupt Pin </span>
+   BYTE   byMaxLatency<span class="token punctuation">;</span>         <span class="token comment">// Max Latency</span>
+   BYTE   byMinGrant<span class="token punctuation">;</span>           <span class="token comment">// Min Grant</span>
+  <span class="token punctuation">}</span> PCIDEV<span class="token punctuation">,</span> <span class="token operator">*</span>LPPCIDEV<span class="token punctuation">;</span>
+
+</code></pre> 
+<p>6个BAR，每个BAR记录了该设备映射的一段地址空间，有Memorry空间和IO空间</p> 
+<h3><a id="MemorryBAR_181"></a>Memorry空间的BAR</h3> 
+<p><img src="https://images2.imgbox.com/02/12/1uACq9iu_o.png" alt="在这里插入图片描述"><br> 第0位为0，表示该为Memorry空间<br> 第1位为0表示32位地址，为1表示64位地址<br> 第2为为0表示区间大小超过1M，为0表示不超过1M<br> 第3位表示是否支持可预读取</p> 
+<h3><a id="IOBAR_187"></a>IO空间的BAR</h3> 
+<p><img src="https://images2.imgbox.com/69/39/dstKtcLy_o.png" alt="在这里插入图片描述">第0位为1，表示该为IO空间</p> 
+<h2><a id="MMIO_189"></a>MMIO</h2> 
+<p>内存映射io，和内存共享一个地址空间。可以和像读写内存一样读写其内容。<br> 通过Memory 空间访问设备I/O的方式称为memory mapped I/O，即MMIO，这种情况下，CPU直接使用普通访存指令即可访问设备I/O。</p> 
+<h2><a id="PMIO_192"></a>PMIO</h2> 
+<p>端口映射io，内存和io设备有各自独立的地址空间，cpu需要通过专门的指令才能去访问。在intel的微处理器中使用的指令是IN和OUT。</p> 
+<p>通过I/O 空间访问设备I/O的方式称为port mapped I/O，即PMIO，这种情况下CPU需要使用专门的I/O指令如IN/OUT访问I/O端口</p> 
+<h2><a id="Ispci_196"></a>Ispci</h2> 
+<p>pci外设地址，形如0000:00:1f.1。第一个部分16位表示域；第二个部分8位表示总线编号；第三个部分5位表示设备号；最后一个部分3位表示功能号。<br> lspci 命令可以显示当前的pci设备</p> 
+<p><img src="https://images2.imgbox.com/67/84/jPDDIAF2_o.png" alt="在这里插入图片描述"></p> 
+<p>lspci -v可以显示当前的pci设备的详细信息，如mmio的地址，pmio的端口号<br> <img src="https://images2.imgbox.com/35/de/w7vEJz6y_o.png" alt="在这里插入图片描述"></p> 
+<p>lspci -v -m -n -s 设备可以显示头部的一些信息<br> <img src="https://images2.imgbox.com/a5/0f/RtkdMebQ_o.png" alt="在这里插入图片描述"></p> 
+<p>/sys/bus/pci/devices可以找到pci设备相关的文件。<br> <img src="https://images2.imgbox.com/4d/c8/6hbEA5iK_o.png" alt="在这里插入图片描述"><br> /sys/devices/pci0000:00也可以找到pci设备的相关的文件<br> <img src="https://images2.imgbox.com/6e/c4/aphUgLiP_o.png" alt="在这里插入图片描述"><br> 查看设备id是device文件<br> cat /sys/devices/pci0000:00/0000:00:03.0/device<br> <img src="https://images2.imgbox.com/9d/99/m8MoSFer_o.png" alt="在这里插入图片描述"></p> 
+<p>随便进入一个pci设备文件用ls查看<br> <img src="https://images2.imgbox.com/09/46/HpW2ZuUG_o.png" alt="在这里插入图片描述"></p> 
+<p><img src="https://images2.imgbox.com/b0/7e/EFRdH1TA_o.png" alt="在这里插入图片描述"><br> 每个设备的目录下resource0 对应MMIO空间。resource1 对应PMIO空间。（不是所有设备文件都有resource0或者resource1）<br> resource文件里面会记录相关的数据，第一行就是MIMO的信息，从左到右是：起始地址、结束地址、标识位。第二行是PMIO</p> 
+<p>I/O 内存：/proc/iomem<br> I/O 端口：/proc/ioports<br> 使用cat /proc/iomem可查看当前PCI设备的映射内存空间<br> 使用cat /proc/ioports可查看当前PCI设备的映射端口空间</p> 
+<h2><a id="PCIMemoryIO_227"></a>访问PCI设备配置空间中的Memory空间和IO空间</h2> 
+<h3><a id="MMIO_228"></a>MMIO</h3> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdio.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;unistd.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdlib.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdint.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;string.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;errno.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;signal.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;fcntl.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;ctype.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;termios.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;assert.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/types.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/mman.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/io.h&gt;</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">MAP_SIZE</span> <span class="token expression"><span class="token number">4096UL</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">MAP_MASK</span> <span class="token expression"><span class="token punctuation">(</span>MAP_SIZE <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">)</span></span></span>
+
+<span class="token keyword">char</span><span class="token operator">*</span> pci_device_name <span class="token operator">=</span> <span class="token string">"/sys/devices/pci0000:00/0000:00:04.0/resource0"</span><span class="token punctuation">;</span>
+
+<span class="token keyword">unsigned</span> <span class="token keyword">char</span><span class="token operator">*</span> mmio_base<span class="token punctuation">;</span>
+
+<span class="token keyword">unsigned</span> <span class="token keyword">char</span><span class="token operator">*</span> <span class="token function">getMMIOBase</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+    
+    <span class="token keyword">int</span> fd<span class="token punctuation">;</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token punctuation">(</span>fd <span class="token operator">=</span> <span class="token function">open</span><span class="token punctuation">(</span>pci_device_name<span class="token punctuation">,</span> O_RDWR <span class="token operator">|</span> O_SYNC<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">perror</span><span class="token punctuation">(</span><span class="token string">"open pci device"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">exit</span><span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    mmio_base <span class="token operator">=</span> <span class="token function">mmap</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span> MAP_SIZE<span class="token punctuation">,</span> PROT_READ <span class="token operator">|</span> PROT_WRITE<span class="token punctuation">,</span> MAP_SHARED<span class="token punctuation">,</span> fd<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//根据resource0中的文件内容来分配Memory空间</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>mmio_base <span class="token operator">==</span> <span class="token punctuation">(</span><span class="token keyword">void</span> <span class="token operator">*</span><span class="token punctuation">)</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">perror</span><span class="token punctuation">(</span><span class="token string">"mmap"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">exit</span><span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">return</span> mmio_base<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token function">mmio_write</span><span class="token punctuation">(</span><span class="token class-name">uint64_t</span> addr<span class="token punctuation">,</span> <span class="token class-name">uint64_t</span> value<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token operator">*</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token class-name">uint64_t</span><span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">(</span>mmio_base <span class="token operator">+</span> addr<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">=</span> value<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token class-name">uint64_t</span> <span class="token function">mmio_read</span><span class="token punctuation">(</span><span class="token class-name">uint64_t</span> addr<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> <span class="token operator">*</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token class-name">uint64_t</span><span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">(</span>mmio_base <span class="token operator">+</span> addr<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token keyword">int</span> argc<span class="token punctuation">,</span> <span class="token keyword">char</span> <span class="token keyword">const</span> <span class="token operator">*</span>argv<span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token function">getMMIOBase</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"mmio_base Resource0Base: %p\n"</span><span class="token punctuation">,</span> mmio_base<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token function">mmio_write</span><span class="token punctuation">(</span><span class="token number">144</span><span class="token punctuation">,</span> val<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">mmio_read</span><span class="token punctuation">(</span><span class="token number">144</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="PMIO_289"></a>PMIO</h3> 
+<p>需要权限才能访问端口<br> 0x000-0x3ff端口可以用ioperm(from, num, turn_on)获得权限<br> 比如ioperm(0x300,5,1); 获得 0x300 到 0x304 端口的访问权限<br> 更高端口需要iopl(3)获得权限，这个可以获得范围所有端口权限<br> in,out系列函数如下，分别是写入/读取一个字节（b结尾），两个字节（w结尾），四个字节（l结尾）</p> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/io.h &gt;</span></span>
+
+<span class="token function">iopl</span><span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">)</span><span class="token punctuation">;</span> 
+<span class="token function">inb</span><span class="token punctuation">(</span>port<span class="token punctuation">)</span><span class="token punctuation">;</span> 
+<span class="token function">inw</span><span class="token punctuation">(</span>port<span class="token punctuation">)</span><span class="token punctuation">;</span> 
+<span class="token function">inl</span><span class="token punctuation">(</span>port<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token function">outb</span><span class="token punctuation">(</span>val<span class="token punctuation">,</span>port<span class="token punctuation">)</span><span class="token punctuation">;</span> 
+<span class="token function">outw</span><span class="token punctuation">(</span>val<span class="token punctuation">,</span>port<span class="token punctuation">)</span><span class="token punctuation">;</span> 
+<span class="token function">outl</span><span class="token punctuation">(</span>val<span class="token punctuation">,</span>port<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<h2><a id="QQMqemu_object_model_309"></a>QQM（qemu object model）</h2> 
+<p>QEMU提供了一套面向对象编程的模型——QOM，即QEMU Object Module，几乎所有的设备如CPU、内存、总线等都是利用这一面向对象的模型来实现的。<br> 而对象的初始化分为四步：</p> 
+<ol><li>将 TypeInfo 注册 TypeImpl</li><li>实例化 ObjectClass</li><li>实例化 Object</li><li>添加 Property</li></ol> 
+<p>ObjectClass: 是所有类对象的基类，仅仅保存了一个整数 type 。<br> Object: 是所有对象的 基类Base Object ， 第一个成员变量为指向 ObjectClass 的指针。<br> TypeInfo：是用户用来定义一个 Type 的工具型的数据结构。<br> TypeImpl：对数据类型的抽象数据结构，TypeInfo的属性与TypeImpl的属性对应。</p> 
+<h2><a id="_323"></a>简洁概要</h2> 
+<h3><a id="_TypeInfo__TypeImpl_325"></a>将 TypeInfo 注册 TypeImpl：</h3> 
+<p>1、首先__attribute__((constructor))的修饰让type_init在main之前执行，type_init的参数是XXX_register_types函数指针，将函数指针传递到ModuleEntry的init函数指针，最后就是将这个ModuleEntry插入到ModuleTypeList<br> 2、main函数中的module_call_init(MODULE_INIT_QOM);调用了MODULE_INIT_QOM类型的ModuleTypeList中的所有ModuleEntry中的init()函数，也就是第一步type_init的第一个参数XXX_register_types函数指针<br> 3、那就下了就是XXX_register_types函数的操作了，就是创建TypeImpl的哈希表</p> 
+<h3><a id="ObjectClass_331"></a>ObjectClass的初始化：</h3> 
+<p>调用链main-&gt;select_machine-&gt;object_class_get_list-&gt;object_class_foreach-&gt;object_class_foreach_tramp-&gt;type_initialize</p> 
+<p>将parent-&gt;class-&gt;interfaces的一些信息添加到ti-&gt;class-&gt;interfaces列表上面，ti-&gt;interfaces[i].typename对应的type的信息也添加到ti-&gt;class-&gt;interfaces列表，最后最重要的就是调用parent的class_base_init进行初始化，最后调用自己ti-&gt;class_init进行初始化。</p> 
+<h3><a id="_InstanceObject_337"></a>实例化 Instance(Object)</h3> 
+<p>调用链qemu_opts_foreach-&gt;device_init_func-&gt;qdev_device_add-&gt;object_new-&gt;object_new_with_type</p> 
+<p>object_new_with_type函数里面初始化了Object的一些成员，并通过object_init_with_type函数调用ti-&gt;instance_init函数（有parent就会先递归调用object_init_with_type，再调用自身的ti-&gt;instance_init函数），而最后就是通过object_post_init_with_type函数差不多，只不过先调用自身的ti-&gt;instance_post_init，再递归调用parent的ti-&gt;instance_post_init</p> 
+<h3><a id="miniQEMU_343"></a>准备自己写mini版QEMU吧，不然实在迷糊</h3>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/76e6315543b14d7d242f5c7cce7e6378/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">TypeScript攻略：小白变大神的实用指南</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a230189fa98bb0f13c79c87e02f94ec6/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">job_queue_processes参数讲解</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

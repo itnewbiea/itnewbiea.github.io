@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>低延迟音视频传输技术在直播领域的应用 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="低延迟音视频传输技术在直播领域的应用" />
+<meta property="og:description" content="本文来自陌陌视频流媒体技术负责人吴涛在WebRTCon 2018上的分享，他详解了陌陌从传统直播过渡到1对1到多人互动模式的演进，架构的优化保证了用户体验与业务需求。另外，文末为WebRTCon 2018最后一波PPT分享，点击阅读原文下载。
+文 / 吴涛
+整理 / LiveVideoStack
+概览
+我有幸曾在互联网、安防监控、广电音视频传输三大领域从事工作，感觉自己现在的水平应该仅够满足实战需求了，所以今天在这里不敢说为大家做分享，只能说为大家汇报一些自己在这三个领域工作的心得体会。
+互联网直播的话题已经是老生常谈了，我们也很难再讲出来一些新的东西。我最早来到陌陌的时候，陌陌做音视频传输技术的只有四个人，一个做客户端，一个做支付，一个做后台，剩下一个由我来做音视频。可以说我见证了陌陌直播从襁褓之中成长为现在这样一个成熟直播平台的全过程。2017年Q4财报显示，陌陌现在月活跃用户数9910万人，收入是3.58亿美元，而陌陌视频收入约3.2亿美元，也就是说陌陌90%多的收入都是视频提供的，这是现在陌陌直播平台的发展情况。
+今天我向大家分享的主要内容有：
+基于CDN架构的直播应用
+基于CDN架构的低延迟直播的应用
+CDN架构下非交互直播的问题
+带有交互能力的直播
+直播技术未来的发展
+1.基于CDN架构的直播应用
+这张图是陌陌APP直播界面去除礼物、动画等元素的效果图。一位主播在屏幕前为用户表演。主播能做的事，对着屏幕表演，用户除了给主播送礼物或发消息外无法与主播进行其他交互。有时用户会发现主播不会对自己发送的消息作出反馈，这是为什么？第一种原因可能是这位主播受关注度比较高，消息量比较大，无法一一进行回复；第二种原因可能是此时端对端延迟过大，使得主播响应无法及时送达到观众端。
+以上是其中一种基于CDN架构的直播架构图。这个架构图很简单，主播把直播数据推到了一个CDN的边缘节点，用户再从CDN的另一端的边缘节点获取直播数据，这种架构在直播当中十分常见，为什么使用这种简单架构？
+1.1优势
+显而易见的是，其优势就是简单。使用这种架构意味着企业不需要开发者有多强的网络技术能力，只需要确定域名后把音视频传入即可完成。并且，简单意味着这种架构的开发效率非常高，也许只需编写几行代码或者进行配置即可完成。对于一个应用型公司来讲，这种方案的开发门槛很低，所需要的时间、人力资源成本都很低，这也是互联网直播使用CDN的好处之一。
+1.2 劣势
+当然这种方案也存在劣势。第一我们知道CDN是建立在TCP协议上的，这就导致CDN会受到TCP协议本身的约束，实时音视频数据传输TCP协议栈并不十分理想；第二是使用CDN质量差异较大；第三是使用CDN难以随需求进行定制化，CDN面对很多用户的需求都是非定制化的；第四是使用CDN架构端对端的延迟大，我特意使用虚线将主播与观众相连标记时间。虽然每家公司的CDN解决方案都号称端对端延迟只有三秒，实际上如果从用户良好体验的角度出发，经过测算端对端的延迟控制在5秒比较理想，低于5秒就可能会出现卡顿等影响体验的问题。
+1.3 技术关键点
+CDN架构是直播的基础方案，我们必须把这个方案做得足够完美才能在直播体验上有优势。除了以上叙述的关键点，在实际应用场景上CDN还会受到很多条件的约束：从用户体验的角度来讲，观众使用手机观看直播，无论是使用陌陌还是其他友商的APP，当使用这个应用进入感兴趣的直播间首先体验到的是能够快速呈现直播内容。如果用户点击某个直播间后需要等待一下或者获取视频失败，无疑是一个非常糟糕的体验；其次是画面的清晰度与流畅程度；再次是与主播间的延迟这些都是从用户体验的角度出发遇到的问题，我们需要使用技术手段来解决用户遇到的这些问题。
+我们把遇到的这些问题大致分成两个方面并加以解决：一个是传输的前端，一个是传输的后端。
+1.3.1 传输前端·推流器问题
+首先需要解决的是传输的前端也就是主播端，在主播端需要解决的是推流器问题。
+1）抗拥塞
+对用户而言在直播体验上最糟糕的无疑是卡顿。用户希望能够看到流畅的直播，但是如果使用TCP协议就会出现拥塞问题，那么我们如何来抗拥塞呢？抗拥塞本质是是降低TCP协议拥塞构成的干扰，其原理比较简单，一种方案是减少在推流器上发送的数据，降低帧率、码率、分辨率等各种数据的传输量，数据的传输效率降低，拥塞对直播画面的影响就会减弱；另一种方案则更加简单粗暴，也就是一旦出现拥塞我们就丢弃数据或者重新建立链接，这样也会有效减弱拥塞对直播画面的影响。
+2）秒开问题
+第二点就是秒开问题，也许会有人认为使用CDN架构并不存在秒开问题，只要缓冲第一帧是关键帧就可解决。这个观点没错但是不全面，需要缓冲多少数据？是缓冲一个关键帧还是关键帧所在的一个完整的GOP？还是一个关键帧与一些P帧（对于直播而言很少有B帧，因为B帧的编解码耗时多，所以直播视频尽量不使用B帧）？具体缓冲多少？这便牵扯到如何对GOP进行设置，而GOP的设置必须由编码器决定，因为对于直播视频流而言，一个GOP中I帧的占比是非常大的，与同等参数下的体育直播不一样。体育直播P帧与I帧的大小实际上是近似的，因为体育直播受到场景画面变化剧烈的影响，也就是说GOP的具体参数需要根据直播场景与视频画面进行设置，并不能简单理解为在CDN边缘只缓存一个关键帧或者只缓存几个数据就能解决。也许一个GOP值设置的非常庞大导致一个GOP需要三秒钟，当用户打开直播画面时一个关键帧后画面出现一个跳转，这种的体验是非常糟糕的。我们根据直播的场景在编码器上设置GOP能够妥善处理秒开问题。
+3）清晰度
+用户需要能够快速打开视频并且流畅观看，也需要看到清晰的画面。以家庭影院为例，从最早的录像带，进化成VCD再进化到DVD，再进化到现在的蓝光4K等等，画面清晰度始终是用户所追求的一项重要指标。这里我有一份数据统计：陌陌在每年1月7号都会有一个盛典，直播舞台上进行的一些表演。我把直播画面清晰度进行了简单分类，第一个是960×540的标清分辨率，第二个是1280×720的高清分辨率，第三个是1080P的全高清分辨率。分辨率为960×540时传输需要1M的带宽，这时如果通过正常的互联网传输直播画面是很少卡顿的；而当分辨率提高到1280×720时就需要2.5M到3M左右的带宽进行传输，这时如果用户是在家里拿手机看直播画面便会出现一些卡顿；当分辨率提高到1080P时稳定传输需要5M以上带宽，在这种情况下除非用户家里宽带的网络质量非常好或者手机4G信号特别强，否则就会出现多次直播画面的卡顿。但根据用户反馈的数据来看：分辨率为720P的观看用户是最多的，使用1080P观看直播画面的用户占到了总用户量的10%，其中观看画面模糊但流畅的用户只占不到25%，也就是说清晰度对于用户而言非常重要。如何在推流器端优化清晰度呢？解决此问题不只依赖某个技术点，我们可以通过场景渲染、色彩增强等技术，也可根据直播环境背景色调整主播的着装、环境光照等等，这些都会决定画面的清晰度；我们可以将一路画面设置成不同的分辨率，对于两个不同的分辨率的视频我们可以使用光照去弥补，使得用户在不同的分辨率上看到近似清晰的效果。总而言之，我们可以对不同的场景进行调整与匹配，优化画面的清晰度。
+1.3.2 传输后端·播放器问题
+解决完推流器问题，接下来需要解决的是播放器问题。
+1）抗卡顿
+关于播放器首先需要解决的还是卡顿问题。抗卡顿是保证用户体验中最重要的方面，尤其是对于直播而言。那么如何在播放器端妥善解决卡顿问题？较为简单的方案是加缓冲，缓冲区的存在可以有效减少卡顿的次数与机率。
+2）抗延迟
+为什么用户给主播发消息给主播，隔了好厂一段时间才有反馈？因为直播画面存在延迟。卡顿与延迟是互相矛盾的条件，画面流畅意味着可能延迟增大，延迟减小画面又可能会因为网络不稳定等原因出现卡顿。关于这一点我们只能针对不同使用场景和业务环境进行动态调整，在减少延迟的同时尽量保证画面的流畅。
+3）拉流成功率
+关于这一点的问题比较少见，理论上CDN模式能够全球覆盖、全网覆盖，拉流肯定会成功，实际并非如此。举个极端的例子，西部偏远地区会经常出现拉流失败；而在在流量高峰时段，数据采集拉流成功率只有90%左右，这就会导致用户无法成功打开直播画面，直播清晰度流畅度也无从谈起了，所以拉流成功率也需要我们关注。关于拉流成功率还需要说明的一点是，因为一些规模较小的宽带运营商会做一些网带缓冲，也可以说是域名劫持。一旦出现域名劫持自然无法成功拉流或者拉到非线上直播的流，这比较麻烦。为解决这一问题，在陌陌我们可能不一定下发IP而是一个302的调度点。通过这些措施来保证客户端成功获取正确的视频流，确保拉流成功率。
+2.基于CDN架构的低延迟直播的应用
+讲完了CDN架构的简单应用，接下来讲一讲年初最火的直播答题。这张图是陌陌的一个直播答题界面，直播答题实际上有什么难点呢？
+3.CDN架构下非交互直播的问题
+延迟高、交互性差、表演内容相似度高、观众无法简单参与
+为什么会有这些问题？因为此方案只是把播放器和CDN上的边缘缓冲全部去除，这种模式是最简单的。我们没有对现有的CDN架构进行重大调整而是将主播推到CDN变成将主播推到三体云，只需要调整SDK上的几行代码即可实现。
+4.带有交互能力的直播
+模式一：普通连线
+虽然普通连线解决了最简单的问题，但在实际应用场景中基本已经没有厂商使用这种模式，因为通过这种模式达成的直播效果十分单调。
+模式二：主播间连线
+主播与主播之间的连线实际上是现在最受直播平台与主播欢迎的一种直播答题模式。对于平台而言可以通过这种模式让一些不知名的主播与知名主播进行PK，能够为提升主播知名度同时给直播平台带来流量；对于主播而言通过与别的主播进行PK可以推出新玩法，进一步的互动避免直播内容的同质化。这种模式的架构是数据从两位主播所在的手机编码器两端推到CDN，观众从CDN边缘获取直播数据；与此同时数据也由主播端推到中间的互动云服务器，主播与主播之间通过互动云进行连接。这种架构是最初搭建的一种，因为简单到不需要大的改动就能实现。但实际上这种架构也存在问题：也就是这需要双推主播端的直播数据，一路数据被推到CDN一路数据推到互动云。两路数据意味着两路编码，这对CPU、对带宽的消耗很大。根据简单测试在正常的环境或者在Wi-Fi的环境下，手机推流超过1.2M的时出现抖动的机率就会显著提高。两路编码会带来较高的CPU性能损耗，进而导致手机的发热问题。如果我们对这种架构进行优化：
+采用单推也就是把两个主播端的数据先推到互动云，数据在互动云进行混合转码后推到CDN边缘结点，这样在主播的编码器端只有一路数据需要推至云，剩下处理过程的由服务器代劳，便可解决双推带来的问题。 模式三：多人连线（狼人杀模式）
+第三种模式是多人联线，我们内部称其为“狼人杀模式”。为什么叫狼人杀模式？多人连线这个模式其实是由“狼人杀”演变而来的。最早我们只是考虑观众和主播或主播和主播互动，从来没考虑到观众之间也能实现互动。其实我们发现普通人有时更想参与互动，但是面对主播又无法去有效表达，远没有观众之间互动的参与热情高。这种模式也非常受平台青睐，因为在这种模式下用户停留的时间就会变长。让用户以较低成本参与其中，不需要用户具有特别的才艺就能展现自我。这也使得直播软件成为一种社交方式，一个全民级应用。这种架构相对之前的更为简单，也就是将所有参与用户的音视频数据传到互动云上就行了；互动云再将数据推给CDN，对于不想看或者不想参与的用户可以从CDN拉流，对于想观看或者想参与的用户可以连接到互动云。当然这种模式也存在问题：我们知道普通人面对镜头的压力还是非常大的，就像美颜、滤镜是现在自拍的标配一样，在直播中露脸这件事对普通用户而言往往带来较大压力。
+模式四：电台模式
+模式三的问题使其演变成了第四种模式——电台模式，也就是只直播用户的音频，这样虽然不存在画面但是业务模式并未改变。在这里我有一个问题：模式四能否直接套用模式三的架构？其实模式四用模式三是不行的，因为在实时互动云模式下，主播之间的延迟是不足1秒的，但主播与观众之间的延迟是5秒左右。对于视频画面我们可以用转场动画处理使用户不易察觉到这5秒延迟的存在，而在纯音频模式下无法用这种措施进行处理优化，因为用户听到的音频是连续的，一旦少了一部分就会使用户体验大打折扣。所以对于第四种模式我们使用更加简单的方式处理，也就是不经过CDN而直接用互动云处理数据。用户如果想参与直播互动就打开麦克风，如果只想听直播就关闭麦克风。对我们而言这种全新模式能够以更低的开发成本为用户带来更好的交互直播体验。
+互联网直播是否能改变直播行业？既然互联网直播能够实现互动，那么电视直播能否实现互动？当然我们无法在家看电视直播时通过APP和电视台主持人聊天。第一是因为电视直播从采集到播出需要层层的安全审核。第二是因为缺乏更先进的数据传输技术，现有技术无法将电视直播的数据高效传输至互动云。关于这一点在陌陌6月推出的世界杯直播业务时已经可以实现互动直播，也就是在世界杯现场用摄像机，导播台，编码器等一系列硬件设备搭建起一个直播环境。用户通过APP就能在观看直播时和主持人互动，为什么说这和电视直播的不一样？因为在传统演播室环境下，电视台对直播的安全与稳定性要求很高；但对于各互联网直播平台，虽然应用做得都很稳定，但在极端情况下也会有直播异常甚至崩溃的情况发生，这对于电视台而言是无法想象的直播事故。大家可以想象如果《新闻联播》在直播时出现花屏绿屏卡顿等问题会造成多么重大的影响。而对于陌陌来说，陌陌现场就是陌陌的《新闻联播》，我们需要保证不会出现任何直播事故。对此我们会使用一些传统广电的解决方案，例如所有的直播信号都是多路信号，从来不会出现一路信号异常影响整场直播的问题。那么我们如何在如此严苛条件下实现这种互动直播呢？其实做法很简单，也就是在多分路的前提下引入OBS这样一个开源的编码环境。我们在其中集成了OBS的互动SDK，也就是硬件编码器推一路信号给陌陌原站的同时OBS也推一路信号给陌陌的原站。当然这两路流在原站会区分优先级，如果原站只收到编码器推出的一路信号，那么把数据转出推给CDN，用户就可以收看到直播画面；如果原站收到OBS推出的一路信号，便会将来自OBS的数据流直接传输至内存里并通过信道传输出去，而编码器的流只会被挂起，当OBS出现稳定性故障时，编码器的流便会恢复，此时用户可能感觉画面变成连屏、混屏。同时在OBS上也可实现最常见的PC端连麦，以上就是在演播间如何进行互动直播的全新应用。
+5.直播技术未来的发展
+5.1 低卡顿
+为什么说是“低卡顿”而不是说“无卡顿”？因为现有的技术还无法实现完全没有卡顿、缓冲。这不单单取决于技术，更包括基础设施的建设，我们只是希望把卡顿率降到最低。根据陌陌的PV统计数据，用户每观看15分钟以上直播必然会出现一次卡顿，这个值是根据数据收集而并非理论计算。我们也是不断尝试尽可能优化，但实际上现在业内没有彻底解决卡顿问题的有效方案。
+5.2 低延迟" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/d3e1ab3a36652779f506434c51c6755d/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2018-06-15T10:38:21+08:00" />
+<meta property="article:modified_time" content="2018-06-15T10:38:21+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">低延迟音视频传输技术在直播领域的应用</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div class="rich_media_content"> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><img src="https://images2.imgbox.com/3f/fe/KlTgrT5I_o.png" alt="640?wx_fmt=jpeg"></p> 
+ <p><br></p> 
+ <blockquote> 
+  <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:14px;color:rgb(165,165,165);">本文来自陌陌视频流媒体技术负责人吴涛在WebRTCon 2018上的分享，他详解了陌陌从传统直播过渡到1对1到多人互动模式的演进，架构的优化保证了用户体验与业务需求。另外，文末为WebRTCon 2018最后一波PPT分享，点击<strong>阅读原文</strong>下载。</span></p> 
+ </blockquote> 
+ <p><br></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:14px;color:rgb(165,165,165);">文 / 吴涛</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:14px;color:rgb(165,165,165);">整理 / LiveVideoStack</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:14px;color:rgb(165,165,165);"><br></span></p> 
+ <p><br></p> 
+ <p><br></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:18px;color:rgb(247,150,70);">概览</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><br></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">我有幸曾在互联网、安防监控、广电音视频传输三大领域从事工作，感觉自己现在的水平应该仅够满足实战需求了，所以今天在这里不敢说为大家做分享，只能说为大家汇报一些自己在这三个领域工作的心得体会。</span></p> 
+ <p><br></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">互联网直播的话题已经是老生常谈了，我们也很难再讲出来一些新的东西。我最早来到陌陌的时候，陌陌做音视频传输技术的只有四个人，一个做客户端，一个做支付，一个做后台，剩下一个由我来做音视频。可以说我见证了陌陌直播从襁褓之中成长为现在这样一个成熟直播平台的全过程。2017年Q4财报显示，陌陌现在月活跃用户数9910万人，收入是3.58亿美元，而陌陌视频收入约3.2亿美元，也就是说陌陌90%多的收入都是视频提供的，这是现在陌陌直播平台的发展情况。</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span><img src="https://images2.imgbox.com/06/c5/9lNdf89b_o.png" alt="640?wx_fmt=jpeg"></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><br></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">今天我向大家分享的主要内容有：</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <ol class="list-paddingleft-2" style="list-style-type:decimal;"><li><p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">基于CDN架构的直播应用</span></p></li><li><p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">基于CDN架构的低延迟直播的应用</span></p></li><li><p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">CDN架构下非交互直播的问题</span></p></li><li><p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">带有交互能力的直播</span></p></li><li><p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">直播技术未来的发展</span></p></li></ol> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><br></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:18px;color:rgb(247,150,70);">1.基于CDN架构的直播应用</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><img src="https://images2.imgbox.com/16/ff/qr1ZeB8P_o.png" alt="640?wx_fmt=jpeg"></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><br></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">这张图是陌陌APP直播界面去除礼物、动画等元素的效果图。一位主播在屏幕前为用户表演。主播能做的事，对着屏幕表演，用户除了给主播送礼物或发消息外无法与主播进行其他交互。有时用户会发现主播不会对自己发送的消息作出反馈，这是为什么？第一种原因可能是这位主播受关注度比较高，消息量比较大，无法一一进行回复；第二种原因可能是此时端对端延迟过大，使得主播响应无法及时送达到观众端。</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><img src="https://images2.imgbox.com/7b/f6/vR7MoYbK_o.png" alt="640?wx_fmt=jpeg"></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">以上是其中一种基于CDN架构的直播架构图。这个架构图很简单，主播把直播数据推到了一个CDN的边缘节点，用户再从CDN的另一端的边缘节点获取直播数据，这种架构在直播当中十分常见，为什么使用这种简单架构？</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(247,150,70);">1.1优势</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(247,150,70);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">显而易见的是，其优势就是简单。使用这种架构意味着企业不需要开发者有多强的网络技术能力，只需要确定域名后把音视频传入即可完成。并且，简单意味着这种架构的开发效率非常高，也许只需编写几行代码或者进行配置即可完成。对于一个应用型公司来讲，这种方案的开发门槛很低，所需要的时间、人力资源成本都很低，这也是互联网直播使用CDN的好处之一。</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(247,150,70);">1.2 劣势</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(247,150,70);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">当然这种方案也存在劣势。第一我们知道CDN是建立在TCP协议上的，这就导致CDN会受到TCP协议本身的约束，实时音视频数据传输TCP协议栈并不十分理想；第二是使用CDN质量差异较大；第三是使用CDN难以随需求进行定制化，CDN面对很多用户的需求都是非定制化的；第四是使用CDN架构端对端的延迟大，我特意使用虚线将主播与观众相连标记时间。虽然每家公司的CDN解决方案都号称端对端延迟只有三秒，实际上如果从用户良好体验的角度出发，经过测算端对端的延迟控制在5秒比较理想，低于5秒就可能会出现卡顿等影响体验的问题。</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(247,150,70);">1.3 技术关键点</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><br></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">CDN架构是直播的基础方案，我们必须把这个方案做得足够完美才能在直播体验上有优势。除了以上叙述的关键点，在实际应用场景上CDN还会受到很多条件的约束：从用户体验的角度来讲，观众使用手机观看直播，无论是使用陌陌还是其他友商的APP，当使用这个应用进入感兴趣的直播间首先体验到的是能够快速呈现直播内容。如果用户点击某个直播间后需要等待一下或者获取视频失败，无疑是一个非常糟糕的体验；其次是画面的清晰度与流畅程度；再次是与主播间的延迟这些都是从用户体验的角度出发遇到的问题，我们需要使用技术手段来解决用户遇到的这些问题。</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">我们把遇到的这些问题大致分成两个方面并加以解决：一个是传输的前端，一个是传输的后端。</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(247,150,70);"><br></span><span style="font-size:15px;color:rgb(247,150,70);">1.3.1 传输前端·推流器问题</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:15px;color:rgb(247,150,70);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">首先需要解决的是传输的前端也就是主播端，在主播端需要解决的是推流器问题。</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><img src="https://images2.imgbox.com/a8/ab/WGsDoPkJ_o.png" alt="640?wx_fmt=jpeg"></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><br></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">1）抗拥塞</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">对用户而言在直播体验上最糟糕的无疑是卡顿。用户希望能够看到流畅的直播，但是如果使用TCP协议就会出现拥塞问题，那么我们如何来抗拥塞呢？抗拥塞本质是是降低TCP协议拥塞构成的干扰，其原理比较简单，一种方案是减少在推流器上发送的数据，降低帧率、码率、分辨率等各种数据的传输量，数据的传输效率降低，拥塞对直播画面的影响就会减弱；另一种方案则更加简单粗暴，也就是一旦出现拥塞我们就丢弃数据或者重新建立链接，这样也会有效减弱拥塞对直播画面的影响。</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">2）秒开问题</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">第二点就是秒开问题，也许会有人认为使用CDN架构并不存在秒开问题，只要缓冲第一帧是关键帧就可解决。这个观点没错但是不全面，需要缓冲多少数据？是缓冲一个关键帧还是关键帧所在的一个完整的GOP？还是一个关键帧与一些P帧（对于直播而言很少有B帧，因为B帧的编解码耗时多，所以直播视频尽量不使用B帧）？具体缓冲多少？这便牵扯到如何对GOP进行设置，而GOP的设置必须由编码器决定，因为对于直播视频流而言，一个GOP中I帧的占比是非常大的，与同等参数下的体育直播不一样。体育直播P帧与I帧的大小实际上是近似的，因为体育直播受到场景画面变化剧烈的影响，也就是说GOP的具体参数需要根据直播场景与视频画面进行设置，并不能简单理解为在CDN边缘只缓存一个关键帧或者只缓存几个数据就能解决。也许一个GOP值设置的非常庞大导致一个GOP需要三秒钟，当用户打开直播画面时一个关键帧后画面出现一个跳转，这种的体验是非常糟糕的。我们根据直播的场景在编码器上设置GOP能够妥善处理秒开问题。</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">3）清晰度</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">用户需要能够快速打开视频并且流畅观看，也需要看到清晰的画面。以家庭影院为例，从最早的录像带，进化成VCD再进化到DVD，再进化到现在的蓝光4K等等，画面清晰度始终是用户所追求的一项重要指标。这里我有一份数据统计：陌陌在每年1月7号都会有一个盛典，直播舞台上进行的一些表演。我把直播画面清晰度进行了简单分类，第一个是960×540的标清分辨率，第二个是1280×720的高清分辨率，第三个是1080P的全高清分辨率。分辨率为960×540时传输需要1M的带宽，这时如果通过正常的互联网传输直播画面是很少卡顿的；而当分辨率提高到1280×720时就需要2.5M到3M左右的带宽进行传输，这时如果用户是在家里拿手机看直播画面便会出现一些卡顿；当分辨率提高到1080P时稳定传输需要5M以上带宽，在这种情况下除非用户家里宽带的网络质量非常好或者手机4G信号特别强，否则就会出现多次直播画面的卡顿。但根据用户反馈的数据来看：分辨率为720P的观看用户是最多的，使用1080P观看直播画面的用户占到了总用户量的10%，其中观看画面模糊但流畅的用户只占不到25%，也就是说清晰度对于用户而言非常重要。如何在推流器端优化清晰度呢？解决此问题不只依赖某个技术点，我们可以通过场景渲染、色彩增强等技术，也可根据直播环境背景色调整主播的着装、环境光照等等，这些都会决定画面的清晰度；我们可以将一路画面设置成不同的分辨率，对于两个不同的分辨率的视频我们可以使用光照去弥补，使得用户在不同的分辨率上看到近似清晰的效果。总而言之，我们可以对不同的场景进行调整与匹配，优化画面的清晰度。</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span><span style="font-size:15px;color:rgb(247,150,70);">1.3.2 传输后端·播放器问题</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:15px;color:rgb(247,150,70);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:15px;color:rgb(247,150,70);"><img src="https://images2.imgbox.com/0d/a3/wk2iEwpb_o.png" alt="640?wx_fmt=jpeg"></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><br></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">解决完推流器问题，接下来需要解决的是播放器问题。</span></p> 
+ <p><br></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">1）抗卡顿</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">关于播放器首先需要解决的还是卡顿问题。抗卡顿是保证用户体验中最重要的方面，尤其是对于直播而言。那么如何在播放器端妥善解决卡顿问题？较为简单的方案是加缓冲，缓冲区的存在可以有效减少卡顿的次数与机率。</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">2）抗延迟</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">为什么用户给主播发消息给主播，隔了好厂一段时间才有反馈？因为直播画面存在延迟。卡顿与延迟是互相矛盾的条件，画面流畅意味着可能延迟增大，延迟减小画面又可能会因为网络不稳定等原因出现卡顿。关于这一点我们只能针对不同使用场景和业务环境进行动态调整，在减少延迟的同时尽量保证画面的流畅。</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">3）拉流成功率</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">关于这一点的问题比较少见，理论上CDN模式能够全球覆盖、全网覆盖，拉流肯定会成功，实际并非如此。举个极端的例子，西部偏远地区会经常出现拉流失败；而在在流量高峰时段，数据采集拉流成功率只有90%左右，这就会导致用户无法成功打开直播画面，直播清晰度流畅度也无从谈起了，所以拉流成功率也需要我们关注。关于拉流成功率还需要说明的一点是，因为一些规模较小的宽带运营商会做一些网带缓冲，也可以说是域名劫持。一旦出现域名劫持自然无法成功拉流或者拉到非线上直播的流，这比较麻烦。为解决这一问题，在陌陌我们可能不一定下发IP而是一个302的调度点。通过这些措施来保证客户端成功获取正确的视频流，确保拉流成功率。</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span><span style="font-size:18px;color:rgb(247,150,70);">2.基于CDN架构的低延迟直播的应用</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:18px;color:rgb(247,150,70);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:18px;color:rgb(247,150,70);"><img src="https://images2.imgbox.com/f2/35/9P6aeu16_o.png" alt="640?wx_fmt=jpeg"></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:18px;color:rgb(247,150,70);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">讲完了CDN架构的简单应用，接下来讲一讲年初最火的直播答题。这张图是陌陌的一个直播答题界面，直播答题实际上有什么难点呢？</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:18px;color:rgb(247,150,70);">3.CDN架构下非交互直播的问题</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:18px;color:rgb(247,150,70);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:18px;color:rgb(247,150,70);"><img src="https://images2.imgbox.com/df/e2/8EhZ69vy_o.png" alt="640?wx_fmt=jpeg"></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><br></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">延迟高、交互性差、表演内容相似度高、观众无法简单参与</span></p> 
+ <p><br></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">为什么会有这些问题？因为此方案只是把播放器和CDN上的边缘缓冲全部去除，这种模式是最简单的。我们没有对现有的CDN架构进行重大调整而是将主播推到CDN变成将主播推到三体云，只需要调整SDK上的几行代码即可实现。</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span><span style="font-size:18px;color:rgb(247,150,70);">4.带有交互能力的直播</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><br></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><img src="https://images2.imgbox.com/da/35/WfYE0PdH_o.png" alt="640?wx_fmt=jpeg"></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="color:rgb(89,89,89);font-size:16px;">模式一：普通连线</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><img src="https://images2.imgbox.com/1a/b7/3HZ5F5Kq_o.png" alt="640?wx_fmt=jpeg"><img src="https://images2.imgbox.com/3c/f1/EFcUYl8S_o.png" alt="640?wx_fmt=jpeg"></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><br></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">虽然普通连线解决了最简单的问题，但在实际应用场景中基本已经没有厂商使用这种模式，因为通过这种模式达成的直播效果十分单调。</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">模式二：主播间连线</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><img src="https://images2.imgbox.com/35/15/mxJ1r0ER_o.png" alt="640?wx_fmt=jpeg"><img src="https://images2.imgbox.com/5a/5c/ARySUSYA_o.png" alt="640?wx_fmt=jpeg"></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">主播与主播之间的连线实际上是现在最受直播平台与主播欢迎的一种直播答题模式。对于平台而言可以通过这种模式让一些不知名的主播与知名主播进行PK，能够为提升主播知名度同时给直播平台带来流量；对于主播而言通过与别的主播进行PK可以推出新玩法，进一步的互动避免直播内容的同质化。这种模式的架构是数据从两位主播所在的手机编码器两端推到CDN，观众从CDN边缘获取直播数据；与此同时数据也由主播端推到中间的互动云服务器，主播与主播之间通过互动云进行连接。这种架构是最初搭建的一种，因为简单到不需要大的改动就能实现。但实际上这种架构也存在问题：也就是这需要双推主播端的直播数据，一路数据被推到CDN一路数据推到互动云。两路数据意味着两路编码，这对CPU、对带宽的消耗很大。根据简单测试在正常的环境或者在Wi-Fi的环境下，手机推流超过1.2M的时出现抖动的机率就会显著提高。两路编码会带来较高的CPU性能损耗，进而导致手机的发热问题。如果我们对这种架构进行优化：</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><br></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><img src="https://images2.imgbox.com/33/56/fOIYGTGr_o.png" alt="640?wx_fmt=jpeg"></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><br></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">采用单推也就是把两个主播端的数据先推到互动云，数据在互动云进行混合转码后推到CDN边缘结点，这样在主播的编码器端只有一路数据需要推至云，剩下处理过程的由服务器代劳，便可解决双推带来的问题。 </span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">模式三：多人连线（狼人杀模式）</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><img src="https://images2.imgbox.com/45/d1/QrwBlH6I_o.png" alt="640?wx_fmt=jpeg"><img src="https://images2.imgbox.com/ec/14/UvXHF5J3_o.png" alt="640?wx_fmt=jpeg"></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">第三种模式是多人联线，我们内部称其为“狼人杀模式”。为什么叫狼人杀模式？多人连线这个模式其实是由“狼人杀”演变而来的。最早我们只是考虑观众和主播或主播和主播互动，从来没考虑到观众之间也能实现互动。其实我们发现普通人有时更想参与互动，但是面对主播又无法去有效表达，远没有观众之间互动的参与热情高。这种模式也非常受平台青睐，因为在这种模式下用户停留的时间就会变长。让用户以较低成本参与其中，不需要用户具有特别的才艺就能展现自我。这也使得直播软件成为一种社交方式，一个全民级应用。这种架构相对之前的更为简单，也就是将所有参与用户的音视频数据传到互动云上就行了；互动云再将数据推给CDN，对于不想看或者不想参与的用户可以从CDN拉流，对于想观看或者想参与的用户可以连接到互动云。当然这种模式也存在问题：我们知道普通人面对镜头的压力还是非常大的，就像美颜、滤镜是现在自拍的标配一样，在直播中露脸这件事对普通用户而言往往带来较大压力。</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">模式四：电台模式</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><img src="https://images2.imgbox.com/4e/6c/r0ITxVjF_o.png" alt="640?wx_fmt=jpeg"><img src="https://images2.imgbox.com/51/f6/neGBCQQh_o.png" alt="640?wx_fmt=jpeg"></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><br></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">模式三的问题使其演变成了第四种模式——电台模式，也就是只直播用户的音频，这样虽然不存在画面但是业务模式并未改变。在这里我有一个问题：模式四能否直接套用模式三的架构？其实模式四用模式三是不行的，因为在实时互动云模式下，主播之间的延迟是不足1秒的，但主播与观众之间的延迟是5秒左右。对于视频画面我们可以用转场动画处理使用户不易察觉到这5秒延迟的存在，而在纯音频模式下无法用这种措施进行处理优化，因为用户听到的音频是连续的，一旦少了一部分就会使用户体验大打折扣。所以对于第四种模式我们使用更加简单的方式处理，也就是不经过CDN而直接用互动云处理数据。用户如果想参与直播互动就打开麦克风，如果只想听直播就关闭麦克风。对我们而言这种全新模式能够以更低的开发成本为用户带来更好的交互直播体验。</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">互联网直播是否能改变直播行业？既然互联网直播能够实现互动，那么电视直播能否实现互动？当然我们无法在家看电视直播时通过APP和电视台主持人聊天。第一是因为电视直播从采集到播出需要层层的安全审核。第二是因为缺乏更先进的数据传输技术，现有技术无法将电视直播的数据高效传输至互动云。关于这一点在陌陌6月推出的世界杯直播业务时已经可以实现互动直播，也就是在世界杯现场用摄像机，导播台，编码器等一系列硬件设备搭建起一个直播环境。用户通过APP就能在观看直播时和主持人互动，为什么说这和电视直播的不一样？因为在传统演播室环境下，电视台对直播的安全与稳定性要求很高；但对于各互联网直播平台，虽然应用做得都很稳定，但在极端情况下也会有直播异常甚至崩溃的情况发生，这对于电视台而言是无法想象的直播事故。大家可以想象如果《新闻联播》在直播时出现花屏绿屏卡顿等问题会造成多么重大的影响。而对于陌陌来说，陌陌现场就是陌陌的《新闻联播》，我们需要保证不会出现任何直播事故。对此我们会使用一些传统广电的解决方案，例如所有的直播信号都是多路信号，从来不会出现一路信号异常影响整场直播的问题。那么我们如何在如此严苛条件下实现这种互动直播呢？其实做法很简单，也就是在多分路的前提下引入OBS这样一个开源的编码环境。我们在其中集成了OBS的互动SDK，也就是硬件编码器推一路信号给陌陌原站的同时OBS也推一路信号给陌陌的原站。当然这两路流在原站会区分优先级，如果原站只收到编码器推出的一路信号，那么把数据转出推给CDN，用户就可以收看到直播画面；如果原站收到OBS推出的一路信号，便会将来自OBS的数据流直接传输至内存里并通过信道传输出去，而编码器的流只会被挂起，当OBS出现稳定性故障时，编码器的流便会恢复，此时用户可能感觉画面变成连屏、混屏。同时在OBS上也可实现最常见的PC端连麦，以上就是在演播间如何进行互动直播的全新应用。</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span><span style="font-size:18px;color:rgb(247,150,70);">5.直播技术未来的发展</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:18px;color:rgb(247,150,70);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:18px;color:rgb(247,150,70);"><img src="https://images2.imgbox.com/80/60/9WUhYFZz_o.png" alt="640?wx_fmt=jpeg"></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:18px;color:rgb(247,150,70);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(247,150,70);">5.1 低卡顿</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(247,150,70);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">为什么说是“低卡顿”而不是说“无卡顿”？因为现有的技术还无法实现完全没有卡顿、缓冲。这不单单取决于技术，更包括基础设施的建设，我们只是希望把卡顿率降到最低。根据陌陌的PV统计数据，用户每观看15分钟以上直播必然会出现一次卡顿，这个值是根据数据收集而并非理论计算。我们也是不断尝试尽可能优化，但实际上现在业内没有彻底解决卡顿问题的有效方案。</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(247,150,70);">5.2 低延迟</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><br></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">实现低延迟可以通过使用更好的传输协议，因为多媒体本身是适用于UDP协议而非TCP协议的。Google曾推出一个QUIC协议并已经存在了几年，我们也做过一个简单的测试：在网络良好的实验室环境下QUIC协议的传输能力弱于TCP协议，实验结果与谷歌的标称不相符；而当网络丢包率达到5%时，QUIC协议的优势已经开始显现了；当网络丢包率达到30%时TCP协议传输基本上不可用，而QUIC协议可正常的运行。但在真正的网络环境中，这种测试的结果都是不完全正确的。那我们怎么测呢？因为在实际网络中用户遇到更多的是突然间卡顿，出现的大部分丢包现象是突发网络抖动，也就是突发的丢包，如果在突发10%，丢包5%的情况下会是什么结果呢？ QUIC协议在突发为5%，丢包为10%的情况下不如TCP，但当突发变为30%，丢包变为10%的情况下就比TCP强很多了，也就是说我们无法简单地在QUIC协议、UDP协议和TCP协议中做出选择。TCP协议相对于UDP协议的优势是能够保证数据的有效到达，而UDP需要FEC等来保证数据的有效到达；QUIC虽介于两者之间，但我们也不能将其简单应用，而应当根据实际环境检测结果来进行选择。</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(247,150,70);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(247,150,70);">5.3 高清晰度</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">高清晰度是现如今音视频领域的发展趋势</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(247,150,70);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(247,150,70);">5.4 富效果</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">如何理解富效果？首先是在画面上使用AR技术进行增强，使直播更加酷炫好玩；其次是类似于裸眼3D、全景视频等技术的运用，大大增加直播的可玩性。相信以上这些都是直播技术未来的发展趋势。</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><br></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><br></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:18px;color:rgb(247,150,70);">WebRTCon 2018 PPT 最后一波</span></p> 
+ <p><br></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">由于需要确认的信息较多，我们不得不分若干次放出本次大会的PPT。在大家的理解与支持下，最后一波PPT已经确认完毕，点击『<strong>阅读原文</strong>』即可进行下载。</span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"></span><span style="font-size:18px;color:rgb(247,150,70);">LiveVideoStack Meet 广州：多媒体技术创新与应用难点探索</span></p> 
+ <p style="margin-left:16px;margin-right:16px;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <p style="margin-left:16px;margin-right:16px;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">LiveVideoStack音视频技术社区联合领先的多媒体技术专家——三体云联推出“多媒体技术创新与应用难点探索”技术沙龙，在多人连麦、海量直播教室、高并发视频会议、Codec与降低带宽成本等话题展开讨论，分享最新的实践与思考，旨在帮助多媒体开发技术人提升能力，解决行业应用难点。</span></p> 
+ <p><br></p> 
+ <p style="margin-left:16px;margin-right:16px;line-height:1.5em;"><span style="font-size:16px;color:rgb(247,150,70);"> 讲师与话题：</span></p> 
+ <p style="margin-left:16px;margin-right:16px;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <ul class="list-paddingleft-2" style="list-style-type:disc;"><li><p style="margin-left:16px;margin-right:16px;line-height:1.5em;"><span style="color:rgb(89,89,89);font-size:14px;">《低延迟音视频传输技术在直播领域的应用》 </span></p><p style="margin-left:16px;margin-right:16px;line-height:1.5em;"><span style="color:rgb(89,89,89);font-size:14px;">  陌陌 视频流媒体技术负责人 吴涛</span></p></li><li><p style="margin-left:16px;margin-right:16px;line-height:1.5em;"><span style="color:rgb(89,89,89);font-size:14px;">《视频直播体验优化》  </span></p><p style="margin-left:16px;margin-right:16px;line-height:1.5em;"><span style="color:rgb(89,89,89);font-size:14px;">  YY音视频算法中心负责人 林绪虹</span></p></li><li><p style="margin-left:16px;margin-right:16px;line-height:1.5em;"><span style="color:rgb(89,89,89);font-size:14px;">《实时音视频技术赋能传统行业》 </span></p><p style="margin-left:16px;margin-right:16px;line-height:1.5em;"><span style="color:rgb(89,89,89);font-size:14px;">  三体云联产品副总裁 崔文秀</span></p></li><li><p style="margin-left:16px;margin-right:16px;line-height:1.5em;"><span style="color:rgb(89,89,89);font-size:14px;">《低延迟直播互动方案探索——WebRTC与Kurento配合使用》    </span></p><p style="margin-left:16px;margin-right:16px;line-height:1.5em;"><span style="color:rgb(89,89,89);font-size:14px;">  搜狐千帆直播组高级Android开发工程师 刘海涛</span></p></li></ul> 
+ <p style="margin-left:1em;margin-right:1em;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);"><br></span></p> 
+ <p style="margin-left:16px;margin-right:16px;line-height:1.5em;"><img src="https://images2.imgbox.com/ff/80/HzB5GTLS_o.png" alt="640?wx_fmt=jpeg"></p> 
+ <p style="margin-left:16px;margin-right:16px;line-height:1.5em;"><span style="font-size:16px;color:rgb(89,89,89);">了解更多详细信息，请扫描图中二维码，快来报名参与吧！</span></p> 
+</div>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/eea96b8499ef7fdc2b8d690d4df101ff/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">如何破解无法炸开的CAD加密图纸</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/c1f3283958794cb8b807cb035ac05af0/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">无人机遥感应用</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Faster-RCNN网络详解 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Faster-RCNN网络详解" />
+<meta property="og:description" content="文章目录 一、前言二、Faster-RCNN算法原理2.1.RPN结构2.1.1感受野的计算与候选框的生成2.1.2正负样本 2.2.RPN的损失计算2.2.1对于分类损失2.2.2.边界回归参数 2.3.Fast-RCNN损失2.4.整体训练 三、总结四、参考博客、视频、论文地址4.1.B站优质UP视频4.2.系类论文地址4.3.个人相应笔记4.3.1数据集4.3.2目标检测系列 一、前言 前面铺垫都是为了学习最终的Faster-RCNN网络，为此学习了PASCAL VOC数据集、COCO数据集、评价指标、SS算法、R-CNN网络、Fast-RCNN网络，这些可以到本文参考博客查看。
+本文有两个目的，其一是作为本人自己的笔记，方便自己巩固复习；其二，希望拙劣的见解能够帮助到正在自学的朋友。
+Faster R-CNN提出了一个FPN的结构使得检测速度进度加快，推测速度达到5fps，也即每1秒可以检测5张图片。
+二、Faster-RCNN算法原理 我们可以认为Faste-RCNN是在Fast-RCNN的基础上进行修改的，主要改的部分就是候选框的生成，改为了RPN结构，也就是说Faster-RCNN = Fast-RCNN &#43; RPN，接下来我们先介绍什么是RPN?
+2.1.RPN结构 上图右边是原论文给的关于RPN的结构，在输入整张图片得到feature map后，我们在feature map上滑动找到滑动窗口中心点在原始图上的中心点（可以根据映射比例关系得到），然后在原图上以该点为中心计算出k个anchor boxes,这里的anchor boxes即为初步生成的候选框，k为指定的一个大小，因为每个目标的大小和比例不一样，所以需要多个候选框来尽可能的找到目标。在原论文中k=9(主要选取了3个比例，分为1：1，1：2，2：1，大小也有三个，分别为：128✖128， 256✖256， 512✖512。也即k = 3✖3 = 9 )
+256-d表示的是一个256维的一维向量，256是因为feature map的channels为256，如果backbone是VGG16则会生成512维的一维向量。
+2kscores指的是，长度为2k的全连接层，每两个数来表示对k个候选框背景与目标的概率预测，总共k个候选框，所以2k个scores。
+4k是指对k个候选框的边界框回归参数的预测，每个框需要4个参数。
+2.1.1感受野的计算与候选框的生成 1）感受野的计算
+论文中也提到了对于feature map上面每一个pixel的感受野，当网络backbone为ZF时感受为171，VGG16时为228，下图为ZF时的感受野计算过程：
+PS:得到每一个anchor的背景前景预测以及边界框回归参数后，我们通过RPN生成的边界框回归参数与前景背景预测分数调整这个初步生成的候选框来生成Fast-RCNN的输入候选框。
+2）候选框的生成
+对于一张1000✖600✖3的图片在经过backbone输出大小为60*40的feature map,对于上面的每一个pixel,有九个初步候选框，大约为60乘以40✖9 大约20k个初步候选框，排除掉超出图片范围的大约剩下6k个，再经过RPN得到的cls得分，采取极大值抑制的方法筛选出大概2k个候选框，IOU设置为0.7，最终得到的候选框数量与SS算法生成的基本相同，大约2k个。
+2.1.2正负样本 训练数据的采样，也即正样本与负样本。
+对于每张图片大概采集256个样本，128个正样本，若正样本不够128，则负样本补上数量就行，例如正样本只有100，则负样本采取156个。正样本有两种方式来确定：1）是取与真实框IOU大于0.7的记为正样本；2）将与真实样本IOU最大的作为正样本；第二种方式主要作为第一种方式的补充，防止没有预测的框与真实框IOU大于0.7的极端情况。
+负样本由IOU小于0.3的来确定。
+2.2.RPN的损失计算 RPN的损失与前面的Fast-RCNN的损失类似，也有两个损失，一个是分类损失，一个边界框回归参数的损失。
+2.2.1对于分类损失 刚看最不理解的就是为什么Ncls不等于Nreg,理论上不应该对于每一个候选框我们需要由它对于前景与背景的预测分数，有边界框的回归回归参数，这样不是256个框就都除以256吗?
+后面我的个人理解是：对于分类损失确实只预测了256个框，所以每张图像的256个预测框的前后背景得分交叉熵需要除以256
+而对于边界框的回归主要由位置来决定，虽然只使用了256个框但是由2400个位置，每个位置k个框，最后采样提取出来的256个框包含了这2400个位置的信息，所以除以2400。
+况且还有一个平衡参数λ=10，这样得到的每个损失的权重为1/256，1/240，基本一样，更能说明其实刚开始想的除以256应该才是正确想法。
+事实上对于λ，作者做了一些实验，有结果如下：
+可以看到实际上各个部分的损失权重对于结果的准确性影响很小。而λ=10是作者实验得到的最佳参数。
+2.2.2.边界回归参数 RPN的边界框回归损失与Fast-RCNN的边界框回归损失基本一样，不明白的可以去看我的关于fast-RCNN的详解。值得注意的是这里的X,Xa,X*分别指预测的框，anchor box（也即还没有经过RPN调整的框）、真实框的中心x坐标，y,w,h类似分别指框中心y坐标，框宽和高。这里的边界框回归参数都是相对anchor box计算的。
+2.3.Fast-RCNN损失 这部分损失请看上一篇博客。本质上计算一模一样。3.目标检测(三)——Fast-RCNN详解
+2.4.整体训练 关于Faster-RCNN的训练，作者有提出几种方法。
+1.交替迭代训练，也就是本论文最终采取的方式
+2.直接将Fast-RCNN与RPN的损失加在一起训练（Pytorch官方采取的这种方式，相比第一种时间更少，结果也基本一样）
+3.作者提到直接加在一起可能会有一点问题，解决方法超出本篇论文的讨论范围。
+三、总结 写到这里，R-CNN的系列基本学完，后续还有继续写Mask-RCNN的笔记。特别感谢有B站Up主霹雳吧啦Wz的视频讲解，没有博主的无私分享，我感觉自己理解会达不到这样的层次。本系列的博客都是基于他的视频讲解与原论文还有其他优秀博客写的，确实花了不少时间，希望自己能够帮助到正在学习相关知识的朋友。接下来就可以开始阅读Faster-RCNN的源码了。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/125c5dad8420b4bf1c963436d8fb7ab4/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-05-21T10:49:27+08:00" />
+<meta property="article:modified_time" content="2023-05-21T10:49:27+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Faster-RCNN网络详解</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#_1" rel="nofollow">一、前言</a></li><li><a href="#FasterRCNN_8" rel="nofollow">二、Faster-RCNN算法原理</a></li><li><ul><li><a href="#21RPN_12" rel="nofollow">2.1.RPN结构</a></li><li><ul><li><a href="#211_21" rel="nofollow">2.1.1感受野的计算与候选框的生成</a></li><li><a href="#212_32" rel="nofollow">2.1.2正负样本</a></li></ul> 
+   </li><li><a href="#22RPN_38" rel="nofollow">2.2.RPN的损失计算</a></li><li><ul><li><a href="#221_42" rel="nofollow">2.2.1对于分类损失</a></li><li><a href="#222_53" rel="nofollow">2.2.2.边界回归参数</a></li></ul> 
+   </li><li><a href="#23FastRCNN_56" rel="nofollow">2.3.Fast-RCNN损失</a></li><li><a href="#24_59" rel="nofollow">2.4.整体训练</a></li></ul> 
+  </li><li><a href="#_66" rel="nofollow">三、总结</a></li><li><a href="#_72" rel="nofollow">四、参考博客、视频、论文地址</a></li><li><ul><li><a href="#41BUP_73" rel="nofollow">4.1.B站优质UP视频</a></li><li><a href="#42_76" rel="nofollow">4.2.系类论文地址</a></li><li><a href="#43_86" rel="nofollow">4.3.个人相应笔记</a></li><li><ul><li><a href="#431_87" rel="nofollow">4.3.1数据集</a></li><li><a href="#432_91" rel="nofollow">4.3.2目标检测系列</a></li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_1"></a>一、前言</h2> 
+<p>前面铺垫都是为了学习最终的Faster-RCNN网络，为此学习了PASCAL VOC数据集、COCO数据集、评价指标、SS算法、R-CNN网络、Fast-RCNN网络，这些可以到本文参考博客查看。</p> 
+<blockquote> 
+ <p>本文有两个目的，其一是作为本人自己的笔记，方便自己巩固复习；其二，希望拙劣的见解能够帮助到正在自学的朋友。</p> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/6f/86/jHrC2unr_o.png" alt="在这里插入图片描述"><br> Faster R-CNN提出了一个FPN的结构使得检测速度进度加快，推测速度达到5fps，也即每1秒可以检测5张图片。</p> 
+<h2><a id="FasterRCNN_8"></a>二、Faster-RCNN算法原理</h2> 
+<p><img src="https://images2.imgbox.com/7d/90/4NtFh5DU_o.png" alt="在这里插入图片描述"><br> 我们可以认为Faste-RCNN是在Fast-RCNN的基础上进行修改的，主要改的部分就是候选框的生成，改为了RPN结构，也就是说Faster-RCNN = Fast-RCNN + RPN，接下来我们先介绍什么是RPN?</p> 
+<h3><a id="21RPN_12"></a>2.1.RPN结构</h3> 
+<p><img src="https://images2.imgbox.com/1a/5a/wbyieWqz_o.png" alt="在这里插入图片描述"><br> 上图右边是原论文给的关于RPN的结构，在输入整张图片得到feature map后，我们在feature map上滑动找到滑动窗口中心点在原始图上的中心点（可以根据映射比例关系得到），然后在原图上以该点为中心计算出k个anchor boxes,这里的anchor boxes即为初步生成的候选框，k为指定的一个大小，因为每个目标的大小和比例不一样，所以需要多个候选框来尽可能的找到目标。在原论文中k=9(主要选取了3个比例，分为1：1，1：2，2：1，大小也有三个，分别为：128✖128， 256✖256， 512✖512。也即k = 3✖3 = 9 )</p> 
+<blockquote> 
+ <p>256-d表示的是一个256维的一维向量，256是因为feature map的channels为256，如果backbone是VGG16则会生成512维的一维向量。<br> 2kscores指的是，长度为2k的全连接层，每两个数来表示对k个候选框背景与目标的概率预测，总共k个候选框，所以2k个scores。<br> 4k是指对k个候选框的边界框回归参数的预测，每个框需要4个参数。</p> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/8a/a8/nGbDvpy3_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="211_21"></a>2.1.1感受野的计算与候选框的生成</h4> 
+<p><strong>1）感受野的计算</strong></p> 
+<blockquote> 
+ <p>论文中也提到了对于feature map上面每一个pixel的感受野，当网络backbone为ZF时感受为171，VGG16时为228，下图为ZF时的感受野计算过程：<br> <img src="https://images2.imgbox.com/da/82/1pSq5dTF_o.png" alt="在这里插入图片描述"><br> <mark>PS:得到每一个anchor的背景前景预测以及边界框回归参数后，我们通过RPN生成的边界框回归参数与前景背景预测分数调整这个初步生成的候选框来生成Fast-RCNN的输入候选框。</mark></p> 
+</blockquote> 
+<p><strong>2）候选框的生成</strong></p> 
+<blockquote> 
+ <p>对于一张1000✖600✖3的图片在经过backbone输出大小为60*40的feature map,对于上面的每一个pixel,有九个初步候选框，大约为60乘以40✖9 大约20k个初步候选框，排除掉超出图片范围的大约剩下6k个，再经过RPN得到的cls得分，采取极大值抑制的方法筛选出大概2k个候选框，IOU设置为0.7，最终得到的候选框数量与SS算法生成的基本相同，大约2k个。</p> 
+</blockquote> 
+<h4><a id="212_32"></a>2.1.2正负样本</h4> 
+<p>训练数据的采样，也即正样本与负样本。</p> 
+<p>对于每张图片大概采集256个样本，128个正样本，若正样本不够128，则负样本补上数量就行，例如正样本只有100，则负样本采取156个。正样本有两种方式来确定：1）是取与真实框IOU大于0.7的记为正样本；2）将与真实样本IOU最大的作为正样本；第二种方式主要作为第一种方式的补充，防止没有预测的框与真实框IOU大于0.7的极端情况。<br> 负样本由IOU小于0.3的来确定。</p> 
+<h3><a id="22RPN_38"></a>2.2.RPN的损失计算</h3> 
+<p>RPN的损失与前面的Fast-RCNN的损失类似，也有两个损失，一个是分类损失，一个边界框回归参数的损失。<br> <img src="https://images2.imgbox.com/16/62/7ogjosEb_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="221_42"></a>2.2.1对于分类损失</h4> 
+<blockquote> 
+ <p>刚看最不理解的就是为什么Ncls不等于Nreg,理论上不应该对于每一个候选框我们需要由它对于前景与背景的预测分数，有边界框的回归回归参数，这样不是256个框就都除以256吗?<br> 后面我的个人理解是：对于分类损失确实只预测了256个框，所以每张图像的256个预测框的前后背景得分交叉熵需要除以256<br> 而对于边界框的回归主要由位置来决定，虽然只使用了256个框但是由2400个位置，每个位置k个框，最后采样提取出来的256个框包含了这2400个位置的信息，所以除以2400。<br> 况且还有一个平衡参数λ=10，这样得到的每个损失的权重为1/256，1/240，基本一样，更能说明其实刚开始想的除以256应该才是正确想法。<br> 事实上对于λ，作者做了一些实验，有结果如下：<br> <img src="https://images2.imgbox.com/24/c8/SfHLmUcW_o.png" alt="&gt; [外链图片转存失败,源站可能有防盗链机制,建议将图片保存下来直接上传(img-xrcOGolX-1684636829305)(image_7.9db1a8fc.png)]"><br> <mark>可以看到实际上各个部分的损失权重对于结果的准确性影响很小。而λ=10是作者实验得到的最佳参数。</mark></p> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/77/7d/1t6VtwgL_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="222_53"></a>2.2.2.边界回归参数</h4> 
+<p><img src="https://images2.imgbox.com/d9/07/gM8KP78t_o.png" alt="在这里插入图片描述"><br> RPN的边界框回归损失与Fast-RCNN的边界框回归损失基本一样，不明白的可以去看我的关于fast-RCNN的详解。值得注意的是这里的X,Xa,X*分别指预测的框，anchor box（也即还没有经过RPN调整的框）、真实框的中心x坐标，y,w,h类似分别指框中心y坐标，框宽和高。这里的边界框回归参数都是相对anchor box计算的。</p> 
+<h3><a id="23FastRCNN_56"></a>2.3.Fast-RCNN损失</h3> 
+<p>这部分损失请看上一篇博客。本质上计算一模一样。<a href="https://blog.csdn.net/SL1029_/article/details/130779462?spm=1001.2014.3001.5501">3.目标检测(三)——Fast-RCNN详解</a></p> 
+<h3><a id="24_59"></a>2.4.整体训练</h3> 
+<p><img src="https://images2.imgbox.com/54/c9/UlFce12Y_o.png" alt="在这里插入图片描述"><br> 关于Faster-RCNN的训练，作者有提出几种方法。</p> 
+<blockquote> 
+ <p>1.交替迭代训练，也就是本论文最终采取的方式<br> 2.直接将Fast-RCNN与RPN的损失加在一起训练（Pytorch官方采取的这种方式，相比第一种时间更少，结果也基本一样）<br> 3.作者提到直接加在一起可能会有一点问题，解决方法超出本篇论文的讨论范围。</p> 
+</blockquote> 
+<h2><a id="_66"></a>三、总结</h2> 
+<p><img src="https://images2.imgbox.com/6f/9e/lwdThj2W_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/b9/73/En0NKEbL_o.png" alt="在这里插入图片描述"></p> 
+<p>写到这里，R-CNN的系列基本学完，后续还有继续写Mask-RCNN的笔记。特别<mark>感谢有B站Up主霹雳吧啦Wz的视频讲解</mark>，没有博主的无私分享，我感觉自己理解会达不到这样的层次。本系列的博客都是基于他的视频讲解与原论文还有其他优秀博客写的，确实花了不少时间，希望自己能够帮助到正在学习相关知识的朋友。接下来就可以开始阅读Faster-RCNN的源码了。</p> 
+<h2><a id="_72"></a>四、参考博客、视频、论文地址</h2> 
+<h3><a id="41BUP_73"></a>4.1.B站优质UP视频</h3> 
+<p><a href="https://www.bilibili.com/video/BV1af4y1m7iL/?p=3&amp;spm_id_from=pageDriver&amp;vd_source=6f62aba02fc9ac56aa9063bbce87d3a7" rel="nofollow">B站UP主视频（强推）</a></p> 
+<h3><a id="42_76"></a>4.2.系类论文地址</h3> 
+<p><a href="https://cs.brown.edu/people/pfelzens/papers/seg-ijcv.pdf" rel="nofollow">基于图的分割算法论文</a></p> 
+<p><a href="www.eecs.qmul.ac.uk/~sgg/ECS795P/papers/WK09_SelectiveSearch_Uijlings_IJCV2013.pdf" rel="nofollow">Selective Search算法</a></p> 
+<p><a href="https://arxiv.org/pdf/1311.2524v3.pdf" rel="nofollow">R-CNN论文</a></p> 
+<p>[Fast-RCNN](<a href="https://arxiv.org/abs/1504.08083" rel="nofollow">[1504.08083] Fast R-CNN (arxiv.org)</a>)</p> 
+<p>[Faster-RCNN](<a href="https://arxiv.org/pdf/1506.01497v3.pdf" rel="nofollow">1506.01497v3.pdf (arxiv.org)</a>)</p> 
+<h3><a id="43_86"></a>4.3.个人相应笔记</h3> 
+<h4><a id="431_87"></a>4.3.1数据集</h4> 
+<p><a href="https://blog.csdn.net/SL1029_/article/details/130698969?spm=1001.2014.3001.5501">1.PASCAL VOC数据集详解</a><br> <a href="https://blog.csdn.net/SL1029_/article/details/130698509?spm=1001.2014.3001.5501">2.MS CoCo数据集详解</a><br> <a href="https://blog.csdn.net/SL1029_/article/details/130680911?spm=1001.2014.3001.5501">3.MAP计算与CoCo评价指标</a></p> 
+<h4><a id="432_91"></a>4.3.2目标检测系列</h4> 
+<p><a href="https://blog.csdn.net/SL1029_/article/details/130751436?spm=1001.2014.3001.5501">1.目标检测(一)——SS算法</a><br> <a href="https://blog.csdn.net/SL1029_/article/details/130762011?spm=1001.2014.3001.5501">2.目标检测(二)——RCNN详解</a><br> <a href="https://blog.csdn.net/SL1029_/article/details/130779462?spm=1001.2014.3001.5501">3.目标检测(三)——Fast-RCNN详解</a></p> 
+<hr>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/2984d3b74a6fec949d3ef04a5a5da2b1/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">mobx数据更新，组件未刷新问题</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/8c1d86e7db34c63cbb0cd4f5d4e06466/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">u-boot移植：详细讲解移植u-boot.2022.10版本到imx6ull开发板</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

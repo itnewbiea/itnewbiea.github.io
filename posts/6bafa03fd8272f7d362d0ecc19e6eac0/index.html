@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>linux内核引用FILE指针,探秘linux-文件管理(inode理解)及管道和IO重定向 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="linux内核引用FILE指针,探秘linux-文件管理(inode理解)及管道和IO重定向" />
+<meta property="og:description" content="一、文件管理
+1、Linux系统上各主要目录的简介
+/ 根,所有文件的起点
+bin 存放操作系统启动时的引导程序,以及操作系统内核文件
+boot 存放操作系统启动时的引导程序,以及操作系统内核文件
+dev 存放设备文件和特殊文件(如字符设备)
+etc 存放配置文件的目录
+home 普通用户的家目录默认都在此目录下
+lib 存放系统库和内核模块文件 (/lib/modules)
+lib64 存放x86_64位系统上共享库文件
+media 系统上提供的设备挂载点
+misc 系统上提供的设备挂载点
+mnt 系统上提供的设备挂载点
+opt 第三方应用程序的安装位置
+proc 用于输出内核与进程信息相关的虚拟文件系统
+root root用户的家目录
+sbin 存放管理员用户可执行的相关二进制程序文件目录,不能单独分区,操作系统启动时会用到该目录下的相关程序
+selinux selinux相关的安全策略等信息的存储位置
+srv 系统上运行的服务用到的数据
+sys 用于输出系统上硬件设备相关信息的虚拟文件系统
+tmp 临时文件存储位置
+usr 第三方软件的安装目录,该目录下有另一套完整的目录文件结构,包括有bin、sbin、local、include、而local又有bin、sbin等
+2、inode的认识总结
+文件系统inode的一些原理：
+文件系统在组织文件存储时，遵循一定的存储规则。在文件系统创建时，会将底层存储设备(硬盘)逻辑划分为一个一个的磁盘(block)，一般一个block大小默认为4096个字节，也就是4K，这个值在ext系列文件系统上支持1024、2048、4096，可以在创建文件系统的时候指定(利用mke2fs -b SIZE来指定block大小，一旦指定后，后期不能更改)，然后将多个磁盘块划分为一个个的块组，一个分区里面有有多个块组，但一个分区里面会有一部分block用来存储整个分区的一些属性状态的超级块，(用tune2fs -l DEVICE可以查看到分区超级块里面存储的信息，如分区卷标、分区的特性、挂载时的默认选项、总共有多少inode、总共多少block、每个块组有多少block、每个块组有多少inode等信息)。
+linxu上文件有两部分组成，一个是文件的元数据，一个是文件的数据本身，两部分分开存储，文件系统划分出来的磁盘块有部分用来存储inode table，有部分用来存储数据本身，文件的数据至少占据1个block大小，即使数据只有1byte，如果blick大小为4K，那么该文件数据占用的磁盘空间也是4K。inode table里面存储每每个文件的inode条目，每个条目在在同一个文件系统内部有一个唯一的ID号，一个inode条目记录一个文件的元数据信息，这些信息包括：该文件的权限、属主属组、大小、时间戳(但是inode条目里面是没有存储该文件的文件名的，这点要注意，文件名是存储在目录文件的数据块中)。
+inode条目还存储了该文件的数据所在的block的指针信息，也就是该文件数据存在哪个磁盘块上，一般一个inode条目的指针部分，分为直接指针、间接指针、二重指针、三重指针…直接指针在ext系列文件系统上有12个，一个直接指针指向一个磁盘块，故利用直接指针可以存储的数据大小，为4K*12。当数据超过48K时，就需要利用间接指针指向的数据区域来存储了，所谓间接指针就是inode的数据块指针指向了一个block块，但这个block本身存储的不是文件数据本身，而是存储的指针信息(在ext文件系统上，一个指针信息占用4字节的空间，故一个block可以有1024个指针信息)，然后，由这个block块里面的指针指向具体文件数据存储磁盘块，这样，利用间接指针可以存储的文件大小为1024*4K。要存储的文件超过了间接指针能指向的范围，则需要用到二重指针，二重指针是指，inode条目里面的指针指向一个block，该block存储的依然是指针信息，一个指针指向一个block，而被指向的这个block存储的依然是指针信息，具体是这样：inode条目–&gt;block(存的是指针)–&gt;block(存的是指针)–&gt;block(存的是文件数据)，这样二重指针所能存储的文件数据大小就是1024*1024*4K，以此类推。
+直接指针：inode条目–&gt;block(存的是文件数据)
+间接指针：inode条目–&gt;block(存的是指针)–&gt;block(存的是文件数据)
+二重指针：inode条目–&gt;block(存的是指针)–&gt;block(存的是指针)–&gt;block(存的是文件数据)
+三重指针：inode条目–&gt;block(存的是指针)–&gt;block(存的是指针)–&gt;block(存的是指针)–&gt;block(存的是文件数据)
+利用直接指针能存储的文件大小：12*4K
+利用间接指针能存储的文件大小：1*1024*4K (一个inode条目只有1个间接指针)
+利用二重指针能存储的文件大小：1*1024*1024*4K
+利用三重指针能存储的文件大小：1*1024*1024*1024*4K
+而对于文件和目录的存储，在文件系统存储时是不一样的，文件存储中，数据部分存的是文件本身的数据文件，而目录文件，数据部分存储的是目录下面文件名与该文件的inode号的对应关系
+故当我们访问某个文件时，文件系统内部寻找的过程大致是这样的：(以寻找/etc/issue为例)
+首先找/根，因为根是自启动的，可以知道自己是在哪个inode上，找到/的inode后，inode指向了/下相应的数据存储的block，该block内部存储了/下一级子目录的名称和inode对应关系(当然如果/下有直接的文件，那某些数据块上存储的就是文件的数据)，通过对应关系，就找到了etc所在的inode，然后通过etc的indode，就找到了etc下面的文件和目录的数据存储的block，进而找到了issue文件的数据
+3、文件类型和软硬链接的介绍
+ls -l 中查看到的权限字段的信息中第一位即表示该文件的类型，常见的文件类型有：" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/6bafa03fd8272f7d362d0ecc19e6eac0/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-05-03T01:19:55+08:00" />
+<meta property="article:modified_time" content="2021-05-03T01:19:55+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">linux内核引用FILE指针,探秘linux-文件管理(inode理解)及管道和IO重定向</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div style="font-size:16px;"> 
+ <p>一、文件管理</p> 
+ <p>1、Linux系统上各主要目录的简介</p> 
+ <p>/ 根,所有文件的起点</p> 
+ <p>bin 存放操作系统启动时的引导程序,以及操作系统内核文件</p> 
+ <p>boot 存放操作系统启动时的引导程序,以及操作系统内核文件</p> 
+ <p>dev 存放设备文件和特殊文件(如字符设备)</p> 
+ <p>etc 存放配置文件的目录</p> 
+ <p>home 普通用户的家目录默认都在此目录下</p> 
+ <p>lib 存放系统库和内核模块文件 (/lib/modules)</p> 
+ <p>lib64 存放x86_64位系统上共享库文件</p> 
+ <p>media 系统上提供的设备挂载点</p> 
+ <p>misc 系统上提供的设备挂载点</p> 
+ <p>mnt 系统上提供的设备挂载点</p> 
+ <p>opt 第三方应用程序的安装位置</p> 
+ <p>proc 用于输出内核与进程信息相关的虚拟文件系统</p> 
+ <p>root root用户的家目录</p> 
+ <p>sbin 存放管理员用户可执行的相关二进制程序文件目录,不能单独分区,操作系统启动时会用到该目录下的相关程序</p> 
+ <p>selinux selinux相关的安全策略等信息的存储位置</p> 
+ <p>srv 系统上运行的服务用到的数据</p> 
+ <p>sys 用于输出系统上硬件设备相关信息的虚拟文件系统</p> 
+ <p>tmp 临时文件存储位置</p> 
+ <p>usr 第三方软件的安装目录,该目录下有另一套完整的目录文件结构,包括有bin、sbin、local、include、而local又有bin、sbin等</p> 
+ <p>2、inode的认识总结</p> 
+ <p>文件系统inode的一些原理：</p> 
+ <p>文件系统在组织文件存储时，遵循一定的存储规则。在文件系统创建时，会将底层存储设备(硬盘)逻辑划分为一个一个的磁盘(block)，一般一个block大小默认为4096个字节，也就是4K，这个值在ext系列文件系统上支持1024、2048、4096，可以在创建文件系统的时候指定(利用mke2fs -b SIZE来指定block大小，一旦指定后，后期不能更改)，然后将多个磁盘块划分为一个个的块组，一个分区里面有有多个块组，但一个分区里面会有一部分block用来存储整个分区的一些属性状态的超级块，(用tune2fs -l DEVICE可以查看到分区超级块里面存储的信息，如分区卷标、分区的特性、挂载时的默认选项、总共有多少inode、总共多少block、每个块组有多少block、每个块组有多少inode等信息)。</p> 
+ <p>linxu上文件有两部分组成，一个是文件的元数据，一个是文件的数据本身，两部分分开存储，文件系统划分出来的磁盘块有部分用来存储inode table，有部分用来存储数据本身，文件的数据至少占据1个block大小，即使数据只有1byte，如果blick大小为4K，那么该文件数据占用的磁盘空间也是4K。inode table里面存储每每个文件的inode条目，每个条目在在同一个文件系统内部有一个唯一的ID号，一个inode条目记录一个文件的元数据信息，这些信息包括：该文件的权限、属主属组、大小、时间戳(但是inode条目里面是没有存储该文件的文件名的，这点要注意，文件名是存储在目录文件的数据块中)。</p> 
+ <p>inode条目还存储了该文件的数据所在的block的指针信息，也就是该文件数据存在哪个磁盘块上，一般一个inode条目的指针部分，分为直接指针、间接指针、二重指针、三重指针…直接指针在ext系列文件系统上有12个，一个直接指针指向一个磁盘块，故利用直接指针可以存储的数据大小，为4K*12。当数据超过48K时，就需要利用间接指针指向的数据区域来存储了，所谓间接指针就是inode的数据块指针指向了一个block块，但这个block本身存储的不是文件数据本身，而是存储的指针信息(在ext文件系统上，一个指针信息占用4字节的空间，故一个block可以有1024个指针信息)，然后，由这个block块里面的指针指向具体文件数据存储磁盘块，这样，利用间接指针可以存储的文件大小为1024*4K。要存储的文件超过了间接指针能指向的范围，则需要用到二重指针，二重指针是指，inode条目里面的指针指向一个block，该block存储的依然是指针信息，一个指针指向一个block，而被指向的这个block存储的依然是指针信息，具体是这样：inode条目–&gt;block(存的是指针)–&gt;block(存的是指针)–&gt;block(存的是文件数据)，这样二重指针所能存储的文件数据大小就是1024*1024*4K，以此类推。</p> 
+ <p>直接指针：inode条目–&gt;block(存的是文件数据)</p> 
+ <p>间接指针：inode条目–&gt;block(存的是指针)–&gt;block(存的是文件数据)</p> 
+ <p>二重指针：inode条目–&gt;block(存的是指针)–&gt;block(存的是指针)–&gt;block(存的是文件数据)</p> 
+ <p>三重指针：inode条目–&gt;block(存的是指针)–&gt;block(存的是指针)–&gt;block(存的是指针)–&gt;block(存的是文件数据)</p> 
+ <p>利用直接指针能存储的文件大小：12*4K</p> 
+ <p>利用间接指针能存储的文件大小：1*1024*4K (一个inode条目只有1个间接指针)</p> 
+ <p>利用二重指针能存储的文件大小：1*1024*1024*4K</p> 
+ <p>利用三重指针能存储的文件大小：1*1024*1024*1024*4K</p> 
+ <p>而对于文件和目录的存储，在文件系统存储时是不一样的，文件存储中，数据部分存的是文件本身的数据文件，而目录文件，数据部分存储的是目录下面文件名与该文件的inode号的对应关系</p> 
+ <p>故当我们访问某个文件时，文件系统内部寻找的过程大致是这样的：(以寻找/etc/issue为例)</p> 
+ <p>首先找/根，因为根是自启动的，可以知道自己是在哪个inode上，找到/的inode后，inode指向了/下相应的数据存储的block，该block内部存储了/下一级子目录的名称和inode对应关系(当然如果/下有直接的文件，那某些数据块上存储的就是文件的数据)，通过对应关系，就找到了etc所在的inode，然后通过etc的indode，就找到了etc下面的文件和目录的数据存储的block，进而找到了issue文件的数据</p> 
+ <p align="center"><img src="https://images2.imgbox.com/a5/51/LFmyRpgI_o.png" alt="26c26575698dd136feeaf00d20f3d556.png"></p> 
+ <p>3、文件类型和软硬链接的介绍</p> 
+ <p>ls -l 中查看到的权限字段的信息中第一位即表示该文件的类型，常见的文件类型有：</p> 
+ <p>– 表示普通文件</p> 
+ <p>d 表示目录文件</p> 
+ <p>b 表示块设备文件，如硬盘</p> 
+ <p>c 表示字符设备文件，如/dev/zero、/dev/null、/dev/ramdom</p> 
+ <p>l 表示符号链接文件</p> 
+ <p>p 表示管道文件</p> 
+ <p>s 表示socket套接字文件</p> 
+ <p>硬链接：多个文件路径指向的是同一个innod，故通过innod找到的磁盘块也就是同样的特性：</p> 
+ <p>1、目录不支持硬链接</p> 
+ <p>2、硬链接不能跨文件系统</p> 
+ <p>3、创建硬链接会增加inode引用计数</p> 
+ <p>硬链接创建方式：ln 原文件 链接文件</p> 
+ <p>软链接：指向一个文件路径的另一个文件路径，符号链接文件本身的innod中存放磁盘块指针的位置，不是存的磁盘块指针，而是指向了另外一个路径特性：</p> 
+ <p>1、符号链接与文件时两个各自独立的文件，各有自己的inode；对原文件创建软链接，不会增加引用计数</p> 
+ <p>2、支持对目录创建符号链接，可以跨文件系统</p> 
+ <p>3、删除符号链接文件不影响原文件，但删除原文件，符号链接指定的路径即不存在，此时会变成无效的链接</p> 
+ <p>4、符号链接文件的大小，是其指向的文件的路径字符串的字节数</p> 
+ <p>软链接创建方式：ln -s 原文件 链接文件</p> 
+ <p>注意：创建软链接时，原始文件的路径要使用绝对路径，如果要使用相对路径，则要相对于链接文件的路径，不能是相对于当前工作目录的相对路径</p> 
+ <p>4、文件系统相关命令</p> 
+ <p>cd：改变工作目录</p> 
+ <p>cd /PATH/TO/SOMEDIR 切换到指定目录</p> 
+ <p>cd 切换回家目录</p> 
+ <p>cd ~ 切换回自己家目录</p> 
+ <p>cd ~USERNAME 切换到指定用户的家目录(只有管理员才有权限切换到其他用户的家目录)</p> 
+ <p>cd – 在上一次所在目录与当前目录之间来回切换</p> 
+ <p>PWD 用来记录当前工作目录的环境变量</p> 
+ <p>OLDPWD 用来记录上一次工作目录的环境变量</p> 
+ <p>ls：列出指定目录下的内容</p> 
+ <p>语法：ls [OPTION]…[FILE]…</p> 
+ <p>常用选项：</p> 
+ <p>-a 显示所有文件，包括隐藏文件</p> 
+ <p>-A 显示除.和..之外的所有文件</p> 
+ <p>-l 长格式列表，表示显示文件的详细属性信息显示出来的信息为</p> 
+ <p>-rw-r-x— 2 root root 8827 10月15 20:34 testa.log</p> 
+ <p>-rw-r-x—该文件的文件类型和相应的权限</p> 
+ <p>2 表示文件被硬链接的次数</p> 
+ <p>root 表示文件的属主</p> 
+ <p>root 表示文件的属组</p> 
+ <p>8827 表示文件的大小</p> 
+ <p>但是如果对ll /dev 该处显示的是两个数字，类似brw-rw—-. 1 root cdrom 11, 0 7月13 00:34 sr0</p> 
+ <p>这里的数字前一个表示主设备号，后一个表示次设备号，前一个数字一样，表示设备类型一样，后一个数字表示该种设备下的不同的设备</p> 
+ <p>10月15 20:34 表示文件最后一次被修改的时间</p> 
+ <p>-h 表示对文件大小做单位换算，换算后的结果可能为非精确值(1000和1024的区别)</p> 
+ <p>-d 表示仅显示目录自身，而不是目录下面每个文件的属性，要与-l一起使用，显示目录自身的属性信息</p> 
+ <p>-r ，–reverse 表示显示时以逆序的方式进行显示，默认是升序显示</p> 
+ <p>-R ，–recursive 表示递归显示</p> 
+ <p>ls -ld 目录和符号链接信息</p> 
+ <p>ls -1 文件分行显示</p> 
+ <p>ls -S 按从大到小排序</p> 
+ <p>ls -u 配合-t，显示并按atime从新到旧排序</p> 
+ <p>ls -U不排序按目录存放顺序显示</p> 
+ <p>ls -i 可以显示文件的inode编号</p> 
+ <p>stat命令：显示文件或文件系统的状态，显示文件的元数据</p> 
+ <p>例如：stat /etc/passwd</p> 
+ <p>显示大小、innod号，权限、最近一次访问时间(atime)、最近一次的更改时间(mtime)(改变文件内容)，最近一次的改变时间(ctime)(改变文件元数据)</p> 
+ <p>touch命令：改变文件的时间戳(atime、mtime、ctime)</p> 
+ <p>语法：touch [OPTION]…FILE…</p> 
+ <p>touch 以存在的文件，表示改变文件的三个时间戳</p> 
+ <p>touch 不存在的文件，表示新建该文件</p> 
+ <p>touch -a 已存在的文件 表示改变文件的访问时间atime</p> 
+ <p>touch -m 已存在的文件 表示改变文件的改变时间mtime</p> 
+ <p>-c 表示如果文件不存在，则不创建该文件</p> 
+ <p>-t 时间；表示修改为的时间</p> 
+ <p>例如：touch -m -t 201607211658.20 /tmp/nwc.txt</p> 
+ <p>表示修改/tmp/nwc.txt文件的修改时间为2016年07月21日16点58分20秒</p> 
+ <p>cp命令：文件复制命令</p> 
+ <p>从文件系统存储级别来理解cp：分配一个空闲的inode号，在inode表中生成一个新的条目，在目录中创建一个目录项，将名称与inode编号关联，拷贝数据，生成新的文件</p> 
+ <p>语法：</p> 
+ <p>单源复制：cp [OPTION]… [-T] SOURCE DEST</p> 
+ <p>多源复制：cp [OPTION]… SOURCE… DIRECTORY</p> 
+ <p>单源复制：cp [OPTION]… [-T] SOURCE DEST</p> 
+ <p>如果DEST不存在，则事先创建此文件，并复制源文件的数据至DEST中；</p> 
+ <p>如果DEST存在：</p> 
+ <p>如果DEST是非目录文件，则覆盖目标文件</p> 
+ <p>如果DEST是目录文件，则事先在DEST目录下创建一个与源文件同名的文件，并复制其数据流</p> 
+ <p>多源复制：cp [OPTION]… SOURCE… DIRECTORY</p> 
+ <p>如果DEST不存在：错误</p> 
+ <p>如果DEST存在：</p> 
+ <p>如果DEST是常规文件：错误</p> 
+ <p>如果DEST是目录：分别复制每个文件至目标目录中，并保持原名</p> 
+ <p>常用选项：</p> 
+ <p>-i 覆盖之前提醒用户确认，默认cp就带此选项</p> 
+ <p>-f 强制覆盖目标文件</p> 
+ <p>-r,-R 递归复制目录及目录中的内容至目标目录</p> 
+ <p>-d 复制软链接文件本身，而不是指向的源文件</p> 
+ <p>-a 复制文件时保留文件的全部元数据信息，实现归档，可用作备份</p> 
+ <p>–preserv=LIST 指定复制时要保留那些属性信息</p> 
+ <p>mode：权限</p> 
+ <p>ownership：属主和属组</p> 
+ <p>timestamps：时间戳信息</p> 
+ <p>context：安全标签</p> 
+ <p>xattr：扩展属性</p> 
+ <p>links：符号链接</p> 
+ <p>all：上述所有属性</p> 
+ <p>mv命令：文件移动命令</p> 
+ <p>(注意：同一个分区的mv操作，只是改了对应目录文件数据中针对该文件的指针信息，文件自身的inode和数据块都没发生改变，但是不同分区之间的mv操作是全部都改掉的)</p> 
+ <p>从文件系统存储级别来理解mv：如果源和目标在同一个文件系统内部进行mv操作，则对应的操作相当于用新的文件名，创建对应新的目录项，删除旧的目录项及对应的旧的文件名，整个操作不会涉及到文件本身的inode号的改变和数据块的改变，只会修改inode条目上的时间戳信息，数据块的内容不会发生移动</p> 
+ <p>如果源和目标不在同一文件系统，则相当于cp和rm的操作</p> 
+ <p>语法：与cp一样</p> 
+ <p>常用选项 -i、-f</p> 
+ <p>rm命令：删除文件(建议自己建个目录文件，把要删除的文件先mv到此目录，过段时间后确认不用后，再删除)</p> 
+ <p>从文件系统存储级别来理解rm：链接数递减，取消inode与数据block之间的关联关系，释放inode号，将数据块标志为空闲状态，删除目录项。rm命令是不会删除数据块中的数据的，只是标记为空闲，让其他文件的数据可以写到该数据块，从而覆盖掉以前的数据</p> 
+ <p>常用选项：-i、-f、-r</p> 
+ <p>alias 可以显示当前系统上的命令别名信息</p> 
+ <p>定义命令别名：</p> 
+ <p>alias NAME=’COMMAND’ 只对当前shell有效，立即生效，重启后失效</p> 
+ <p>例如 alias cds=‘cd /etc/sysconfig/network-scripts/’</p> 
+ <p>撤销别名：</p> 
+ <p>umalias NAME</p> 
+ <p>例如 unalias cds</p> 
+ <p>要想永久生效，可定义在/etc/bashrc配置文件中，如果只想对某个用户永久有效，可以在该用户家目录中.bashrc中定义</p> 
+ <p>tree命令 显示目录树</p> 
+ <p>-d 只显示目录</p> 
+ <p>-L LEVEL 指定显示的层级数目</p> 
+ <p>-P PARTEREN 指定显示通配符的目录</p> 
+ <p>mkdir 创建目录</p> 
+ <p>-p 递归创建，存在于不报错，且可以自动创建所需的各目录</p> 
+ <p>-v 显示详细过程</p> 
+ <p>-m MODE 创建目录时指定权限</p> 
+ <p>mkdir -pv /testdir/dir1/{x,y}/{a,b}</p> 
+ <p>mkdir -pv /testdir/dir2/{x/{a,b},y}</p> 
+ <p>mkdir -pv /testdir/dir{3,4,5/dir{6,7}}</p> 
+ <p>rmdir 删除空目录</p> 
+ <p>-p 递归删除父空目录</p> 
+ <p>-v 显示详细信息</p> 
+ <p>file命令</p> 
+ <p>语法file [OPTION] FILENAME</p> 
+ <p>选项：</p> 
+ <p>-b 显示时不显示文件名</p> 
+ <p>-f FILE 将需要判断文件类型的文件写到一个文件中，用-f指定这个文件，批量判断文件类型</p> 
+ <p>-F 显示时用指定的符号作为分隔符，默认是：冒号</p> 
+ <p>-i 显示出文件的编码类型</p> 
+ <p>-L 判断软链接时，默认只显示软链接文件本身的类型，不显示原文件的类型，加上-L后，可以显示出源文件的类型</p> 
+ <p>5、通配符</p> 
+ <p>匹配零个或多个任意字符</p> 
+ <p>？ 匹配任意单个字符</p> 
+ <p>~ 当前用户家目录</p> 
+ <p>~USERNAME 指定用户家目录</p> 
+ <p>~+ 当前工作目录</p> 
+ <p>~- 前一个工作目录</p> 
+ <p>[0-9] 匹配一个数字范围</p> 
+ <p>[a-z] 大写和小写字母，表示aAbBcC…yYz 不包含大Z</p> 
+ <p>[A-Z] 大写和小写字母，表示AbBcC…yYzZ 不包含小a</p> 
+ <p>例如：[a-d]表示匹配 aAbBcCd 不包含大D</p> 
+ <p>但[abcd]则只匹配abcd</p> 
+ <p>[nwc9] 匹配括号内的单个字符</p> 
+ <p>[^nwc9] 匹配除括号内的字符意外的任意单个字符</p> 
+ <p>[[:digit:]] 匹配任意数字，相当于[0-9]</p> 
+ <p>[^[:digit:]] 匹配除数字之外的字符</p> 
+ <p>[[:lower:]] 匹配任意小写字母</p> 
+ <p>[[:upper:]] 匹配任意大写字母</p> 
+ <p>[[:alpha:]] 匹配任意大小字母</p> 
+ <p>[[:alnum:]] 匹配任意数字或大小写字母</p> 
+ <p>[[:space:]] 匹配空格</p> 
+ <p>[[:punct:]] 匹配标点</p> 
+ <p>管道和IO重定向</p> 
+ <p>1、标准输入输出介绍</p> 
+ <p>linux为程序提供三种I/O设备：</p> 
+ <p>标准输入(STDIN)：0 默认是键盘</p> 
+ <p>标准输出(STDOUT)：1 默认是终端窗口屏幕</p> 
+ <p>标准错误输出(STDERR)：2 默认是终端窗口屏幕</p> 
+ <p>2、IO重定向</p> 
+ <p>I/O重定向就是将默认标准的输入、输出、错误输出定向的别的地方</p> 
+ <p>重定向的方法：命令 重定向操作符 重定向的目标</p> 
+ <p>&gt; 标准输出重定向，覆盖目标的内容</p> 
+ <p>&gt;&gt; 标准输出重定向，将结果追加到目标，不会覆盖目标的内容</p> 
+ <p>2&gt; 标准错误输出重定向，覆盖目标的内容</p> 
+ <p>2&gt;&gt; 标准错误输出重定向,将结果追加到目标，不会覆盖目标的内容</p> 
+ <p>&amp;&gt; 标准输出和标准错误输出重定向，覆盖目标的内容</p> 
+ <p>&amp;&gt;&gt; 标准输出和标准错误输出重定向,将结果追加到目标，不会覆盖目标的内容多个命令合并的输出：</p> 
+ <p>例如：(cal 2015；cal2016)&gt;/testdir/cal.txt&lt; 输入重定向</p> 
+ <p>例如：mail -s “help” root</p> 
+ <p>tr ‘a-z’ ‘A-Z’ tr命令：转换和删除字符</p> 
+ <p>语法：tr [OPTION]… ‘SET1’ [‘SET2’]</p> 
+ <p>选项：</p> 
+ <p>-c 取字符集的补集</p> 
+ <p>-s 把连续重复的字符，以单个字符表示</p> 
+ <p>tr -s‘\n’ 表示把连续的换行符，变成1个换行符，可实现删除空白行</p> 
+ <p>-d 删除SET1匹配到的内容</p> 
+ <p>-t 将SET1的内容转换成SET2的内容</p> 
+ <p>SET支持的内容格式：</p> 
+ <p>\NNN 八进制值为NNN 的字符(1 至3 个数位)</p> 
+ <p>\ 反斜杠</p> 
+ <p>\a 终端鸣响</p> 
+ <p>\b 退格</p> 
+ <p>\f 换页</p> 
+ <p>\n 换行</p> 
+ <p>\r 回车</p> 
+ <p>\t 水平制表符</p> 
+ <p>\v 垂直制表符</p> 
+ <p>字符1-字符2 从字符1 到字符2 的升序递增过程中经历的所有字符</p> 
+ <p>[字符*] 在SET2 中适用，指定字符会被连续复制直到吻合设置1 的长度</p> 
+ <p>[字符*次数] 对字符执行指定次数的复制，若次数以 0 开头则被视为八进制数</p> 
+ <p>[:alnum:] 所有的字母和数字</p> 
+ <p>[:alpha:] 所有的字母</p> 
+ <p>[:blank:] 所有呈水平排列的空白字符</p> 
+ <p>[:cntrl:] 所有的控制字符</p> 
+ <p>[:digit:] 所有的数字</p> 
+ <p>[:graph:] 所有的可打印字符，不包括空格</p> 
+ <p>[:lower:] 所有的小写字母</p> 
+ <p>[:print:] 所有的可打印字符，包括空格</p> 
+ <p>[:punct:] 所有的标点字符</p> 
+ <p>[:space:] 所有呈水平或垂直排列的空白字符</p> 
+ <p>[:upper:] 所有的大写字母</p> 
+ <p>[:xdigit:] 所有的十六进制数</p> 
+ <p>[=字符=] 所有和指定字符相等的字符</p> 
+ <p>3、管道</p> 
+ <p>管道(|)用来连接命令，例如:</p> 
+ <p>COMMAND1|COMMAND|COMMAND3…</p> 
+ <p>表示将COMMAND1的输出作为COMMAND2的输入，COMMAND的标准输出作为COMMAND3的输入</p> 
+ <p>注意：错误输出默认不能通过管道进行发送，如果要发送，可以利用2&gt;&amp;1或|&amp;来实现</p> 
+ <p>三、练习</p> 
+ <p>1、将/etc/issue文件中的内容转换为大写后保存至/tmp/issue.out文件中</p> 
+ <p>tr ‘a-z’ ‘A-Z’ &lt; /etc/issue &gt;/tmp/issue.out</p> 
+ <p>2、将当前系统登录用户的信息转换为大写后保存至/tmp/who.out文件中</p> 
+ <p>who|tr ‘a-z’ ‘A-Z’ &gt;/tmp/who.out</p> 
+ <p>3、一个linux用户给root发邮件，要求邮件标题为”help”，邮件正文如下：</p> 
+ <p>Hello, I am 用户名,the system version is here,pleasehelp me to check it ,thanks!</p> 
+ <p>操作系统版本信息</p> 
+ <p>echo -e “hello,I amwhoami,The system version is ,please help me to check it,thanks\nuname -sr” |mail -s “help” root</p> 
+ <p>4、将/root/下文件列表，显示成一行，并文件名之间用空格隔开</p> 
+ <p>for i inls /root;do echo -n “$i “;done;echo</p> 
+ <p>5、file1文件的内容为：”1 2 3 4 5 6 7 8 9 10” 计算出所有数字的总和</p> 
+ <p>i=i</p> 
+ <p>6、删除Windows文本文件中的’^M’字符</p> 
+ <p>cat -A /testdir/新建文本文档.txt | tr -d ‘^M’</p> 
+ <p>7、处理字符串“xt.,l 1 jr#!$mn2 c*/fe3 uz4”，只保留其中的数字和空格</p> 
+ <p>echo 'xt.,l 1 jr#!$mn2 c*/fe3 uz4'|tr -d '[:alpha:][:punct:]'</p> 
+ <p>8、将PATH变量每个目录显示在独立的一行</p> 
+ <p>echo $PATH|tr ‘:’ ‘\n’</p> 
+ <p>9、删除指定文件的空行</p> 
+ <p>tr -s ‘\n’ ‘\n’</p> 
+ <p>10、将文件中每个单词(字母)显示在独立的一行，并无空行</p> 
+ <p>tr -s ‘\n’ ‘\n’ </p> 
+</div>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/c75ff29f19348a88d1abcc1eb542ee2f/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">JVM的四种内存屏障</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/d7ebeb217e023c1ca18b81918a55ad73/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">linux将用户加入多个组,Linux 用命令把同一个用户加入多个组</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

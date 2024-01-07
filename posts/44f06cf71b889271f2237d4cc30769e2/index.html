@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>k8s中实现pod自动扩缩容 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="k8s中实现pod自动扩缩容" />
+<meta property="og:description" content="一、k8s应用自动扩缩容概述
+1）背景：
+在实际的业务场景中，我们经常会遇到某个服务需要扩容的场景（例如：测试对服务压测、电商平台秒杀、大促活动、或由于资源紧张、工作负载降低等都需要对服务实例数进行扩缩容操作）。
+2）扩缩容分类
+对象分类
+• node扩缩容
+• 在使用 kubernetes 集群经常问到的一个问题是，我应该保持多大的节点规模来满足应用需求呢？cluster-autoscaler 的出现解决了这个问题， 可以通过 cluster-autoscaler 实现节点级别的动态添加与删除，动态调整容器资源池，应对峰值流量。
+• pod层面
+• 我们一般会使用 Deployment 中的 replicas 参数，设置多个副本集来保证服务的高可用，但是这是一个固定的值，比如我们设置 10 个副本，就会启 10 个 pod 同时 running 来提供服务。如果这个服务平时流量很少的时候，也是 10 个 pod 同时在 running，而流量突然暴增时，有可能出现 10 个 pod 不够用的情况。针对这种情况怎么办？就需要自动扩缩容。
+按方式分类
+• 手动模式
+通过 kubectl scale 命令，这样需要每次去手工操作一次，而且不确定什么时候业务请求量就很大了，所以如果不能做到自动化的去扩缩容的话，这也是一个很麻烦的事情。
+• 自动模式
+kubernetes HPA（Horizontal Pod Autoscaling）：根据监控指标（cpu 使用率、磁盘、自定义的等）自动扩容或缩容服务中的pod数量，当业务需求增加时，系统将无缝地自动增加适量 pod 容器，提高系统稳定性。
+kubernetes KPA（Knative Pod Autoscaler）：基于请求数对 Pod 自动扩缩容，KPA 的主要限制在于它不支持基于 CPU 的自动扩缩容。
+kubernetes VPA（Vertical Pod Autoscaler）：基于 Pod 的资源使用情况自动设置 pod 的 CPU 和内存的 requests，从而让集群将 Pod 调度到有足够资源的最佳节点上。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/44f06cf71b889271f2237d4cc30769e2/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-01-02T21:37:00+08:00" />
+<meta property="article:modified_time" content="2024-01-02T21:37:00+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">k8s中实现pod自动扩缩容</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>一、k8s应用自动扩缩容概述<br> 1）背景：<br> 在实际的业务场景中，我们经常会遇到某个服务需要扩容的场景（例如：测试对服务压测、电商平台秒杀、大促活动、或由于资源紧张、工作负载降低等都需要对服务实例数进行扩缩容操作）。</p> 
+<p>2）扩缩容分类<br> 对象分类<br> • node扩缩容<br> • 在使用 kubernetes 集群经常问到的一个问题是，我应该保持多大的节点规模来满足应用需求呢？cluster-autoscaler 的出现解决了这个问题， 可以通过 cluster-autoscaler 实现节点级别的动态添加与删除，动态调整容器资源池，应对峰值流量。</p> 
+<p>• pod层面<br> • 我们一般会使用 Deployment 中的 replicas 参数，设置多个副本集来保证服务的高可用，但是这是一个固定的值，比如我们设置 10 个副本，就会启 10 个 pod 同时 running 来提供服务。如果这个服务平时流量很少的时候，也是 10 个 pod 同时在 running，而流量突然暴增时，有可能出现 10 个 pod 不够用的情况。针对这种情况怎么办？就需要自动扩缩容。</p> 
+<p>按方式分类<br> • 手动模式<br> 通过 kubectl scale 命令，这样需要每次去手工操作一次，而且不确定什么时候业务请求量就很大了，所以如果不能做到自动化的去扩缩容的话，这也是一个很麻烦的事情。</p> 
+<p>• 自动模式<br> kubernetes HPA（Horizontal Pod Autoscaling）：根据监控指标（cpu 使用率、磁盘、自定义的等）自动扩容或缩容服务中的pod数量，当业务需求增加时，系统将无缝地自动增加适量 pod 容器，提高系统稳定性。</p> 
+<p>kubernetes KPA（Knative Pod Autoscaler）：基于请求数对 Pod 自动扩缩容，KPA 的主要限制在于它不支持基于 CPU 的自动扩缩容。</p> 
+<p>kubernetes VPA（Vertical Pod Autoscaler）：基于 Pod 的资源使用情况自动设置 pod 的 CPU 和内存的 requests，从而让集群将 Pod 调度到有足够资源的最佳节点上。</p> 
+<p>二、如何实现自动扩缩容<br> HPA运作方式<br> • 整体逻辑：K8s 的 HPA controller 已经实现了一套简单的自动扩缩容逻辑，默认情况下，每 15s 检测一次指标，只要检测到了配置 HPA 的目标值，则会计算出预期的工作负载的副本数，再进行扩缩容操作。同时，为了避免过于频繁的扩缩容，默认在 5min 内没有重新扩缩容的情况下，才会触发扩缩容。</p> 
+<p>• 缺陷：HPA 本身的算法相对比较保守，可能并不适用于很多场景。例如，一个快速的流量突发场景，如果正处在 5min 内的 HPA 稳定期，这个时候根据 HPA 的策略，会导致无法扩容。</p> 
+<p>• pod数量计算方式：通过现有 pods 的 CPU 使用率的平均值（计算方式是最近的 pod 使用量（最近一分钟的平均值，从 metrics-server 中获得）除以设定的每个 Pod 的 CPU 使用率限额）跟目标使用率进行比较，并且在扩容时，还要遵循预先设定的副本数限制：MinReplicas &lt;= Replicas &lt;= MaxReplicas。计算扩容后 Pod 的个数：sum(最近一分钟内某个 Pod 的 CPU 使用率的平均值)/CPU 使用上限的整数+1</p> 
+<p>三、安装 Metrics Server</p> 
+<pre><code class="prism language-bash"><span class="token comment"># 官方仓库地址：https://github.com/kubernetes-sigs/metrics-server</span>
+$ <span class="token function">wget</span> https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.4.0/components.yaml
+在部署之前，修改 components.yaml 的镜像地址为：
+hostNetwork: <span class="token boolean">true</span>  <span class="token comment"># 使用hostNetwork模式</span>
+containers:
+- name: metrics-server
+  image: cnych/metrics-server:v0.4.0
+  
+  
+kubectl apply <span class="token parameter variable">-f</span> components.yaml
+kubectl get pods <span class="token parameter variable">-n</span> kube-system <span class="token parameter variable">-l</span> k8s-app<span class="token operator">=</span>metrics-server
+</code></pre> 
+<p>问题处理：<br> 如果出现pod的状态一直在重启，要看下日志报错<br> <img src="https://images2.imgbox.com/fa/d6/FFtlT5et_o.png" alt="在这里插入图片描述"><img src="https://images2.imgbox.com/9e/43/FncoOny2_o.png" alt="在这里插入图片描述"><br> E0102 12:55:08.341168 1 server.go:132] unable to fully scrape metrics: [unable to fully scrape metrics from node master1: unable to fetch metrics from node master1: Get “https://192.168.100.15:10250/stats/summary?only_cpu_and_memory=true”: x509: cannot validate certificate for 192.168.100.15 because it doesn’t contain any IP SANs, unable to fully scrape metrics from node node-1: unable to fetch metrics from node node-1: Get “https://192.168.100.16:10250/stats/summary?only_cpu_and_memory=true”: x509: cannot validate certificate for 192.168.100.16 because it doesn’t contain any IP SANs, unable to fully scrape metrics from node node-2: unable to fetch metrics from node node-2: Get “https://192.168.100.17:10250/stats/summary?only_cpu_and_memory=true”: x509: cannot validate certificate for 192.168.100.17 because it doesn’t contain any IP SANs]</p> 
+<p>修复方式：<br> 在如下位置添加：<code>- --kubelet-insecure-tls</code><br> <img src="https://images2.imgbox.com/14/b6/K6bTnn6Q_o.png" alt="在这里插入图片描述"><br> 检查：<br> <img src="https://images2.imgbox.com/73/c8/iIYh9RYa_o.png" alt="在这里插入图片描述">指标获取<br> K8S 从 1.8 版本开始，各节点CPU、内存等资源的 metrics 信息可以通过 Metrics API 来获取，用户可以直接获取这些 metrics 信息（例如通过执行 kubect top 命令），HPA 使用这些 metics 信息来实现动态伸缩。</p> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@master1 ha<span class="token punctuation">]</span><span class="token comment"># kubectl top nodes</span>
+NAME      CPU<span class="token punctuation">(</span>cores<span class="token punctuation">)</span>   CPU%   MEMORY<span class="token punctuation">(</span>bytes<span class="token punctuation">)</span>   MEMORY%
+master1   419m         <span class="token number">20</span>%    1465Mi          <span class="token number">39</span>%
+node-1    251m         <span class="token number">12</span>%    811Mi           <span class="token number">22</span>%
+node-2    235m         <span class="token number">11</span>%    813Mi           <span class="token number">22</span>%
+</code></pre> 
+<p>四、实践<br> 1）使用 Deployment 来创建一个 Nginx Pod，然后利用 HPA 来进行自动扩缩容。资源清单如下所示：（hpa-demo.yaml）</p> 
+<pre><code class="prism language-yaml"><span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> apps/v1
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> Deployment
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> hpa<span class="token punctuation">-</span>demo
+<span class="token key atrule">spec</span><span class="token punctuation">:</span>
+  <span class="token key atrule">selector</span><span class="token punctuation">:</span>
+    <span class="token key atrule">matchLabels</span><span class="token punctuation">:</span>
+      <span class="token key atrule">app</span><span class="token punctuation">:</span> nginx
+  <span class="token key atrule">template</span><span class="token punctuation">:</span>
+    <span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+      <span class="token key atrule">labels</span><span class="token punctuation">:</span>
+        <span class="token key atrule">app</span><span class="token punctuation">:</span> nginx
+    <span class="token key atrule">spec</span><span class="token punctuation">:</span>
+      <span class="token key atrule">containers</span><span class="token punctuation">:</span>
+      <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> nginx
+        <span class="token key atrule">image</span><span class="token punctuation">:</span> nginx
+        <span class="token key atrule">ports</span><span class="token punctuation">:</span>
+        <span class="token punctuation">-</span> <span class="token key atrule">containerPort</span><span class="token punctuation">:</span> <span class="token number">80</span>
+        <span class="token key atrule">resources</span><span class="token punctuation">:</span>
+          <span class="token key atrule">requests</span><span class="token punctuation">:</span>
+            <span class="token key atrule">memory</span><span class="token punctuation">:</span> 50Mi
+            <span class="token key atrule">cpu</span><span class="token punctuation">:</span> 50m
+</code></pre> 
+<pre><code class="prism language-bash"><span class="token comment">#执行yaml启动</span>
+kubectl apply <span class="token parameter variable">-f</span> hpa-demo.yaml
+<span class="token comment">#查看pod</span>
+kubectl get pods <span class="token parameter variable">-l</span> <span class="token assign-left variable">app</span><span class="token operator">=</span>nginx
+</code></pre> 
+<p>2）创建一个 HPA 资源对象</p> 
+<pre><code class="prism language-bash"><span class="token comment">#此命令创建了一个关联资源 hpa-demo 的 HPA，最小的 Pod 副本数为1，最大为10。HPA 会根据设定的 cpu 使用率（10%）动态的增加或者减少 Pod 数量。 </span>
+kubectl autoscale deployment hpa-demo --cpu-percent<span class="token operator">=</span><span class="token number">10</span> <span class="token parameter variable">--min</span><span class="token operator">=</span><span class="token number">1</span> <span class="token parameter variable">--max</span><span class="token operator">=</span><span class="token number">10</span>
+<span class="token comment">#查看hpa状态</span>
+<span class="token punctuation">[</span>root@master1 ha<span class="token punctuation">]</span><span class="token comment"># kubectl get hpa</span>
+NAME       REFERENCE             TARGETS         MINPODS   MAXPODS   REPLICAS   AGE
+hpa-demo   Deployment/hpa-demo   <span class="token operator">&lt;</span>unknown<span class="token operator">&gt;</span>/10%   <span class="token number">1</span>         <span class="token number">10</span>        <span class="token number">0</span>          10s
+<span class="token punctuation">[</span>root@master1 ha<span class="token punctuation">]</span><span class="token comment">#</span>
+<span class="token punctuation">[</span>root@master1 ha<span class="token punctuation">]</span><span class="token comment"># kubectl get hpa</span>
+NAME       REFERENCE             TARGETS   MINPODS   MAXPODS   REPLICAS   AGE
+hpa-demo   Deployment/hpa-demo   <span class="token number">0</span>%/10%    <span class="token number">1</span>         <span class="token number">10</span>        <span class="token number">1</span>          20s
+</code></pre> 
+<p>五、测试验证</p> 
+<pre><code class="prism language-bash"><span class="token comment">#使用busybox进行压测</span>
+<span class="token punctuation">[</span>root@master1 ha<span class="token punctuation">]</span><span class="token comment"># kubectl run -it --image busybox test-hpa --restart=Never --rm /bin/sh</span>
+If you don't see a <span class="token builtin class-name">command</span> prompt, try pressing enter.
+/ <span class="token comment"># while true; do wget -q -O- http://10.244.137.87; done</span>
+</code></pre> 
+<pre><code class="prism language-bash"><span class="token comment">#观察hpa值变化：</span>
+kubectl get hpa <span class="token parameter variable">--watch</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/e6/44/V0WKbgqS_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-bash"><span class="token comment">#观察pod的变化</span>
+kubectl get pods <span class="token parameter variable">-l</span> <span class="token assign-left variable">app</span><span class="token operator">=</span>nginx <span class="token parameter variable">--watch</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/75/26/L04uo9mm_o.png" alt="在这里插入图片描述"></p> 
+<p>流量太大时候就会出现不能及时扩容的场景，这也就是缺点的地方</p> 
+<p><img src="https://images2.imgbox.com/b8/9c/pY2tqEVn_o.png" alt="在这里插入图片描述"></p> 
+<p>当cpu恢复后pod的数量也自动缩容，实现了自动扩缩容<br> <img src="https://images2.imgbox.com/a6/f3/iF5XIuwX_o.png" alt="在这里插入图片描述"></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/5dddfd8b89436d9cffbf17741797a5b7/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">深入理解ArkTS：Harmony OS 应用开发语言 TypeScript 的基础语法和关键特性</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/4f19e64701e766be173fc95374a967bb/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">使用 Jackson 提取 JSON 数据值 - JsonUtils工具类</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

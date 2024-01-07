@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>1.linux系统基础笔记（互斥量、信号量） - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="1.linux系统基础笔记（互斥量、信号量）" />
+<meta property="og:description" content="操作系统是很多人每天必须打交道的东西，因为在你打开电脑的一刹那，随着bios自检结束，你的windows系统已经开始运行了。如果问大家操作系统是什么？可能有的人会说操作系统就是windows，就是那些可以放大、缩小、移动的窗口。对曾经是计算机专业的朋友来说，这个答案还要稍微复杂一些，操作系统可能还有linux、unix、ios、sun solaris、aix等。如果再细化一点，对嵌入式工具比较解的朋友还会有新的补充，因为在他们看来，vxworks、eCos、ucos也都是操作系统，虽然它们好多系统连界面都没有。
+既然操作系统称之为一个系统，那么它必然是由好多的部件组成的。有过linux嵌入式开发经验的朋友都知道，要想使一个linux在arm芯片上真正跑起来，它必须有三个部分组成，即boot &#43; 内核 &#43; 文件系统。而真正内核的东西其实很少，也就是cpu初始化、线程调度、内存分配、文件系统、网络协议栈、驱动这些部分组成。那么是不是所有的芯片都需要跑操作系统呢？我们可以举个例子。
+现在有一个简单的温度测量电路，它由三部分组成：1、单片机；2、温度传感器模块；3、无线发射模块。我们设计这么一个温度测量电路其实就是一个目的，那就是为了实时获取当前的温度信息。那么，这么一个简单的电路应该怎么设计程序呢？其实很简单。
+void sleep(int value) { int outer; int inner; for(; outer &lt; value; outer&#43;&#43;) { for(inner = 0; inner &lt; 1000; inner&#43;&#43;) ; } } void main() { while(1) { /* read temperature from port*/ sleep(1000); /* send temperature to wireless module */ sleep(1000); } } 如果我们需要cpu干的事情很少，甚至极端一点说只有一件事情，那么根本没有设计操作系统的必要。我们设计出操作系统，主要是想在单位时间内完成几件事情。打个比方来说，你完全可以在工作的时候一遍写文档、一遍收发电子邮件，偶尔还能开个小差休息一会。 所以操作系统就是为了共享资源而存在的。
+认识操作系统的用途不难，关键是如何把操作系统用代码写出来。也许有人会跟你说，免费的代码一大堆，Linux就不错，你下载下来直接读就好了。但是我告诉你，最新的Linux内核版本已经轻松的越过了3.0，整个代码的长度远在千万行之上，你可能从哪看起都不知道。可能此时又有人不同意了，看不懂高版本的linux，可以看看linux低版本的代码，0.11版本的代码就不错，因为赵炯就是怎么推荐的。我要说的是，0.11的代码固然好，但是怎么编译版本、怎么修改代码、怎么构造文件系统、怎么跑起来是我们绕不过的一道难题。对于很多朋友来说，阅读linux代码尚且困难，更不要说后面还需要完成的一大摊子烂事了。
+说了这么多，我们需要的的内核代码是什么样的？其实在我看来，很简单。它只要满足下面两个条件就可以了，
+（1）像用户软件一样可以运行；
+（2）像用户软件一样可以单步调试。 要解决这些问题，对linux系统来说上不难解决。要解决os的运行和调试问题，关键就在于如何仿真中断和实现os的任务切换。至于任务的开启、运行和挂起，内存分配，互斥量，信号量，文件系统，tcp/ip协议栈，GUI操作，这些其实都是可以在linux上进行仿真和操作的，朋友们可以尽请放心。这部分的内容，我们会在以后的博客中陆续展开。
+为了能够更好地阅读后面发表的博文，我建议你巩固一下下面这些知识，这样会对你的理解有很大的裨益。
+（1）cpu 结构，了解中断流程就行；
+（2）linux 汇编语言；
+（3）函数堆栈格式和内容；
+（4）互斥量、信号量的使用方法；
+（5）调度的基本策略；
+（6）内存分配的基本方法；" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/6f35a61dc77b6cc1463ab5cf96b48e2c/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2019-09-29T12:19:00+08:00" />
+<meta property="article:modified_time" content="2019-09-29T12:19:00+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">1.linux系统基础笔记（互斥量、信号量）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div id="cnblogs_post_body" class="blogpost-body"> 
+ <p>　　操作系统是很多人每天必须打交道的东西，因为在你打开电脑的一刹那，随着bios自检结束，你的windows系统已经开始运行了。如果问大家操作系统是什么？可能有的人会说操作系统就是windows，就是那些可以放大、缩小、移动的窗口。对曾经是计算机专业的朋友来说，这个答案还要稍微复杂一些，操作系统可能还有linux、unix、ios、sun solaris、aix等。如果再细化一点，对嵌入式工具比较解的朋友还会有新的补充，因为在他们看来，vxworks、eCos、ucos也都是操作系统，虽然它们好多系统连界面都没有。</p> 
+ <p>　　 既然操作系统称之为一个系统，那么它必然是由好多的部件组成的。有过linux嵌入式开发经验的朋友都知道，要想使一个linux在arm芯片上真正跑起来，它必须有三个部分组成，即boot + 内核 + 文件系统。而真正内核的东西其实很少，也就是cpu初始化、线程调度、内存分配、文件系统、网络协议栈、驱动这些部分组成。那么是不是所有的芯片都需要跑操作系统呢？我们可以举个例子。</p> 
+ <p>　　 现在有一个简单的温度测量电路，它由三部分组成：1、单片机；2、温度传感器模块；3、无线发射模块。我们设计这么一个温度测量电路其实就是一个目的，那就是为了实时获取当前的温度信息。那么，这么一个简单的电路应该怎么设计程序呢？其实很简单。</p> 
+ <div class="cnblogs_Highlighter"> 
+  <pre><code class="language-cpp">void sleep(int value)
+{
+    int outer;
+    int inner;
+
+    for(; outer &lt; value; outer++)
+    {
+        for(inner = 0; inner &lt; 1000; inner++)
+            ;
+    }
+}
+
+
+void main()
+{
+    while(1)
+    {
+        /* read temperature from port*/
+        sleep(1000);
+        /* send temperature to wireless module */
+        sleep(1000);
+    }
+}    </code></pre> 
+ </div> 
+ <p><br>　　如果我们需要cpu干的事情很少，甚至极端一点说只有一件事情，那么根本没有设计操作系统的必要。我们设计出操作系统，主要是想在单位时间内完成几件事情。打个比方来说，你完全可以在工作的时候一遍写文档、一遍收发电子邮件，偶尔还能开个小差休息一会。 所以操作系统就是为了共享资源而存在的。</p> 
+ <p>　　认识操作系统的用途不难，关键是如何把操作系统用代码写出来。也许有人会跟你说，免费的代码一大堆，Linux就不错，你下载下来直接读就好了。但是我告诉你，最新的Linux内核版本已经轻松的越过了3.0，整个代码的长度远在千万行之上，你可能从哪看起都不知道。可能此时又有人不同意了，看不懂高版本的linux，可以看看linux低版本的代码，0.11版本的代码就不错，因为赵炯就是怎么推荐的。我要说的是，0.11的代码固然好，但是怎么编译版本、怎么修改代码、怎么构造文件系统、怎么跑起来是我们绕不过的一道难题。对于很多朋友来说，阅读linux代码尚且困难，更不要说后面还需要完成的一大摊子烂事了。</p> 
+ <p>　　说了这么多，我们需要的的内核代码是什么样的？其实在我看来，很简单。它只要满足下面两个条件就可以了，<br>（1）像用户软件一样可以运行；<br>（2）像用户软件一样可以单步调试。    </p> 
+ <p>　　要解决这些问题，对linux系统来说上不难解决。要解决os的运行和调试问题，关键就在于如何仿真中断和实现os的任务切换。至于任务的开启、运行和挂起，内存分配，互斥量，信号量，文件系统，tcp/ip协议栈，GUI操作，这些其实都是可以在linux上进行仿真和操作的，朋友们可以尽请放心。这部分的内容，我们会在以后的博客中陆续展开。</p> 
+ <p>    为了能够更好地阅读后面发表的博文，我建议你巩固一下下面这些知识，这样会对你的理解有很大的裨益。<br>（1）cpu 结构，了解中断流程就行；<br>（2）linux 汇编语言；<br>（3）函数堆栈格式和内容；<br>（4）互斥量、信号量的使用方法；<br>（5）调度的基本策略；<br>（6）内存分配的基本方法；<br>（7）tcp/ip socket编程；<br>（8）gui编程方法，可以参考windows的方法；<br>（9）系统中的内存布局、编译原理等等。<br><span style="font-size:18pt;"><strong>互斥量</strong></span></p> 
+ <p>　　学过操作系统课程的朋友对这个词汇肯定不会很陌生。和信号量相比，互斥保护的资源一般是唯一的。也就是说，资源就一份，你占有了，我就没有办法占有；当然如果你释放了，此时我就有机会占有了。<br> <br>     一切的一切看上去没有什么问题。但是，我们都知道在实时嵌入式系统当中，线程之间的调度是严格按照优先级来进行调度。比方说，优先级为10的任务必须比优先级为11的任务优先得到调度。那么，有同学会问了，那优先级为11的任务什么时候才能得到调度呢，其实这个要求还是蛮苛刻的。要想优先级为11的任务得到调度，此时必须没有优先级10的任务、或者任务pend到资源上了、或者自身delay、或者被人suspend了。否则，优先级为10的任务会这么一直运行下去。那，这和我们的互斥量有什么关系呢？请听我一一讲来。<br> <br>     我们假设现在有两个任务都准备运行，分别人任务A、B，优先级依次是10、11。某一段时间后，优先级为10和优先级为11的任务都在尝试获取某个资源。本来按照优先级的先后顺序，优先级为10的任务应该率先获取资源，这都没问题。但是，假设在尝试获取资源前，优先级为10的任务开了个小差，sleep一会，那么这个时候优先级为11的任务就可以开始运行了。等到优先级为10的任务苏醒过来，想重新获取资源的时候，惊讶地发现资源早就被别人给占了。因为资源目前只有一份，所以它只好把自己pend到等待队列里面，慢慢等待好心人能快点把资源释放出来。一切的一切看上去没有什么问题，但是这却和实时系统设计的初衷是相违背的。前面我们规定高优先级的任务必须优先得到运行的机会，而目前这种情况和我们的设计原则是背道而驰的。<br> <br>     当然这个问题很早就被大家发现了，大家也在尝试不同的方法来解决。目前使用的比较多的就是两种方法，一种是给互斥量设定一个优先级，另外一种就是对优先级进行继承处理。看上去是两种方法，其实目的只有一个，就是让那些占有互斥量的thread提高优先级，赶快运行结束，把资源还给后面真正需要的人。看上去一切解决得都很完美，但是大家有没有考虑过这样一个问题，如果线程连续占有多个互斥量，优先级又该怎么处理？如果pend的任务被修改了优先级该怎么处理？如果这两种方法一起被使用，那又该怎么处理？我想，这就是作者在后期对互斥量代码进行重构的原因吧。当然了，上面讨论的内容已经是比较深的了，大家可以看看早期互斥量是怎么设计的，慢慢来，这样才会对作者的设计意图更加了解一些。<br> <br>     老规矩，我们首先看看互斥量是怎么设计的，</p> 
+ <div class="cnblogs_Highlighter"> 
+  <pre><code class="language-cpp">typedef struct RAW_MUTEX
+{ 
+　　RAW_COMMON_BLOCK_OBJECT common_block_obj;
+　　RAW_U8 count;
+
+　　/*ponit to occupy task*/
+　　RAW_TASK_OBJ *occupy;
+　　/*occupy task original priority*/
+　　RAW_U8 occupy_original_priority;
+} RAW_MUTEX;</code></pre> 
+ </div> 
+ <p>     看上去互斥量的东西多一点，其实也还可以，只要大家明白了互斥量处理逻辑再回头来看看这些东西的时候，认识就会更加深刻。我们看看，数据结构里面都有什么，<br>     （1）通用互斥结构，这在前面信号量的时候已经介绍过一遍；<br>     （2）计数，判断资源是否还在；<br>     （3）当前所属的任务；<br>     （4）该任务原来的优先级。<br> <br>     说好了基本结构，我们看看互斥量的构造、申请、释放、删除函数是怎么设计的，首先当然还是初始化函数，</p> 
+ <div class="cnblogs_Highlighter"> 
+  <pre><code class="language-cpp">RAW_U16 raw_mutex_create(RAW_MUTEX *mutex_ptr, RAW_U8 *name_ptr)
+{
+　　#if (RAW_MUTEX_FUNCTION_CHECK &gt; 0)
+
+　　if (mutex_ptr == 0)
+　　return RAW_NULL_OBJECT;
+
+　　#endif
+
+　　/*Init the list*/
+　　list_init(&amp;mutex_ptr-&gt;common_block_obj.block_list);
+　　mutex_ptr-&gt;common_block_obj.block_way = 0;
+　　mutex_ptr-&gt;common_block_obj.name = name_ptr;
+
+　　/*No one occupy mutex yet*/
+　　mutex_ptr-&gt;occupy = 0;
+
+　　/*resource is available at init state*/ 
+　　mutex_ptr-&gt;count = 1; 
+　　mutex_ptr-&gt;occupy_original_priority = 0;
+
+
+　　return RAW_SUCCESS;
+}</code></pre> 
+ </div> 
+ <p><br>    初始化的函数还是比较简单的，主要做了下面的流程，<br>     （1）初始化互斥结构的公共属性，比如名字、阻塞方式等等；<br>     （2）初始化当前资源数量；<br>     （3）初始化占有资源的线程指针，还有就是线程的优先级。<br> <br>     创建了互斥量之后，我们就要看看互斥量是怎么申请的？代码有点长，同学们可以心理调整一下了，</p> 
+ <div class="cnblogs_Highlighter"> 
+  <pre><code class="language-cpp">RAW_U16 raw_mutex_get(RAW_MUTEX *mutex_ptr, RAW_U32 wait_option)
+{
+　　RAW_U16 error_status;
+　　RAW_SR_ALLOC();
+
+　　#if (RAW_MUTEX_FUNCTION_CHECK &gt; 0)
+
+
+　　if (mutex_ptr == 0) {
+　　　　return RAW_NULL_OBJECT;
+　　}
+
+　　if (raw_int_nesting) {
+
+　　return RAW_NOT_CALLED_BY_ISR;
+
+　　}
+
+　　#endif
+　　
+　　RAW_CRITICAL_ENTER();
+
+　　/* mutex is available */
+　　if (mutex_ptr-&gt;count) { 
+　　　　mutex_ptr-&gt;occupy = raw_task_active; 
+　　　　mutex_ptr-&gt;occupy_original_priority = raw_task_active-&gt;priority;
+　　　　mutex_ptr-&gt;count = 0;
+　　
+　　　RAW_CRITICAL_EXIT();
+
+　　　　return RAW_SUCCESS;
+　　}
+
+
+　　/*if the same task get the same mutex again, it causes deadlock*/ 
+　　if (raw_task_active == mutex_ptr-&gt;occupy) { 
+
+　　#if (CONFIG_RAW_ASSERT &gt; 0)
+　　RAW_ASSERT(0);
+　　#endif
+
+　　RAW_CRITICAL_EXIT(); 
+　　return RAW_MUTEX_DEADLOCK;
+　　}
+
+　　/*Cann't get mutex, and return immediately if wait_option is RAW_NO_WAIT*/
+　　if (wait_option == RAW_NO_WAIT) { 
+
+　　RAW_CRITICAL_EXIT();
+
+　　return RAW_NO_PEND_WAIT;
+
+　　}
+
+　　/*system is locked so task can not be blocked just return immediately*/
+　　if (raw_sched_lock) { 
+　　　　RAW_CRITICAL_EXIT();	
+　　　　return RAW_SCHED_DISABLE;
+　　}
+
+　　/*if current task is a higher priority task and block on the mutex
+　　*priority inverse condition happened, priority inherit method is used here*/
+
+　　if (raw_task_active-&gt;priority &lt; mutex_ptr-&gt;occupy-&gt;priority) { 
+　　　　switch (mutex_ptr-&gt;occupy-&gt;task_state) {
+
+　　　　case RAW_RDY:
+　　　　　　/*remove from the ready list*/
+　　　　　　remove_ready_list(&amp;raw_ready_queue, mutex_ptr-&gt;occupy);
+　　　　　　/*raise the occupy task priority*/
+　　　　　　mutex_ptr-&gt;occupy-&gt;priority = raw_task_active-&gt;priority;	
+　　　　　　/*readd to the ready list head*/
+　　　　　　add_ready_list_head(&amp;raw_ready_queue, mutex_ptr-&gt;occupy);
+　　　　　　break;
+　　
+
+　　　　case RAW_DLY:
+　　　　case RAW_DLY_SUSPENDED:
+　　　　case RAW_SUSPENDED:
+　　　　　　　　/*occupy task is not on any list, so just change the priority*/ 
+　　　　  　　mutex_ptr-&gt;occupy-&gt;priority = raw_task_active-&gt;priority;	
+　　　　　　　break;
+
+　　　　case RAW_PEND: /* Change the position of the task in the wait list */
+　　　　case RAW_PEND_TIMEOUT:
+　　　　case RAW_PEND_SUSPENDED:
+　　　　case RAW_PEND_TIMEOUT_SUSPENDED:	
+　　　　　　/*occupy task is on the block list so change the priority on the block list*/
+　　　　　　mutex_ptr-&gt;occupy-&gt;priority = raw_task_active-&gt;priority;	
+　　　　　　change_pend_list_priority(mutex_ptr-&gt;occupy); 
+　　　　　　break;
+
+　　　　default:
+　　　　　　RAW_CRITICAL_EXIT();	
+　　　　　　return RAW_INVALID_STATE;
+　　　　}
+
+　　}
+
+　　/*Any way block the current task*/
+　　raw_pend_object(&amp;mutex_ptr-&gt;common_block_obj, raw_task_active, wait_option);
+
+　　RAW_CRITICAL_EXIT();	
+
+　　/*find the next highest priority task ready to run*/
+　　raw_sched(); 
+
+　　/*So the task is waked up, need know which reason cause wake up.*/
+　　error_status = block_state_post_process(raw_task_active, 0);
+
+　　return error_status;
+}</code></pre> 
+ </div> 
+ <p><br>    这段代码其实开头都还好，关键是末尾要结束的时候有一段代码比较费解。我想，这就是我前面说过的优先级反转问题。为了解决这一问题，在rawos版本中采取了优先级继承的方法。我们还是详细看一下逻辑本身是怎么样的，<br>     （1）判断参数合法性；<br>     （2）判断资源是否可取，如果可取，则在记录当前线程和优先级后返回；<br>     （3）如果资源被自己重复申请，返回；<br>     （4）如果线程不愿等待，返回；<br>     （5）如果此时禁止调度，返回；<br>     （6）如果此时优先级大于互斥量占有者的优先级，分情况处理<br>             a）占有者处于ready的状态，那么修改它的优先级，重新加入调度队列；<br>             b）占有者处于sleep的状态，直接修改优先级即可；<br>             c）占有者也被pend到别的资源上面了，那么修改那个资源的pend列表，可能设计到调度顺序问题。<br>     （7）线程把自己pend到互斥量等待队列上面；<br>     （8）线程调用系统调度函数，切换到其他线程运行；<br>     （9）线程再次得到运行的机会，从task获取结果后返回。<br> <br>     基本上上面的介绍算得上是很详细了，那么互斥量的释放基本上是一个逆操作的过程，朋友也可以思考一下应该怎么解决才好，</p> 
+ <div class="cnblogs_Highlighter"> 
+  <pre><code class="language-cpp">RAW_U16 raw_mutex_put(RAW_MUTEX *mutex_ptr)
+{
+
+　　LIST *block_list_head;
+
+　　RAW_SR_ALLOC();
+
+　　#if (RAW_MUTEX_FUNCTION_CHECK &gt; 0)
+
+　　if (mutex_ptr == 0) {
+　　　　return RAW_NULL_OBJECT;
+　　}
+
+　　#endif
+
+　　block_list_head = &amp;mutex_ptr-&gt;common_block_obj.block_list;
+
+　　RAW_CRITICAL_ENTER();
+
+　　/*Must release the mutex by self*/
+　　if (raw_task_active != mutex_ptr-&gt;occupy) { 
+　　　　RAW_CRITICAL_EXIT();
+　　　　return RAW_MUTEX_NOT_RELEASE_BY_OCCYPY;
+　　}
+
+　　/*if no block task on this list just return*/
+　　if (is_list_empty(block_list_head)) { 
+　　　　mutex_ptr-&gt;count = 1; 
+　　　　RAW_CRITICAL_EXIT();
+　　　　return RAW_SUCCESS;
+　　}
+
+　　/*if priority was changed, just change it back to original priority*/
+
+　　if (raw_task_active-&gt;priority != mutex_ptr-&gt;occupy_original_priority) {
+
+　　　　remove_ready_list(&amp;raw_ready_queue, raw_task_active);
+　　　　raw_task_active-&gt;priority = mutex_ptr-&gt;occupy_original_priority; 
+　　　　add_ready_list_end(&amp;raw_ready_queue, raw_task_active);
+
+　　}
+
+　　/* there must have task blocked on this mutex object*/ 
+　　mutex_ptr-&gt;occupy = list_entry(block_list_head-&gt;next, RAW_TASK_OBJ, task_list); 
+　　/*the first blocked task became the occupy task*/
+　　mutex_ptr-&gt;occupy_original_priority = mutex_ptr-&gt;occupy-&gt;priority;
+　　/*mutex resource is occupied*/
+　　mutex_ptr-&gt;count = 0; 
+
+　　/*Wake up the occupy task, which is the highst priority task on the list*/	
+　　raw_wake_object(mutex_ptr-&gt;occupy);
+
+　　RAW_CRITICAL_EXIT();
+
+
+　　raw_sched(); 
+
+　　return RAW_SUCCESS;
+
+}</code></pre> 
+ </div> 
+ <p><br>    和之前的信号量释放相比，互斥量的释放要复杂一切，关键就在于修改优先级的问题。我们来梳理一下，<br>     （1）判断参数合法性；<br>     （2）判断线程是否为互斥量的占有线程，不是则返回；<br>     （3）判断等待队列是否为空，为空的话则返回；<br>     （4）判断占有任务的优先级有没有发生变化，如果有则需要重新修改优先级，重新加入调度队列中；<br>     （5）选择下一个可以调度的线程；<br>     （6）函数返回。<br> <br>     说了这么些，就剩下最后一个删除互斥量了，大家再接再厉，一起去学习。</p> 
+ <div class="cnblogs_Highlighter"> 
+  <pre><code class="language-cpp">RAW_U16 raw_mutex_delete(RAW_MUTEX *mutex_ptr)
+{
+　　LIST *block_list_head;
+
+　　RAW_TASK_OBJ *mutex_occupy;
+
+　　RAW_SR_ALLOC();
+
+　　#if (RAW_MUTEX_FUNCTION_CHECK &gt; 0)
+
+　　if (mutex_ptr == 0) {
+　　　　return RAW_NULL_OBJECT;
+　　}
+
+　　#endif
+
+　　block_list_head = &amp;mutex_ptr-&gt;common_block_obj.block_list;
+
+　　RAW_CRITICAL_ENTER();
+
+　　mutex_occupy = mutex_ptr-&gt;occupy; 
+　　/*if mutex is occupied and occupy priority is not the original priority*/
+　　if ((mutex_occupy) &amp;&amp; (mutex_occupy-&gt;priority != mutex_ptr-&gt;occupy_original_priority)) {
+　　　　switch (mutex_occupy-&gt;task_state) { 
+　　　　　　case RAW_RDY:	
+　　　　　　　　/*remove from the ready list*/
+　　　　　　　　remove_ready_list(&amp;raw_ready_queue, mutex_ptr-&gt;occupy);
+　　　　　　　　/*raise the occupy task priority*/
+　　　　　　　　mutex_occupy-&gt;priority = mutex_ptr-&gt;occupy_original_priority;
+　　　　　　　　/*readd to the ready list head*/
+　　　　　　　　add_ready_list_end(&amp;raw_ready_queue, mutex_ptr-&gt;occupy);
+　　　　　　　　break;
+
+　　　　　　case RAW_DLY:
+　　　　　　case RAW_SUSPENDED:
+　　　　　　case RAW_DLY_SUSPENDED:
+　　　　　　　　/*occupy task is not on any list, so just change the priority*/ 
+　　　　　　　　mutex_occupy-&gt;priority = mutex_ptr-&gt;occupy_original_priority; 
+　　　　　　　　break;
+
+　　　　　　case RAW_PEND:
+　　　　　　case RAW_PEND_TIMEOUT:
+　　　　　　case RAW_PEND_SUSPENDED:
+　　　　　　case RAW_PEND_TIMEOUT_SUSPENDED:
+　　　　　　/*occupy task is on the block list so change the priority on the block list*/
+　　　　　　mutex_occupy-&gt;priority = mutex_ptr-&gt;occupy_original_priority; 
+　　　　　　change_pend_list_priority(mutex_occupy); 
+
+　　　　　　break;
+
+　　　　　　default:
+　　　　　　　　RAW_CRITICAL_EXIT();
+　　　　　　　　return RAW_STATE_UNKNOWN;
+　　　　}
+　　}
+
+
+　　/*All task blocked on this queue is waken up*/
+　　while (!is_list_empty(block_list_head)) {
+　　　delete_pend_obj(list_entry(block_list_head-&gt;next, RAW_TASK_OBJ, task_list));	
+　　} 
+
+　　RAW_CRITICAL_EXIT();
+　　
+　　raw_sched(); 
+
+　　return RAW_SUCCESS;
+}
+</code></pre> 
+ </div> 
+ <p>　　</p> 
+ <p>    互斥量的操作在实际情形下未必是存在的，所以作者在设计的时候添加了一个编译宏。不过删除所做的工作也不难理解，一个是处理好当前占有者的关系，一个是处理好等待队列的关系。我们来细看一下流程，<br>    （1）判断当前参数合法性；<br>    （2）判断占有者的情况，修改任务优先级，这里的情形和上面申请互斥量的处理方式是一样的，不再赘述；<br>    （3）唤醒所有的等待线程，如果线程已经suspend掉了，那么继续suspend；<br>    （4）调度到其他线程，防止有优先级高的任务已经被释放出来了；<br>    （5）函数返回，结束。<br><br></p> 
+ <p> </p> 
+ <p> </p> 
+ <p> </p> 
+ <p><span style="font-size:18pt;"><strong>信号量</strong></span></p> 
+ <p>之前因为工作的原因，操作系统这块一直没有继续写下去。一方面是自己没有这方面的经历，另外一方面就是操作系统比较复杂和琐碎，调试起来比较麻烦。目前在实际项目中，使用的实时操作系统很多，很多国内的朋友也写过操作系统，有些项目现在还在维护和修改中，这是十分难得的。就我知道和熟悉的就有三个系统，比如</p> 
+ <p> </p> 
+ <p>     （1）RT-THREAD</p> 
+ <p>     （2）RAW-OS</p> 
+ <p>     （3）ClearRTOS</p> 
+ <p> </p> 
+ <p>    这里有比较介绍一下，这三个系统是国内的三位朋友开发的。其中rt-thread时间比较久一点，模块也比较全，bsp、cpu、fs、lwip、gui等辅助的代码也比较多，有兴趣的朋友可以到网站上面下载代码看一看。raw-os是我今年才发现的一个实时系统，从网站的注册时间和软件版本号上来看，系统开发的时间不是很长，不过整个系统代码的结构非常清晰，是我重点推荐阅读的代码。如果朋友们自己download下来，好好看一下其中的代码，肯定会有不少的收获。最后一个代码是作者李云在编写《专业嵌入式软件开发》这本书的时候，为了说明os的基本原理而开发的软件，前后设计了线程、互斥、内存、定时器、驱动框架等内容，值得一读。</p> 
+ <p> </p> 
+ <p>    当然有了这么多优秀的代码，我觉得现在自己的工作就不是重新造一个车轮了，而是和大家分享这些优秀的代码是如何设计的。理解代码本身不是目的，关键是理解代码背后的基本思路。就我个人看过来，rt-thread和raw-os都可以用来学习，不过raw-os更好一些，主要是因为作者将raw-os移植到的vc上面，学起来也十分方便，要是个人在使用过程中有什么疑问，可以通过邮件和作者及时交流。不过由于raw-os的版本在一直在update之中，所以部分代码在前后稍微有点差别，不过这些都不是重点，暂时不了解的内容可以通过后面的了解和学习逐步掌握，不会成为太大的障碍。</p> 
+ <p> </p> 
+ <p>    就像今天的题目一样，我们重点介绍一下信号量的设计原理。首先看一下信号量的数据结构是怎么样的，</p> 
+ <p>typedef struct RAW_SEMAPHORE<br>{ <br> RAW_COMMON_BLOCK_OBJECT common_block_obj;<br> RAW_U32 count;<br><br>} RAW_SEMAPHORE;</p> 
+ <p>    这些代码都是从raw-os上面摘抄下来的，这个版本是0.94版本，和最新的0.96c版本有点差别。首先分析一下信号量的基本结构，其实非常简单，就两个变量，其中comm_block_obj是一个通用类型，记录了当前结构的名称、类型和阻塞队列，而count就是计数，判断是否还有释放的资源。</p> 
+ <p> </p> 
+ <p>    说到了信号量的操作，无非就是信号量的创建、获取、释放、删除操作，当然这里作者考虑的比较详细，在信号量释放的时候还分成了 WAKE_ONE_SEM和WAKE_ALL_SEM两种类型。意思很简单，就是当信号量来临的时候是唤醒一个等待线程呢，还是唤醒所有的等待线程呢，就是这么回事。下面，我们就按照顺序介绍这几个函数，首先是创建函数，</p> 
+ <p>RAW_U16 raw_semaphore_create(RAW_SEMAPHORE *semaphore_ptr, RAW_U8 *name_ptr, RAW_U32 initial_count)<br>{<!-- --><br> #if (RAW_SEMA_FUNCTION_CHECK &gt; 0)<br><br> if (semaphore_ptr == 0) {<!-- --><br><br> return RAW_NULL_OBJECT;<br> }<br><br> if (initial_count == 0xffffffff) {<!-- --><br><br> return RAW_SEMOPHORE_OVERFLOW;<br><br> }<br><br> #endif<br><br> /*Init the list*/<br> list_init(&amp;semaphore_ptr-&gt;common_block_obj.block_list);<br><br> /*Init resource*/<br> semaphore_ptr-&gt;count = initial_count; <br><br> semaphore_ptr-&gt;common_block_obj.name = name_ptr; <br><br> semaphore_ptr-&gt;common_block_obj.block_way = 0;<br><br> return RAW_SUCCESS;<br><br>}<br>    看着初始化函数，我们发现信号量的初始化其实也非常简单，基本工作主要有：</p> 
+ <p>    （1）判断参数合法性；</p> 
+ <p>    （2）初始化阻塞队列、名称等；</p> 
+ <p>    （3）初始化信号量的计数。</p> 
+ <p> </p> 
+ <p>    说完了这些，我们看看信号量的获取是怎么完成的，代码可能长度稍微长一些，不过也不用太紧张，</p> 
+ <p>RAW_U16 raw_semaphore_get(RAW_SEMAPHORE *semaphore_ptr, RAW_U32 wait_option)<br>{<!-- --><br><br> RAW_U16 error_status;<br><br> RAW_SR_ALLOC();<br><br> #if (RAW_SEMA_FUNCTION_CHECK &gt; 0)<br><br> if (semaphore_ptr == 0) {<!-- --><br><br> return RAW_NULL_OBJECT;<br> }<br><br> if (raw_int_nesting) {<!-- --><br><br> return RAW_NOT_CALLED_BY_ISR;<br> }<br><br> #endif<br><br><br> RAW_CRITICAL_ENTER();<br> if (semaphore_ptr-&gt;count) { <br> semaphore_ptr-&gt;count--; <br><br> RAW_CRITICAL_EXIT();<br><br> return RAW_SUCCESS;<br> }<br><br> /*Cann't get semphore, and return immediately if wait_option is RAW_NO_WAIT*/<br> if (wait_option == RAW_NO_WAIT) { <br><br> RAW_CRITICAL_EXIT();<br> return RAW_NO_PEND_WAIT;<br> } <br><br> if (raw_sched_lock) { <br> RAW_CRITICAL_EXIT(); <br> return RAW_SCHED_DISABLE;<br> }<br><br> raw_pend_object(&amp;semaphore_ptr-&gt;common_block_obj, raw_task_active, wait_option);<br> RAW_CRITICAL_EXIT();<br><br> raw_sched(); <br><br> error_status = block_state_post_process(raw_task_active, 0);<br> return error_status;<br><br>}<br>    信号量的获取情况比较复杂一些，这在长度上也体现出来了。不过没关系，我们一步一步看函数做了什么，</p> 
+ <p>    （1）判断参数合法性；</p> 
+ <p>    （2）判断当前函数是否处于中断处理的流程中，如果是选择返回；</p> 
+ <p>    （3）判断当前count是否为0，如果不为 0，则减1返回；</p> 
+ <p>    （4）如果当前count是0，且线程不愿意等待，那么选择返回；</p> 
+ <p>    （5）如果当前禁止调度，那么依然选择返回；</p> 
+ <p>     （6）当前线程将自己挂起，从ready队列中删除，把自己pend到信号量的阻塞队列中；</p> 
+ <p>     （7）阻塞的线程再次获得了运行的机会，我们从task数据结构获得返回结果，此时也不一定是因为获得了资源的缘故哦。</p> 
+ <p> </p> 
+ <p>    上面的get函数看上去比较复杂，但是所有的同步函数基本上都是这样设计的，看多了反而有一种八股文的感觉。刚开始看的同学可能觉得不是很习惯。不要紧，每天多看两眼，时间长了就ok了。好了，接着我们继续去看看信号量的释放函数是怎么处理的，大家做好心理准备哦，</p> 
+ <p>static RAW_U16 internal_semaphore_put(RAW_SEMAPHORE *semaphore_ptr, RAW_U8 opt_wake_all)<br>{<!-- --><br> LIST *block_list_head;<br><br> RAW_SR_ALLOC();<br><br> #if (RAW_SEMA_FUNCTION_CHECK &gt; 0)<br><br> if (semaphore_ptr == 0) {<!-- --><br><br> return RAW_NULL_OBJECT;<br> }<br><br> #endif<br><br> block_list_head = &amp;semaphore_ptr-&gt;common_block_obj.block_list;<br><br> RAW_CRITICAL_ENTER();<br> /*if no block task on this list just return*/<br> if (is_list_empty(block_list_head)) { <br><br> if (semaphore_ptr-&gt;count == 0xffffffff) {<!-- --><br><br> RAW_CRITICAL_EXIT();<br> return RAW_SEMOPHORE_OVERFLOW;<br><br> }<br> /*increase resource*/<br> semaphore_ptr-&gt;count++; <br><br> RAW_CRITICAL_EXIT();<br> return RAW_SUCCESS;<br> }<br><br> /*wake all the task blocked on this semphore*/<br> if (opt_wake_all) {<!-- --><br><br> while (!is_list_empty(block_list_head)) {<!-- --><br> raw_wake_object(list_entry(block_list_head-&gt;next, RAW_TASK_OBJ, task_list));<br> }<br><br> }<br><br> else {<!-- --><br><br> /*Wake up the highest priority task block on the semaphore*/<br> raw_wake_object(list_entry(block_list_head-&gt;next, RAW_TASK_OBJ, task_list));<br> }<br><br> RAW_CRITICAL_EXIT();<br><br> raw_sched(); <br><br> return RAW_SUCCESS;<br>}<br>    看上去，信号量的释放函数也比较长，不过只要有耐心，都是可以看明白的，我们就来具体分析一下，</p> 
+ <p>    （1）判断参数的合法性；</p> 
+ <p>    （2）判断当前是否有等待队列，如果没有，则count自增，函数返回，当然如果count达到了0xffffffff也要返回，不过概率极低；</p> 
+ <p>    （3） 当前存在等待队列，根据opt_wake_all的要求是唤醒一个线程还是唤醒所有的线程；</p> 
+ <p>    （4）调用系统调度函数，让高优先级任务及时得到运行的机会；</p> 
+ <p>    （5）当前线程再次得到运行的机会，函数返回。</p> 
+ <p> </p> 
+ <p>    有了上面的讲解，我们发现os的代码其实也没有那么恐怖。所以，请大家一鼓作气，看看信号量是怎么删除的吧，</p> 
+ <p>RAW_U16 raw_semaphore_delete(RAW_SEMAPHORE *semaphore_ptr)<br>{<!-- --><br> LIST *block_list_head;<br><br> RAW_SR_ALLOC();<br><br> #if (RAW_SEMA_FUNCTION_CHECK &gt; 0)<br><br> if (semaphore_ptr == 0) {<!-- --><br><br> return RAW_NULL_OBJECT;<br> }<br><br> #endif<br><br> block_list_head = &amp;semaphore_ptr-&gt;common_block_obj.block_list;<br><br> RAW_CRITICAL_ENTER();<br><br> /*All task blocked on this queue is waken up*/<br> while (!is_list_empty(block_list_head)) {<!-- --><br> delete_pend_obj(list_entry(block_list_head-&gt;next, RAW_TASK_OBJ, task_list)); <br> } <br><br> RAW_CRITICAL_EXIT();<br> raw_sched(); <br> return RAW_SUCCESS;<br>}<br>    信号量删除的工作其实很少，也很简单，同样我们也来梳理一下，</p> 
+ <p>    （1）判断参数合法性；</p> 
+ <p>    （2）唤醒阻塞队列中的每一个线程；</p> 
+ <p>    （3）调用系统调度函数，因为高优先级的任务很有可能刚刚从阻塞队列中释放出来；</p> 
+ <p>    （4）当前线程再次运行，函数返回。</p> 
+ <p> </p> 
+ <p>    通过上面几个函数的讲解，我们发现关于os互斥部分的代码其实也不复杂。只要对系统本身和中断有一些了解，其实代码都是可以看懂的。当然，上面的代码我们还是讲的比较粗糙，所以有些细节还是要补充一下，</p> 
+ <p> </p> 
+ <p>    （1）全局变量操作的函数必须在关中断的情况下进行操作；</p> 
+ <p>    （2）实时系统的抢占是每时每刻都在进行的，比如中断返回时、信号量释放时、调用延时函数、调用调度函数的时候，所以大家心中要有抢占的概念；</p> 
+ <p>    （3）互斥函数中大量使用了链表的结构，建议大家好好掌握链表的相关算法；</p> 
+ <p>    （4）关于os的代码一定要多看、多思考、多练习才会有进步和提高，纸上得来终觉浅、绝知此事要躬行。</p> 
+ <p><br>参考blog：https://blog.csdn.net/feixiaoxing/article/details/7976857</p> 
+</div> 
+<p>转载于:https://www.cnblogs.com/still-smile/p/11607167.html</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/7dfa69c22110c85c97162f322a78ffa5/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【物联网】MQTT协议</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/4cface135edd938bcb90b8dcc52e17f4/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">个人日常训练计划</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

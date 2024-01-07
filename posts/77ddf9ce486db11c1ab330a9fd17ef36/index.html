@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>基于STM32CubeMX移植freeModbusRTU（从站） - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="基于STM32CubeMX移植freeModbusRTU（从站）" />
+<meta property="og:description" content="困惑了将近一年多的ModbusRTU在我昨天穷极无聊给自己定目标的情况下搞出来了，以前移植不出来主要原因就是基本功不扎实，没有进一步理解串口和定时器配置的原理，一通操作，移植完之后就Timeout，接下来就分享一下我是怎么从0开始移植这个协议的。
+项目已上传码云，文章底部有链接！
+1.需要的材料 STM32开发板一块，不限型号freeModbus包可进入后方链接下载（Modbus官方源码包）STM32CubeMX 2.操作步骤 操作之前先讲两个主要问题
+1.串口设置问题 MoubusRTU移植到stm32平台通信是通过串口进行通信，主要是需要串口进行收发，所以发送中断时必须的，在波特率设置问题上是和定时器相关联，在mbrtu.c文件的eMBRTUInit函数里具体说明了串口波特率和定时器设置的关系
+eMBErrorCode eMBRTUInit( UCHAR ucSlaveAddress, UCHAR ucPort, ULONG ulBaudRate, eMBParity eParity ) { eMBErrorCode eStatus = MB_ENOERR; ULONG usTimerT35_50us; ( void )ucSlaveAddress; ENTER_CRITICAL_SECTION( ); /* Modbus RTU uses 8 Databits. */ if( xMBPortSerialInit( ucPort, ulBaudRate, 8, eParity ) != TRUE ) { eStatus = MB_EPORTERR; } else { /* If baudrate &gt; 19200 then we should use the fixed timer values * t35 = 1750us." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/77ddf9ce486db11c1ab330a9fd17ef36/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-04-16T11:47:18+08:00" />
+<meta property="article:modified_time" content="2020-04-16T11:47:18+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">基于STM32CubeMX移植freeModbusRTU（从站）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>困惑了将近一年多的ModbusRTU在我昨天穷极无聊给自己定目标的情况下搞出来了，以前移植不出来主要原因就是基本功不扎实，没有进一步理解串口和定时器配置的原理，一通操作，移植完之后就Timeout，接下来就分享一下我是怎么从0开始移植这个协议的。</p> 
+<p><strong>项目已上传码云，文章底部有链接！</strong></p> 
+<h4><a id="1_4"></a>1.需要的材料</h4> 
+<ol><li>STM32开发板一块，不限型号</li><li>freeModbus包可进入后方链接下载（<a href="https://github.com/cwalter-at/freemodbus">Modbus官方源码包</a>）</li><li>STM32CubeMX</li></ol> 
+<h4><a id="2_10"></a>2.操作步骤</h4> 
+<p>操作之前先讲两个主要问题</p> 
+<h5><a id="1_12"></a>1.串口设置问题</h5> 
+<p>MoubusRTU移植到stm32平台通信是通过串口进行通信，主要是需要串口进行收发，所以发送中断时必须的，在波特率设置问题上是和定时器相关联，在mbrtu.c文件的eMBRTUInit函数里具体说明了串口波特率和定时器设置的关系</p> 
+<pre><code class="prism language-c">eMBErrorCode
+<span class="token function">eMBRTUInit</span><span class="token punctuation">(</span> UCHAR ucSlaveAddress<span class="token punctuation">,</span> UCHAR ucPort<span class="token punctuation">,</span> ULONG ulBaudRate<span class="token punctuation">,</span> eMBParity eParity <span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    eMBErrorCode    eStatus <span class="token operator">=</span> MB_ENOERR<span class="token punctuation">;</span>
+    ULONG           usTimerT35_50us<span class="token punctuation">;</span>
+
+    <span class="token punctuation">(</span> <span class="token keyword">void</span> <span class="token punctuation">)</span>ucSlaveAddress<span class="token punctuation">;</span>
+    <span class="token function">ENTER_CRITICAL_SECTION</span><span class="token punctuation">(</span>  <span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">/* Modbus RTU uses 8 Databits. */</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span> <span class="token function">xMBPortSerialInit</span><span class="token punctuation">(</span> ucPort<span class="token punctuation">,</span> ulBaudRate<span class="token punctuation">,</span> <span class="token number">8</span><span class="token punctuation">,</span> eParity <span class="token punctuation">)</span> <span class="token operator">!=</span> TRUE <span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        eStatus <span class="token operator">=</span> MB_EPORTERR<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">else</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">/* If baudrate &gt; 19200 then we should use the fixed timer values
+         * t35 = 1750us. Otherwise t35 must be 3.5 times the character time.
+         */</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span> ulBaudRate <span class="token operator">&gt;</span> <span class="token number">19200</span> <span class="token punctuation">)</span>
+        <span class="token punctuation">{<!-- --></span>
+            usTimerT35_50us <span class="token operator">=</span> <span class="token number">35</span><span class="token punctuation">;</span>       <span class="token comment">/* 1750us. */</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">else</span>
+        <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">/* The timer reload value for a character is given by:
+             *
+             * ChTimeValue = Ticks_per_1s / ( Baudrate / 11 )
+             *             = 11 * Ticks_per_1s / Baudrate
+             *             = 220000 / Baudrate
+             * The reload for t3.5 is 1.5 times this value and similary
+             * for t3.5.
+             */</span>
+            usTimerT35_50us <span class="token operator">=</span> <span class="token punctuation">(</span> <span class="token number">7UL</span> <span class="token operator">*</span> <span class="token number">220000UL</span> <span class="token punctuation">)</span> <span class="token operator">/</span> <span class="token punctuation">(</span> <span class="token number">2UL</span> <span class="token operator">*</span> ulBaudRate <span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span> <span class="token function">xMBPortTimersInit</span><span class="token punctuation">(</span> <span class="token punctuation">(</span> USHORT <span class="token punctuation">)</span> usTimerT35_50us <span class="token punctuation">)</span> <span class="token operator">!=</span> TRUE <span class="token punctuation">)</span>
+        <span class="token punctuation">{<!-- --></span>
+            eStatus <span class="token operator">=</span> MB_EPORTERR<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+    <span class="token function">EXIT_CRITICAL_SECTION</span><span class="token punctuation">(</span>  <span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> eStatus<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>从上面代码的注释中可以看出，当波特率大于19200时，超时时间固定位为1750us，当波特率小于19200时，超时时间为3.5个字符时间，具体计算公式在代码注释里已经有了，这里我就不多赘述。本人波特率使用115200，所以按照1750us来。</p> 
+<h5><a id="2_63"></a>2.定时器设置问题</h5> 
+<p>ModbusRTU是通过定时器和串口配合来实现Modbus通信的，所以定时器是决定有没有超时的一大关键问题，由串口设置部分可知，定时器设置是要配合串口设置的波特率食用比较香，所以根据我使用的115200波特率可以得到我定时器设置。首先是APB1的主频率获取到，modbus要求通过预分配后得到的周期为50us，对应频率为20KHz。根据rtu初始化代码得到自动重载值设置为35。</p> 
+<h5><a id="_67"></a>具体操作：</h5> 
+<hr> 
+<h3><a id="stm32cubemx15_70"></a>熟悉stm32cubemx的老司机可以直接从15步看起</h3> 
+<hr> 
+<h6><a id="1MCU_74"></a>1.选择MCU型号</h6> 
+<p><img src="https://images2.imgbox.com/c9/3b/Qj6tJMbU_o.png" alt="选择自己的stm32"></p> 
+<h6><a id="2RCChttpsimgblogcsdnimgcn20200416092119717pngxossprocessimagewatermarktype_ZmFuZ3poZW5naGVpdGkshadow_10text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L0FTV2F0ZXJiZW5iZW4size_16color_FFFFFFt_70_77"></a>2.使能时钟源RCC为外部时钟<img src="https://images2.imgbox.com/88/50/xNc6k22Z_o.png" alt="时钟源选择"></h6> 
+<h6><a id="3APB172MHz_78"></a>3.配置时钟树，记录APB1频率，我这里是72MHz</h6> 
+<p><img src="https://images2.imgbox.com/4e/14/fXRycemq_o.png" alt="配置时钟树"></p> 
+<h6><a id="443600120KHz351750us_81"></a>4.使能定时器4，预分频系数为3600-1，对应的分频频率为20KHz，不懂的回到上面去看定时器设置解析，自动重载值设置为35，得到超时时间1750us。</h6> 
+<p><img src="https://images2.imgbox.com/4f/2f/iKgZTRGd_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="5_83"></a>5.使能定时器中断</h6> 
+<p><img src="https://images2.imgbox.com/1d/70/ZunyhtEI_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="621152008NONE1_85"></a>6.配置串口2，选择异步通信后参数设置为115200,8，NONE，1</h6> 
+<p><img src="https://images2.imgbox.com/7f/e6/3PMAn5iK_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="7_87"></a>7.使能串口中断</h6> 
+<p><img src="https://images2.imgbox.com/bd/d7/k4KUlMpC_o.png" alt="串口中断"></p> 
+<h6><a id="8_89"></a>8.配置中断优先级，定时器中断优先级低于串口中断即可</h6> 
+<p><img src="https://images2.imgbox.com/f7/cb/XT3rzgIc_o.png" alt="中断优先级"></p> 
+<h6><a id="9c_91"></a>9.配置项目参数并分离头文件和c文件后生成代码。</h6> 
+<p><img src="https://images2.imgbox.com/ca/79/xUZoDOZi_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/09/85/kAQoIjQT_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="10freeModbusdemoSTM32MBBARESTM32MB_95"></a>10.打开freeModbus代码包的demo文件夹，新建一个名为STM32MB的文件夹，之后将BARE文件夹内所有内容复制到STM32MB文件夹下，复制完成如图</h6> 
+<p><img src="https://images2.imgbox.com/41/ad/ZGFiuOiK_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="11freeModbusmodbusSTM32MB_97"></a>11.回到freeModbus代码包，复制整个modbus文件夹也粘贴到STM32MB文件夹内，完成效果如图</h6> 
+<p><img src="https://images2.imgbox.com/07/b1/krsDZgTo_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="12STM32MBstm32cubeMX_99"></a>12.将STM32MB文件夹移动到stm32cubeMX生成的工程目录下，如图</h6> 
+<p><img src="https://images2.imgbox.com/e7/10/jTowM0dM_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="13STM32MBMBMB_PortMBSTM32MBmodbuscdemocMB_PortSTM32MBportc_102"></a>13.打开工程，引入STM32MB内的所有头文件，并新建名为MB和MB_Port的组，MB内添加STM32MB文件夹下modbus文件夹内所有c文件以及根目录的demo.c文件，MB_Port内添加STM32MB文件夹下port文件夹内所有c文件，如图所示</h6> 
+<p><img src="https://images2.imgbox.com/c8/59/5FsoZrHC_o.png" alt="工程文件"><br> <img src="https://images2.imgbox.com/60/66/PJQQiinJ_o.png" alt="添加头文件"></p> 
+<h6><a id="14democmainhost_105"></a>14.修改demo.c文件夹的main函数名为host，编译不报错即可开始修改，如图所示</h6> 
+<p><img src="https://images2.imgbox.com/c0/15/JPHIR6xw_o.png" alt="在这里插入图片描述"><br> 以下为正式修改Modbus代码，上面比较繁琐，熟悉stm32cubemx的老司机可以直接从15步看起</p> 
+<h6><a id="15MB_Portportserialc_109"></a>15.修改MB_Port下的portserial.c文件（串口设置）</h6> 
+<p>我直接贴代码，自己对比我的代码和源码差距，关键地方我会在后边标注</p> 
+<pre><code class="prism language-c"><span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">"port.h"</span></span>
+<span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">"stm32f7xx_hal.h"</span></span>
+<span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">"usart.h"</span></span>
+<span class="token comment">/* ----------------------- Modbus includes ----------------------------------*/</span>
+<span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">"mb.h"</span></span>
+<span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">"mbport.h"</span></span>
+
+<span class="token comment">/* ----------------------- static functions ---------------------------------*/</span>
+<span class="token comment">//static void prvvUARTTxReadyISR( void );</span>
+<span class="token comment">//static void prvvUARTRxISR( void );</span>
+
+<span class="token comment">/* ----------------------- Start implementation -----------------------------*/</span>
+<span class="token keyword">void</span>
+<span class="token function">vMBPortSerialEnable</span><span class="token punctuation">(</span> BOOL xRxEnable<span class="token punctuation">,</span> BOOL xTxEnable <span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token comment">/* If xRXEnable enable serial receive interrupts. If xTxENable enable
+     * transmitter empty interrupts.
+     */</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>xRxEnable<span class="token punctuation">)</span>															<span class="token comment">//将串口收发中断和modbus联系起来，下面的串口改为自己使能的串口</span>
+			<span class="token punctuation">{<!-- --></span>
+				<span class="token function">__HAL_UART_ENABLE_IT</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>huart2<span class="token punctuation">,</span>UART_IT_RXNE<span class="token punctuation">)</span><span class="token punctuation">;</span>	<span class="token comment">//我用的是串口2，故为&amp;huart2</span>
+			<span class="token punctuation">}</span>
+		<span class="token keyword">else</span>
+			<span class="token punctuation">{<!-- --></span>
+				<span class="token function">__HAL_UART_DISABLE_IT</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>huart2<span class="token punctuation">,</span>UART_IT_RXNE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>xTxEnable<span class="token punctuation">)</span>
+			<span class="token punctuation">{<!-- --></span>
+				<span class="token function">__HAL_UART_ENABLE_IT</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>huart2<span class="token punctuation">,</span>UART_IT_TXE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+		<span class="token keyword">else</span>
+			<span class="token punctuation">{<!-- --></span>
+				<span class="token function">__HAL_UART_DISABLE_IT</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>huart2<span class="token punctuation">,</span>UART_IT_TXE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>	
+<span class="token punctuation">}</span>
+
+BOOL
+<span class="token function">xMBPortSerialInit</span><span class="token punctuation">(</span> UCHAR ucPORT<span class="token punctuation">,</span> ULONG ulBaudRate<span class="token punctuation">,</span> UCHAR ucDataBits<span class="token punctuation">,</span> eMBParity eParity <span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> TRUE<span class="token punctuation">;</span>				<span class="token comment">//改为TURE，串口初始化在usart.c定义，mian函数已完成</span>
+<span class="token punctuation">}</span>
+
+BOOL
+<span class="token function">xMBPortSerialPutByte</span><span class="token punctuation">(</span> CHAR ucByte <span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token comment">/* Put a byte in the UARTs transmit buffer. This function is called
+     * by the protocol stack if pxMBFrameCBTransmitterEmpty( ) has been
+     * called. */</span>
+		<span class="token keyword">if</span><span class="token punctuation">(</span>HAL_UART_Transmit <span class="token punctuation">(</span><span class="token operator">&amp;</span>huart2 <span class="token punctuation">,</span><span class="token punctuation">(</span>uint8_t <span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">&amp;</span>ucByte<span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">,</span><span class="token number">0x01</span><span class="token punctuation">)</span> <span class="token operator">!=</span> HAL_OK <span class="token punctuation">)</span>	<span class="token comment">//添加发送一位代码</span>
+			<span class="token keyword">return</span> FALSE <span class="token punctuation">;</span>
+		<span class="token keyword">else</span>
+			<span class="token keyword">return</span> TRUE<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+BOOL
+<span class="token function">xMBPortSerialGetByte</span><span class="token punctuation">(</span> CHAR <span class="token operator">*</span> pucByte <span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token comment">/* Return the byte in the UARTs receive buffer. This function is called
+     * by the protocol stack after pxMBFrameCBByteReceived( ) has been called.
+     */</span>
+	<span class="token keyword">if</span><span class="token punctuation">(</span>HAL_UART_Receive <span class="token punctuation">(</span><span class="token operator">&amp;</span>huart2 <span class="token punctuation">,</span><span class="token punctuation">(</span>uint8_t <span class="token operator">*</span><span class="token punctuation">)</span>pucByte<span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">,</span><span class="token number">0x01</span><span class="token punctuation">)</span> <span class="token operator">!=</span> HAL_OK <span class="token punctuation">)</span><span class="token comment">//添加接收一位代码</span>
+			<span class="token keyword">return</span> FALSE <span class="token punctuation">;</span>
+	<span class="token keyword">else</span>
+    <span class="token keyword">return</span> TRUE<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">/* Create an interrupt handler for the transmit buffer empty interrupt
+ * (or an equivalent) for your target processor. This function should then
+ * call pxMBFrameCBTransmitterEmpty( ) which tells the protocol stack that
+ * a new character can be sent. The protocol stack will then call 
+ * xMBPortSerialPutByte( ) to send the character.
+ */</span>
+<span class="token comment">//static </span>
+<span class="token keyword">void</span> <span class="token function">prvvUARTTxReadyISR</span><span class="token punctuation">(</span> <span class="token keyword">void</span> <span class="token punctuation">)</span>		<span class="token comment">//删去前面的static，方便在串口中断使用</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token function">pxMBFrameCBTransmitterEmpty</span><span class="token punctuation">(</span>  <span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">/* Create an interrupt handler for the receive interrupt for your target
+ * processor. This function should then call pxMBFrameCBByteReceived( ). The
+ * protocol stack will then call xMBPortSerialGetByte( ) to retrieve the
+ * character.
+ */</span>
+<span class="token comment">//static </span>
+<span class="token keyword">void</span> <span class="token function">prvvUARTRxISR</span><span class="token punctuation">(</span> <span class="token keyword">void</span> <span class="token punctuation">)</span>				<span class="token comment">//删去前面的static，方便在串口中断使用</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token function">pxMBFrameCBByteReceived</span><span class="token punctuation">(</span>  <span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<h6><a id="16MB_Portporttimerc_204"></a>16.修改MB_Port下的porttimer.c文件（定时器设置）</h6> 
+<p>我直接贴代码，自己对比我的代码和源码差距，关键地方我会在后边标注</p> 
+<pre><code class="prism language-c"><span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">"port.h"</span></span>
+<span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">"stm32f7xx_hal.h"</span></span>
+<span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">"tim.h"</span></span>
+<span class="token comment">/* ----------------------- Modbus includes ----------------------------------*/</span>
+<span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">"mb.h"</span></span>
+<span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">"mbport.h"</span></span>
+
+<span class="token comment">/* ----------------------- static functions ---------------------------------*/</span>
+<span class="token comment">//static void prvvTIMERExpiredISR( void );</span>
+
+<span class="token comment">/* ----------------------- Start implementation -----------------------------*/</span>
+BOOL
+<span class="token function">xMBPortTimersInit</span><span class="token punctuation">(</span> USHORT usTim1Timerout50us <span class="token punctuation">)</span>		<span class="token comment">//定时器初始化直接返回TRUE，已经在mian函数初始化过</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> TRUE<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+
+<span class="token keyword">inline</span> <span class="token keyword">void</span>
+<span class="token function">vMBPortTimersEnable</span><span class="token punctuation">(</span>  <span class="token punctuation">)</span>		<span class="token comment">//使能定时器中断，我用的是定时器4，所以为&amp;htim4</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token comment">/* Enable the timer with the timeout passed to xMBPortTimersInit( ) */</span>
+		<span class="token function">__HAL_TIM_CLEAR_IT</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>htim4<span class="token punctuation">,</span>TIM_IT_UPDATE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token function">__HAL_TIM_ENABLE_IT</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>htim4<span class="token punctuation">,</span>TIM_IT_UPDATE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token function">__HAL_TIM_SET_COUNTER</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>htim4<span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token function">__HAL_TIM_ENABLE</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>htim4<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">inline</span> <span class="token keyword">void</span>
+<span class="token function">vMBPortTimersDisable</span><span class="token punctuation">(</span>  <span class="token punctuation">)</span>	<span class="token comment">//取消定时器中断</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token comment">/* Disable any pending timers. */</span>
+			<span class="token function">__HAL_TIM_DISABLE</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>htim4<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token function">__HAL_TIM_SET_COUNTER</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>htim4<span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token function">__HAL_TIM_DISABLE_IT</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>htim4<span class="token punctuation">,</span>TIM_IT_UPDATE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token function">__HAL_TIM_CLEAR_IT</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>htim4<span class="token punctuation">,</span>TIM_IT_UPDATE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">/* Create an ISR which is called whenever the timer has expired. This function
+ * must then call pxMBPortCBTimerExpired( ) to notify the protocol stack that
+ * the timer has expired.
+ */</span>
+<span class="token comment">//static </span>
+<span class="token keyword">void</span> <span class="token function">prvvTIMERExpiredISR</span><span class="token punctuation">(</span> <span class="token keyword">void</span> <span class="token punctuation">)</span>	<span class="token comment">//modbus定时器动作，需要在中断内使用</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token punctuation">(</span> <span class="token keyword">void</span> <span class="token punctuation">)</span><span class="token function">pxMBPortCBTimerExpired</span><span class="token punctuation">(</span>  <span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h6><a id="17Modbusstm32porth_256"></a>17.修改完Modbus与stm32的接口文件之后要在port.h文件内定义总中断</h6> 
+<p>位置在port.h文件的32行和33行，修改为如下所示，并在port.h前包含上stm32的hal库，如图所示</p> 
+<pre><code class="prism language-c"><span class="token macro property">#<span class="token directive keyword">define</span> ENTER_CRITICAL_SECTION( )   __set_PRIMASK(1) 	 </span><span class="token comment">//关总中断</span>
+<span class="token macro property">#<span class="token directive keyword">define</span> EXIT_CRITICAL_SECTION( )    __set_PRIMASK(0)   </span><span class="token comment">//开总中断</span>
+</code></pre> 
+<pre><code class="prism language-c"><span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">"stm32f7xx_hal.h"</span></span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/ba/96/aUIjcjdh_o.png" alt="在这里插入图片描述"><br> modbus端口函数到此修改完成，接下来是中断函数</p> 
+<h6><a id="18_270"></a>18.串口及定时器中断修改</h6> 
+<p>打开工程内的中断文件，是在Application/User–&gt;stm32f7xx_it.c<br> 根据板子不同而不同，区别是stm32f后面的数字。知道是中断管理文件就行<br> 在/* USER CODE BEGIN PFP */后添加以下代码，用于和modbus的串口和定时器功能代码联系</p> 
+<pre><code class="prism language-c"><span class="token keyword">extern</span> <span class="token keyword">void</span> <span class="token function">prvvUARTTxReadyISR</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">extern</span> <span class="token keyword">void</span> <span class="token function">prvvUARTRxISR</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">extern</span> <span class="token keyword">void</span> <span class="token function">prvvTIMERExpiredISR</span><span class="token punctuation">(</span> <span class="token keyword">void</span> <span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>找到自己设置的串口中断处理函数，添加如下代码，用于将串口收到的内容移动到modbus功能函数进行处理</p> 
+<pre><code class="prism language-c"><span class="token keyword">void</span> <span class="token function">USART2_IRQHandler</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+  <span class="token comment">/* USER CODE BEGIN USART2_IRQn 0 */</span>
+
+  <span class="token comment">/* USER CODE END USART2_IRQn 0 */</span>
+  <span class="token function">HAL_UART_IRQHandler</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>huart2<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token comment">/* USER CODE BEGIN USART2_IRQn 1 */</span>
+	<span class="token keyword">if</span><span class="token punctuation">(</span><span class="token function">__HAL_UART_GET_IT_SOURCE</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>huart2<span class="token punctuation">,</span> UART_IT_RXNE<span class="token punctuation">)</span><span class="token operator">!=</span> RESET<span class="token punctuation">)</span> 
+		<span class="token punctuation">{<!-- --></span>
+			<span class="token function">prvvUARTRxISR</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//接收中断</span>
+		<span class="token punctuation">}</span>
+
+	<span class="token keyword">if</span><span class="token punctuation">(</span><span class="token function">__HAL_UART_GET_IT_SOURCE</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>huart2<span class="token punctuation">,</span> UART_IT_TXE<span class="token punctuation">)</span><span class="token operator">!=</span> RESET<span class="token punctuation">)</span> 
+		<span class="token punctuation">{<!-- --></span>
+			<span class="token function">prvvUARTTxReadyISR</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//发送中断</span>
+		<span class="token punctuation">}</span>
+	
+  <span class="token function">HAL_NVIC_ClearPendingIRQ</span><span class="token punctuation">(</span>USART2_IRQn<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token function">HAL_UART_IRQHandler</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>huart2<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token comment">/* USER CODE END USART2_IRQn 1 */</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>在Application/User–&gt;stm32f7xx_it.c末尾的/* USER CODE BEGIN 1 */添加定时器中断回调函数如下：</p> 
+<pre><code class="prism language-c"><span class="token keyword">void</span> <span class="token function">HAL_TIM_PeriodElapsedCallback</span><span class="token punctuation">(</span>TIM_HandleTypeDef <span class="token operator">*</span>htim<span class="token punctuation">)</span>	<span class="token comment">//定时器中断回调函数，用于连接porttimer.c文件的函数</span>
+<span class="token punctuation">{<!-- --></span>
+  <span class="token comment">/* NOTE : This function Should not be modified, when the callback is needed,
+            the __HAL_TIM_PeriodElapsedCallback could be implemented in the user file
+   */</span>
+  	<span class="token function">prvvTIMERExpiredISR</span><span class="token punctuation">(</span> <span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>到此，串口和定时器的问题已经处理完毕，接下来是modbus的配置</p> 
+<h6><a id="19modbus_318"></a>19.modbus功能处理</h6> 
+<p>硬件接口方面结束之后就可以开始写功能了，在MB–&gt;demo.c中有功能示例，我们根据功能示例来修改对应的功能并使能modbus，这里我只说输入寄存器功能，其它的一次类推，就不多赘述。<br> 这里也是直接贴代码，大概说一下，就是自己设置一个数组，将数据放到数组内，并在被读取时根据数据位置将数据返回去</p> 
+<pre><code class="prism language-c"><span class="token comment">/* ----------------------- Modbus includes ----------------------------------*/</span>
+<span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">"mb.h"</span></span>
+<span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">"mbport.h"</span></span>
+
+<span class="token comment">/* ----------------------- Defines ------------------------------------------*/</span>
+<span class="token macro property">#<span class="token directive keyword">define</span> REG_INPUT_START 0</span>
+<span class="token macro property">#<span class="token directive keyword">define</span> REG_INPUT_NREGS 5</span>
+
+<span class="token comment">/* ----------------------- Static variables ---------------------------------*/</span>
+<span class="token keyword">static</span> USHORT   usRegInputStart <span class="token operator">=</span> REG_INPUT_START<span class="token punctuation">;</span>
+<span class="token comment">//static </span>
+uint16_t   usRegInputBuf<span class="token punctuation">[</span>REG_INPUT_NREGS<span class="token punctuation">]</span><span class="token punctuation">;</span>
+uint16_t InputBuff<span class="token punctuation">[</span><span class="token number">5</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+
+eMBErrorCode
+<span class="token function">eMBRegInputCB</span><span class="token punctuation">(</span> UCHAR <span class="token operator">*</span> pucRegBuffer<span class="token punctuation">,</span> USHORT usAddress<span class="token punctuation">,</span> USHORT usNRegs <span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    eMBErrorCode    eStatus <span class="token operator">=</span> MB_ENOERR<span class="token punctuation">;</span>
+    <span class="token keyword">int</span>             iRegIndex<span class="token punctuation">;</span>
+		<span class="token keyword">int</span>             i<span class="token punctuation">;</span>
+		InputBuff<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token number">0x11</span><span class="token punctuation">;</span>
+		InputBuff<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token number">0x22</span><span class="token punctuation">;</span>
+		InputBuff<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token number">0x33</span><span class="token punctuation">;</span>
+		InputBuff<span class="token punctuation">[</span><span class="token number">3</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token number">0x44</span><span class="token punctuation">;</span>
+	
+    <span class="token keyword">if</span><span class="token punctuation">(</span> <span class="token punctuation">(</span> usAddress <span class="token operator">&gt;=</span> REG_INPUT_START <span class="token punctuation">)</span>
+        <span class="token operator">&amp;&amp;</span> <span class="token punctuation">(</span> usAddress <span class="token operator">+</span> usNRegs <span class="token operator">&lt;=</span> REG_INPUT_START <span class="token operator">+</span> REG_INPUT_NREGS <span class="token punctuation">)</span> <span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        iRegIndex <span class="token operator">=</span> <span class="token punctuation">(</span> <span class="token keyword">int</span> <span class="token punctuation">)</span><span class="token punctuation">(</span> usAddress <span class="token operator">-</span> usRegInputStart <span class="token punctuation">)</span><span class="token punctuation">;</span>
+				<span class="token keyword">for</span><span class="token punctuation">(</span>i<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span>i<span class="token operator">&lt;</span>usNRegs<span class="token punctuation">;</span>i<span class="token operator">++</span><span class="token punctuation">)</span>
+				<span class="token punctuation">{<!-- --></span>
+					<span class="token operator">*</span>pucRegBuffer<span class="token operator">=</span>InputBuff<span class="token punctuation">[</span>i<span class="token operator">+</span>usAddress<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token operator">&gt;&gt;</span><span class="token number">8</span><span class="token punctuation">;</span>
+					pucRegBuffer<span class="token operator">++</span><span class="token punctuation">;</span>
+					<span class="token operator">*</span>pucRegBuffer<span class="token operator">=</span>InputBuff<span class="token punctuation">[</span>i<span class="token operator">+</span>usAddress<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token operator">&amp;</span><span class="token number">0xff</span><span class="token punctuation">;</span>
+					pucRegBuffer<span class="token operator">++</span><span class="token punctuation">;</span>
+				<span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">else</span>
+    <span class="token punctuation">{<!-- --></span>
+        eStatus <span class="token operator">=</span> MB_ENOREG<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">return</span> eStatus<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+eMBErrorCode
+<span class="token function">eMBRegHoldingCB</span><span class="token punctuation">(</span> UCHAR <span class="token operator">*</span> pucRegBuffer<span class="token punctuation">,</span> USHORT usAddress<span class="token punctuation">,</span> USHORT usNRegs<span class="token punctuation">,</span>
+                 eMBRegisterMode eMode <span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> MB_ENOREG<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+
+eMBErrorCode
+<span class="token function">eMBRegCoilsCB</span><span class="token punctuation">(</span> UCHAR <span class="token operator">*</span> pucRegBuffer<span class="token punctuation">,</span> USHORT usAddress<span class="token punctuation">,</span> USHORT usNCoils<span class="token punctuation">,</span>
+               eMBRegisterMode eMode <span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> MB_ENOREG<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+eMBErrorCode
+<span class="token function">eMBRegDiscreteCB</span><span class="token punctuation">(</span> UCHAR <span class="token operator">*</span> pucRegBuffer<span class="token punctuation">,</span> USHORT usAddress<span class="token punctuation">,</span> USHORT usNDiscrete <span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> MB_ENOREG<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<h6><a id="20modbus_391"></a>20.modbus启动</h6> 
+<p>启动modbus需要在main函数进行初始化、开启侦听操作，需要添加以下代码，对应位置可在mian函数找到</p> 
+<pre><code class="prism language-c"><span class="token comment">/* USER CODE BEGIN Includes */</span>
+<span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">"mb.h"</span></span>
+<span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">"mbport.h"</span></span>
+<span class="token comment">/* USER CODE END Includes */</span>
+</code></pre> 
+<pre><code class="prism language-c">  <span class="token comment">/* USER CODE BEGIN 2 */</span>
+	<span class="token function">eMBInit</span><span class="token punctuation">(</span> MB_RTU<span class="token punctuation">,</span> <span class="token number">0x01</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">115200</span><span class="token punctuation">,</span> MB_PAR_NONE<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//初始化modbus，走modbusRTU，从站地址为0x01，端口为1。</span>
+	<span class="token function">eMBEnable</span><span class="token punctuation">(</span>  <span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//使能modbus</span>
+  <span class="token comment">/* USER CODE END 2 */</span>
+</code></pre> 
+<pre><code class="prism language-c">  <span class="token comment">/* USER CODE BEGIN WHILE */</span>
+  <span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span>
+  <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">/* USER CODE END WHILE */</span>
+
+    <span class="token comment">/* USER CODE BEGIN 3 */</span>
+		<span class="token punctuation">(</span> <span class="token keyword">void</span> <span class="token punctuation">)</span><span class="token function">eMBPoll</span><span class="token punctuation">(</span>  <span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//启动modbus侦听</span>
+  <span class="token punctuation">}</span>
+  <span class="token comment">/* USER CODE END 3 */</span>
+</code></pre> 
+<p>至此修改完毕，编译下载之后即可使用modbus poll进行连接测试。</p> 
+<h6><a id="21modbus_421"></a>21.modbus测试</h6> 
+<p>将上述代码编译下载到板子，用TTL转USB接入PC，找到在PC的对应端口即可打开ModbusPoll进行通信测试<br> 代码下载成功后打开ModbusPoll，打开读写定义并设置为从站地址1，功能04读输入寄存器，起始地址0，长度为4，如图所示<br> <img src="https://images2.imgbox.com/f1/b2/QPSVzA1u_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/29/51/TFB7fr5E_o.png" alt="读写设置"><br> 按F3进行连接，连接设置如图，串口所在位置会显示TTL转串口的芯片型号，按照如下设定后确定。<br> <img src="https://images2.imgbox.com/f3/47/rahyIGgj_o.png" alt="在这里插入图片描述"><br> 即可得到下图，由于我们输入寄存器存放的是16进制数，所以要将ModbusPoll显示模式改为16进制才能显示相同内容<br> <img src="https://images2.imgbox.com/bf/9c/C1yyrZnW_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/6d/d2/FfyP3P2G_o.png" alt="在这里插入图片描述"><br> 最终效果如下图，ModbusPoll读取的值与STM32内寄存器内的值一致，读取成功！<br> <img src="https://images2.imgbox.com/96/85/W6MsqPlU_o.png" alt="在这里插入图片描述"></p> 
+<p>至此，freeModbusRTU移植成功！，具体代码已上传，详见<a href="https://gitee.com/ASWaterbenben/F7_ModbusRTU" rel="nofollow">我的码云F7_ModbusRTU</a></p> 
+<p><strong>做完事情就要去打一下游戏！<br> 希望大家不要白piao，点赞评论打赏素质三连！！！</strong></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/81c46aacc514cc56a8d323b832b1831f/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">linux基础教程-黑马程序员汇总PDF</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/10275a0ae6d5b117704ab0b5dac1167b/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">UnsatisfiedLinkError: dalvik.system.PathClassLoader[DexPathList[[zip file &#34;</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【内核调度】【休眠进程的唤醒】【wake_up_process】 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【内核调度】【休眠进程的唤醒】【wake_up_process】" />
+<meta property="og:description" content="wake_up_process 一般当队列里面为空的时候，核心调度器（是否是核心调度器还需要后续去confirm）会在已经睡眠的task中通过调用wake_up_process函数将其唤醒，然后选择合适的cpu来运行
+/** * wake_up_process - Wake up a specific process * @p: The process to be woken up. * * Attempt to wake up the nominated process and move it to the set of runnable * processes. * * Return: 1 if the process was woken up, 0 if it was already running. * * It may be assumed that this function implies a write memory barrier before * changing the task state if and only if any tasks are woken up." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/46f84bef3cbd47cad2d8a6b5e71bd80c/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-07-21T13:35:12+08:00" />
+<meta property="article:modified_time" content="2020-07-21T13:35:12+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【内核调度】【休眠进程的唤醒】【wake_up_process】</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2>wake_up_process</h2> 
+<p>一般当队列里面为空的时候，核心调度器（是否是核心调度器还需要后续去confirm）会在已经睡眠的task中通过调用wake_up_process函数将其唤醒，然后选择合适的cpu来运行</p> 
+<pre><code>/**
+ * wake_up_process - Wake up a specific process
+ * @p: The process to be woken up.
+ *
+ * Attempt to wake up the nominated process and move it to the set of runnable
+ * processes.
+ *
+ * Return: 1 if the process was woken up, 0 if it was already running.
+ *
+ * It may be assumed that this function implies a write memory barrier before
+ * changing the task state if and only if any tasks are woken up.
+ */
+int wake_up_process(struct task_struct *p)
+{
+    /*wake_up_process直接调用try_to_wake_up函数,并添加三个限定参数*/
+	return try_to_wake_up(p, TASK_NORMAL, 0, 1);
+}
+EXPORT_SYMBOL(wake_up_process);
+
+/* Convenience macros for the sake of wake_up */  
+#define TASK_NORMAL     (TASK_INTERRUPTIBLE | TASK_UNINTERRUPTIBLE)  </code></pre> 
+<pre><code>/**
+ * try_to_wake_up - wake up a thread
+ * @p: the thread to be awakened
+ * @state: the mask of task states that can be woken
+ * @wake_flags: wake modifier flags (WF_*)
+ * @sibling_count_hint: A hint at the number of threads that are being woken up
+ *                      in this event.
+ *
+ * If (@state &amp; @p-&gt;state) @p-&gt;state = TASK_RUNNING.
+ *
+ * If the task was not queued/runnable, also place it back on a runqueue.
+ *
+ * Atomic against schedule() which would dequeue a task, also see
+ * set_current_state().
+ *
+ * Return: %true if @p-&gt;state changes (an actual wakeup was done),
+ *	   %false otherwise.
+ */
+static int
+try_to_wake_up(struct task_struct *p, unsigned int state, int wake_flags,
+	       int sibling_count_hint)
+{
+	unsigned long flags;
+	int cpu, success = 0;
+
+	/*
+	 * If we are going to wake up a thread waiting for CONDITION we
+	 * need to ensure that CONDITION=1 done by the caller can not be
+	 * reordered with p-&gt;state check below. This pairs with mb() in
+	 * set_current_state() the waiting thread does.
+	 */
+	raw_spin_lock_irqsave(&amp;p-&gt;pi_lock, flags);
+	/*很有可能需要唤醒一个thread的函数,某个条件必须成立,为了取到最新的没有没优化
+   的条件数值,使用内存屏障来实现.*/
+	smp_mb__after_spinlock();
+	/*如果进程不是在:TASK_INTERRUPTIBLE | TASK_UNINTERRUPTIBLE下,则就不是normal
+  task,直接退出wakeup流程.所以在内核里面看到的wake_up_process,可以看到起主函数都会
+   将进程设置为TASK_INTERRUPTIBLE or TASK_UNINTERRUPTIBLE这两种状态之一*/
+	if (!(p-&gt;state &amp; state))
+		goto out;
+
+	trace_sched_waking(p);
+
+	/* We're going to change -&gt;state: */
+	success = 1;
+	/*获取这个进程当前处在的cpu上面,并不是时候进程就在这个cpu上运行,后面会挑选cpu*/ 
+	cpu = task_cpu(p);
+
+	/*
+	 * Ensure we load p-&gt;on_rq _after_ p-&gt;state, otherwise it would
+	 * be possible to, falsely, observe p-&gt;on_rq == 0 and get stuck
+	 * in smp_cond_load_acquire() below.
+	 *
+	 * sched_ttwu_pending()                 try_to_wake_up()
+	 *   [S] p-&gt;on_rq = 1;                  [L] P-&gt;state
+	 *       UNLOCK rq-&gt;lock  -----.
+	 *                              \
+	 *				 +---   RMB
+	 * schedule()                   /
+	 *       LOCK rq-&gt;lock    -----'
+	 *       UNLOCK rq-&gt;lock
+	 *
+	 * [task p]
+	 *   [S] p-&gt;state = UNINTERRUPTIBLE     [L] p-&gt;on_rq
+	 *
+	 * Pairs with the UNLOCK+LOCK on rq-&gt;lock from the
+	 * last wakeup of our task and the schedule that got our task
+	 * current.
+	 */
+	smp_rmb();
+	/*使用内存屏障保证p-&gt;on_rq的数值是最新的.如果task已经在rq里面,即进程已经处于
+    runnable/running状态.ttwu_remote目的是由于task p已经在rq里面了,并且并没有完全
+    取消调度,再次会wakeup的话,需要将task的状态翻转,将状态设置为TASK_RUNNING,这样
+    task就一直在rq里面运行了.这种情况直接退出下面的流程,并对调度状态/数据进行统计*/
+	if (p-&gt;on_rq &amp;&amp; ttwu_remote(p, wake_flags))
+		goto stat;
+
+#ifdef CONFIG_SMP
+	/*
+	 * Ensure we load p-&gt;on_cpu _after_ p-&gt;on_rq, otherwise it would be
+	 * possible to, falsely, observe p-&gt;on_cpu == 0.
+	 *
+	 * One must be running (-&gt;on_cpu == 1) in order to remove oneself
+	 * from the runqueue.
+	 *
+	 *  [S] -&gt;on_cpu = 1;	[L] -&gt;on_rq
+	 *      UNLOCK rq-&gt;lock
+	 *			RMB
+	 *      LOCK   rq-&gt;lock
+	 *  [S] -&gt;on_rq = 0;    [L] -&gt;on_cpu
+	 *
+	 * Pairs with the full barrier implied in the UNLOCK+LOCK on rq-&gt;lock
+	 * from the consecutive calls to schedule(); the first switching to our
+	 * task, the second putting it to sleep.
+	 */
+	smp_rmb();
+
+	/*
+	 * If the owning (remote) CPU is still in the middle of schedule() with
+	 * this task as prev, wait until its done referencing the task.
+	 *
+	 * Pairs with the smp_store_release() in finish_lock_switch().
+	 *
+	 * This ensures that tasks getting woken will be fully ordered against
+	 * their previous state and preserve Program Order.
+	 */
+	smp_cond_load_acquire(&amp;p-&gt;on_cpu, !VAL);
+
+	walt_try_to_wake_up(p);
+
+	p-&gt;sched_contributes_to_load = !!task_contributes_to_load(p);
+	p-&gt;state = TASK_WAKING;
+
+	if (p-&gt;in_iowait) {
+		delayacct_blkio_end(p);
+		atomic_dec(&amp;task_rq(p)-&gt;nr_iowait);
+	}
+	/*根据进程p相关参数设定和系统状态,为进程p选择合适的cpu供其运行*/
+	cpu = select_task_rq(p, p-&gt;wake_cpu, SD_BALANCE_WAKE, wake_flags,
+			     sibling_count_hint);
+	/*如果选择的cpu与进程p当前所在的cpu不相同,则将进程的wake_flags标记添加需要迁移
+     ,并将进程p迁移到cpu上.*/ 
+	if (task_cpu(p) != cpu) {
+		wake_flags |= WF_MIGRATED;
+		psi_ttwu_dequeue(p);
+		set_task_cpu(p, cpu);
+	}
+
+#else /* CONFIG_SMP */
+
+	if (p-&gt;in_iowait) {
+		delayacct_blkio_end(p);
+		atomic_dec(&amp;task_rq(p)-&gt;nr_iowait);
+	}
+
+#endif /* CONFIG_SMP */
+	 /*进程p入队操作并标记p为runnable状态,同时执行wakeup preemption,即唤醒抢占.*/
+	ttwu_queue(p, cpu, wake_flags);
+stat:
+	/*调度相关的统计*/
+	ttwu_stat(p, cpu, wake_flags);
+out:
+	raw_spin_unlock_irqrestore(&amp;p-&gt;pi_lock, flags);
+
+	return success;
+}</code></pre> 
+<h3>walt_try_to_wake_up</h3> 
+<pre><code>/* utility function to update walt signals at wakeup */
+static inline void walt_try_to_wake_up(struct task_struct *p)
+{
+	struct rq *rq = cpu_rq(task_cpu(p));
+	struct rq_flags rf;
+	u64 wallclock;
+
+	rq_lock_irqsave(rq, &amp;rf);
+	wallclock = walt_ktime_clock();
+	walt_update_task_ravg(rq-&gt;curr, rq, TASK_UPDATE, wallclock, 0);
+	walt_update_task_ravg(p, rq, TASK_WAKE, wallclock, 0);
+	rq_unlock_irqrestore(rq, &amp;rf);
+}</code></pre> 
+<h3>select_task_rq</h3> 
+<pre><code>/*
+ * The caller (fork, wakeup) owns p-&gt;pi_lock, -&gt;cpus_allowed is stable.
+ */
+static inline
+int select_task_rq(struct task_struct *p, int cpu, int sd_flags, int wake_flags,
+		   int sibling_count_hint)
+{
+	lockdep_assert_held(&amp;p-&gt;pi_lock);
+/*nr_cpus_allowed这个变量是进程p可以运行的cpu数量,一般在系统初始化的时候就已经
+    设定好了的,或者可以通过设定cpu的亲和性来修改*/
+	if (p-&gt;nr_cpus_allowed &gt; 1)
+		cpu = p-&gt;sched_class-&gt;select_task_rq(p, cpu, sd_flags, wake_flags,
+						     sibling_count_hint);
+	else
+		cpu = cpumask_any(&amp;p-&gt;cpus_allowed);
+
+	/*
+	 * In order not to call set_task_cpu() on a blocking task we need
+	 * to rely on ttwu() to place the task on a valid -&gt;cpus_allowed
+	 * CPU.
+	 *
+	 * Since this is common to all placement strategies, this lives here.
+	 *
+	 * [ this allows -&gt;select_task() to simply return task_cpu(p) and
+	 *   not worry about this generic constraint ]
+	 */
+	 /*1.如果选择的cpu与进程p允许运行的cpu不匹配 则重新选择cpu在进程p成员变cpus_allowed里面选择*/
+	if (unlikely(!is_cpu_allowed(p, cpu)))
+		cpu = select_fallback_rq(task_cpu(p), p);
+
+	return cpu;
+}</code></pre> 
+<h2>select_fallback_rq</h2> 
+<pre><code>/*
+ * -&gt;cpus_allowed is protected by both rq-&gt;lock and p-&gt;pi_lock
+ *
+ * A few notes on cpu_active vs cpu_online:
+ *
+ *  - cpu_active must be a subset of cpu_online
+ *
+ *  - on cpu-up we allow per-cpu kthreads on the online &amp;&amp; !active cpu,
+ *    see __set_cpus_allowed_ptr(). At this point the newly online
+ *    CPU isn't yet part of the sched domains, and balancing will not
+ *    see it.
+ *
+ *  - on CPU-down we clear cpu_active() to mask the sched domains and
+ *    avoid the load balancer to place new tasks on the to be removed
+ *    CPU. Existing tasks will remain running there and will be taken
+ *    off.
+ *
+ * This means that fallback selection must not select !active CPUs.
+ * And can assume that any active CPU must be online. Conversely
+ * select_task_rq() below may allow selection of !active CPUs in order
+ * to satisfy the above rules.
+ */
+static int select_fallback_rq(int cpu, struct task_struct *p)
+{
+	int nid = cpu_to_node(cpu);
+	const struct cpumask *nodemask = NULL;
+	enum { cpuset, possible, fail } state = cpuset;
+	int dest_cpu;
+
+	/*
+	 * If the node that the CPU is on has been offlined, cpu_to_node()
+	 * will return -1. There is no CPU on the node, and we should
+	 * select the CPU on the other node.
+	 */
+	if (nid != -1) {
+		nodemask = cpumask_of_node(nid);
+
+		/* Look for allowed, online CPU in same node. */
+		for_each_cpu(dest_cpu, nodemask) {
+			if (!cpu_active(dest_cpu))
+				continue;
+			if (cpumask_test_cpu(dest_cpu, &amp;p-&gt;cpus_allowed))
+				return dest_cpu;
+		}
+	}
+
+	for (;;) {
+		/* Any allowed, online CPU? */
+		for_each_cpu(dest_cpu, &amp;p-&gt;cpus_allowed) {
+			if (!is_cpu_allowed(p, dest_cpu))
+				continue;
+
+			goto out;
+		}
+
+		/* No more Mr. Nice Guy. */
+		switch (state) {
+		case cpuset:
+			if (IS_ENABLED(CONFIG_CPUSETS)) {
+				cpuset_cpus_allowed_fallback(p);
+				state = possible;
+				break;
+			}
+			/* Fall-through */
+		case possible:
+			do_set_cpus_allowed(p, cpu_possible_mask);
+			state = fail;
+			break;
+
+		case fail:
+			BUG();
+			break;
+		}
+	}
+
+out:
+	if (state != cpuset) {
+		/*
+		 * Don't tell them about moving exiting tasks or
+		 * kernel threads (both mm NULL), since they never
+		 * leave kernel.
+		 */
+		if (p-&gt;mm &amp;&amp; printk_ratelimit()) {
+			printk_deferred("process %d (%s) no longer affine to cpu%d\n",
+					task_pid_nr(p), p-&gt;comm, cpu);
+		}
+	}
+
+	return dest_cpu;
+}</code></pre> 
+<p> </p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/b4e1958ad052e357bc65f8edd0df8c12/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Python用27行代码绘制一幅满天星！送给女朋友，省时省力！</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/1098090ca8824614e9c85f84506f2cdb/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">12. 离线处理之业务数据采集、生成用户画像、推广效果分析以及知识点总结</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

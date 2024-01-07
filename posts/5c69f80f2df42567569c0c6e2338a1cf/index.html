@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>千兆网口Freescale-ETSEC-&#43;-Marvell-88E1111-uboot-Linux-驱动分析 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="千兆网口Freescale-ETSEC-&#43;-Marvell-88E1111-uboot-Linux-驱动分析" />
+<meta property="og:description" content="千兆网口Freescale-ETSEC-&#43;-Marvell-88E1111-uboot-Linux-驱动分析 1 千兆以太网的物理层
+千兆以太网的物理层分为物理编码子层PCS（Physical Coding Sublayer）、物理介质连接子层PMA（Physical Medium Attachment）和物理介质相关子层PMD（Physical Medium Dependent）三层，如下图所示：
+其中PCS子层负责8b10b编码，它可以把从GMII口接收到的8位并行的数据转换成10位并行的数据输出。因为10比特的数据能有效地减小直流分量，降低误码率，另外采用8b10b编码便于在数据中提取时钟和进行首发同步。可以把PCS两头看成GMII接口和TBI接口。
+PMA子层进一步将PCS子层的编码结果向各种物理媒体传送，主要是负责完成串并转换。PCS层以125M的速率并行传送10位代码到PMA层，由PMA层转换为1.25Gbps的串行数据流进行发送，以便实际能得到1Gbps的千兆以太网传送速率。可以把PMA子层的两头分别看做TBI接口和SGMII接口。
+PMD子层将对各种实际的物理媒体完成接口，完成真正的物理连接。由于1000BASE-X支持多种物理媒介，如光纤和屏蔽双绞线，它们的物理接口显然不会相同。有的要进行光电转换，有的要完成从不平衡到平衡的转换。PMD层将对这些具体的连接器作出规定。
+2 Freescale 的ETSEC与PHY之间的接口
+Freescale的MPC8314和P2020都自带了三速以太网控制器ETSEC，可以提供10M，100M，1000M三种速率的接口。当作为以太网时，需要外部的PHY芯片或者Serdes设备与其相连接。每个ETSEC都支持多标准的MII接口，总体结构如下图所示，可以提供GMII，RGMII，MII，RMII，RTBI，SGMII 六种接口，下图为从MPC8314 datasheet中截取的ETSEC的结构图。
+如果CPU与PHY之间是GMII接口或RGMII接口，那么PHY将提供完整的PCS，PMA，PMD三层工作；如果CPU与PHY之间是RTBI接口，那么PCS层的工作在ETSEC中已经做完了，ETSEC中的TBI模块可以做PCS层的工作，PHY只需要做PMA和PMD的工作即可；如果CPU与PHY之间是SGMII接口，那么PHY只需要完成PMD的工作，ETSEC中的PCS由TBI完成，而PMA由CPU自带的Serdes模块完成。
+3 BD表结构
+在千兆以太网的驱动中，现在一般都使用一个叫BD表的东西来管理MAC层发送和接收的内存区域，如下图所示：
+在IMMR映射的寄存器空间中有两组寄存器TBASEn和RBASEn，分别为TxBD Ringn 和 RxBD Ringn的指针。MPC8314的ETSEC允许有8个TxBD Ring和8个RxBD Ring，他们都存放在内存的某个区域中。每个Buffer Descriptor 都是有8个字节构成，两个字节的状态，两个字节的数据长度和四个字节的数据指针，这个指针指向内存的另一块地方，这才是真正存储发送接收数据的地方。Buffer Descriptor必须在网口初始化的时候初始化，并将自己的地址赋给TBASEn和RBASEn。
+在网口驱动程序中可以看到，每个BD Ring中的BD数量是可变的（我们设为64），而他们之间并没有指针连接，只是一段连续的空间，顺序下来的，所谓的环只是一个虚拟的概念，在最后一个BD时，需要将BD状态位中的W位（Wrap）置一，表示这是最后一个BD，他的下一个BD就是第一个BD。如下图所示：
+下面一节将结合uboot源码分析一下网口初始化以及PHY配置的过程，再下一节会分析内核中的驱动。为什么先说uboot，因为在我看来，驱动程序就是分为两个部分，1 按照Datasheet的说明去配置寄存器，2 添加符合操作系统规范去融入操作系统。在uboot下系统很简单，代码一目了然，所以我们应该在boot下先把寄存器配置好，再去分析复杂的多的内核代码。
+这节分析uboot中的网口驱动代码。 1 网口驱动函数列表
+函数名
+函数用途
+tsec_initialize()
+网口初始化函数
+tsec_init()
+网口启动函数
+tsec_local_mdio_write()
+MDIO口写函数
+tsec_local_mdio_read()
+MDIO口读函数
+tsec_send()
+网口发送函数
+tsec_recv()
+网口接收函数
+tsec_configure_serdes()
+配置TBI PHY的函数
+fsl_serdes_init()
+Serdes模块初始化函数
+init_phy()
+PHY初始化函数
+adjust_link()
+根据PHY状态配置MAC的函数
+2 tsec_initialize()函数
+该函数为ETSEC的初始化函数，在该函数中要初始化eth_device结构和私有的tsec_private结构，并初始化PHY。
+int tsec_initialize(bd_t * bis, int index, char *devname)" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/5c69f80f2df42567569c0c6e2338a1cf/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-06-27T12:12:53+08:00" />
+<meta property="article:modified_time" content="2020-06-27T12:12:53+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">千兆网口Freescale-ETSEC-&#43;-Marvell-88E1111-uboot-Linux-驱动分析</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h3 style="margin-left:0cm;">千兆网口Freescale-ETSEC-+-Marvell-88E1111-uboot-Linux-驱动分析</h3> 
+<p style="margin-left:0cm;"><strong><span style="color:#FF0000;">1 </span></strong><strong><span style="color:#FF0000;">千兆以太网的物理层</span></strong></p> 
+<p style="margin-left:0cm;"><span style="color:#333333;">千兆以太网的物理层分为物理编码子层</span><span style="color:#333333;">PCS</span><span style="color:#333333;">（</span><span style="color:#333333;">Physical Coding Sublayer</span><span style="color:#333333;">）、物理介质连接子层</span><span style="color:#333333;">PMA</span><span style="color:#333333;">（</span><span style="color:#333333;">Physical Medium Attachment</span><span style="color:#333333;">）和物理介质相关子层</span><span style="color:#333333;">PMD</span><span style="color:#333333;">（</span><span style="color:#333333;">Physical Medium Dependent</span><span style="color:#333333;">）三层，如下图所示：</span></p> 
+<p style="margin-left:0cm;"><img alt="" height="210" src="https://images2.imgbox.com/6d/00/m3woXktn_o.png" width="443"></p> 
+<p style="margin-left:0cm;"><span style="color:#333333;">其中</span><span style="color:#333333;">PCS</span><span style="color:#333333;">子层负责</span><span style="color:#333333;">8b10b</span><span style="color:#333333;">编码，它可以把从</span><span style="color:#333333;">GMII</span><span style="color:#333333;">口接收到的</span><span style="color:#333333;">8</span><span style="color:#333333;">位并行的数据转换成</span><span style="color:#333333;">10</span><span style="color:#333333;">位并行的数据输出。因为</span><span style="color:#333333;">10</span><span style="color:#333333;">比特的数据能有效地减小直流分量，降低误码率，另外采用</span><span style="color:#333333;">8b10b</span><span style="color:#333333;">编码便于在数据中提取时钟和进行首发同步。可以把</span><span style="color:#333333;">PCS</span><span style="color:#333333;">两头看成</span><span style="color:#333333;">GMII</span><span style="color:#333333;">接口和</span><span style="color:#333333;">TBI</span><span style="color:#333333;">接口。</span></p> 
+<p style="margin-left:0cm;"><span style="color:#333333;">PMA</span><span style="color:#333333;">子层进一步将</span><span style="color:#333333;">PCS</span><span style="color:#333333;">子层的编码结果向各种物理媒体传送，主要是负责完成串并转换。</span><span style="color:#333333;">PCS</span><span style="color:#333333;">层以</span><span style="color:#333333;">125M</span><span style="color:#333333;">的速率并行传送</span><span style="color:#333333;">10</span><span style="color:#333333;">位代码到</span><span style="color:#333333;">PMA</span><span style="color:#333333;">层，由</span><span style="color:#333333;">PMA</span><span style="color:#333333;">层转换为</span><span style="color:#333333;">1.25Gbps</span><span style="color:#333333;">的串行数据流进行发送，以便实际能得到</span><span style="color:#333333;">1Gbps</span><span style="color:#333333;">的千兆以太网传送速率。可以把</span><span style="color:#333333;">PMA</span><span style="color:#333333;">子层的两头分别看做</span><span style="color:#333333;">TBI</span><span style="color:#333333;">接口和</span><span style="color:#333333;">SGMII</span><span style="color:#333333;">接口。</span></p> 
+<p style="margin-left:0cm;"><span style="color:#333333;">PMD</span><span style="color:#333333;">子层将对各种实际的物理媒体完成接口，完成真正的物理连接。由于</span><span style="color:#333333;">1000BASE-X</span><span style="color:#333333;">支持多种物理媒介，如光纤和屏蔽双绞线，它们的物理接口显然不会相同。有的要进行光电转换，有的要完成从不平衡到平衡的转换。</span><span style="color:#333333;">PMD</span><span style="color:#333333;">层将对这些具体的连接器作出规定。</span></p> 
+<p style="margin-left:0cm;"> </p> 
+<p style="margin-left:0cm;"><strong><span style="color:#FF0000;">2 Freescale </span></strong><strong><span style="color:#FF0000;">的</span></strong><strong><span style="color:#FF0000;">ETSEC</span></strong><strong><span style="color:#FF0000;">与</span></strong><strong><span style="color:#FF0000;">PHY</span></strong><strong><span style="color:#FF0000;">之间的接口</span></strong></p> 
+<p style="margin-left:0cm;"> </p> 
+<p style="margin-left:0cm;"><span style="color:#333333;">Freescale</span><span style="color:#333333;">的</span><span style="color:#333333;">MPC8314</span><span style="color:#333333;">和</span><span style="color:#333333;">P2020</span><span style="color:#333333;">都自带了三速以太网控制器</span><span style="color:#333333;">ETSEC</span><span style="color:#333333;">，可以提供</span><span style="color:#333333;">10M</span><span style="color:#333333;">，</span><span style="color:#333333;">100M</span><span style="color:#333333;">，</span><span style="color:#333333;">1000M</span><span style="color:#333333;">三种速率的接口。当作为以太网时，需要外部的</span><span style="color:#333333;">PHY</span><span style="color:#333333;">芯片或者</span><span style="color:#333333;">Serdes</span><span style="color:#333333;">设备与其相连接。每个</span><span style="color:#333333;">ETSEC</span><span style="color:#333333;">都支持多标准的</span><span style="color:#333333;">MII</span><span style="color:#333333;">接口，总体结构如下图所示，可以提供</span><span style="color:#333333;">GMII</span><span style="color:#333333;">，</span><span style="color:#333333;">RGMII</span><span style="color:#333333;">，</span><span style="color:#333333;">MII</span><span style="color:#333333;">，</span><span style="color:#333333;">RMII</span><span style="color:#333333;">，</span><span style="color:#333333;">RTBI</span><span style="color:#333333;">，</span><span style="color:#333333;">SGMII </span><span style="color:#333333;">六种接口，下图为从</span><span style="color:#333333;">MPC8314 datasheet</span><span style="color:#333333;">中截取的</span><span style="color:#333333;">ETSEC</span><span style="color:#333333;">的结构图。</span></p> 
+<p style="margin-left:0cm;"><img alt="" height="378" src="https://images2.imgbox.com/90/47/E0lDA7Ix_o.png" width="428"></p> 
+<p style="margin-left:0cm;"> </p> 
+<p style="margin-left:0cm;">     <span style="color:#333333;">如果</span><span style="color:#333333;">CPU</span><span style="color:#333333;">与</span><span style="color:#333333;">PHY</span><span style="color:#333333;">之间是</span><span style="color:#333333;">GMII</span><span style="color:#333333;">接口或</span><span style="color:#333333;">RGMII</span><span style="color:#333333;">接口，那么</span><span style="color:#333333;">PHY</span><span style="color:#333333;">将提供完整的</span><span style="color:#333333;">PCS</span><span style="color:#333333;">，</span><span style="color:#333333;">PMA</span><span style="color:#333333;">，</span><span style="color:#333333;">PMD</span><span style="color:#333333;">三层工作；如果</span><span style="color:#333333;">CPU</span><span style="color:#333333;">与</span><span style="color:#333333;">PHY</span><span style="color:#333333;">之间是</span><span style="color:#333333;">RTBI</span><span style="color:#333333;">接口，那么</span><span style="color:#333333;">PCS</span><span style="color:#333333;">层的工作在</span><span style="color:#333333;">ETSEC</span><span style="color:#333333;">中已经做完了，</span><span style="color:#333333;">ETSEC</span><span style="color:#333333;">中的</span><span style="color:#333333;">TBI</span><span style="color:#333333;">模块可以做</span><span style="color:#333333;">PCS</span><span style="color:#333333;">层的工作，</span><span style="color:#333333;">PHY</span><span style="color:#333333;">只需要做</span><span style="color:#333333;">PMA</span><span style="color:#333333;">和</span><span style="color:#333333;">PMD</span><span style="color:#333333;">的工作即可；如果</span><span style="color:#333333;">CPU</span><span style="color:#333333;">与</span><span style="color:#333333;">PHY</span><span style="color:#333333;">之间是</span><span style="color:#333333;">SGMII</span><span style="color:#333333;">接口，那么</span><span style="color:#333333;">PHY</span><span style="color:#333333;">只需要完成</span><span style="color:#333333;">PMD</span><span style="color:#333333;">的工作，</span><span style="color:#333333;">ETSEC</span><span style="color:#333333;">中的</span><span style="color:#333333;">PCS</span><span style="color:#333333;">由</span><span style="color:#333333;">TBI</span><span style="color:#333333;">完成，而</span><span style="color:#333333;">PMA</span><span style="color:#333333;">由</span><span style="color:#333333;">CPU</span><span style="color:#333333;">自带的</span><span style="color:#333333;">Serdes</span><span style="color:#333333;">模块完成。</span></p> 
+<p style="margin-left:0cm;"> </p> 
+<p style="margin-left:0cm;"><strong><span style="color:#FF0000;">3 BD</span></strong><strong><span style="color:#FF0000;">表结构</span></strong></p> 
+<p style="margin-left:0cm;"><span style="color:#333333;">在千兆以太网的驱动中，现在一般都使用一个叫</span><span style="color:#333333;">BD</span><span style="color:#333333;">表的东西来管理</span><span style="color:#333333;">MAC</span><span style="color:#333333;">层发送和接收的内存区域，如下图所示：</span></p> 
+<p style="margin-left:0cm;"> </p> 
+<p style="margin-left:0cm;"><img alt="" height="343" src="https://images2.imgbox.com/8f/f8/7LmTFA3P_o.png" width="525"></p> 
+<p style="margin-left:0cm;"> </p> 
+<p style="margin-left:0cm;"><span style="color:#333333;">在IMMR映射的寄存器空间中有两组寄存器TBASEn和RBASEn，分别为TxBD Ringn 和 RxBD Ringn的指针。MPC8314的ETSEC允许有8个TxBD Ring和8个RxBD Ring，他们都存放在内存的某个区域中。每个Buffer Descriptor 都是有8个字节构成，两个字节的状态，两个字节的数据长度和四个字节的数据指针，这个指针指向内存的另一块地方，这才是真正存储发送接收数据的地方。Buffer Descriptor必须在网口初始化的时候初始化，并将自己的地址赋给TBASEn和RBASEn。</span></p> 
+<p style="margin-left:0cm;"><span style="color:#333333;">在网口驱动程序中可以看到，每个BD Ring中的BD数量是可变的（我们设为64），而他们之间并没有指针连接，只是一段连续的空间，顺序下来的，所谓的环只是一个虚拟的概念，在最后一个BD时，需要将BD状态位中的W位（Wrap）置一，表示这是最后一个BD，他的下一个BD就是第一个BD。如下图所示：</span></p> 
+<p style="margin-left:0cm;"> </p> 
+<p style="margin-left:0cm;"><img alt="" height="322" src="https://images2.imgbox.com/49/2e/B6dxxAOZ_o.png" width="420"></p> 
+<p style="margin-left:0cm;"> </p> 
+<p style="margin-left:0cm;"> </p> 
+<p style="margin-left:0cm;"><span style="color:#333333;">下面一节将结合</span><span style="color:#333333;">uboot</span><span style="color:#333333;">源码分析一下网口初始化以及</span><span style="color:#333333;">PHY</span><span style="color:#333333;">配置的过程，再下一节会分析内核中的驱动。为什么先说</span><span style="color:#333333;">uboot</span><span style="color:#333333;">，因为在我看来，驱动程序就是分为两个部分，</span><span style="color:#333333;">1 </span><span style="color:#333333;">按照</span><span style="color:#333333;">Datasheet</span><span style="color:#333333;">的说明去配置寄存器，</span><span style="color:#333333;">2 </span><span style="color:#333333;">添加符合操作系统规范去融入操作系统。在</span><span style="color:#333333;">uboot</span><span style="color:#333333;">下系统很简单，代码一目了然，所以我们应该在</span><span style="color:#333333;">boot</span><span style="color:#333333;">下先把寄存器配置好，再去分析复杂的多的内核代码。</span></p> 
+<p style="margin-left:0cm;"> </p> 
+<p style="margin-left:0cm;"><strong><span style="color:#333333;">这节分析</span></strong><strong><span style="color:#FF0000;">uboot</span></strong><strong><span style="color:#FF0000;">中的网口驱动代码</span></strong><strong><span style="color:#333333;">。</span></strong><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#333333;">1 </span></strong><strong><span style="color:#333333;">网口驱动函数列表</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<table border="1" cellspacing="0" style="margin-left:18.85pt;"><tbody><tr><td style="width:148.55pt;"> <p style="margin-left:0cm;"><strong>函数名</strong></p> </td><td style="width:225pt;"> <p style="margin-left:0cm;"><strong><span style="color:#000000;">函数用途</span></strong></p> </td></tr><tr><td style="vertical-align:top;width:148.55pt;"> <p style="margin-left:0cm;"><strong>tsec_initialize()</strong></p> </td><td style="vertical-align:top;width:225pt;"> <p style="margin-left:0cm;"><strong>网口初始化函数</strong></p> </td></tr><tr><td style="vertical-align:top;width:148.55pt;"> <p style="margin-left:0cm;"><strong>tsec_init()</strong></p> </td><td style="vertical-align:top;width:225pt;"> <p style="margin-left:0cm;"><strong>网口启动函数</strong></p> </td></tr><tr><td style="vertical-align:top;width:148.55pt;"> <p style="margin-left:0cm;"><strong>tsec_local_mdio_write()</strong></p> </td><td style="vertical-align:top;width:225pt;"> <p style="margin-left:0cm;"><strong>MDIO</strong><strong>口写函数</strong></p> </td></tr><tr><td style="vertical-align:top;width:148.55pt;"> <p style="margin-left:0cm;"><strong>tsec_local_mdio_read()</strong></p> </td><td style="vertical-align:top;width:225pt;"> <p style="margin-left:0cm;"><strong>MDIO</strong><strong>口读函数</strong></p> </td></tr><tr><td style="vertical-align:top;width:148.55pt;"> <p style="margin-left:0cm;"><strong>tsec_send()</strong></p> </td><td style="vertical-align:top;width:225pt;"> <p style="margin-left:0cm;"><strong>网口发送函数</strong></p> </td></tr><tr><td style="vertical-align:top;width:148.55pt;"> <p style="margin-left:0cm;"><strong>tsec_recv()</strong></p> </td><td style="vertical-align:top;width:225pt;"> <p style="margin-left:0cm;"><strong>网口接收函数</strong></p> </td></tr><tr><td style="vertical-align:top;width:148.55pt;"> <p style="margin-left:0cm;"><strong>tsec_configure_serdes()</strong></p> </td><td style="vertical-align:top;width:225pt;"> <p style="margin-left:0cm;"><strong>配置TBI PHY的函数</strong></p> </td></tr><tr><td style="vertical-align:top;width:148.55pt;"> <p style="margin-left:0cm;"><strong>fsl_serdes_init()</strong></p> </td><td style="vertical-align:top;width:225pt;"> <p style="margin-left:0cm;"><strong>Serdes</strong><strong>模块初始化函数</strong></p> </td></tr><tr><td style="vertical-align:top;width:148.55pt;"> <p style="margin-left:0cm;"><strong>init_phy()</strong></p> </td><td style="vertical-align:top;width:225pt;"> <p style="margin-left:0cm;"><strong>PHY</strong><strong>初始化函数</strong></p> </td></tr><tr><td style="vertical-align:top;width:148.55pt;"> <p style="margin-left:0cm;"><strong>adjust_link()</strong></p> </td><td style="vertical-align:top;width:225pt;"> <p style="margin-left:0cm;"><strong>根据PHY状态配置MAC的函数</strong></p> </td></tr></tbody></table> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#333333;">2 tsec_initialize()</span></strong><strong><span style="color:#333333;">函数</span></strong></p> 
+<p style="margin-left:0cm;"><strong>   </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#333333;">该函数为</span></strong><strong><span style="color:#333333;">ETSEC</span></strong><strong><span style="color:#333333;">的初始化函数，在该函数中要初始化</span></strong><strong><span style="color:#333333;">eth_device</span></strong><strong><span style="color:#333333;">结构和私有的</span></strong><strong><span style="color:#333333;">tsec_private</span></strong><strong><span style="color:#333333;">结构，并初始化</span></strong><strong><span style="color:#333333;">PHY</span></strong><strong><span style="color:#333333;">。</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">int tsec_initialize(bd_t * bis, int index, char *devname)</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">{<!-- --></span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       struct eth_device *dev;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       int i;      </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       struct tsec_private *priv;     </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#FF0000;">/*</span></strong><strong><span style="color:#FF0000;">为</span></strong><strong><span style="color:#FF0000;">dev</span></strong><strong><span style="color:#FF0000;">分配空间</span></strong><strong><span style="color:#FF0000;">*/</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       dev = (struct eth_device *)malloc(sizeof *dev);  </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       if (NULL == dev)       </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              return 0;     </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       memset(dev, 0, sizeof *dev);</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong><strong><span style="color:#FF0000;">/*</span></strong><strong><span style="color:#FF0000;">为</span></strong><strong><span style="color:#FF0000;">priv</span></strong><strong><span style="color:#FF0000;">分配空间</span></strong><strong><span style="color:#FF0000;">*/</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       priv = (struct tsec_private *)malloc(sizeof(*priv));     </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       if (NULL == priv)             </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              return 0;     </span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong>       </strong><strong><span style="color:#FF0000;">/*</span></strong><strong><span style="color:#FF0000;">从</span></strong><strong><span style="color:#FF0000;">tsec_info </span></strong><strong><span style="color:#FF0000;">数组中取合适的值去初始化私有结构</span></strong><strong><span style="color:#FF0000;">tsec_private*/</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       privlist[num_tsecs++] = priv;     </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#333333;">       priv-&gt;regs = tsec_info[index].regs;  </span></strong><strong><span style="color:#FF0000;">//</span></strong><strong><span style="color:#FF0000;">每个</span></strong><strong><span style="color:#FF0000;">tsec</span></strong><strong><span style="color:#FF0000;">寄存器的基址</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#333333;">       priv-&gt;phyregs = tsec_info[index].miiregs;     </span></strong><strong><span style="color:#FF0000;">//PHY MDIO</span></strong><strong><span style="color:#FF0000;">读写状态寄存器基址</span></strong></p> 
+<p style="margin-left:0cm;"><strong>    </strong><strong><span style="color:#FF0000;">/*TBI PHY</span></strong><strong><span style="color:#FF0000;">的</span></strong><strong><span style="color:#FF0000;">MDIO</span></strong><strong><span style="color:#FF0000;">读写状态寄存器基址</span></strong><strong><span style="color:#FF0000;">*/</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       priv-&gt;phyregs_sgmii = tsec_info[index].miiregs_sgmii;  </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#333333;">       priv-&gt;phyaddr = tsec_info[index].phyaddr; </span></strong><strong><span style="color:#FF0000;">//PHY </span></strong><strong><span style="color:#FF0000;">地址</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       priv-&gt;flags = tsec_info[index].flags;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       priv-&gt;ID = index;</span></strong></p> 
+<p style="margin-left:0cm;"><strong>    </strong><strong><span style="color:#FF0000;">/*</span></strong><strong><span style="color:#FF0000;">使用将</span></strong><strong><span style="color:#FF0000;">priv</span></strong><strong><span style="color:#FF0000;">结构体挂到</span></strong><strong><span style="color:#FF0000;">dev</span></strong><strong><span style="color:#FF0000;">结构体下，挂载</span></strong><strong><span style="color:#FF0000;">tsec</span></strong><strong><span style="color:#FF0000;">的打开、关闭、发送、接收函数</span></strong><strong><span style="color:#FF0000;">*/</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       sprintf(dev-&gt;name, tsec_info[index].devname); </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       dev-&gt;iobase = 0;     </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       dev-&gt;priv = priv;     </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       dev-&gt;init = tsec_init;      </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       dev-&gt;halt = tsec_halt;    </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       dev-&gt;send = tsec_send;      </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       dev-&gt;recv = tsec_recv;</span></strong></p> 
+<p style="margin-left:0cm;"><strong>           </strong><strong><span style="color:#FF0000;">/*</span></strong><strong><span style="color:#FF0000;">初始化</span></strong><strong><span style="color:#FF0000;">IP</span></strong><strong><span style="color:#FF0000;">地址</span></strong><strong><span style="color:#FF0000;">*/</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       for (i = 0; i &lt; 6; i++)          </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              dev-&gt;enetaddr[i] = 0;     </span></strong></p> 
+<p style="margin-left:0cm;"><strong>      </strong><strong><span style="color:#FF0000;"> /*</span></strong><strong><span style="color:#FF0000;">设置当前活跃的网口名相当于</span></strong><strong><span style="color:#FF0000;"> set ethact eTSECn</span></strong><strong><span style="color:#FF0000;">，将多个网口级联</span></strong><strong><span style="color:#FF0000;">*/</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">eth_register(dev);</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong>      </strong><strong><span style="color:#FF0000;"> /* </span></strong><strong><span style="color:#FF0000;">通过设置</span></strong><strong><span style="color:#FF0000;">MACCFG1</span></strong><strong><span style="color:#FF0000;">寄存器重启</span></strong><strong><span style="color:#FF0000;"> MAC */</span></strong><strong>      </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       priv-&gt;regs-&gt;maccfg1 |= MACCFG1_SOFT_RESET;      </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       udelay(2);  /* Soft Reset must be asserted for 3 TX clocks */ </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       priv-&gt;regs-&gt;maccfg1 &amp;= ~(MACCFG1_SOFT_RESET);</span></strong></p> 
+<p style="margin-left:0cm;"><strong>      </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#FF0000;">/*</span></strong><strong><span style="color:#FF0000;">挂载</span></strong><strong><span style="color:#FF0000;">MII</span></strong><strong><span style="color:#FF0000;">口的读写函数</span></strong><strong><span style="color:#FF0000;">*/</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       #if defined(CONFIG_MII) || defined(CONFIG_CMD_MII) /  </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              &amp;&amp; !defined(BITBANGMII)    </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              miiphy_register(dev-&gt;name, tsec_miiphy_read, tsec_miiphy_write);</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       #endif  </span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong>       </strong><strong><span style="color:#FF0000;">/* </span></strong><strong><span style="color:#FF0000;">初始化</span></strong><strong><span style="color:#FF0000;">PHY</span></strong><strong><span style="color:#FF0000;">，并返回</span></strong><strong><span style="color:#FF0000;"> */</span></strong><strong>      </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       return init_phy(dev);</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">}</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#333333;">3 init_phy()</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">static int init_phy(struct eth_device *dev)</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">{<!-- --></span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       struct tsec_private *priv = (struct tsec_private *)dev-&gt;priv;  </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       struct phy_info *curphy;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       volatile tsec_t *regs = priv-&gt;regs;    </span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong>       </strong><strong><span style="color:#FF0000;">/*</span></strong><strong><span style="color:#FF0000;">在</span></strong><strong><span style="color:#FF0000;">TBIPA</span></strong><strong><span style="color:#FF0000;">的寄存器中写入</span></strong><strong><span style="color:#FF0000;">TBI PHY</span></strong><strong><span style="color:#FF0000;">的地址</span></strong><strong><span style="color:#FF0000;">*/    </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       regs-&gt;tbipa = CONFIG_SYS_TBIPA_VALUE + priv-&gt;ID;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       asm("sync");     </span></strong></p> 
+<p style="margin-left:0cm;"><strong>      </strong><strong><span style="color:#FF0000;"> /* </span></strong><strong><span style="color:#FF0000;">重启</span></strong><strong><span style="color:#FF0000;">MII</span></strong><strong><span style="color:#FF0000;">接口</span></strong><strong><span style="color:#FF0000;"> */</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       priv-&gt;phyregs-&gt;miimcfg = MIIMCFG_RESET; </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       asm("sync");     </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       priv-&gt;phyregs-&gt;miimcfg = MIIMCFG_INIT_VALUE;      </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       asm("sync");     </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       while (priv-&gt;phyregs-&gt;miimind &amp; MIIMIND_BUSY) ;    </span></strong></p> 
+<p style="margin-left:0cm;"><strong>      </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#FF0000;">/* </span></strong><strong><span style="color:#FF0000;">通过读</span></strong><strong><span style="color:#FF0000;">PHY</span></strong><strong><span style="color:#FF0000;">的</span></strong><strong><span style="color:#FF0000;">2</span></strong><strong><span style="color:#FF0000;">号</span></strong><strong><span style="color:#FF0000;">3</span></strong><strong><span style="color:#FF0000;">号寄存器获得该</span></strong><strong><span style="color:#FF0000;">ETSEC</span></strong><strong><span style="color:#FF0000;">外连的</span></strong><strong><span style="color:#FF0000;">PHY</span></strong><strong><span style="color:#FF0000;">的</span></strong><strong><span style="color:#FF0000;">ID</span></strong><strong><span style="color:#FF0000;">，搜索</span></strong><strong><span style="color:#FF0000;">phy_info</span></strong><strong><span style="color:#FF0000;">数组，找到符合</span></strong><strong><span style="color:#FF0000;">ID</span></strong><strong><span style="color:#FF0000;">的</span></strong><strong><span style="color:#FF0000;">PHY</span></strong><strong><span style="color:#FF0000;">信息返回。</span></strong><strong><span style="color:#FF0000;"> */     </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       curphy = get_phy_info(dev);      </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       if (curphy == NULL)</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              {<!-- --></span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              priv-&gt;phyinfo = NULL;           </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              printf("%s: No PHY found/n", dev-&gt;name);           </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              return 0;     </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              }</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong>    </strong><strong><span style="color:#FF0000;">/*</span></strong><strong><span style="color:#FF0000;">如果是</span></strong><strong><span style="color:#FF0000;">SGMII</span></strong><strong><span style="color:#FF0000;">的接口，需要使用</span></strong><strong><span style="color:#FF0000;">TBI PHY</span></strong><strong><span style="color:#FF0000;">，初始化</span></strong><strong><span style="color:#FF0000;">TBI PHY</span></strong><strong><span style="color:#FF0000;">，注意这里名字竟然叫</span></strong><strong><span style="color:#FF0000;">serdes</span></strong><strong><span style="color:#FF0000;">配置，</span></strong><strong><span style="color:#FF0000;">Linux</span></strong><strong><span style="color:#FF0000;">里面也这么叫，真是误人子弟啊。</span></strong><strong><span style="color:#FF0000;">*/</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       if (regs-&gt;ecntrl &amp; ECNTRL_SGMII_MODE)             </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">             tsec_configure_serdes(priv);</span></strong></p> 
+<p style="margin-left:0cm;"><strong>      </strong><strong><span style="color:#FF0000;"> /*</span></strong><strong><span style="color:#FF0000;">在符合条件的</span></strong><strong><span style="color:#FF0000;">PHY</span></strong><strong><span style="color:#FF0000;">的</span></strong><strong><span style="color:#FF0000;">phy_info</span></strong><strong><span style="color:#FF0000;">数组中调用其初始化配置函数</span></strong><strong><span style="color:#FF0000;">*/</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">priv-&gt;phyinfo = curphy; </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       phy_run_commands(priv, priv-&gt;phyinfo-&gt;config);     </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">    return 1;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">}</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#333333;">4 phy_info</span></strong><strong><span style="color:#333333;">结构</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#333333;">Uboot</span></strong><strong><span style="color:#333333;">中使用这个结构来完成</span></strong><strong><span style="color:#333333;">phy</span></strong><strong><span style="color:#333333;">的操作，所有的</span></strong><strong><span style="color:#333333;">phy</span></strong><strong><span style="color:#333333;">都要使用这个结构表示，下面是</span></strong><strong><span style="color:#333333;">88E1111</span></strong><strong><span style="color:#333333;">的</span></strong><strong><span style="color:#333333;">phy_info</span></strong><strong><span style="color:#333333;">结构：</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">struct phy_info phy_info_M88E1111S = {<!-- --></span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#333333;">           0x01410cc,  // PHY ID</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#333333;">              "Marvell 88E1111S",       </span></strong><strong><span style="color:#FF0000;">// PHY</span></strong><strong><span style="color:#FF0000;">名称</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              4,   </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              (struct phy_cmd[])</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              {     </span></strong></p> 
+<p style="margin-left:0cm;"><strong>              </strong><strong><span style="color:#FF0000;">/* </span></strong><strong><span style="color:#FF0000;">配置数组，在调用</span></strong><strong><span style="color:#FF0000;">priv-&gt;phyinfo-&gt;config</span></strong><strong><span style="color:#FF0000;">时将依次调用下面的内容，每个大括号内，第一个为</span></strong><strong><span style="color:#FF0000;">PHY</span></strong><strong><span style="color:#FF0000;">寄存器地址，第二个为</span></strong><strong><span style="color:#FF0000;">value*/</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              /* Reset and configure the PHY */            </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              {MIIM_CONTROL, MIIM_CONTROL_RESET, NULL},            </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              /* Delay RGMII TX and RX */         </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              {MIIM_GBIT_CONTROL, MIIM_GBIT_CONTROL_INIT, NULL},           </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              {MIIM_ANAR, MIIM_ANAR_INIT, NULL},           </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              {MIIM_CONTROL, MIIM_CONTROL_RESET, NULL},            </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              {MIIM_CONTROL, MIIM_CONTROL_INIT, &amp;mii_cr_init},</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              {miim_end,}</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              },    </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              (struct phy_cmd[])</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              {     </span></strong></p> 
+<p style="margin-left:0cm;"><strong>             </strong><strong><span style="color:#FF0000;"> /* </span></strong><strong><span style="color:#FF0000;">启动数组，在</span></strong><strong><span style="color:#FF0000;">ETSEC</span></strong><strong><span style="color:#FF0000;">启动的时候要依次调用。</span></strong><strong><span style="color:#FF0000;"> */             </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              /* Status is read once to clear old link state */            </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              {MIIM_STATUS, miim_read, NULL},           </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              /* Auto-negotiate */         </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              {MIIM_STATUS, miim_read, &amp;mii_parse_sr},         </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              /* Read the status */       </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              {MIIM_88E1011_PHY_STATUS, miim_read, &amp;mii_parse_88E1011_psr},       </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              {miim_end,} },    </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              (struct phy_cmd[])</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              {     </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              /* shutdown */          </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              {miim_end,}</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              },</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">};</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#FF0000;">需要注意的是，这个数组时</span></strong><strong><span style="color:#FF0000;">uboot</span></strong><strong><span style="color:#FF0000;">的源码中提供的，但是由于</span></strong><strong><span style="color:#FF0000;">PHY</span></strong><strong><span style="color:#FF0000;">与</span></strong><strong><span style="color:#FF0000;">MAC</span></strong><strong><span style="color:#FF0000;">之间接口使用的不同，这个数组中的内容需要根据需要，参考相应</span></strong><strong><span style="color:#FF0000;">PHY</span></strong><strong><span style="color:#FF0000;">的</span></strong><strong><span style="color:#FF0000;">datasheet</span></strong><strong><span style="color:#FF0000;">作出一定的修改。</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">5 tsec_init()</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong>    </strong><strong><span style="color:#333333;">该函数不会在初始化的时候调用，它在每当你使用网口的时候被调用，使用网口，不管是</span></strong><strong><span style="color:#333333;">ping</span></strong><strong><span style="color:#333333;">，还是</span></strong><strong><span style="color:#333333;">tftp</span></strong><strong><span style="color:#333333;">。</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">int tsec_init(struct eth_device *dev, bd_t * bd)</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">{<!-- --></span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       uint tempval;    </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       char tmpbuf[MAC_ADDR_LEN];  </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       int i;      </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       struct tsec_private *priv = (struct tsec_private *)dev-&gt;priv;  </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       volatile tsec_t *regs = priv-&gt;regs;</span></strong></p> 
+<p style="margin-left:0cm;"><strong>      </strong></p> 
+<p style="margin-left:0cm;"><strong>       </strong><strong><span style="color:#FF0000;">/* </span></strong><strong><span style="color:#FF0000;">初始化</span></strong><strong><span style="color:#FF0000;">MACCFG2</span></strong><strong><span style="color:#FF0000;">和</span></strong><strong><span style="color:#FF0000;">ECNTRL</span></strong><strong><span style="color:#FF0000;">两个寄存器，这两个寄存器非常重要，它们主要是用来是配置</span></strong><strong><span style="color:#FF0000;">MAC</span></strong><strong><span style="color:#FF0000;">对</span></strong><strong><span style="color:#FF0000;">PHY</span></strong><strong><span style="color:#FF0000;">的接口。在这里先给个初始化的值，默认为</span></strong><strong><span style="color:#FF0000;">GMII</span></strong><strong><span style="color:#FF0000;">。</span></strong><strong><span style="color:#FF0000;">*/</span></strong><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       tsec_halt(dev); </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       regs-&gt;maccfg2 = MACCFG2_INIT_SETTINGS;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       regs-&gt;ecntrl = ECNTRL_INIT_SETTINGS; </span></strong></p> 
+<p style="margin-left:0cm;"><strong>     </strong><strong><span style="color:#FF0000;">  /* </span></strong><strong><span style="color:#FF0000;">配置</span></strong><strong><span style="color:#FF0000;">MAC</span></strong><strong><span style="color:#FF0000;">地址。</span></strong><strong><span style="color:#FF0000;"> */</span></strong><strong>     </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       for (i = 0; i &lt; MAC_ADDR_LEN; i++)</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              {<!-- --></span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              tmpbuf[MAC_ADDR_LEN - 1 - i] = dev-&gt;enetaddr[i];   </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              }     </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       tempval = (tmpbuf[0] &lt;&lt; 24) | (tmpbuf[1] &lt;&lt; 16) | (tmpbuf[2] &lt;&lt; 8) |</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              tmpbuf[3];  </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       regs-&gt;macstnaddr1 = tempval;  </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       tempval = *((uint *) (tmpbuf + 4));      </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       regs-&gt;macstnaddr2 = tempval;  </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       /* reset the indices to zero */      </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       rxIdx = 0;    </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       txIdx = 0;     </span></strong></p> 
+<p style="margin-left:0cm;"><strong>     </strong><strong><span style="color:#FF0000;">  /* </span></strong><strong><span style="color:#FF0000;">清除其它的寄存器</span></strong><strong><span style="color:#FF0000;"> */   </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       init_registers(regs);</span></strong></p> 
+<p style="margin-left:0cm;"><strong>      </strong><strong><span style="color:#FF0000;"> /* </span></strong><strong><span style="color:#FF0000;">启动</span></strong><strong><span style="color:#FF0000;">tsec */    </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       startup_tsec(dev);  </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       /* If there's no link, fail */      </span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       return (priv-&gt;link ? 0 : -1);</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">}</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">6 startup_tsec()</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">static void startup_tsec(struct eth_device *dev)</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">{<!-- --></span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       int i;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       struct tsec_private *priv = (struct tsec_private *)dev-&gt;priv;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       volatile tsec_t *regs = priv-&gt;regs;</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong>       </strong><strong><span style="color:#FF0000;">/* </span></strong><strong><span style="color:#FF0000;">初始化</span></strong><strong><span style="color:#FF0000;">BD</span></strong><strong><span style="color:#FF0000;">表基址指针</span></strong><strong><span style="color:#FF0000;"> */</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       regs-&gt;tbase = (unsigned int)(&amp;rtx.txbd[txIdx]);</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       regs-&gt;rbase = (unsigned int)(&amp;rtx.rxbd[rxIdx]);</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong>       </strong><strong><span style="color:#FF0000;">/* </span></strong><strong><span style="color:#FF0000;">初始化</span></strong><strong><span style="color:#FF0000;">RX BD*/</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       for (i = 0; i &lt; PKTBUFSRX; i++) {<!-- --></span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              rtx.rxbd[i].status =( RXBD_EMPTY | RXBD_INTERRUPT);</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              rtx.rxbd[i].length = 0;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              rtx.rxbd[i].bufPtr = (uint) NetRxPackets[i];</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       }</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       rtx.rxbd[PKTBUFSRX - 1].status |= RXBD_WRAP;</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong>       </strong><strong><span style="color:#FF0000;">/*</span></strong><strong><span style="color:#FF0000;">初始化</span></strong><strong><span style="color:#FF0000;">TX BD*/</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       for (i = 0; i &lt; TX_BUF_CNT; i++) {<!-- --></span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              rtx.txbd[i].status = 0;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              rtx.txbd[i].length = 0;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              rtx.txbd[i].bufPtr = 0;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       }</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       rtx.txbd[TX_BUF_CNT - 1].status |= TXBD_WRAP;</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong>       </strong><strong><span style="color:#FF0000;">/*</span></strong><strong><span style="color:#FF0000;">又要去找</span></strong><strong><span style="color:#FF0000;">phy_info</span></strong><strong><span style="color:#FF0000;">数组了，这次调用的是</span></strong><strong><span style="color:#FF0000;">startup</span></strong><strong><span style="color:#FF0000;">中的命令和函数</span></strong><strong><span style="color:#FF0000;">*/</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       if(priv-&gt;phyinfo)</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              phy_run_commands(priv, priv-&gt;phyinfo-&gt;startup);</span></strong></p> 
+<p style="margin-left:0cm;"><strong>      </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#FF0000;">/*</span></strong><strong><span style="color:#FF0000;">根据</span></strong><strong><span style="color:#FF0000;">PHY</span></strong><strong><span style="color:#FF0000;">的</span></strong><strong><span style="color:#FF0000;">Copper</span></strong><strong><span style="color:#FF0000;">侧值配置</span></strong><strong><span style="color:#FF0000;">MAC</span></strong><strong><span style="color:#FF0000;">寄存器</span></strong><strong><span style="color:#FF0000;">*/</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">adjust_link(dev);</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong>       </strong><strong><span style="color:#FF0000;">/* </span></strong><strong><span style="color:#FF0000;">使能</span></strong><strong><span style="color:#FF0000;">MACCFG1</span></strong><strong><span style="color:#FF0000;">中的发送接收使能</span></strong><strong><span style="color:#FF0000;"> */</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       regs-&gt;maccfg1 |= (MACCFG1_RX_EN | MACCFG1_TX_EN);</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong>       </strong><strong><span style="color:#FF0000;">/* </span></strong><strong><span style="color:#FF0000;">让</span></strong><strong><span style="color:#FF0000;">DMA</span></strong><strong><span style="color:#FF0000;">知道可以准备搬运了这里的</span></strong><strong><span style="color:#FF0000;">DMA</span></strong><strong><span style="color:#FF0000;">是</span></strong><strong><span style="color:#FF0000;">ETSEC</span></strong><strong><span style="color:#FF0000;">内部的，并不是</span></strong><strong><span style="color:#FF0000;">CPU</span></strong><strong><span style="color:#FF0000;">中的</span></strong><strong><span style="color:#FF0000;">DMA</span></strong><strong><span style="color:#FF0000;">单元。</span></strong><strong><span style="color:#FF0000;">*/</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       regs-&gt;dmactrl |= DMACTRL_INIT_SETTINGS;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       regs-&gt;tstat = TSTAT_CLEAR_THALT;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       regs-&gt;dmactrl &amp;= ~(DMACTRL_GRS | DMACTRL_GTS);</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">}</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#333333;">参照上面的</span></strong><strong><span style="color:#333333;">phy_info</span></strong><strong><span style="color:#333333;">数组的</span></strong><strong><span style="color:#333333;">startup</span></strong><strong><span style="color:#333333;">中的内容得知这里</span></strong><strong><span style="color:#333333;">phy_run_commands(priv, priv-&gt;phyinfo-&gt;startup)</span></strong><strong><span style="color:#333333;">要调用两个函数</span></strong><strong><span style="color:#333333;">mii_parse_sr</span></strong><strong><span style="color:#333333;">和</span></strong><strong><span style="color:#333333;">mii_parse_88E1011_psr</span></strong><strong><span style="color:#333333;">。</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#333333;">这两个函数主要是配置三个重要的</span></strong><strong><span style="color:#333333;">priv</span></strong><strong><span style="color:#333333;">结构体中的成员</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">priv-&gt;link</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">priv-&gt;speed</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#333333;">priv-&gt; duplexity</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#333333;">分别是</span></strong><strong><span style="color:#333333;">link</span></strong><strong><span style="color:#333333;">状态，速率和双工。具体的代码就不分析了，主要是读</span></strong><strong><span style="color:#333333;">PHY</span></strong><strong><span style="color:#333333;">的</span></strong><strong><span style="color:#333333;">Copper</span></strong><strong><span style="color:#333333;">侧寄存器，然后根据寄存器的值去配置这三个成员，在后面的</span></strong><strong><span style="color:#333333;">adjust_link</span></strong><strong><span style="color:#333333;">函数中会根据这三个成员的值去配置</span></strong><strong><span style="color:#333333;">MAC</span></strong><strong><span style="color:#333333;">的</span></strong><strong><span style="color:#333333;">MACCFG2</span></strong><strong><span style="color:#333333;">和</span></strong><strong><span style="color:#333333;">ECNTRL</span></strong><strong><span style="color:#333333;">寄存器。</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">在</span></strong><strong><span style="color:#000000;">uboot</span></strong><strong><span style="color:#000000;">阶段，没有挂载中断，接收通过轮询来实现的，所以发送和接收这两个过程跟</span></strong><strong><span style="color:#000000;">Linux</span></strong><strong><span style="color:#000000;">内核中有区别。</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">在发送阶段，网口将被启动，发送函数首先找到一个可用的</span></strong><strong><span style="color:#000000;">Buffer Descriptor</span></strong><strong><span style="color:#000000;">，将上层软件组好的包的地址赋给该</span></strong><strong><span style="color:#000000;">BD</span></strong><strong><span style="color:#000000;">的指针，置相应的标志位和长度，然后通知</span></strong><strong><span style="color:#000000;">DMA</span></strong><strong><span style="color:#000000;">来搬运。搬运结束后，发送函数会清除相应的</span></strong><strong><span style="color:#000000;">BD</span></strong><strong><span style="color:#000000;">标识位。</span></strong><strong><span style="color:#000000;">DMA</span></strong><strong><span style="color:#000000;">将数据从内存搬运到</span></strong><strong><span style="color:#000000;">Tx FIFO</span></strong><strong><span style="color:#000000;">后，</span></strong><strong><span style="color:#000000;">   MAC</span></strong><strong><span style="color:#000000;">会给其加上数据链路层的首部后通过</span></strong><strong><span style="color:#000000;">GMII</span></strong><strong><span style="color:#000000;">口发送到</span></strong><strong><span style="color:#000000;">PHY</span></strong><strong><span style="color:#000000;">层。</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">在接收阶段，硬件会检测</span></strong><strong><span style="color:#000000;">TSECn_RX_DV</span></strong><strong><span style="color:#000000;">和</span></strong><strong><span style="color:#000000;">TSECn_COL</span></strong><strong><span style="color:#000000;">信号，并会检查有效的</span></strong><strong><span style="color:#000000;">preamble</span></strong><strong><span style="color:#000000;">，若找到，则检查</span></strong><strong><span style="color:#000000;">MAC</span></strong><strong><span style="color:#000000;">地址，校验等等，若都合格，则剥掉链路层的包头后，塞给</span></strong><strong><span style="color:#000000;">Rx FIFO</span></strong><strong><span style="color:#000000;">，</span></strong><strong><span style="color:#000000;">DMA</span></strong><strong><span style="color:#000000;">会将其搬到现在一个有效的</span></strong><strong><span style="color:#000000;">Rx BD</span></strong><strong><span style="color:#000000;">中，我们的接收程序会轮询该</span></strong><strong><span style="color:#000000;">Buffer Descriptor</span></strong><strong><span style="color:#000000;">，直到它有数据时，便将数据提交到上层，然后清除</span></strong><strong><span style="color:#000000;">BD</span></strong><strong><span style="color:#000000;">的一些状态位。</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">static int tsec_send(struct eth_device *dev, volatile void *packet, int length)</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">{<!-- --></span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       int i;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       int result = 0;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       struct tsec_private *priv = (struct tsec_private *)dev-&gt;priv;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       volatile tsec_t *regs = priv-&gt;regs;</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       /*</span></strong><strong><span style="color:#000000;">找一块空的</span></strong><strong><span style="color:#000000;">Buffer Descriptor*/</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       for (i = 0; rtx.txbd[txIdx].status &amp; TXBD_READY; i++) {<!-- --></span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              if (i &gt;= TOUT_LOOP) {<!-- --></span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">                     printf("%s: tsec: tx buffers full/n", dev-&gt;name);</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">                     return result;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              }</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       }</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       rtx.txbd[txIdx].bufPtr = (uint) packet;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       rtx.txbd[txIdx].length = length;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       rtx.txbd[txIdx].status |=</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">           (TXBD_READY | TXBD_LAST | TXBD_CRC | TXBD_INTERRUPT);</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong>       </strong><strong><span style="color:#FF0000;">/* </span></strong><strong><span style="color:#FF0000;">通过设置寄存器让</span></strong><strong><span style="color:#FF0000;">DMA</span></strong><strong><span style="color:#FF0000;">来从</span></strong><strong><span style="color:#FF0000;">BD</span></strong><strong><span style="color:#FF0000;">中搬运到</span></strong><strong><span style="color:#FF0000;">FIFO</span></strong><strong><span style="color:#FF0000;">中</span></strong><strong><span style="color:#FF0000;"> */</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       regs-&gt;tstat = TSTAT_CLEAR_THALT;</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong>       </strong><strong><span style="color:#FF0000;">/* </span></strong><strong><span style="color:#FF0000;">等到</span></strong><strong><span style="color:#FF0000;">BD</span></strong><strong><span style="color:#FF0000;">搬运完成，清除标志位</span></strong><strong><span style="color:#FF0000;">*/</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       for (i = 0; rtx.txbd[txIdx].status &amp; TXBD_READY; i++) {<!-- --></span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              if (i &gt;= TOUT_LOOP) {<!-- --></span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">                     printf("%s: tsec: tx error/n", dev-&gt;name);</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">                     return result;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              }</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       }</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       txIdx = (txIdx + 1) % TX_BUF_CNT;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       result = rtx.txbd[txIdx].status &amp; TXBD_STATS;</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       return result;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">}</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">static int tsec_recv(struct eth_device *dev)</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">{<!-- --></span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       int length;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       struct tsec_private *priv = (struct tsec_private *)dev-&gt;priv;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       volatile tsec_t *regs = priv-&gt;regs;</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       while (!(rtx.rxbd[rxIdx].status &amp; RXBD_EMPTY)) {<!-- --></span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              length = rtx.rxbd[rxIdx].length;</span></strong></p> 
+<p style="margin-left:0cm;"><strong>              </strong><strong><span style="color:#FF0000;">/* </span></strong><strong><span style="color:#FF0000;">有数据来时，检测</span></strong><strong><span style="color:#FF0000;">BD</span></strong><strong><span style="color:#FF0000;">的</span></strong><strong><span style="color:#FF0000;">status</span></strong><strong><span style="color:#FF0000;">，如果没有报错，就扔给上层协议栈</span></strong><strong><span style="color:#FF0000;"> */</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              if (!(rtx.rxbd[rxIdx].status &amp; RXBD_STATS)) {<!-- --></span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">                     NetReceive(NetRxPackets[rxIdx], length - 4);</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              } else {<!-- --></span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">                     printf("Got error %x/n",</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">                            (rtx.rxbd[rxIdx].status &amp; RXBD_STATS));</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              }</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              rtx.rxbd[rxIdx].length = 0;</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong>              </strong><strong><span style="color:#FF0000;">/* </span></strong><strong><span style="color:#FF0000;">如果是最后一个</span></strong><strong><span style="color:#FF0000;">BD</span></strong><strong><span style="color:#FF0000;">就设置</span></strong><strong><span style="color:#FF0000;">W</span></strong><strong><span style="color:#FF0000;">位</span></strong><strong><span style="color:#FF0000;"> */</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              rtx.rxbd[rxIdx].status =</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">                  RXBD_EMPTY | (((rxIdx + 1) == PKTBUFSRX) ? RXBD_WRAP : 0);</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              rxIdx = (rxIdx + 1) % PKTBUFSRX;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       }</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       if (regs-&gt;ievent &amp; IEVENT_BSY) {<!-- --></span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              regs-&gt;ievent = IEVENT_BSY;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              regs-&gt;rstat = RSTAT_CLEAR_RHALT;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       }</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       return -1;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">}</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><span style="color:#333333;">Uboot</span><span style="color:#333333;">下的网口驱动就这么多内容。</span></p> 
+<p style="margin-left:0cm;"> </p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">Linux </span></strong><strong><span style="color:#000000;">网络驱动设备模型</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">Linux</span></strong><strong><span style="color:#000000;">网络设备模型如下图，从上到下可以划分为</span></strong><strong><span style="color:#000000;">4</span></strong><strong><span style="color:#000000;">层，分别是网络协议接口层，网络设备接口层，设备驱动功能层和网络设备媒介层。</span></strong></p> 
+<p style="margin-left:0cm;"><img alt="" height="399" src="https://images2.imgbox.com/32/2e/8gYPCRKn_o.png" width="678"></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#333333;">网络协议接口层向网络层协议提供统一的数据包收发接口，通过</span></strong><strong><span style="color:#333333;">dev_queue_xmit()</span></strong><strong><span style="color:#333333;">函数发送数据，并通过</span></strong><strong><span style="color:#333333;">netif_rx</span></strong><strong><span style="color:#333333;">（）函数接收数据。</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#333333;">网络设备结构层向协议接口层提供统一的用于描述具体网络设备属性和操作的结构体</span></strong><strong><span style="color:#333333;">net_device</span></strong><strong><span style="color:#333333;">。</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#333333;">设备驱动功能层各函数是网络设备结构层</span></strong><strong><span style="color:#333333;">net_device</span></strong><strong><span style="color:#333333;">数据结构的具体成员，通过</span></strong><strong><span style="color:#333333;">hard_start_xmit</span></strong><strong><span style="color:#333333;">（）函数发送，通过中断触发接收函数。</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#333333;">网络设备媒介层就是完成数据包发送和接收的物理实体。</span></strong></p> 
+<p style="margin-left:0cm;"> </p> 
+<p style="margin-left:0cm;"> </p> 
+<p style="margin-left:0cm;"><strong><span style="color:#333333;">套接字缓冲区</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#333333;">套接字缓冲区</span></strong><strong><span style="color:#333333;"> sk_buff</span></strong><strong><span style="color:#333333;">的结构体非常重要，用于在</span></strong><strong><span style="color:#333333;">Linux</span></strong><strong><span style="color:#333333;">网络子系统中的各层之间传递数据，是</span></strong><strong><span style="color:#333333;">Linux</span></strong><strong><span style="color:#333333;">网络子系统数据传递的</span></strong><strong><span style="color:#333333;">“</span></strong><strong><span style="color:#333333;">中枢神经</span></strong><strong><span style="color:#333333;">”</span></strong><strong><span style="color:#333333;">。</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#333333;">当发送数据时，</span></strong><strong><span style="color:#333333;">Linux</span></strong><strong><span style="color:#333333;">内核的网络处理模块必须建立一个包含要传输的数据包</span></strong><strong><span style="color:#333333;">sk_buff</span></strong><strong><span style="color:#333333;">，然后将</span></strong><strong><span style="color:#333333;">sk_buff</span></strong><strong><span style="color:#333333;">递交给下层，各层在</span></strong><strong><span style="color:#333333;">sk_buff</span></strong><strong><span style="color:#333333;">中添加不同的协议头直至交给网络设备发送。同样，当网络设备从网络媒介上接收数据包后，它必须将接收到的数据转化为</span></strong><strong><span style="color:#333333;">sk_buff</span></strong><strong><span style="color:#333333;">数据结构并传递给上层，各层剥去相应的协议头，直至交给用户。</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#333333;">Skb</span></strong><strong><span style="color:#333333;">有四个指针，</span></strong><strong><span style="color:#333333;">head</span></strong><strong><span style="color:#333333;">和</span></strong><strong><span style="color:#333333;">end</span></strong><strong><span style="color:#333333;">分别指向数据缓冲区的启始地址和结尾地址，而</span></strong><strong><span style="color:#333333;">data</span></strong><strong><span style="color:#333333;">和</span></strong><strong><span style="color:#333333;">tail</span></strong><strong><span style="color:#333333;">分别指向有效数据的开始地址和结尾地址。</span></strong></p> 
+<p style="margin-left:0cm;"> </p> 
+<p style="margin-left:0cm;"><img alt="" height="295" src="https://images2.imgbox.com/b7/ac/v4ESCKYp_o.png" width="324"></p> 
+<p style="margin-left:0cm;"> </p> 
+<p style="margin-left:0cm;"> </p> 
+<p style="margin-left:0cm;"><strong><span style="color:#333333;">Skb</span></strong><strong><span style="color:#333333;">的操作有：</span></strong><strong><span style="color:#333333;">alloc_skb</span></strong><strong><span style="color:#333333;">（）分配一个套接字缓冲区和一个数据缓冲区；</span></strong><strong><span style="color:#333333;">Kree_skb</span></strong><strong><span style="color:#333333;">进行套接字缓冲区的释放；</span></strong><strong><span style="color:#333333;">skb_push</span></strong><strong><span style="color:#333333;">（）将</span></strong><strong><span style="color:#333333;">data</span></strong><strong><span style="color:#333333;">指针上移，主要用于添加协议头部；</span></strong><strong><span style="color:#333333;">skb_pull</span></strong><strong><span style="color:#333333;">将</span></strong><strong><span style="color:#333333;">data</span></strong><strong><span style="color:#333333;">指针下移，用于剥去头部。</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#FF0000;">1 dtb</span></strong><strong><span style="color:#FF0000;">文件解析，生成资源单项列表。</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">start_kernel </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> setup_arch </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> unflatten_device_tree</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">该函数可以解析</span></strong><strong><span style="color:#000000;">dtb</span></strong><strong><span style="color:#000000;">文件，构建一个由</span></strong><strong><span style="color:#000000;">device_node</span></strong><strong><span style="color:#000000;">结构连接而成的单项链表。如下在此函数执行过后，在内存中会存在一个如下的链表：</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><img alt="" height="107" src="https://images2.imgbox.com/fc/c2/xWTQ6I4u_o.jpg" width="732"></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">后面所有的函数，如果需要从</span></strong><strong><span style="color:#000000;">of tree</span></strong><strong><span style="color:#000000;">结构上读取设备资料的，都将从这个链表中遍历并读取。</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#FF0000;">2 Of_platform</span></strong><strong><span style="color:#FF0000;">总线的注册：</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">Arch/powerpc/kernel/of_platform.c</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">postcore_initcall(</span></strong><strong><span style="color:#3366ff;">of_bus_driver_init</span></strong><strong><span style="color:#000000;">);</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">of_bus_type_init(&amp;of_platform_bus_type, "of_platform")</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">à</span></strong><strong> </strong><strong><span style="color:#3366ff;">bus_register</span></strong><strong><span style="color:#000000;">(of_platform_bus_type)</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">同时：</span></strong><strong><span style="color:#000000;">bus-&gt;match = of_platform_bus_match;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       bus-&gt;probe = of_platform_device_probe;</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#3366ff;">of_platform_bus_type</span></strong><strong><span style="color:#3366ff;">总线注册完毕。</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#FF0000;">3 mdio</span></strong><strong><span style="color:#FF0000;">总线的注册</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">/driver/net/Phy_device.c</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">subsys_initcall(</span></strong><strong><span style="color:#3366ff;">phy_init</span></strong><strong><span style="color:#000000;">)</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">phy_init </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> mdio_bus_init </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> bus_register(&amp;mdio_bus_type)</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">总线注册后，在总线上注册了一个默认的</span></strong><strong><span style="color:#000000;">phy</span></strong><strong><span style="color:#000000;">的驱动</span></strong><strong><span style="color:#000000;"> genphy_driver</span></strong><strong><span style="color:#000000;">：</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       .phy_id         = 0xffffffff,</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       .phy_id_mask     = 0xffffffff,</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       .name           = "Generic PHY",</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#3366ff;">Mdio</span></strong><strong><span style="color:#3366ff;">总线注册完毕。</span></strong></p> 
+<p style="margin-left:0cm;"> </p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#FF0000;">4 of_platform</span></strong><strong><span style="color:#FF0000;">总线上的设备注册：</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">Arch/powerpc/platform/83xx/Mpc831x_rdb.c</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">machine_device_initcall(mpc831x_rdb, </span></strong><strong><span style="color:#3366ff;">declare_of_platform_devices</span></strong><strong><span style="color:#000000;">);</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">declare_of_platform_devices </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> of_platform_bus_probe(NULL, of_bus_ids, NULL)</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">Arch/powerpc/kernel/of_platform.c</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">遍历第一步中在内存中生成链表的所有</span></strong><strong><span style="color:#000000;">soc</span></strong><strong><span style="color:#000000;">的子节点，将所有的</span></strong><strong><span style="color:#000000;">soc</span></strong><strong><span style="color:#000000;">子节点设备添加到</span></strong><strong><span style="color:#000000;">of_platform</span></strong><strong><span style="color:#000000;">总线。</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">of_platform_bus_probe </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> of_platform_device_create </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> of_device_register </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> device_add</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#3366ff;">of_platform</span></strong><strong><span style="color:#3366ff;">总线上的所有设备添加完毕，</span></strong><strong><span style="color:#3366ff;">e0024000.ethernet</span></strong><strong><span style="color:#3366ff;">，</span></strong><strong><span style="color:#3366ff;">e0024520.mdio</span></strong><strong><span style="color:#3366ff;">等设备现在都在总线上。</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#FF0000;">5 mdio</span></strong><strong><span style="color:#FF0000;">总线上驱动的添加</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">/driver/net/phy/marvell.c</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">module_init(</span></strong><strong><span style="color:#3366ff;">marvell_init</span></strong><strong><span style="color:#000000;">)</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">marvell_init </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> phy_driver_register(&amp;marvell_drivers[i]) </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> driver_register</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">前面第三步，注册</span></strong><strong><span style="color:#000000;">mdio</span></strong><strong><span style="color:#000000;">总线后，已经添加了一个默认的</span></strong><strong><span style="color:#000000;">phy</span></strong><strong><span style="color:#000000;">的驱动，现在要将所有的</span></strong><strong><span style="color:#000000;">phy</span></strong><strong><span style="color:#000000;">驱动添加到总线上，这里将所有的</span></strong><strong><span style="color:#000000;">marvell</span></strong><strong><span style="color:#000000;">的</span></strong><strong><span style="color:#000000;">phy</span></strong><strong><span style="color:#000000;">都添加。</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#3366ff;">这步过后，内核的</span></strong><strong><span style="color:#3366ff;">/sys/bus/mdio/driver</span></strong><strong><span style="color:#3366ff;">里面就有了各种</span></strong><strong><span style="color:#3366ff;">phy</span></strong><strong><span style="color:#3366ff;">的驱动，但这时还没有和具体的设备绑定。</span></strong></p> 
+<p style="margin-left:0cm;"> </p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#FF0000;">6 of_platform</span></strong><strong><span style="color:#FF0000;">总线上</span></strong><strong><span style="color:#FF0000;">Mdio</span></strong><strong><span style="color:#FF0000;">设备驱动（该驱动的目的是在</span></strong><strong><span style="color:#FF0000;">mdio</span></strong><strong><span style="color:#FF0000;">总线上添加</span></strong><strong><span style="color:#FF0000;">PHY</span></strong><strong><span style="color:#FF0000;">设备）的添加，并绑定设备：</span></strong><strong><span style="color:#FF0000;">e0024520.mdio</span></strong><strong><span style="color:#FF0000;">和</span></strong><strong><span style="color:#FF0000;">e0025520.mdio</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">/driver/net/fsl_pq_mdio.c</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">module_init(</span></strong><strong><span style="color:#3366ff;">fsl_pq_mdio_init</span></strong><strong><span style="color:#000000;">)</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">fsl_pq_mdio_init </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> of_register_platform_driver(&amp;fsl_pq_mdio_driver) </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> of_register_driver </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> driver_register</span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> bus_add_driver </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> driver_attach</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">遍历整个</span></strong><strong><span style="color:#000000;">of_platform</span></strong><strong><span style="color:#000000;">总线，寻找与之相匹配的设备，找到</span></strong><strong><span style="color:#FF0000;">e0024520.mdio</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">driver_attach </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> __driver_attach </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> driver_match_device</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">将</span></strong><strong><span style="color:#000000;">driver</span></strong><strong><span style="color:#000000;">的</span></strong><strong><span style="color:#000000;">match_table</span></strong><strong><span style="color:#000000;">里的信息和</span></strong><strong><span style="color:#000000;">dev_nod</span></strong><strong><span style="color:#000000;">中的做比较，若符合就进入</span></strong><strong><span style="color:#000000;">driver</span></strong><strong><span style="color:#000000;">的</span></strong><strong><span style="color:#000000;">probe</span></strong><strong><span style="color:#000000;">，也就是</span></strong><strong><span style="color:#000000;">fsl_pq_mdio_probe</span></strong><strong><span style="color:#000000;">。</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#3366ff;">现在</span></strong><strong><span style="color:#3366ff;">of_platform</span></strong><strong><span style="color:#3366ff;">总线上的设备</span></strong><strong><span style="color:#3366ff;">e0024520.mdio</span></strong><strong><span style="color:#3366ff;">和</span></strong><strong><span style="color:#3366ff;">e0025520.mdio</span></strong><strong><span style="color:#3366ff;">已经绑定了驱动。</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#FF0000;">7 Mdio</span></strong><strong><span style="color:#FF0000;">总线上的设备的添加，寻找并绑定相应的驱动。</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">/driver/net/fsl_pq_mdio.c</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">fsl_pq_mdio_probe </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> of_mdiobus_register </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> phy_device_register </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> device_register(&amp;phydev-&gt;dev) </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;">device_add </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> bus_probe_device </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> device_attach </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;">bus_for_each_drv</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">扫描</span></strong><strong><span style="color:#000000;">mdio</span></strong><strong><span style="color:#000000;">总线上的所有的驱动，若找到匹配的，就绑定，并</span></strong><strong><span style="color:#000000;">probe</span></strong><strong><span style="color:#000000;">。</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">__device_attach </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> driver_probe_device </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> really_probe </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> phy_probe</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#3366ff;">将所有的</span></strong><strong><span style="color:#3366ff;">phy</span></strong><strong><span style="color:#3366ff;">和</span></strong><strong><span style="color:#3366ff;">tbi-phy</span></strong><strong><span style="color:#3366ff;">的设备都添加到</span></strong><strong><span style="color:#3366ff;">mdio</span></strong><strong><span style="color:#3366ff;">总线上，并且两个</span></strong><strong><span style="color:#3366ff;">phy</span></strong><strong><span style="color:#3366ff;">设备和两个</span></strong><strong><span style="color:#3366ff;">tbi-phy</span></strong><strong><span style="color:#3366ff;">设备都会根据其自己的</span></strong><strong><span style="color:#3366ff;">PHYID</span></strong><strong><span style="color:#3366ff;">找到各自的驱动</span></strong></p> 
+<p style="margin-left:0cm;"> </p> 
+<p style="margin-left:0cm;"><strong><span style="color:#FF0000;">8 of_platform</span></strong><strong><span style="color:#FF0000;">总线上</span></strong><strong><span style="color:#FF0000;">gianfar</span></strong><strong><span style="color:#FF0000;">设备驱动添加，并绑定设备</span></strong><strong><span style="color:#FF0000;">e0024000.ethernet</span></strong><strong><span style="color:#FF0000;">和</span></strong><strong><span style="color:#FF0000;">e0025000.ethernet</span></strong><strong><span style="color:#FF0000;">：</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">/driver/net/gianfar.c</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">module_init(</span></strong><strong><span style="color:#3366ff;">gfar_init</span></strong><strong><span style="color:#000000;">);</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">gfar_init </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> of_register_platform_driver(&amp;gfar_driver) </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> of_register_driver </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> driver_register </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;">bus_add_driver </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> driver_attach</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">遍历整个</span></strong><strong><span style="color:#000000;">of_platform</span></strong><strong><span style="color:#000000;">总线，寻找与之相匹配的设备</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">driver_attach </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> __driver_attach </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> driver_match_device</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">将</span></strong><strong><span style="color:#000000;">driver</span></strong><strong><span style="color:#000000;">的</span></strong><strong><span style="color:#000000;">match_table</span></strong><strong><span style="color:#000000;">里的信息和</span></strong><strong><span style="color:#000000;">dev_nod</span></strong><strong><span style="color:#000000;">中的做比较，若符合就进入</span></strong><strong><span style="color:#000000;">driver</span></strong><strong><span style="color:#000000;">的</span></strong><strong><span style="color:#000000;">probe</span></strong><strong><span style="color:#000000;">，也就是</span></strong><strong><span style="color:#000000;">gfar_probe</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#3366ff;">现在设备</span></strong><strong><span style="color:#3366ff;">e0024000.ethernet</span></strong><strong><span style="color:#3366ff;">和</span></strong><strong><span style="color:#3366ff;">e0025000.ethernet</span></strong><strong><span style="color:#3366ff;">都有了他们自己的驱动。</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#3366ff;">到这步，</span></strong><strong><span style="color:#3366ff;">of_platform</span></strong><strong><span style="color:#3366ff;">上的</span></strong><strong><span style="color:#3366ff;">gianfar</span></strong><strong><span style="color:#3366ff;">设备和</span></strong><strong><span style="color:#3366ff;">mdio</span></strong><strong><span style="color:#3366ff;">设备都有其各自的驱动，</span></strong><strong><span style="color:#3366ff;">mdio</span></strong><strong><span style="color:#3366ff;">总线上的</span></strong><strong><span style="color:#3366ff;">phy</span></strong><strong><span style="color:#3366ff;">设备和</span></strong><strong><span style="color:#3366ff;">tbi-phy</span></strong><strong><span style="color:#3366ff;">设备都有了其驱动程序，但是</span></strong><strong><span style="color:#3366ff;">phy</span></strong><strong><span style="color:#3366ff;">设备和</span></strong><strong><span style="color:#3366ff;">gianfar</span></strong><strong><span style="color:#3366ff;">设备之间还没有任何联系，</span></strong><strong><span style="color:#3366ff;">phy</span></strong><strong><span style="color:#3366ff;">和</span></strong><strong><span style="color:#3366ff;">gianfar</span></strong><strong><span style="color:#3366ff;">都没有初始化。现在要调用相应的驱动去初始化各个设备，连接</span></strong><strong><span style="color:#3366ff;">gianfar</span></strong><strong><span style="color:#3366ff;">和</span></strong><strong><span style="color:#3366ff;">phy</span></strong><strong><span style="color:#3366ff;">。</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#FF0000;">9 gianfar_probe </span></strong><strong><span style="color:#FF0000;">初始化</span></strong><strong><span style="color:#FF0000;">gianfar</span></strong><strong><span style="color:#FF0000;">设备，填充</span></strong><strong><span style="color:#FF0000;">dev</span></strong><strong><span style="color:#FF0000;">和</span></strong><strong><span style="color:#FF0000;">priv</span></strong><strong><span style="color:#FF0000;">结构体。其中</span></strong><strong><span style="color:#FF0000;">gfar_of_init </span></strong><strong><span style="color:#FF0000;">会从</span></strong><strong><span style="color:#FF0000;">of</span></strong><strong><span style="color:#FF0000;">结构中读出</span></strong><strong><span style="color:#FF0000;">priv-&gt;phy_node</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#FF0000;">10 phy</span></strong><strong><span style="color:#FF0000;">的初始化，</span></strong><strong><span style="color:#FF0000;">phy </span></strong><strong><span style="color:#FF0000;">和</span></strong><strong><span style="color:#FF0000;">gianfar</span></strong><strong><span style="color:#FF0000;">的连接</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">/net/ipv4/ipconfig.c</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">late_initcall(</span></strong><strong><span style="color:#3366ff;">ip_auto_config</span></strong><strong><span style="color:#000000;">)</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">ip_auto_config </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> ic_open_devs </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> dev_change_flags </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> __dev_change_flags </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> __dev_open </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> ops-&gt;ndo_open </span></strong><strong><span style="color:#000000;">à</span></strong><strong><span style="color:#000000;"> gfar_enet_open</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">在</span></strong><strong><span style="color:#000000;">gfar</span></strong><strong><span style="color:#000000;">设备的打开函数中会去初始化</span></strong><strong><span style="color:#000000;">phy</span></strong><strong><span style="color:#000000;">，并</span></strong><strong><span style="color:#000000;">connect to gianfar</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><span style="color:#3366ff;">u</span>       <strong><span style="color:#3366ff;">gfar_enet_open </span></strong><strong><span style="color:#3366ff;">à</span></strong><strong><span style="color:#3366ff;"> init_phy</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">static int init_phy(struct net_device *dev)</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">{<!-- --></span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">。</span></strong><strong> </strong><strong><span style="color:#000000;">。</span></strong><strong> </strong><strong><span style="color:#000000;">。</span></strong><strong> </strong><strong><span style="color:#000000;">。</span></strong><strong> </strong><strong><span style="color:#000000;">。</span></strong><strong> </strong><strong><span style="color:#000000;">。</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">    interface = </span></strong><strong><span style="color:#3366ff;">gfar_get_interface</span></strong><strong><span style="color:#000000;">(dev);</span></strong></p> 
+<p style="margin-left:0cm;"><strong>   </strong><strong><span style="color:#FF0000;"> /*PHY</span></strong><strong><span style="color:#FF0000;">连接和初始化</span></strong><strong><span style="color:#FF0000;">*/</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       priv-&gt;phydev = </span></strong><strong><span style="color:#3366ff;">of_phy_connect</span></strong><strong><span style="color:#000000;">(dev, priv-&gt;phy_node, &amp;adjust_link, 0,</span></strong></p> 
+<p style="margin-left:0cm;"><strong>      </strong></p> 
+<p style="margin-left:0cm;"><strong>    </strong><strong><span style="color:#000000;">。</span></strong><strong> </strong><strong><span style="color:#000000;">。</span></strong><strong> </strong><strong><span style="color:#000000;">。</span></strong><strong> </strong><strong><span style="color:#000000;">。</span></strong><strong> </strong><strong><span style="color:#000000;">。</span></strong><strong> </strong><strong><span style="color:#000000;">。</span></strong></p> 
+<p style="margin-left:0cm;"><strong>    </strong><strong><span style="color:#FF0000;">/*</span></strong><strong><span style="color:#FF0000;">配置</span></strong><strong><span style="color:#FF0000;">TBI-PHY*/</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       if (interface == PHY_INTERFACE_MODE_SGMII)</span></strong></p> 
+<p style="margin-left:0cm;"><strong>              </strong><strong><span style="color:#3366ff;">gfar_configure_serdes</span></strong><strong><span style="color:#000000;">(dev);</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">    . . . . .</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       return 0;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">}</span></strong></p> 
+<p style="margin-left:0cm;"><span style="color:#3366ff;">u</span>       <strong><span style="color:#3366ff;">of_phy_connect</span></strong><strong><span style="color:#3366ff;">函数</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">priv-&gt;phy_node</span></strong><strong><span style="color:#000000;">是从</span></strong><strong><span style="color:#000000;">of</span></strong><strong><span style="color:#000000;">结构中读出的</span></strong><strong><span style="color:#000000;">phy</span></strong><strong><span style="color:#000000;">的信息，还不是真正的</span></strong><strong><span style="color:#000000;">phy</span></strong><strong><span style="color:#000000;">，所以这里要在</span></strong><strong><span style="color:#000000;">mdio_bus_type</span></strong><strong><span style="color:#000000;">总线上再找一次匹配的</span></strong><strong><span style="color:#000000;">phy</span></strong><strong><span style="color:#000000;">。若找到</span></strong><strong><span style="color:#000000;">phy_device *phy</span></strong><strong><span style="color:#000000;">指针就不为空。</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">struct phy_device *</span></strong><strong><span style="color:#3366ff;">of_phy_connect</span></strong><strong><span style="color:#000000;">(struct net_device *dev,</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">                              struct device_node *phy_np,</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">                              void (*hndlr)(struct net_device *), u32 flags,</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">                              phy_interface_t iface)</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">{<!-- --></span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#FF0000;">/*</span></strong><strong><span style="color:#FF0000;">从</span></strong><strong><span style="color:#FF0000;">mdio</span></strong><strong><span style="color:#FF0000;">总线上找到和</span></strong><strong><span style="color:#FF0000;">of tree</span></strong><strong><span style="color:#FF0000;">上读出的</span></strong><strong><span style="color:#FF0000;">phy_node</span></strong><strong><span style="color:#FF0000;">相匹配的</span></strong><strong><span style="color:#FF0000;">phy</span></strong><strong><span style="color:#FF0000;">设备</span></strong><strong><span style="color:#FF0000;">*/</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       struct phy_device *phy = </span></strong><strong><span style="color:#3366ff;">of_phy_find_device</span></strong><strong><span style="color:#000000;">(phy_np);</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       if (!phy)</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              return NULL;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#FF0000;">/*phy</span></strong><strong><span style="color:#FF0000;">的初始化和</span></strong><strong><span style="color:#FF0000;">phy</span></strong><strong><span style="color:#FF0000;">的某些操作</span></strong><strong><span style="color:#FF0000;">*/</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       return </span></strong><strong><span style="color:#3366ff;">phy_connect_direct</span></strong><strong><span style="color:#000000;">(dev, phy, hndlr, flags, iface) ? NULL : phy;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">}</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><span style="color:#3366ff;">u</span>       <strong><span style="color:#3366ff;">phy_connect_direct</span></strong><strong><span style="color:#3366ff;">函数</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">int </span></strong><strong><span style="color:#3366ff;">phy_connect_direct</span></strong><strong><span style="color:#000000;">(struct net_device *dev, struct phy_device *phydev,</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">                     void (*handler)(struct net_device *), u32 flags,</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">                     phy_interface_t interface)</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">{<!-- --></span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       int rc;</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#FF0000;">/*phy </span></strong><strong><span style="color:#FF0000;">连接和初始化</span></strong><strong><span style="color:#FF0000;">*/</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       rc = </span></strong><strong><span style="color:#3366ff;">phy_attach_direct</span></strong><strong><span style="color:#000000;">(dev, phydev, flags, interface);</span></strong></p> 
+<p style="margin-left:0cm;"><strong>      </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       if (rc)</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              return rc;</span></strong></p> 
+<p style="margin-left:0cm;"><strong>    </strong><strong><span style="color:#FF0000;">/*</span></strong><strong><span style="color:#FF0000;">挂载</span></strong><strong><span style="color:#FF0000;">PHY</span></strong><strong><span style="color:#FF0000;">状态改变后修改</span></strong><strong><span style="color:#FF0000;">gianfar</span></strong><strong><span style="color:#FF0000;">驱动寄存器的回调函数</span></strong><strong><span style="color:#FF0000;">*/</span></strong></p> 
+<p style="margin-left:0cm;"><strong>       </strong><strong><span style="color:#3366ff;">phy_prepare_link</span></strong><strong><span style="color:#000000;">(phydev, handler);</span></strong></p> 
+<p style="margin-left:0cm;"><strong>   </strong><strong><span style="color:#FF0000;"> /*PHY</span></strong><strong><span style="color:#FF0000;">的状态机开启</span></strong><strong><span style="color:#FF0000;">*/</span></strong></p> 
+<p style="margin-left:0cm;"><strong>       </strong><strong><span style="color:#3366ff;">phy_start_machine</span></strong><strong><span style="color:#000000;">(phydev, NULL);</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       if (phydev-&gt;irq &gt; 0)</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              {<!-- --></span></strong></p> 
+<p style="margin-left:0cm;"><strong>                </strong><strong><span style="color:#FF0000;">/*PHY</span></strong><strong><span style="color:#FF0000;">中断的开启</span></strong><strong><span style="color:#FF0000;">*/</span></strong></p> 
+<p style="margin-left:0cm;"><strong>                            </strong><strong><span style="color:#3366ff;">phy_start_interrupts</span></strong><strong><span style="color:#000000;">(phydev);</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              }</span></strong></p> 
+<p style="margin-left:0cm;"><strong>             </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       return 0;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">}</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><span style="color:#3366ff;">u</span>       <strong><span style="color:#3366ff;">phy_attach_direct</span></strong><strong><span style="color:#3366ff;">函数</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">int phy_attach_direct(struct net_device *dev, struct phy_device *phydev,</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">                    u32 flags, phy_interface_t interface)</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">{<!-- --></span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       struct device *d = &amp;phydev-&gt;dev;</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong>       </strong><strong><span style="color:#FF0000;">/* </span></strong><strong><span style="color:#FF0000;">如何该</span></strong><strong><span style="color:#FF0000;">phy</span></strong><strong><span style="color:#FF0000;">没有驱动，就使用</span></strong><strong><span style="color:#FF0000;">genphy</span></strong><strong><span style="color:#FF0000;">的驱动</span></strong><strong><span style="color:#FF0000;"> */</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       if (NULL == d-&gt;driver) {<!-- --></span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              int err;</span></strong></p> 
+<p style="margin-left:0cm;"><strong>             </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              d-&gt;driver = &amp;genphy_driver.driver;</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              err = d-&gt;driver-&gt;probe(d);</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              if (err &gt;= 0)</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">                     err = device_bind_driver(d);</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              if (err)</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">                     return err;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       }</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#FF0000;">/*</span></strong><strong><span style="color:#FF0000;">如果</span></strong><strong><span style="color:#FF0000;">phy</span></strong><strong><span style="color:#FF0000;">已经和</span></strong><strong><span style="color:#FF0000;">gianfar</span></strong><strong><span style="color:#FF0000;">连接</span></strong><strong> </strong><strong><span style="color:#FF0000;">返回</span></strong><strong><span style="color:#FF0000;">*/</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       if (phydev-&gt;attached_dev) {<!-- --></span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              dev_err(&amp;dev-&gt;dev, "PHY already attached/n");</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">              return -EBUSY;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       }</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#FF0000;">/*</span></strong><strong><span style="color:#FF0000;">连接</span></strong><strong><span style="color:#FF0000;">phy</span></strong><strong><span style="color:#FF0000;">和</span></strong><strong><span style="color:#FF0000;">gianfar*/</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       phydev-&gt;attached_dev = dev;</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       phydev-&gt;dev_flags = flags;</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       phydev-&gt;interface = interface;</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#FF0000;">/*</span></strong><strong><span style="color:#FF0000;">使用</span></strong><strong><span style="color:#FF0000;">phy</span></strong><strong><span style="color:#FF0000;">的驱动中的初始化函数去初始化</span></strong><strong><span style="color:#FF0000;">phy</span></strong><strong><span style="color:#FF0000;">设备。</span></strong><strong><span style="color:#FF0000;">*/</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">       return </span></strong><strong><span style="color:#3366ff;">phy_init_hw</span></strong><strong><span style="color:#000000;">(phydev);</span></strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#000000;">}</span></strong></p> 
+<p style="margin-left:0cm;"><strong> </strong></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#3366ff;">到这里，所有的</span></strong><strong><span style="color:#3366ff;">gianfar</span></strong><strong><span style="color:#3366ff;">，</span></strong><strong><span style="color:#3366ff;">phy</span></strong><strong><span style="color:#3366ff;">，</span></strong><strong><span style="color:#3366ff;">tbi-phy</span></strong><strong><span style="color:#3366ff;">设备都已经注册，驱动已经加载，</span></strong><strong><span style="color:#3366ff;">gianfar</span></strong><strong><span style="color:#3366ff;">和</span></strong><strong><span style="color:#3366ff;">phy</span></strong><strong><span style="color:#3366ff;">已经连接，并初始化完成。</span></strong></p> 
+<p style="margin-left:0cm;"> </p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/64e4f254d1736b7201aa101ccdcbe3d1/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">对于Google Earth Engine的介绍</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/62c260d0f7290f1a3581b664c7624be3/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Element Ui 下拉选择框内追加添加按钮，点击可以追加新的选项内容</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

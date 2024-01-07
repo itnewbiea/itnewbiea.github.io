@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Kafka协调器和有意思的三个参数 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Kafka协调器和有意思的三个参数" />
+<meta property="og:description" content="一、Kafka的协调器 作用： 负责消费者的出入组工作组协调器，每个broker启动的时候，都会创建GroupCoordinator实例，管理部分消费组 在与之连接的消费者中选举出消费者leader 下发leader消费者返回的消费者分区分配结果给所有的消费者管理消费者的消费偏移量提交，保存在kafka的内部主题中和消费者心跳保持，知道哪些消费者已经死掉，组中存活的消费者是哪些 消费者协调器，每个consumer实例化时，同时实例化一个ConsumerCoordinator对象，负责同一个消费组下各个消费者和服务端组协调器之前的通信 向组协调器申请加入组或者离开组向组协调器提交偏移量通过心跳，保持组协调器的连接感知被组协调器选为leader的消费者的协调器，负责消费者分区分配。分配结果发送给组协调器非leader的消费者，通过消费者协调器和组协调器同步分配结果 选举GroupCoordinator流程： 首先对消费组的groupId进行hash，接着对consumer_offsets的分区数量取模，默认是50，可以通过offsets.topic.num.partitions来设置找到你的这个consumer group的offset要提交到consumer_offsets的哪个分区然后对这个分区找到对应的leader所在的broker，这个broker就是这个consumer group的coordinator了，consumer接着就会维护一个Socket连接跟这个Broker进行通信 选举消费者leader过程 确定了GroupCoordinator之后，所有的consumer都会发送一个join group请求注册GroupCoordinator就会默认把第一个注册上来的consumer选择成为leader consumer把整个Topic的情况（Kafka元数据）下发给leader consumerleader consumer就会根据负载均衡的思路制定消费方案，返回给GroupCoordinatorGroupCoordinator拿到方案之后再下发给所有的consumerconsumer都会向GroupCoordinator发送心跳，当有consumer长时间不再和GroupCoordinator保持联系，就会重新把分配给这个consumer的任务重新执行一遍 二、有意思的参数 1. heartbeat.interval.ms参数 每个consumer 都会根据 heartbeat.interval.ms 参数指定的时间周期性地向group coordinator发送 hearbeat，group coordinator会给各个consumer响应，若发生了 rebalance，各个consumer收到的响应中会包含 REBALANCE_IN_PROGRESS 标识，这样各个consumer就知道已经发生了rebalance，同时 group coordinator也知道了各个consumer的存活情况
+2. session.timeout.ms参数 group coordinator检测consumer发生崩溃所需的时间。一个consumer group里面的某个consumer挂掉了，最长需要 session.timeout.ms 秒检测出来
+3. max.poll.interval.ms参数 如果在两次poll操作之间，超过了这个时间，会进行重平衡
+参数使用举例 session.timeout.ms=10， heartbeat.interval.ms=3 session.timeout.ms是个&#34;逻辑&#34;指标，它指定了一个阈值—10秒，在这个阈值内如果coordinator未收到consumer的任何消息，那coordinator就认为consumer挂了。而heartbeat.interval.ms是个&#34;物理&#34;指标，它告诉consumer要每3秒给coordinator发一个心跳包，heartbeat.interval.ms越小，发的心跳包越多
+设计的原因： 如果group coordinator在一个heartbeat.interval.ms周期内未收到consumer的心跳，就把该consumer移出group，这样设计显得不合理，有可能网络延时，有可能consumer出现了一次长时间GC，影响了心跳包的到达，就会造成误判，导致频繁的rebalance
+版本对比 在kafka0.10.1之前，发送心跳包和消息处理逻辑这2个过程是耦合在一起的，如果一条消息处理时长要5min，而session.timeout.ms=3000ms，那么等 kafka consumer处理完消息，group coordinator早就将consumer 移出group了，，因为只有一个线程，在消息处理过程中就无法向group coordinator发送心跳包，超过3000ms未发送心跳包，group coordinator就将该consumer移出group了
+kafka0.10.1之后的版本中，new KafkaConsumer对象后，在while true循环中执行consumer.poll拉取消息这个过程中，存在两个线程：
+heartbeat 线程，定时发送心跳processing线程，可理解为调用consumer.poll方法执行消息处理逻辑的线程 两个线程设计的优点
+将二者分开，一个processing线程负责执行消息处理逻辑，一个heartbeat线程负责发送心跳包，那么：就算一条消息需要处理5min，只要底heartbeat线程在session.timeout.ms向group coordinator发送了心跳包，那consumer可以继续处理消息，而不用担心被移出group如果consumer出了问题，那么在 session.timeout.ms内就能检测出来，而不用等到 max.poll.interval.ms 时长后才能检测出来 实际问题分析 项目中经常碰到的 频繁consumer rebalance 错误" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/a017958da1cce3aeaa51a164b3a99a61/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-01-21T15:51:43+08:00" />
+<meta property="article:modified_time" content="2020-01-21T15:51:43+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Kafka协调器和有意思的三个参数</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-github-gist">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h4><a id="Kafka_0"></a>一、Kafka的协调器</h4> 
+<ul><li><strong>作用：</strong> 负责消费者的出入组工作</li><li><strong>组协调器</strong>，每个broker启动的时候，都会创建GroupCoordinator实例，管理部分消费组 
+  <ul><li>在与之连接的消费者中选举出消费者leader</li></ul> 
+  <ul><li>下发leader消费者返回的消费者分区分配结果给所有的消费者</li><li>管理消费者的消费偏移量提交，保存在kafka的内部主题中</li><li>和消费者心跳保持，知道哪些消费者已经死掉，组中存活的消费者是哪些</li></ul> </li><li><strong>消费者协调器</strong>，每个consumer实例化时，同时实例化一个ConsumerCoordinator对象，负责同一个消费组下各个消费者和服务端组协调器之前的通信 
+  <ul><li>向组协调器申请加入组或者离开组</li><li>向组协调器提交偏移量</li><li>通过心跳，保持组协调器的连接感知</li><li>被组协调器选为leader的消费者的协调器，负责消费者分区分配。分配结果发送给组协调器</li><li>非leader的消费者，通过消费者协调器和组协调器同步分配结果</li></ul> </li></ul> 
+<h6><a id="GroupCoordinator_14"></a>选举GroupCoordinator流程：</h6> 
+<ol><li>首先对消费组的groupId进行hash，接着对consumer_offsets的分区数量取模，默认是50，可以通过offsets.topic.num.partitions来设置</li><li>找到你的这个consumer group的offset要提交到consumer_offsets的哪个分区</li><li>然后对这个分区找到对应的leader所在的broker，这个broker就是这个consumer group的coordinator了，consumer接着就会维护一个Socket连接跟这个Broker进行通信</li></ol> 
+<h6><a id="leader_19"></a>选举消费者leader过程</h6> 
+<ol><li>确定了GroupCoordinator之后，所有的consumer都会发送一个join group请求注册</li><li>GroupCoordinator就会默认把第一个注册上来的consumer选择成为leader consumer</li><li>把整个Topic的情况（Kafka元数据）下发给leader consumer</li><li>leader consumer就会根据负载均衡的思路制定消费方案，返回给GroupCoordinator</li><li>GroupCoordinator拿到方案之后再下发给所有的consumer</li><li>consumer都会向GroupCoordinator发送心跳，当有consumer长时间不再和GroupCoordinator保持联系，就会重新把分配给这个consumer的任务重新执行一遍</li></ol> 
+<h4><a id="_26"></a>二、有意思的参数</h4> 
+<h5><a id="1_heartbeatintervalms_27"></a>1. heartbeat.interval.ms参数</h5> 
+<p>每个consumer 都会根据 heartbeat.interval.ms 参数指定的时间周期性地向group coordinator发送 hearbeat，group coordinator会给各个consumer响应，若发生了 rebalance，各个consumer收到的响应中会包含 REBALANCE_IN_PROGRESS 标识，这样各个consumer就知道已经发生了rebalance，同时 group coordinator也知道了各个consumer的存活情况</p> 
+<h5><a id="2_sessiontimeoutms_30"></a>2. session.timeout.ms参数</h5> 
+<p>group coordinator检测consumer发生崩溃所需的时间。一个consumer group里面的某个consumer挂掉了，最长需要 session.timeout.ms 秒检测出来</p> 
+<h5><a id="3_maxpollintervalms_33"></a>3. max.poll.interval.ms参数</h5> 
+<p>如果在两次poll操作之间，超过了这个时间，会进行重平衡</p> 
+<h5><a id="_35"></a>参数使用举例</h5> 
+<pre><code class="prism language-java">session<span class="token punctuation">.</span>timeout<span class="token punctuation">.</span>ms<span class="token operator">=</span><span class="token number">10</span>，
+heartbeat<span class="token punctuation">.</span>interval<span class="token punctuation">.</span>ms<span class="token operator">=</span><span class="token number">3</span>
+</code></pre> 
+<p>session.timeout.ms是个"逻辑"指标，它指定了一个阈值—10秒，在这个阈值内如果coordinator未收到consumer的任何消息，那coordinator就认为consumer挂了。而heartbeat.interval.ms是个"物理"指标，它告诉consumer要每3秒给coordinator发一个心跳包，heartbeat.interval.ms越小，发的心跳包越多</p> 
+<p><strong>设计的原因：</strong> 如果group coordinator在一个heartbeat.interval.ms周期内未收到consumer的心跳，就把该consumer移出group，这样设计显得不合理，有可能网络延时，有可能consumer出现了一次长时间GC，影响了心跳包的到达，就会造成误判，导致频繁的rebalance</p> 
+<h5><a id="_44"></a>版本对比</h5> 
+<ul><li> <p><strong>在kafka0.10.1之前</strong>，发送心跳包和消息处理逻辑这2个过程是耦合在一起的，如果一条消息处理时长要5min，而session.timeout.ms=3000ms，那么等 kafka consumer处理完消息，group coordinator早就将consumer 移出group了，，因为只有一个线程，在消息处理过程中就无法向group coordinator发送心跳包，超过3000ms未发送心跳包，group coordinator就将该consumer移出group了</p> </li><li> <p>kafka0.10.1之后的版本中，new KafkaConsumer对象后，在while true循环中执行consumer.poll拉取消息这个过程中，存在两个线程：</p> 
+  <ul><li>heartbeat 线程，定时发送心跳</li><li>processing线程，可理解为调用consumer.poll方法执行消息处理逻辑的线程</li></ul> </li><li> <p><strong>两个线程设计的优点</strong></p> 
+  <ul><li>将二者分开，一个processing线程负责执行消息处理逻辑，一个heartbeat线程负责发送心跳包，那么：就算一条消息需要处理5min，只要底heartbeat线程在session.timeout.ms向group coordinator发送了心跳包，那consumer可以继续处理消息，而不用担心被移出group</li><li>如果consumer出了问题，那么在 session.timeout.ms内就能检测出来，而不用等到 max.poll.interval.ms 时长后才能检测出来</li></ul> </li></ul> 
+<h5><a id="_54"></a>实际问题分析</h5> 
+<p>项目中经常碰到的 频繁consumer rebalance 错误</p> 
+<ul><li> <p><strong>分析：</strong> 虽然是两个线程，可能消息处理线程执行时间很长，但是心跳线程一直在发送信息，看起来应该不会发生重平衡，为什么group coordinator怎么还老是将consumer移出group，然后导致不断地rebalance呢？</p> </li><li> <p>主要是由max.poll.interval.ms这个参数引起的，消息处理逻辑花了太长的时间，超过了max.poll.interval.ms ，那么此consumer提交offset就会失败。此外，在用户线程中，一般会做一些<strong>失败的重试处理</strong>，比如通过线程池的 ThreadPoolExecutor#afterExecute()方法捕获到异常，再次提交Runnable任务重新订阅kafka topic。那么意味着有新消费者加入group，就会引发 rebalance，而可悲的是：新的消费者还是来不及处理完所有消息，又被移出group。如此循环，就发生了不停地 rebalance 的现象</p> </li></ul> 
+<h5><a id="_61"></a>避免重平衡参数设置</h5> 
+<ul><li> <p><strong>前提：重平衡无法避免。只能通过合理配置减少</strong></p> </li><li> <p><strong>session.timeout.ms 和 heartbeat.interval.ms参数设置</strong></p> 
+  <ul><li>设置 session.timeout.ms = 10s。</li><li>设置 heartbeat.interval.ms = 3s。</li><li>要保证 Consumer 实例在被判定为“dead”之前，能够发送至少 3 轮的心跳请求，即 session.timeout.ms &gt;= 3 * heartbeat.interval.ms</li></ul> </li><li> <p><strong>max.poll.interval.ms 参数值的设置</strong> ，默认是5分钟。可以根据业务的实际处理实际，比如业务处理时间是8分钟，可以将其调成10分钟，避免频繁的rebalance</p> </li><li> <p><strong>调整JVM参数</strong>，避免频繁GC导致的重平衡（JVM高手根据实际情况合理设置）</p> </li></ul> 
+<h5><a id="_72"></a>参考</h5> 
+<p><a href="https://www.cnblogs.com/hapjin/p/10926882.html" rel="nofollow">Kafka session.timeout.ms heartbeat.interval.ms参数的区别以及对数据存储的一些思考</a></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/24744219279391f356ed9e4141cb494b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">ElasticSearch学习笔记（九）——Elasticsearch查询原理分析</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/6c34828aa27e94bc48957b42a348ad85/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Android使用AspectJ实现AOP -- 上手实践篇</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

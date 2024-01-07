@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>es DELETE index 源码分析 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="es DELETE index 源码分析" />
+<meta property="og:description" content="这里有前置要求：
+需要已经编译通过过es源码！es源码能够自己本地成功运行。
+https://blog.csdn.net/weixin_30166297/article/details/116751609
+明确几个点 本篇文章，用类名 &#43; . &#43; function() 来表示某个类的某个方法。本篇文章的源码调试，用的是IDEA开发工具，快捷键是默认的！本篇文章说的点进去是指查看方法调用，是使用 ctrl &#43; 鼠标左键点击 需要查看的方法，不再赘述。 列举重要的类（解析这些重要的类发挥的作用）：
+MetaStateService 用来做MetaData状态变更以后的落盘操作，包括从磁盘上将集群信息读回集群。Node类（这个类不好找org.elasticsearch.node）MetaData类 集群的信息 几个方向
+如何定义API，需要理清楚es的调用关系。要知道如何从一个 DETELE index 然后调用到处理逻辑上去
+理清楚处理类，es是如何删除一个索引的。
+理清楚es的代码结构，这些类都在哪里放着。
+需要知道es的IOC容器并不是用spring来管理的，要明白在es中是如何注册的。
+如果是新加功能，如何写es中的测试类 ESIntegTestCase类是es的用于集成测试的类，它为我们封装了一些常用的方法，比如启动集群，创建索引，等等。
+https://doc.codingdict.com/elasticsearch/504/https://www.twle.cn/l/yufei/elasticsearch/es-basic-testing.html 服务端 TransportDeleteIndexAction ，该类属于服务层的操作类。
+TransportDeleteIndexAction 继承了 TransportMasterNodeAction，TransportMasterNodeAction是master节点来调度指定操作的类， 完成master节点执行和重试功能。
+注意这里暂时省略了API层的分析，直接来到服务层看代码，核心代码在这里！
+另外再说一点:这里并不是简单的API调用服务层。ES里边的处理逻辑是比较复杂。下边要讲的删除逻辑是真正执行删除的操作。但是API并没有直接调用它，删除流程是这样，通过es集群状态信息的变化，由这个变化的事件触发了调用删除逻辑。这样做的原因是：es是天然的分布式应用。状态信息的改变，首先发生在master节点上，然后master在将状态分发到数据节点上，在状态信息更新的时候，就捕捉到了这个变化的事件。然后就能够触发删除逻辑了。
+执行删除操作的入口 TransportDeleteIndexAction.masterOperation()
+源码如下：
+TransportDeleteIndexAction.masterOperation()
+@Override protected void masterOperation(final DeleteIndexRequest request, final ClusterState state, final ActionListener&lt;AcknowledgedResponse&gt; listener) { // 根据请求提取出来索引。 final Set&lt;Index&gt; concreteIndices = new HashSet&lt;&gt;(Arrays.asList(indexNameExpressionResolver.concreteIndices(state, request))); if (concreteIndices.isEmpty()) { listener.onResponse(new AcknowledgedResponse(true)); return; } // async delete freezing indices stats." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/6eaa125b77933a1f565758b6163fc31d/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-08-01T15:12:06+08:00" />
+<meta property="article:modified_time" content="2022-08-01T15:12:06+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">es DELETE index 源码分析</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <blockquote> 
+ <p>这里有前置要求：</p> 
+ <p>需要已经编译通过过es源码！es源码能够自己本地成功运行。</p> 
+ <p>https://blog.csdn.net/weixin_30166297/article/details/116751609</p> 
+ <h4><a id="_6"></a>明确几个点</h4> 
+ <ul><li>本篇文章，用类名 + . + function() 来表示某个类的某个方法。</li><li>本篇文章的源码调试，用的是IDEA开发工具，快捷键是默认的！</li><li>本篇文章说的点进去是指查看方法调用，是使用 ctrl + 鼠标左键点击 需要查看的方法，不再赘述。</li></ul> 
+</blockquote> 
+<blockquote> 
+ <p>列举重要的类（解析这些重要的类发挥的作用）：</p> 
+ <ul><li>MetaStateService 用来做MetaData状态变更以后的落盘操作，包括从磁盘上将集群信息读回集群。</li><li>Node类（这个类不好找org.elasticsearch.node）</li><li>MetaData类 集群的信息</li></ul> 
+</blockquote> 
+<blockquote> 
+ <p>几个方向</p> 
+ <p>如何定义API，需要理清楚es的调用关系。要知道如何从一个 DETELE index 然后调用到处理逻辑上去</p> 
+ <p>理清楚处理类，es是如何删除一个索引的。</p> 
+ <p>理清楚es的代码结构，这些类都在哪里放着。</p> 
+ <p>需要知道es的IOC容器并不是用spring来管理的，要明白在es中是如何注册的。</p> 
+ <p>如果是新加功能，如何写es中的测试类 ESIntegTestCase类是es的用于集成测试的类，它为我们封装了一些常用的方法，比如启动集群，创建索引，等等。</p> 
+ <ul><li>https://doc.codingdict.com/elasticsearch/504/</li><li>https://www.twle.cn/l/yufei/elasticsearch/es-basic-testing.html</li></ul> 
+</blockquote> 
+<h3><a id="_35"></a>服务端</h3> 
+<p>TransportDeleteIndexAction ，该类属于服务层的操作类。</p> 
+<p>TransportDeleteIndexAction 继承了 TransportMasterNodeAction，TransportMasterNodeAction是master节点来调度指定操作的类， 完成master节点执行和重试功能。</p> 
+<blockquote> 
+ <p>注意这里暂时省略了API层的分析，直接来到服务层看代码，核心代码在这里！</p> 
+ <p>另外再说一点:这里并不是简单的API调用服务层。ES里边的处理逻辑是比较复杂。下边要讲的删除逻辑是真正执行删除的操作。但是API并没有直接调用它，删除流程是这样，通过es集群状态信息的变化，由这个变化的事件触发了调用删除逻辑。这样做的原因是：es是天然的分布式应用。状态信息的改变，首先发生在master节点上，然后master在将状态分发到数据节点上，在状态信息更新的时候，就捕捉到了这个变化的事件。然后就能够触发删除逻辑了。</p> 
+</blockquote> 
+<h3><a id="_45"></a>执行删除操作的入口</h3> 
+<p>TransportDeleteIndexAction.masterOperation()</p> 
+<p>源码如下：</p> 
+<p>TransportDeleteIndexAction.masterOperation()</p> 
+<pre><code class="prism language-java"> <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">protected</span> <span class="token keyword">void</span> <span class="token function">masterOperation</span><span class="token punctuation">(</span><span class="token keyword">final</span> <span class="token class-name">DeleteIndexRequest</span> request<span class="token punctuation">,</span> <span class="token keyword">final</span> <span class="token class-name">ClusterState</span> state<span class="token punctuation">,</span>
+                                   <span class="token keyword">final</span> <span class="token class-name">ActionListener</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">AcknowledgedResponse</span><span class="token punctuation">&gt;</span></span> listener<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// 根据请求提取出来索引。</span>
+        <span class="token keyword">final</span> <span class="token class-name">Set</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Index</span><span class="token punctuation">&gt;</span></span> concreteIndices <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">HashSet</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token class-name">Arrays</span><span class="token punctuation">.</span><span class="token function">asList</span><span class="token punctuation">(</span>indexNameExpressionResolver<span class="token punctuation">.</span><span class="token function">concreteIndices</span><span class="token punctuation">(</span>state<span class="token punctuation">,</span> request<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>concreteIndices<span class="token punctuation">.</span><span class="token function">isEmpty</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            listener<span class="token punctuation">.</span><span class="token function">onResponse</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">AcknowledgedResponse</span><span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">return</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+		<span class="token comment">// async delete freezing indices stats. 异步发送请求删除。遍历删除冻结索引的列表，构造一个 BulkRequest，每个索引提供一个DeleteRequest对象。</span>
+        <span class="token class-name">DaoUtil</span><span class="token punctuation">.</span><span class="token function">delete</span><span class="token punctuation">(</span>transportService<span class="token punctuation">,</span> concreteIndices<span class="token punctuation">.</span><span class="token function">toArray</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">Index</span><span class="token punctuation">[</span>concreteIndices<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// 构造删除集群状态信息中对应的索引信息。设置超时时间</span>
+        <span class="token class-name">DeleteIndexClusterStateUpdateRequest</span> deleteRequest <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">DeleteIndexClusterStateUpdateRequest</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+            <span class="token punctuation">.</span><span class="token function">ackTimeout</span><span class="token punctuation">(</span>request<span class="token punctuation">.</span><span class="token function">timeout</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">masterNodeTimeout</span><span class="token punctuation">(</span>request<span class="token punctuation">.</span><span class="token function">masterNodeTimeout</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+            <span class="token punctuation">.</span><span class="token function">indices</span><span class="token punctuation">(</span>concreteIndices<span class="token punctuation">.</span><span class="token function">toArray</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">Index</span><span class="token punctuation">[</span>concreteIndices<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">// 在里边提交一个修改集群状态的任务。 todo 这里应该再看一下，它是怎么修改集群状态信息的。</span>
+        deleteIndexService<span class="token punctuation">.</span><span class="token function">deleteIndices</span><span class="token punctuation">(</span>deleteRequest<span class="token punctuation">,</span> <span class="token keyword">new</span> <span class="token class-name">ActionListener</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">ClusterStateUpdateResponse</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+            <span class="token annotation punctuation">@Override</span>
+            <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">onResponse</span><span class="token punctuation">(</span><span class="token class-name">ClusterStateUpdateResponse</span> response<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                listener<span class="token punctuation">.</span><span class="token function">onResponse</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">AcknowledgedResponse</span><span class="token punctuation">(</span>response<span class="token punctuation">.</span><span class="token function">isAcknowledged</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+
+            <span class="token annotation punctuation">@Override</span>
+            <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">onFailure</span><span class="token punctuation">(</span><span class="token class-name">Exception</span> t<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                logger<span class="token punctuation">.</span><span class="token function">debug</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-&gt;</span> <span class="token keyword">new</span> <span class="token class-name">ParameterizedMessage</span><span class="token punctuation">(</span><span class="token string">"failed to delete indices [{}]"</span><span class="token punctuation">,</span> concreteIndices<span class="token punctuation">)</span><span class="token punctuation">,</span> t<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                listener<span class="token punctuation">.</span><span class="token function">onFailure</span><span class="token punctuation">(</span>t<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="_90"></a>该方法中有两步：</h4> 
+<ol><li>构建删除索引的bulk，异步提交任务。删除冻结的索引。</li><li>更新集群状态，将删除的索引信息从集群状态中移除，将更新后的集群状态信息，分发到其它的节点上。<strong>并根据修改后的集群状态信息，做数据物理移除操作</strong>。这一步是非常关键的，从表面上看不出来的数据是在这里移除的，从代码注释和命名上只能看出来它提交了一个修改集群状态的任务。真正的处理删除数据的逻辑，就是通过这个集群状态信息的改变，触发的。也就是说这个集群状态信息变更的操作任务，触发了数据删除的动作。</li></ol> 
+<h4><a id="bulk_97"></a>构建删除冻结索引的bulk请求</h4> 
+<p>进入到TransportDeleteIndexAction.masterOperation()，然后可以看到 DaoUtil.delete(transportService, concreteIndices.toArray(new Index[concreteIndices.size()]));</p> 
+<p>这里进去以后只能看到，它构建了一个请求，并没有做执行操作。源码如下：</p> 
+<pre><code class="prism language-java"> <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">delete</span><span class="token punctuation">(</span><span class="token class-name">TransportService</span> transportService<span class="token punctuation">,</span> <span class="token class-name">Index</span><span class="token punctuation">[</span><span class="token punctuation">]</span> indices<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">try</span><span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">BulkRequest</span> bulkRequest <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">BulkRequest</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">for</span><span class="token punctuation">(</span><span class="token class-name">Index</span> index <span class="token operator">:</span> indices<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+                bulkRequest<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">DeleteRequest</span><span class="token punctuation">(</span><span class="token class-name">Constant</span><span class="token punctuation">.</span>INDEX<span class="token punctuation">,</span> <span class="token class-name">Constant</span><span class="token punctuation">.</span>TYPE<span class="token punctuation">,</span> <span class="token class-name">DaoUtil</span><span class="token punctuation">.</span><span class="token function">getId</span><span class="token punctuation">(</span>index<span class="token punctuation">.</span><span class="token function">getName</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token function">bulk</span><span class="token punctuation">(</span>transportService<span class="token punctuation">,</span> bulkRequest<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span><span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Exception</span> e<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+            logger<span class="token punctuation">.</span><span class="token function">error</span><span class="token punctuation">(</span><span class="token string">""</span><span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="_119"></a>物理删除数据操作</h3> 
+<h4><a id="_121"></a>数据节点处理删除请求</h4> 
+<p>做数据remove的操作，应该在数据节点上执行。</p> 
+<p>todo 可以去看一看 数据节点是如何接收请求的。</p> 
+<p>删除索引的位置在：<strong>IndicesService.removeIndex()</strong></p> 
+<p>删除逻辑主要包含：</p> 
+<ol><li>在es中最开始是执行closeIndex（关索引）</li><li>closeIndex调用去closeShard（关分片）</li><li>将索引对应的数据进行remove</li></ol> 
+<p>IndicesService.removeIndex()源码如下：</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">removeIndex</span><span class="token punctuation">(</span><span class="token keyword">final</span> <span class="token class-name">Index</span> index<span class="token punctuation">,</span> <span class="token keyword">final</span> <span class="token class-name">IndexRemovalReason</span> reason<span class="token punctuation">,</span> <span class="token keyword">final</span> <span class="token class-name">String</span> extraInfo<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">final</span> <span class="token class-name">String</span> indexName <span class="token operator">=</span> index<span class="token punctuation">.</span><span class="token function">getName</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">final</span> <span class="token class-name">IndexService</span> indexService<span class="token punctuation">;</span>
+            <span class="token keyword">final</span> <span class="token class-name">IndexEventListener</span> listener<span class="token punctuation">;</span>
+            <span class="token keyword">synchronized</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">hasIndex</span><span class="token punctuation">(</span>index<span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token boolean">false</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token keyword">return</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+
+                logger<span class="token punctuation">.</span><span class="token function">debug</span><span class="token punctuation">(</span><span class="token string">"[{}] closing ... (reason [{}])"</span><span class="token punctuation">,</span> indexName<span class="token punctuation">,</span> reason<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token class-name">Map</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">IndexService</span><span class="token punctuation">&gt;</span></span> newIndices <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">HashMap</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span>indices<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                indexService <span class="token operator">=</span> newIndices<span class="token punctuation">.</span><span class="token function">remove</span><span class="token punctuation">(</span>index<span class="token punctuation">.</span><span class="token function">getUUID</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">assert</span> indexService <span class="token operator">!=</span> <span class="token keyword">null</span> <span class="token operator">:</span> <span class="token string">"IndexService is null for index: "</span> <span class="token operator">+</span> index<span class="token punctuation">;</span>
+                indices <span class="token operator">=</span> <span class="token function">unmodifiableMap</span><span class="token punctuation">(</span>newIndices<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                listener <span class="token operator">=</span> indexService<span class="token punctuation">.</span><span class="token function">getIndexEventListener</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+
+            listener<span class="token punctuation">.</span><span class="token function">beforeIndexRemoved</span><span class="token punctuation">(</span>indexService<span class="token punctuation">,</span> reason<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            logger<span class="token punctuation">.</span><span class="token function">debug</span><span class="token punctuation">(</span><span class="token string">"{} closing index service (reason [{}][{}])"</span><span class="token punctuation">,</span> index<span class="token punctuation">,</span> reason<span class="token punctuation">,</span> extraInfo<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">// 第一步的处理在这里，关索引。可以继续跟进这个方法，它又进入第二步，关分片，其中包括了将数据刷新到段中，将段中的数据落到磁盘上。并且还将分片对应的文件目录，直接删除了！这里非常重要。</span>
+            indexService<span class="token punctuation">.</span><span class="token function">close</span><span class="token punctuation">(</span>extraInfo<span class="token punctuation">,</span> reason <span class="token operator">==</span> <span class="token class-name">IndexRemovalReason</span><span class="token punctuation">.</span>DELETED<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            logger<span class="token punctuation">.</span><span class="token function">debug</span><span class="token punctuation">(</span><span class="token string">"{} closed... (reason [{}][{}])"</span><span class="token punctuation">,</span> index<span class="token punctuation">,</span> reason<span class="token punctuation">,</span> extraInfo<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">final</span> <span class="token class-name">IndexSettings</span> indexSettings <span class="token operator">=</span> indexService<span class="token punctuation">.</span><span class="token function">getIndexSettings</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            listener<span class="token punctuation">.</span><span class="token function">afterIndexRemoved</span><span class="token punctuation">(</span>indexService<span class="token punctuation">.</span><span class="token function">index</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> indexSettings<span class="token punctuation">,</span> reason<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>reason <span class="token operator">==</span> <span class="token class-name">IndexRemovalReason</span><span class="token punctuation">.</span>DELETED<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token comment">// now we are done - try to wipe data on disk if possible （去执行移除数据的操作，可以看下边详细分析）</span>
+                <span class="token function">deleteIndexStore</span><span class="token punctuation">(</span>extraInfo<span class="token punctuation">,</span> indexService<span class="token punctuation">.</span><span class="token function">index</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> indexSettings<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Exception</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            logger<span class="token punctuation">.</span><span class="token function">warn</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-&gt;</span> <span class="token keyword">new</span> <span class="token class-name">ParameterizedMessage</span><span class="token punctuation">(</span><span class="token string">"failed to remove index {} ([{}][{}])"</span><span class="token punctuation">,</span> index<span class="token punctuation">,</span> reason<span class="token punctuation">,</span> extraInfo<span class="token punctuation">)</span><span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="_174"></a>关闭索引和关闭分片的细节</h5> 
+<p>es的索引是由分片组成的，分片又是一个lucene实例，索引在删除索引的时候，应该先将一个一个分片先关掉！</p> 
+<p>indexService.close(）就是用来关闭分片的，同时，在这里边还做了特殊的操作，它会将一个一个的分片数据，根据目录，直接进行物理移除！调用链路非常隐蔽，这个流程是最复杂的，可以看下边的详细过程。最终调用的是：NodeEnvironment.deleteShardDirectoryUnderLock()方法。</p> 
+<blockquote> 
+ <p>接着点进去 indexService.close(）方法</p> 
+ <p>然后进入removeShard()方法</p> 
+ <p>然后再进入closeShard()方法，然后从finally进入到store.close()</p> 
+ <p>然后再进入decRef()</p> 
+ <p>然后再从decRef() 进入refCounter.decRef()</p> 
+ <p>再向下走到closeInternal()，接着就到了接口上了</p> 
+ <p>接着看closeInternal()接口的实现类，走下边截图这个</p> 
+ <p>[外链图片转存失败,源站可能有防盗链机制,建议将图片保存下来直接上传(img-8ZPeQEk8-1659337774571)(C:\Users\zhangshuaixing\AppData\Roaming\Typora\typora-user-images\1652868197900.png)]</p> 
+ <p>然后一个关键步骤来了：走到了onClose.accept(shardLock)，点accept向下走，看到的是一个接口。</p> 
+ <p>[外链图片转存失败,源站可能有防盗链机制,建议将图片保存下来直接上传(img-Kz9CE5V2-1659337774576)(C:\Users\zhangshuaixing\AppData\Roaming\Typora\typora-user-images\1652870088557.png)]</p> 
+ <p>接着需要从看谁实现了Consumer这个接口，从上边的onClose.accept(shardLock)，能够看到在OnClose中实现的。点onClose，进到OnClose类，看到accept只是一个接口，它的实现类在IndexService里边！然后里边调用了onShardClose(lock)方法。在里边又调用了shardStoreDeleter.deleteShardStore()方法，跟着deleteShardStore()向下看到的是一个接口，而这个接口的实现类是IndicesService.deleteShardStore()方法，里边又调用了nodeEnv.deleteShardDirectoryUnderLock()，在nodeEnv.deleteShardDirectoryUnderLock()方法里边，实现了将分片数据对应的文件夹，直接移除掉！</p> 
+</blockquote> 
+<h5><a id="deleteIndexStore_208"></a>物理移除数据的细节deleteIndexStore()详解</h5> 
+<p>注意分片对应的目录数据已经在上边close分片的时候已经移除掉了。</p> 
+<p>跟进上边代码的deleteIndexStore(）方法</p> 
+<p>接着调用了deleteIndexStoreIfDeletionAllowed() 方法，在这个方法里边又调用nodeEnv.deleteIndexDirectorySafe()方法去执行删除。但是这个方法里边可能会有删除不成功的情况，因为要获取锁。所以又提供了一个兜底方案，假如删除操作失败了，则将删除索引的操作调用addPendingDelete()方法，来兜底。</p> 
+<p>nodeEnv.deleteIndexDirectorySafe()方法里边，有一个获取分片锁的过程。然后调用deleteIndexDirectoryUnderLock(）方法，递归来删除数据。想要添加回收站功能，就要在这里去添加一个方法moveIndexDirectoryUnderLock()，用来替换deleteIndexDirectoryUnderLock()</p> 
+<p>再来看一下deleteIndexDirectoryUnderLock()源码</p> 
+<pre><code class="prism language-java"> <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">deleteIndexDirectoryUnderLock</span><span class="token punctuation">(</span><span class="token class-name">Index</span> index<span class="token punctuation">,</span> <span class="token class-name">IndexSettings</span> indexSettings<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">IOException</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">final</span> <span class="token class-name">Path</span><span class="token punctuation">[</span><span class="token punctuation">]</span> indexPaths <span class="token operator">=</span> <span class="token function">indexPaths</span><span class="token punctuation">(</span>index<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        logger<span class="token punctuation">.</span><span class="token function">trace</span><span class="token punctuation">(</span><span class="token string">"deleting index {} directory, paths({}): [{}]"</span><span class="token punctuation">,</span> index<span class="token punctuation">,</span> indexPaths<span class="token punctuation">.</span>length<span class="token punctuation">,</span> indexPaths<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">IOUtils</span><span class="token punctuation">.</span><span class="token function">rm</span><span class="token punctuation">(</span>indexPaths<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>indexSettings<span class="token punctuation">.</span><span class="token function">hasCustomDataPath</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">Path</span> customLocation <span class="token operator">=</span> <span class="token function">resolveIndexCustomLocation</span><span class="token punctuation">(</span>indexSettings<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            logger<span class="token punctuation">.</span><span class="token function">trace</span><span class="token punctuation">(</span><span class="token string">"deleting custom index {} directory [{}]"</span><span class="token punctuation">,</span> index<span class="token punctuation">,</span> customLocation<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token class-name">IOUtils</span><span class="token punctuation">.</span><span class="token function">rm</span><span class="token punctuation">(</span>customLocation<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="_235"></a>实现更新集群状态信息源码的位置</h3> 
+<p>进入到TransportDeleteIndexAction.masterOperation()，然后可以看到deleteIndexService.deleteIndices(deleteRequest, new ActionListener()</p> 
+<p>deleteIndexService.deleteIndices()中继续调用 clusterService.submitStateUpdateTask()，在这个方法中，new 了一个AckedClusterStateUpdateTask对象，这个对象里的execute()方法里又调用了**deleteIndices()**方法，这个方法里边是真正存放了从集群状态中，删除索引信息的操作。方法里边执行了移除索引状态信息的操作，并返回了一个分发任务，将更新后的集群状态信息，用于更新到集群的全部节点。后边将任务分发全部的节点，去执行更新集群状态信息的操作。</p> 
+<p>接着从clusterService.submitStateUpdateTask()继续向下跟进到了方法masterService.submitStateUpdateTasks()，再调用taskBatcher.submitTasks(safeTasks, config.timeout(), source)来提交任务，接下来会将上边构建的从集群状态中移除索引信息的任务分发给其它节点。</p> 
+<p>关于删除集群状态信息的详细操作，可以继续分析上边提到的 MetaDataDeleteIndexService.deleteIndices()</p> 
+<h4><a id="_245"></a>看一下它都做了什么：</h4> 
+<ol><li>遍历索引，从路由表中移除索引信息、移除clusterBlock、 删除IndexMetaData</li><li>将删除的索引放入墓碑</li><li>从快照中删除与待删除索引有关的内容</li></ol> 
+<p>源码如下：</p> 
+<pre><code class="prism language-java">	<span class="token comment">/**
+     * Delete some indices from the cluster state.
+     */</span>
+    <span class="token keyword">public</span> <span class="token class-name">ClusterState</span>  <span class="token function">deleteIndices</span><span class="token punctuation">(</span><span class="token class-name">ClusterState</span> currentState<span class="token punctuation">,</span> <span class="token class-name">Set</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Index</span><span class="token punctuation">&gt;</span></span> indices<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">final</span> <span class="token class-name">MetaData</span> meta <span class="token operator">=</span> currentState<span class="token punctuation">.</span><span class="token function">metaData</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">final</span> <span class="token class-name">Set</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">IndexMetaData</span><span class="token punctuation">&gt;</span></span> metaDatas <span class="token operator">=</span> indices<span class="token punctuation">.</span><span class="token function">stream</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">map</span><span class="token punctuation">(</span>i <span class="token operator">-&gt;</span> meta<span class="token punctuation">.</span><span class="token function">getIndexSafe</span><span class="token punctuation">(</span>i<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">collect</span><span class="token punctuation">(</span><span class="token function">toSet</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// Check if index deletion conflicts with any running snapshots (检查快照)</span>
+        <span class="token class-name">SnapshotsService</span><span class="token punctuation">.</span><span class="token function">checkIndexDeletion</span><span class="token punctuation">(</span>currentState<span class="token punctuation">,</span> metaDatas<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">RoutingTable<span class="token punctuation">.</span>Builder</span> routingTableBuilder <span class="token operator">=</span> <span class="token class-name">RoutingTable</span><span class="token punctuation">.</span><span class="token function">builder</span><span class="token punctuation">(</span>currentState<span class="token punctuation">.</span><span class="token function">routingTable</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">MetaData<span class="token punctuation">.</span>Builder</span> metaDataBuilder <span class="token operator">=</span> <span class="token class-name">MetaData</span><span class="token punctuation">.</span><span class="token function">builder</span><span class="token punctuation">(</span>meta<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">ClusterBlocks<span class="token punctuation">.</span>Builder</span> clusterBlocksBuilder <span class="token operator">=</span> <span class="token class-name">ClusterBlocks</span><span class="token punctuation">.</span><span class="token function">builder</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">blocks</span><span class="token punctuation">(</span>currentState<span class="token punctuation">.</span><span class="token function">blocks</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">final</span> <span class="token class-name">IndexGraveyard<span class="token punctuation">.</span>Builder</span> graveyardBuilder <span class="token operator">=</span> <span class="token class-name">IndexGraveyard</span><span class="token punctuation">.</span><span class="token function">builder</span><span class="token punctuation">(</span>metaDataBuilder<span class="token punctuation">.</span><span class="token function">indexGraveyard</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">final</span> <span class="token keyword">int</span> previousGraveyardSize <span class="token operator">=</span> graveyardBuilder<span class="token punctuation">.</span><span class="token function">tombstones</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 关键的操作: 遍历索引</span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">final</span> <span class="token class-name">Index</span> index <span class="token operator">:</span> indices<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">String</span> indexName <span class="token operator">=</span> index<span class="token punctuation">.</span><span class="token function">getName</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            logger<span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span><span class="token string">"{} deleting index"</span><span class="token punctuation">,</span> index<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">// 从路由表中移除索引信息，这个具体操作简单，只是从 map中根据名字，将索引移除。</span>
+            routingTableBuilder<span class="token punctuation">.</span><span class="token function">remove</span><span class="token punctuation">(</span>indexName<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">// clusterBlock是用来，标识索引允许什么类型的操作，比如read-only</span>
+            clusterBlocksBuilder<span class="token punctuation">.</span><span class="token function">removeIndexBlocks</span><span class="token punctuation">(</span>indexName<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">// 删除IndexMetaData， 它是用来描述索引信息的IndexMetaData对象，感兴趣可以去看一下IndexMetaData类</span>
+            metaDataBuilder<span class="token punctuation">.</span><span class="token function">remove</span><span class="token punctuation">(</span>indexName<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token comment">// add tombstones to the cluster state for each deleted index (将删除的索引信息添加到墓碑中，墓碑中会记录删除过的索引) TOOD 注意这里比较重要，回收站功能的恢复数据是要改墓碑的。可以参考这里的获取墓碑的操作，并将墓碑中记录的删除移除掉。</span>
+        <span class="token keyword">final</span> <span class="token class-name">IndexGraveyard</span> currentGraveyard <span class="token operator">=</span> graveyardBuilder<span class="token punctuation">.</span><span class="token function">addTombstones</span><span class="token punctuation">(</span>indices<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">build</span><span class="token punctuation">(</span>settings<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 把墓碑数据更新到 集群元数据中</span>
+        metaDataBuilder<span class="token punctuation">.</span><span class="token function">indexGraveyard</span><span class="token punctuation">(</span>currentGraveyard<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        logger<span class="token punctuation">.</span><span class="token function">trace</span><span class="token punctuation">(</span><span class="token string">"{} tombstones purged from the cluster state. Previous tombstone size: {}. Current tombstone size: {}."</span><span class="token punctuation">,</span>
+            graveyardBuilder<span class="token punctuation">.</span><span class="token function">getNumPurged</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> previousGraveyardSize<span class="token punctuation">,</span> currentGraveyard<span class="token punctuation">.</span><span class="token function">getTombstones</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token class-name">MetaData</span> newMetaData <span class="token operator">=</span> metaDataBuilder<span class="token punctuation">.</span><span class="token function">build</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">ClusterBlocks</span> blocks <span class="token operator">=</span> clusterBlocksBuilder<span class="token punctuation">.</span><span class="token function">build</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// 更新快照列表，把和要删除的索引的快照任务都释放掉。</span>
+        <span class="token class-name">ImmutableOpenMap</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">ClusterState<span class="token punctuation">.</span>Custom</span><span class="token punctuation">&gt;</span></span> customs <span class="token operator">=</span> currentState<span class="token punctuation">.</span><span class="token function">getCustoms</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 定义一个释放释放快照类型的操作类型。</span>
+        <span class="token keyword">final</span> <span class="token class-name">RestoreInProgress</span> restoreInProgress <span class="token operator">=</span> currentState<span class="token punctuation">.</span><span class="token function">custom</span><span class="token punctuation">(</span><span class="token class-name">RestoreInProgress</span><span class="token punctuation">.</span>TYPE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>restoreInProgress <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">RestoreInProgress</span> updatedRestoreInProgress <span class="token operator">=</span> <span class="token class-name">RestoreService</span><span class="token punctuation">.</span><span class="token function">updateRestoreStateWithDeletedIndices</span><span class="token punctuation">(</span>restoreInProgress<span class="token punctuation">,</span> indices<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>updatedRestoreInProgress <span class="token operator">!=</span> restoreInProgress<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token class-name">ImmutableOpenMap<span class="token punctuation">.</span>Builder</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">ClusterState<span class="token punctuation">.</span>Custom</span><span class="token punctuation">&gt;</span></span> builder <span class="token operator">=</span> <span class="token class-name">ImmutableOpenMap</span><span class="token punctuation">.</span><span class="token function">builder</span><span class="token punctuation">(</span>customs<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                builder<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token class-name">RestoreInProgress</span><span class="token punctuation">.</span>TYPE<span class="token punctuation">,</span> updatedRestoreInProgress<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                customs <span class="token operator">=</span> builder<span class="token punctuation">.</span><span class="token function">build</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token comment">// 这里是定义了一个分发任务。用来更新集群状态信息。这里是点睛之笔，从这里我们一样就看出来，这个方法都改了那些地方</span>
+        <span class="token keyword">return</span> allocationService<span class="token punctuation">.</span><span class="token function">reroute</span><span class="token punctuation">(</span>
+            	<span class="token comment">// 集群状态，这里边挂着墓碑的状态。</span>
+                <span class="token class-name">ClusterState</span><span class="token punctuation">.</span><span class="token function">builder</span><span class="token punctuation">(</span>currentState<span class="token punctuation">)</span>
+            		<span class="token comment">// 路由表</span>
+                    <span class="token punctuation">.</span><span class="token function">routingTable</span><span class="token punctuation">(</span>routingTableBuilder<span class="token punctuation">.</span><span class="token function">build</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+            		<span class="token comment">// 元数据</span>
+                    <span class="token punctuation">.</span><span class="token function">metaData</span><span class="token punctuation">(</span>newMetaData<span class="token punctuation">)</span>
+            		<span class="token comment">// blocks信息</span>
+                    <span class="token punctuation">.</span><span class="token function">blocks</span><span class="token punctuation">(</span>blocks<span class="token punctuation">)</span>
+            		<span class="token comment">// 快照的状态信息</span>
+                    <span class="token punctuation">.</span><span class="token function">customs</span><span class="token punctuation">(</span>customs<span class="token punctuation">)</span>
+                    <span class="token punctuation">.</span><span class="token function">build</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                <span class="token string">"deleted indices ["</span> <span class="token operator">+</span> indices <span class="token operator">+</span> <span class="token string">"]"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+</code></pre>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/f34a03c4c2f3069e0bf26c14f7e8c825/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">vue实现element-ui对话框可拖拽功能</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/045df5fb9a108c1a6cef4e981abab0d0/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">echarts图表的大小调整的解决方案</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

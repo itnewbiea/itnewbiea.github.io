@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Android7.0 klog机制（如何将android log打印到kernel log中） - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Android7.0 klog机制（如何将android log打印到kernel log中）" />
+<meta property="og:description" content="在分析Android7.0 init进程一文中提到，在init进程中是通过klog来输出log信息的，但是由于log的级别不同可能导致有些添加的log无法输出来。在init .cpp的main函数中初始化klog。
+klog_init(); //初始化klog klog_set_level(KLOG_NOTICE_LEVEL); //设置klog的级别为NOTICE system/core/libcutils/klog.c void klog_init(void) { if (klog_fd &gt;= 0) return; /* Already initialized */ //klog_fd默认值为-1，如果大于等于1表示klog已经初始化过，返回 klog_fd = open(&#34;/dev/kmsg&#34;, O_WRONLY | O_CLOEXEC); //打开/dev/kmsg文件，获得文件描述符 if (klog_fd &gt;= 0) { //大于等于0表示，打开成功，init进程的log都会输出到kernel log中 return; } static const char* name = &#34;/dev/__kmsg__&#34;; if (mknod(name, S_IFCHR | 0600, (1 &lt;&lt; 8) | 11) == 0) { //如果上面没有打开成功，创建/dev/_kmsg_文件 klog_fd = open(name, O_WRONLY | O_CLOEXEC); //打开文件，获取文件描述符 unlink(name); } } void klog_set_level(int level) { klog_level = level; //将设置的level赋值给klog_level } 在init." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/8157889e8efedc640485bafe3ffce507/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2016-11-25T19:06:29+08:00" />
+<meta property="article:modified_time" content="2016-11-25T19:06:29+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Android7.0 klog机制（如何将android log打印到kernel log中）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>    在分析Android7.0 init进程一文中提到，在init进程中是通过klog来输出log信息的，但是由于log的级别不同可能导致有些添加的log无法输出来。在init .cpp的main函数中初始化klog。</p> 
+<p></p> 
+<pre><code class="language-cpp">    klog_init();          //初始化klog
+    klog_set_level(KLOG_NOTICE_LEVEL);   //设置klog的级别为NOTICE
+</code></pre>system/core/libcutils/klog.c 
+<p></p> 
+<p></p> 
+<pre><code class="language-cpp">void klog_init(void) {
+    if (klog_fd &gt;= 0) return; /* Already initialized */      //klog_fd默认值为-1，如果大于等于1表示klog已经初始化过，返回
+
+    klog_fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);   //打开/dev/kmsg文件，获得文件描述符
+    if (klog_fd &gt;= 0) {                      //大于等于0表示，打开成功，init进程的log都会输出到kernel log中
+        return;  
+    }
+
+    static const char* name = "/dev/__kmsg__"; 
+    if (mknod(name, S_IFCHR | 0600, (1 &lt;&lt; 8) | 11) == 0) {   //如果上面没有打开成功，创建/dev/_kmsg_文件
+        klog_fd = open(name, O_WRONLY | O_CLOEXEC);      //打开文件，获取文件描述符
+        unlink(name);
+    }
+}</code></pre> 
+<pre><code class="language-cpp">void klog_set_level(int level) {
+    klog_level = level;                  //将设置的level赋值给klog_level
+}</code></pre> 
+<p></p> 
+<p>在init.cpp通过NOTICE函数输出log信息。但是INFO函数就输不出log，下面我们看一下具体原因。</p> 
+<p></p> 
+<pre><code class="language-cpp">    NOTICE("init %s started!\n", is_first_stage ? "first stage" : "second stage");
+</code></pre>在system/core/init/log.h头文件中对NOTICE，INFO等函数进行定义 
+<p></p> 
+<p></p> 
+<pre><code class="language-cpp">#define ERROR(x...)   init_klog_write(KLOG_ERROR_LEVEL, x)
+#define WARNING(x...) init_klog_write(KLOG_WARNING_LEVEL, x)
+#define NOTICE(x...)  init_klog_write(KLOG_NOTICE_LEVEL, x)
+#define INFO(x...)    init_klog_write(KLOG_INFO_LEVEL, x)
+#define DEBUG(x...)   init_klog_write(KLOG_DEBUG_LEVEL, x)
+#define VERBOSE(x...) init_klog_write(KLOG_DEBUG_LEVEL, x)</code></pre>调用NOTICE函数，也就调到了函数init_klog_wirte传入的参数为NOTICE log level，如果调用别的函数就传入对应的log level。还有传入需要打印的信息。 
+<p></p> 
+<p>先看一下各个log level的值，代码定义位置system/core//include/cutils/klog.h</p> 
+<p></p> 
+<pre><code class="language-cpp">#define KLOG_ERROR_LEVEL   3
+#define KLOG_WARNING_LEVEL 4
+#define KLOG_NOTICE_LEVEL  5
+#define KLOG_INFO_LEVEL    6
+#define KLOG_DEBUG_LEVEL   7</code></pre> 
+<p></p> 
+<p>继续分析代码system/core/init/log.cpp</p> 
+<p></p> 
+<pre><code class="language-cpp">void init_klog_write(int level, const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    init_klog_vwrite(level, fmt, ap);        //函数调用
+    va_end(ap);
+}
+</code></pre> 
+<pre><code class="language-cpp">static void init_klog_vwrite(int level, const char* fmt, va_list ap) {
+    static const char* tag = basename(getprogname());
+
+    if (level &gt; klog_get_level()) return;      //之前设置的level为NOTICE 5，现在level也为5相等为false，INFO level为6所以return
+
+    // The kernel's printk buffer is only 1024 bytes.
+    // TODO: should we automatically break up long lines into multiple lines?
+    // Or we could log but with something like "..." at the end?
+    char buf[1024];             //kernel 的printk buffer只有1024个字节， 将长的单行log，变为多行，或者直接省略掉
+    size_t prefix_size = snprintf(buf, sizeof(buf), "&lt;%d&gt;%s: ", level, tag);
+    size_t msg_size = vsnprintf(buf + prefix_size, sizeof(buf) - prefix_size, fmt, ap);
+    if (msg_size &gt;= sizeof(buf) - prefix_size) {
+        msg_size = snprintf(buf + prefix_size, sizeof(buf) - prefix_size,
+                            "(%zu-byte message too long for printk)\n", msg_size);
+    }
+
+    iovec iov[1];
+    iov[0].iov_base = buf;
+    iov[0].iov_len = prefix_size + msg_size;
+
+    klog_writev(level, iov, 1);       //传送整理好的信息
+}</code></pre>system/core/libcutils/klog.c 
+<br> 
+<p></p> 
+<p></p> 
+<pre><code class="language-cpp">void klog_writev(int level, const struct iovec* iov, int iov_count) {
+    if (level &gt; klog_level) return;           //由于level与klog_level都为5,所以继续执行
+    if (klog_fd &lt; 0) klog_init();               //前面已经初始化过klog_fd大于等于0
+    if (klog_fd &lt; 0) return;                     
+    TEMP_FAILURE_RETRY(writev(klog_fd, iov, iov_count));   
+}</code></pre> 
+<p></p> 
+<pre><code class="language-cpp">//system/core/include/log/uio.h
+extern int  readv( int  fd, struct iovec*  vecs, int  count );   //定义readv函数
+extern int  writev( int  fd, const struct iovec*  vecs, int  count );  /定义writev函数</code></pre> 
+<pre><code class="language-cpp">//system/core/liblog/uio.c
+#include &lt;log/uio.h&gt;
+LIBLOG_ABI_PUBLIC int writev(int fd, const struct iovec *vecs, int count)
+{
+    int   total = 0;
+
+    for ( ; count &gt; 0; count--, vecs++ ) {
+        const char*  buf = vecs-&gt;iov_base;
+        int          len = vecs-&gt;iov_len;
+
+        while (len &gt; 0) {
+            int  ret = write( fd, buf, len ); //调用linux的write函数，fd为/dev/kmsg的文件描述符，所以将log写入到kmsg中即kernel log中。
+            if (ret &lt; 0) {
+                if (total == 0)
+                    total = -1;
+                goto Exit;
+            }
+            if (ret == 0)
+                goto Exit;
+
+            total += ret;
+            buf   += ret;
+            len   -= ret;
+        }
+    }
+Exit:
+    return total;
+}</code></pre> 
+<p></p> 
+<p>    之前做项目时遇到一个问题，在开机过程中kernel 与 init进程中的log都输在kernel log中，而启动zygote之后log是输出在android中的，这样就发生了init进程到framework这段时间无法精确计算，对分析开机流程总耗时带来不小的困扰。所以我们就仿照klog自己定义TAG来输出信息，将android 中的log输出到kernel中，这样同一行log即在kernel log中有也在android log中有就可以精确计算时间了。</p> 
+<p>首先在system/core/include/cutils/klog.h中定义log level</p> 
+<p></p> 
+<pre><code class="language-cpp">	#define KLOG_PERFORMANCE_LEVEL 0              //根据之前分析，将level设置小一点，至少要小于5
+	#define KLOG_BOOTINFO(tag,x...) klog_write(KLOG_PERFORMANCE_LEVEL, "&lt;0&gt;" tag ": " x)    //定义函数关系</code></pre> 
+<p></p> 
+<p>定义完之后就可以在framework中使用了，</p> 
+<p>例如init进程启动完zygote服务，会进入/frameowrk/base/cmds/app_process/app_main.cpp我们可以在这里使用</p> 
+<pre><code class="language-cpp">#include &lt;cutils/klog.h&gt;              //先include对应的头文件
+#define BOOTINFO(x...) KLOG_BOOTINFO("bootinfo", x)       //定义对应的函数关系</code></pre> 
+<p></p> 
+<pre><code class="language-cpp"> BOOTINFO("Entered app_main.cpp main() \n");    //就可以通过BOOTINFO函数将log输出到kernel log中</code></pre>不过将编译好的文件替换到手机中仍然无法输出对应log信息，经过分析发现是有与selinux权限，输出log存在selinux安全问题。 
+<p></p> 
+<p>为了调试我们本地只好将selinux关闭了，代码还是在init .cpp 中我们之前将init进程时有过提到。</p> 
+<p></p> 
+<pre><code class="language-cpp">static void selinux_initialize(bool in_kernel_domain) {
+    Timer t;
+
+    //..............
+    if (in_kernel_domain) {
+       //.........
+
+        bool kernel_enforcing = (security_getenforce() == 1);
+        bool is_enforcing = selinux_is_enforcing();
+        if (kernel_enforcing != is_enforcing) {
+            if (security_setenforce(is_enforcing)) {     //可以直接将is_enforcing改为false，就将selinux关闭了
+                ERROR("security_setenforce(%s) failed: %s\n",
+                      is_enforcing ? "true" : "false", strerror(errno));
+                security_failure();
+            }
+        }
+
+        //.............
+    } else {
+        selinux_init_all_handles();
+    }
+}</code></pre>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/2418b2463f82c9650d9ef01f22ef865d/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">scala代码格式化</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/92645c66f7680bd04580db1d9655d800/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">mysql 在修改添加字段(alter table 表名 add column 或者 modify column)且带unique时提示duplicate entry for key的原因以及解决方案</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

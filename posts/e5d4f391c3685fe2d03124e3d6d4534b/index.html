@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>bitmap基础介绍&#43;holo实现离线UV计算 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="bitmap基础介绍&#43;holo实现离线UV计算" />
+<meta property="og:description" content="bitmap 基础介绍bitmaping 数据结构bitmap计算算子集成二阶段分布式计算：RoaringBitmap构造方案分桶方案建序方案 holo官网 离线UV计算创建用户映射表创建聚合结果表更新用户映射表和聚合结果表更新聚合结果表UV、PV查询 基础介绍 RoaringBitmap主要为了解决UV指标计算的问题。旨在建立一种可以多维分析的精准UV数据模型，并且可以低成本地实现交并差等集合运算UV指标。 PV和UV指标一直是各类业务中广泛存在并且重点关注的实时指标。其中对于PV指标而言，由于其具备可加性，因此当对维度组合或者时间维度进行上卷时，可以直接求和得出我们所要的累计结果。但是去重指标UV则具备不可加性，他是一种对UID去重计数的指标，如果在维度上卷时直接求和会导致结果偏大。即UV指标一旦定制化生成，就很难具备再计算的能力，需要用户事先计算好。例如。
+模型包含每天的UV，但是要算多天的去重UV，则需要从特定时间点重新开始算。模型包含每个城市的UV，但是要算全国的去重UV，则需要去掉城市维度再次聚合计算。 根据历史经验，去重指标有许多解决方案可供设计。主要分为两类，一类是前置计算方案，通过Count Distinct将UV预聚合后存储起来，查询时直接路由到对应UV指标。一类是后置计算方案，将user_id转变成可去重的结构，在查询时通过集合运算，算出UV指标。
+前置计算方案，即最常用的Count Distinct算子，统计时根据uid是否存在来决定计次，通常基于DWD模型或者UID粒度的DWS模型，生成UV指标存储在ADM模型中。后置计算方案，通常将user_id存储在可去重结构，可去重结构包括非精准去重的HyperLogLog与ThetaSketch，以及精准去重的RoaringBitmap。 bitmaping 数据结构 RoaringBitmap是效压缩位图，采取的是2^ 32位(4294967296)的Bitmap，可以存储[0,2^32 -1]区间范围的用户编号。但是RoaringBitmap会对这个2^32bit的Bitmap做很多压缩操作，将Bitmap尽可能地压缩在很小的存储量级。其核心思想是：
+对于每个用户编号k，会被划分成二进制的高16位(k / 2^16)和低16位(k mod 2^16)。其中高16位称为共享有效位，又可称为分桶号。属于roaring bitmap的一级索引，总计最多可包含2^16=65536个桶。共享有效位只存储一份，可以由多个编号共用，因此很大程度上减少了空间消耗。每一个桶由一个Container 来存放一个数值的低16位。其中container是RBM新创造的概念，其核心目标是为了更高效地压缩和存储数据。Container 总共包括三种数据结构： Array Container ，Bitmap Container和RunContainer。Array Container 存放稀疏的数据，Bitmap Container 存放稠密的数据。此外，如果Array Container和Bitmap Container可以用行程编码压缩，就会替换成RunContainer存储。
+Array Container：使用short数组存储低16位，元素排序后放入short数组中。没有数据压缩机制，在数据稀疏场景存储效率高。Bitmap Container：long数组存储低16位，数据内容对应long类型的bit位，数据稠密存储效率很高。如：1，5，6表达成一个long值为00110001.Run Container：低16位使用short数组存储，将连续数据值存储为[起始点，连续个数的格式]。在数据连续性好的场景存储效率高。例如数据[11,12,13,14,15]将存储为两个short数值[11,4]。 在存储效率方面，数据量离散且小于4096时使用array最优，在数据量大且无规律时bitmap最优，在数据连续性比较好的情况下，RunContainer的存储效率最优。
+时间复杂度方面Bitmap时间复杂度为O(1)高于Array和Run存储的nlog(n)。
+bitmap计算算子集成 hologres本身是兼容postgres开源生态，pg版本的roaringbitmap插件通过简单适配，很容易集成在hologres中。roaringbitmap插件：https://github.com/zeromax007/gpdb-roaringbitmap。
+holo中roaringbitmap函数使用文档 ：https://help.aliyun.com/zh/hologres/user-guide/roaring-bitmap-functions?spm=a2c4g.11186623.0.0.df1b5791jxHiiU
+典型计算算子：
+二阶段分布式计算： 数据的分布键按桶号和bitmap高16位打散到hologres各个计算节点。在进行交并差集计算过程中，由于各个节点之间数据完全独立，每个节点可以单独进行计算，并将计算结果直接汇总到master节点计算进行聚合。整个计算过程是一个二阶段计算过程，完全没有数据shuffle, 整体计算非常高效。
+RoaringBitmap构造方案 RoaringBitmap使用过程中，主要遇到的问题，就是如何将user_id存入到RoaringBitmap数据结构中。因为RoaringBitmap不能像HyperLogLog那样，可以直接将user_id存入Bitmap数据结构中。为了能将亿级的编号存入Bitmap中，探索过如下两种方案。
+分桶方案 主要解决：数据量过多
+分桶方案采取分治的思想，即将一个大用户集切成多个桶，每个桶的量级足以存到42亿的Bitmap中，并且桶中的UID互斥，没有重合的UID。
+而分桶的方案包括很多，例如可以采取前几位分桶，或者后几位分桶，只要能够保证剩下的几位都可以存在Bitmap里面。在实时场景中，由于要考虑Explorer的机器数，因此既需要保障每个桶内的UV量级均匀的同时，也需要保障每台机器在存储桶的个数也是均匀的。如下图所示，但是由于ODPS没有存储机器数的概念，因此其分桶的个数可以更加灵活，只需要保障每个分桶下的UID数是相同的即可。
+此外，为了防止数据条数膨胀太多，我们默认会采取分10个桶。如果UID量级比较大，用户也可以选择性地增加分桶个数。为了将UID均匀地划分到10个桶上面，我们采取取轮询分桶的方式，即对于第1个编号放在第1个桶里，第2个编号放在第2个桶里，不断轮询分配，直到第11个编号，又重新从第1个桶开始划分。因此最终的分桶方法为。
+例如将2088022931508105按10个桶划分，则其分桶号和用户编号为 分桶号 = 93150810 % 10 = 0 用户编号 = concat(reverse(022)，93150810 / 10 ) = 2209315081 分10个桶，等同于将UID的倒数第二位作为分桶号，剩下的有效位重排后作为编号。 分桶方案的优势：" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/e5d4f391c3685fe2d03124e3d6d4534b/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-11-21T16:59:06+08:00" />
+<meta property="article:modified_time" content="2023-11-21T16:59:06+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">bitmap基础介绍&#43;holo实现离线UV计算</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-github-gist">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>bitmap</h4> 
+ <ul><li><a href="#_2" rel="nofollow">基础介绍</a></li><li><a href="#bitmaping__15" rel="nofollow">bitmaping 数据结构</a></li><li><a href="#bitmap_29" rel="nofollow">bitmap计算算子集成</a></li><li><a href="#_36" rel="nofollow">二阶段分布式计算：</a></li><li><a href="#RoaringBitmap_39" rel="nofollow">RoaringBitmap构造方案</a></li><li><ul><li><a href="#_42" rel="nofollow">分桶方案</a></li><li><a href="#_66" rel="nofollow">建序方案</a></li></ul> 
+  </li><li><a href="#holo_UV_85" rel="nofollow">holo官网 离线UV计算</a></li><li><ul><li><a href="#_92" rel="nofollow">创建用户映射表</a></li><li><a href="#_113" rel="nofollow">创建聚合结果表</a></li><li><a href="#_136" rel="nofollow">更新用户映射表和聚合结果表</a></li><li><a href="#_148" rel="nofollow">更新聚合结果表</a></li><li><a href="#UVPV_181" rel="nofollow">UV、PV查询</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_2"></a>基础介绍</h2> 
+<pre><code>RoaringBitmap主要为了解决UV指标计算的问题。旨在建立一种可以多维分析的精准UV数据模型，并且可以低成本地实现交并差等集合运算UV指标。
+</code></pre> 
+<p>PV和UV指标一直是各类业务中广泛存在并且重点关注的实时指标。其中对于PV指标而言，由于其具备可加性，因此当对维度组合或者时间维度进行上卷时，可以直接求和得出我们所要的累计结果。但是去重指标UV则具备不可加性，他是一种对UID去重计数的指标，如果在维度上卷时直接求和会导致结果偏大。即UV指标一旦定制化生成，就很难具备再计算的能力，需要用户事先计算好。例如。</p> 
+<ul><li>模型包含每天的UV，但是要算多天的去重UV，则需要从特定时间点重新开始算。</li><li>模型包含每个城市的UV，但是要算全国的去重UV，则需要去掉城市维度再次聚合计算。</li></ul> 
+<p>根据历史经验，去重指标有许多解决方案可供设计。主要分为两类，一类是前置计算方案，通过Count Distinct将UV预聚合后存储起来，查询时直接路由到对应UV指标。一类是后置计算方案，将user_id转变成可去重的结构，在查询时通过集合运算，算出UV指标。</p> 
+<ul><li>前置计算方案，即最常用的Count Distinct算子，统计时根据uid是否存在来决定计次，通常基于DWD模型或者UID粒度的DWS模型，生成UV指标存储在ADM模型中。</li><li>后置计算方案，通常将user_id存储在可去重结构，可去重结构包括非精准去重的HyperLogLog与ThetaSketch，以及精准去重的RoaringBitmap。</li></ul> 
+<h2><a id="bitmaping__15"></a>bitmaping 数据结构</h2> 
+<p>RoaringBitmap是效压缩位图，采取的是2^ 32位(4294967296)的Bitmap，可以存储[0,2^32 -1]区间范围的用户编号。但是RoaringBitmap会对这个2^32bit的Bitmap做很多压缩操作，将Bitmap尽可能地压缩在很小的存储量级。其核心思想是：</p> 
+<ol><li>对于每个用户编号k，会被划分成二进制的高16位(k / 2^16)和低16位(k mod 2^16)。</li><li>其中高16位称为共享有效位，又可称为分桶号。属于roaring bitmap的一级索引，总计最多可包含2^16=65536个桶。共享有效位只存储一份，可以由多个编号共用，因此很大程度上减少了空间消耗。</li><li>每一个桶由一个Container 来存放一个数值的低16位。其中container是RBM新创造的概念，其核心目标是为了更高效地压缩和存储数据。Container 总共包括三种数据结构： Array Container ，Bitmap Container和RunContainer。Array Container 存放稀疏的数据，Bitmap Container 存放稠密的数据。此外，如果Array Container和Bitmap Container可以用行程编码压缩，就会替换成RunContainer存储。<br> <img src="https://images2.imgbox.com/2f/6e/Ffwk6VQL_o.png" alt="在这里插入图片描述"></li></ol> 
+<ul><li>Array Container：使用short数组存储低16位，元素排序后放入short数组中。没有数据压缩机制，在数据稀疏场景存储效率高。</li><li>Bitmap Container：long数组存储低16位，数据内容对应long类型的bit位，数据稠密存储效率很高。如：1，5，6表达成一个long值为00110001.</li><li>Run Container：低16位使用short数组存储，将连续数据值存储为[起始点，连续个数的格式]。在数据连续性好的场景存储效率高。例如数据[11,12,13,14,15]将存储为两个short数值[11,4]。</li></ul> 
+<p>在存储效率方面，数据量离散且小于4096时使用array最优，在数据量大且无规律时bitmap最优，在数据连续性比较好的情况下，RunContainer的存储效率最优。</p> 
+<p>时间复杂度方面Bitmap时间复杂度为O(1)高于Array和Run存储的nlog(n)。</p> 
+<h2><a id="bitmap_29"></a>bitmap计算算子集成</h2> 
+<p>hologres本身是兼容postgres开源生态，pg版本的roaringbitmap插件通过简单适配，很容易集成在hologres中。roaringbitmap插件：https://github.com/zeromax007/gpdb-roaringbitmap。</p> 
+<p>holo中roaringbitmap函数使用文档 ：https://help.aliyun.com/zh/hologres/user-guide/roaring-bitmap-functions?spm=a2c4g.11186623.0.0.df1b5791jxHiiU</p> 
+<p>典型计算算子：<br> <img src="https://images2.imgbox.com/75/13/rlkrMJZS_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="_36"></a>二阶段分布式计算：</h2> 
+<p>数据的分布键按桶号和bitmap高16位打散到hologres各个计算节点。在进行交并差集计算过程中，由于各个节点之间数据完全独立，每个节点可以单独进行计算，并将计算结果直接汇总到master节点计算进行聚合。整个计算过程是一个二阶段计算过程，完全没有数据shuffle, 整体计算非常高效。<br> <img src="https://images2.imgbox.com/99/c8/uFbC3PIK_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="RoaringBitmap_39"></a>RoaringBitmap构造方案</h2> 
+<p>RoaringBitmap使用过程中，主要遇到的问题，就是如何将user_id存入到RoaringBitmap数据结构中。因为RoaringBitmap不能像HyperLogLog那样，可以直接将user_id存入Bitmap数据结构中。为了能将亿级的编号存入Bitmap中，探索过如下两种方案。</p> 
+<h3><a id="_42"></a>分桶方案</h3> 
+<p><strong>主要解决：数据量过多</strong></p> 
+<p>分桶方案采取分治的思想，即将一个大用户集切成多个桶，每个桶的量级足以存到42亿的Bitmap中，并且桶中的UID互斥，没有重合的UID。</p> 
+<p>而分桶的方案包括很多，例如可以采取前几位分桶，或者后几位分桶，只要能够保证剩下的几位都可以存在Bitmap里面。在实时场景中，由于要考虑Explorer的机器数，因此既需要保障每个桶内的UV量级均匀的同时，也需要保障每台机器在存储桶的个数也是均匀的。如下图所示，但是由于ODPS没有存储机器数的概念，因此其分桶的个数可以更加灵活，只需要保障每个分桶下的UID数是相同的即可。</p> 
+<p><img src="https://images2.imgbox.com/d7/70/fQPZjZG6_o.png" alt="在这里插入图片描述"><br> 此外，为了防止数据条数膨胀太多，我们默认会采取分10个桶。如果UID量级比较大，用户也可以选择性地增加分桶个数。为了将UID均匀地划分到10个桶上面，我们采取取轮询分桶的方式，即对于第1个编号放在第1个桶里，第2个编号放在第2个桶里，不断轮询分配，直到第11个编号，又重新从第1个桶开始划分。因此最终的分桶方法为。</p> 
+<pre><code>例如将2088022931508105按10个桶划分，则其分桶号和用户编号为
+分桶号 = 93150810 % 10 = 0
+用户编号 = concat(reverse(022)，93150810 / 10 ) = 2209315081
+分10个桶，等同于将UID的倒数第二位作为分桶号，剩下的有效位重排后作为编号。
+</code></pre> 
+<p><strong>分桶方案的优势</strong>：</p> 
+<ul><li>不需要依赖外部表的输入，纯粹根据支付宝ID的特性生成新的编号，且分桶数相同的表可以相互做关联。</li><li>在ODPS中，存储空间大小与分桶个数关系不大，即不同的分桶个数下表的存储空间的大小都差不多。但是分桶个数与bitmap聚合算子使用的机器数呈正相关，即分桶的个数越多，则ODPS reduce时的线程数，或者Explorer查询和存储的机器数也会越多，可以充分利用分布式集群的资源，提高查询效率。</li></ul> 
+<p><strong>分桶方案的局限性</strong></p> 
+<ul><li>只能适用于支付宝ID，其余字符串类型的基数统计无法使用。</li><li>分桶后会存在数据膨胀，由于分桶个数最少为10，因此至少表的数据会膨胀10倍。在部分场景对数据条数有限制时，需要限制聚合表维度组合的个数。</li><li>在下游消费时，需要二次聚合，有一定的使用成本。</li></ul> 
+<h3><a id="_66"></a>建序方案</h3> 
+<p>建序方案也是当时实时场景中最早探索的方案，并且在一些开源的RoaringBitmap技术分享中，也是广泛使用此类方案的。例如《Flink+Hologres精准去重》 、《Hologres使用Flink+RoaringBitmap实现实时UV计算》 等。</p> 
+<p>其核心思想在于，在存储用户ID编号时，会先从一张【用户映射表】中获取用户新的编号，然后再将新的编号存储到RoaringBitmap中。【用户映射表】需要覆盖所有用户，如果用户不存在则将新的用户append至表中，并新增一个唯一编号<br> <img src="https://images2.imgbox.com/82/5f/rJn3LyXP_o.png" alt="在这里插入图片描述"></p> 
+<p>对于映射表的设计，首先为了保证每个新增用户的新编号是唯一的，可以采取自增主键的方式，并存储在新字段user_no中，此外，为了兼容分桶方案的编号，建序表保留了两个字段：bucket_no和bucket_user_no，分别作为分，分桶号和分桶后的用户编号。</p> 
+<p><strong>建序方案的优势</strong>：</p> 
+<ul><li>不需要分桶，也不会产生数据膨胀。</li><li>在下游查询时，单次聚合即可，消费成本更低。</li><li>可以对任意字符串都生成对应的编号，因此非支付宝ID的数据也可以存储bitmap算基数。</li></ul> 
+<p><strong>建序方案的局限性</strong></p> 
+<ul><li>无法利用分布式集群的资源，由于仅会有一个桶，因此如果采用Explorer进行加速，不会进行计算下推，只能使用一台Explorer机器，查询性能会大打折扣。</li><li>用户映射表需要高保链路来保障，首先映射表本身上游的写入任务不能发生延迟，防止下游消费的UID没有生成编号的情况，否则会导致结果不精准。其次映射表会被大量任务依赖，因此对查询请求量要求也更高。</li></ul> 
+<h2><a id="holo_UV_85"></a>holo官网 离线UV计算</h2> 
+<ol><li>创建一张用户明细表，用于存放业务所有维度的明细数据。</li><li>创建一张历史用户映射表，存放历史每个访问过的用户ID（uid）和对应的int32数值，其中int32主要是Serial类型，便于与明细表做用户uid映射。说明RoaringBitmap类型要求用户ID必须是32位int类型且越稠密越好（用户ID最好连续），而常见的业务系统或者埋点中的用户ID很多是字符串类型，因此使用uid_mapping类型构建一张用户映射表。用户映射表利用Hologres的Serial类型（自增的32位int）来实现用户映射的自动管理和稳定映射。</li><li>把T+1（上一天）的明细表和历史用户映射表做Inner Join得到基础维度表。</li><li>根据业务逻辑，将基础维度表按照最细粒度基础维度group by，把上一天的所有数据根据最大的查询维度聚合出的uid结果放入RoaringBitmap中，并存放在聚合结果表（每天百万条）。</li><li>按照查询维度查询聚合结果表，对其中关键的RoaringBitmap字段做or运算进行去重后并统计基数，即可得出对应用户数UV，计数条数即可计算得出PV，达到亚秒级查询。<br> <img src="https://images2.imgbox.com/ef/4c/oOp9lvxP_o.png" alt="在这里插入图片描述"></li></ol> 
+<h3><a id="_92"></a>创建用户映射表</h3> 
+<p>创建名称为uid_mapping的用户映射表，用于映射uid到32位INT类型，其DDL如下所示。</p> 
+<p>RoaringBitmap类型要求用户ID必须是32位int类型且越稠密越好（用户ID最好连续），而常见的业务系统或者埋点中的用户ID很多是字符串类型，因此使用uid_mapping类型构建一张映射表。映射表利用Hologres的Serial类型（自增的32位int）来实现用户映射的自动管理和稳定映射。</p> 
+<p>说明: 该表在本例每天批量写入场景，可为行存表也可为列存表，没有太大区别。如需要做实时数据（例如和Flink联用），需要是行存表，以提高Flink维表实时JOIN的QPS。</p> 
+<pre><code class="prism language-sql"><span class="token keyword">BEGIN</span><span class="token punctuation">;</span>
+<span class="token keyword">CREATE</span> <span class="token keyword">TABLE</span> <span class="token keyword">public</span><span class="token punctuation">.</span>zc_uid_mapping <span class="token punctuation">(</span>
+    uid <span class="token keyword">text</span> <span class="token operator">NOT</span> <span class="token boolean">NULL</span><span class="token punctuation">,</span>
+    uid_int32 <span class="token keyword">serial</span><span class="token punctuation">,</span>
+    <span class="token keyword">PRIMARY</span> <span class="token keyword">KEY</span> <span class="token punctuation">(</span>uid<span class="token punctuation">)</span>
+ <span class="token punctuation">)</span><span class="token punctuation">;</span>
+ <span class="token comment">--将uid设为clustering_key和distribution_key便于快速查找其对应的int32值</span>
+<span class="token keyword">CALL</span> set_table_property<span class="token punctuation">(</span><span class="token string">'public.zc_uid_mapping'</span><span class="token punctuation">,</span> <span class="token string">'clustering_key'</span><span class="token punctuation">,</span> <span class="token string">'uid'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">CALL</span> set_table_property<span class="token punctuation">(</span><span class="token string">'public.zc_uid_mapping'</span><span class="token punctuation">,</span> <span class="token string">'distribution_key'</span><span class="token punctuation">,</span> <span class="token string">'uid'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">CALL</span> set_table_property<span class="token punctuation">(</span><span class="token string">'public.zc_uid_mapping'</span><span class="token punctuation">,</span> <span class="token string">'orientation'</span><span class="token punctuation">,</span> <span class="token string">'row'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">COMMIT</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="_113"></a>创建聚合结果表</h3> 
+<p>创建名称为dws_app的聚合结果表，用于存放RoaringBitmap聚合后的结果，其DDL如下所示。<br> 基础维度为之后进行查询计算pv和uv的最细维度，这里以country、 prov、 city为例构建基础维表。</p> 
+<pre><code class="prism language-sql"><span class="token keyword">begin</span><span class="token punctuation">;</span>
+<span class="token keyword">create</span> <span class="token keyword">table</span> dws_dau_app<span class="token punctuation">(</span>
+    client_type <span class="token keyword">text</span><span class="token punctuation">,</span>
+    ipv <span class="token keyword">text</span><span class="token punctuation">,</span>
+    ds <span class="token keyword">text</span> <span class="token operator">NOT</span> <span class="token boolean">NULL</span><span class="token punctuation">,</span>  <span class="token comment">--日期字段</span>
+    uid32_bitmap roaringbitmap<span class="token punctuation">,</span> <span class="token comment">-- UV计算</span>
+    pv <span class="token keyword">integer</span><span class="token punctuation">,</span> <span class="token comment">-- PV计算</span>
+    <span class="token keyword">primary</span> <span class="token keyword">key</span><span class="token punctuation">(</span>client_type<span class="token punctuation">,</span>ipv<span class="token punctuation">,</span>ds<span class="token punctuation">)</span><span class="token comment">--查询维度和时间作为主键，防止重复插入数据</span>
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">CALL</span> set_table_property<span class="token punctuation">(</span><span class="token string">'public.dws_dau_app'</span><span class="token punctuation">,</span> <span class="token string">'orientation'</span><span class="token punctuation">,</span> <span class="token string">'column'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">--clustering_key和event_time_column设为日期字段，便于过滤</span>
+<span class="token keyword">CALL</span> set_table_property<span class="token punctuation">(</span><span class="token string">'public.dws_dau_app'</span><span class="token punctuation">,</span> <span class="token string">'clustering_key'</span><span class="token punctuation">,</span> <span class="token string">'ds'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">CALL</span> set_table_property<span class="token punctuation">(</span><span class="token string">'public.dws_dau_app'</span><span class="token punctuation">,</span> <span class="token string">'event_time_column'</span><span class="token punctuation">,</span> <span class="token string">'ds'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">--distribution_key设为group by字段</span>
+<span class="token keyword">CALL</span> set_table_property<span class="token punctuation">(</span><span class="token string">'public.dws_app'</span><span class="token punctuation">,</span> <span class="token string">'distribution_key'</span><span class="token punctuation">,</span> <span class="token string">'client_type,ipv,ds'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">end</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="_136"></a>更新用户映射表和聚合结果表</h3> 
+<p>更新用户映射表每天从上一天的uid中找出新客户（用户映射表uid_mapping中没有的uid）插入到用户映射表中，命令如下。</p> 
+<pre><code class="prism language-sql"><span class="token keyword">WITH</span>
+<span class="token comment">-- 其中ymd = '20210329'表示上一天的数据</span>
+    user_ids <span class="token keyword">AS</span> <span class="token punctuation">(</span> <span class="token keyword">SELECT</span> imeisi <span class="token keyword">FROM</span> xxx <span class="token keyword">WHERE</span> ds <span class="token operator">=</span> <span class="token string">'20231119'</span> <span class="token operator">AND</span> imeisi <span class="token operator">is</span> <span class="token operator">not</span> <span class="token boolean">null</span> <span class="token keyword">GROUP</span> <span class="token keyword">BY</span> imeisi <span class="token punctuation">)</span>
+    <span class="token punctuation">,</span>new_ids <span class="token keyword">AS</span> <span class="token punctuation">(</span> <span class="token keyword">SELECT</span> user_ids<span class="token punctuation">.</span>imeisi <span class="token keyword">FROM</span> user_ids <span class="token keyword">LEFT</span> <span class="token keyword">JOIN</span> zc_uid_mapping <span class="token keyword">ON</span> <span class="token punctuation">(</span>user_ids<span class="token punctuation">.</span>imeisi <span class="token operator">=</span> zc_uid_mapping<span class="token punctuation">.</span>uid<span class="token punctuation">)</span> <span class="token keyword">WHERE</span> zc_uid_mapping<span class="token punctuation">.</span>uid <span class="token operator">IS</span> <span class="token boolean">NULL</span> <span class="token punctuation">)</span>
+<span class="token keyword">INSERT</span> <span class="token keyword">INTO</span> zc_uid_mapping <span class="token keyword">SELECT</span>  new_ids<span class="token punctuation">.</span>imeisi
+<span class="token keyword">FROM</span>    new_ids
+</code></pre> 
+<h3><a id="_148"></a>更新聚合结果表</h3> 
+<p>更新完用户映射表后，将数据做聚合运算后插入聚合结果表，主要步骤如下。<br> undefined 通过明细表Inner Join用户映射表，得到上一天的聚合条件和对应的uid_int32。<br> undefined 按照聚合条件做聚合运算后插入RoaringBitmap聚合结果表，作为上一天的聚合结果。<br> undefined 每天只需进行一次聚合，存放一份数据，数据条数等于UV的量。明细表每天几亿的增量，在聚合结果表每天只需存放百万级数据。<br> 插入数据至聚合结果表命令如下。</p> 
+<pre><code class="prism language-sql"><span class="token keyword">WITH</span> aggregation_src <span class="token keyword">AS</span>
+<span class="token punctuation">(</span> 
+    <span class="token keyword">SELECT</span> client_type<span class="token punctuation">,</span>is_ipv <span class="token keyword">as</span> ipv<span class="token punctuation">,</span> uid_int32 
+    <span class="token keyword">FROM</span> 
+    <span class="token punctuation">(</span>
+        <span class="token keyword">SELECT</span> imeisi<span class="token punctuation">,</span>client_type<span class="token punctuation">,</span>is_ipv
+        <span class="token keyword">from</span> xxx  t1
+        <span class="token keyword">WHERE</span> t1<span class="token punctuation">.</span>ds <span class="token operator">=</span> <span class="token string">'20231119'</span> <span class="token operator">and</span> t1<span class="token punctuation">.</span>imeisi <span class="token operator">is</span> <span class="token operator">not</span> <span class="token boolean">null</span>
+    <span class="token punctuation">)</span>t1
+    <span class="token keyword">INNER</span> <span class="token keyword">JOIN</span> zc_uid_mapping t2
+    <span class="token keyword">ON</span> t1<span class="token punctuation">.</span>imeisi <span class="token operator">=</span> t2<span class="token punctuation">.</span>uid   
+<span class="token punctuation">)</span>
+<span class="token keyword">INSERT</span> <span class="token keyword">INTO</span> dws_dau_app 
+<span class="token keyword">SELECT</span> 
+        client_type
+        <span class="token punctuation">,</span>ipv
+        <span class="token punctuation">,</span><span class="token string">'20231119'</span> ds
+        <span class="token punctuation">,</span>RB_BUILD_AGG<span class="token punctuation">(</span>uid_int32<span class="token punctuation">)</span>
+        <span class="token punctuation">,</span><span class="token function">COUNT</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span>
+<span class="token keyword">FROM</span>    aggregation_src
+<span class="token keyword">GROUP</span> <span class="token keyword">BY</span> client_type
+         <span class="token punctuation">,</span>ipv
+<span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="UVPV_181"></a>UV、PV查询</h3> 
+<p>查询时，从dws_app聚合结果表中按照查询维度做聚合计算，查询Bitmap基数，得出Group By条件下的用户数，命令如下。</p> 
+<pre><code class="prism language-sql"><span class="token comment">-- 多天去重</span>
+<span class="token keyword">SELECT</span>  client_type
+        <span class="token punctuation">,</span>RB_CARDINALITY<span class="token punctuation">(</span>RB_OR_AGG<span class="token punctuation">(</span>uid32_bitmap<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token keyword">AS</span> uv
+        <span class="token comment">-- ,rb_or_cardinality_agg(uid32_bitmap)</span>
+        <span class="token punctuation">,</span><span class="token function">sum</span><span class="token punctuation">(</span>pv<span class="token punctuation">)</span> <span class="token keyword">AS</span> pv
+<span class="token keyword">FROM</span>    dws_dau_app
+<span class="token keyword">WHERE</span>   ds <span class="token operator">in</span> <span class="token punctuation">(</span><span class="token string">'20231119'</span><span class="token punctuation">,</span><span class="token string">'20231120'</span><span class="token punctuation">)</span>
+<span class="token keyword">GROUP</span> <span class="token keyword">BY</span> client_type<span class="token punctuation">;</span>
+
+<span class="token comment">-- 等价于</span>
+<span class="token keyword">SELECT</span> ds<span class="token punctuation">,</span>client_type<span class="token punctuation">,</span><span class="token function">count</span><span class="token punctuation">(</span><span class="token keyword">distinct</span> imeisi<span class="token punctuation">)</span> 
+<span class="token keyword">FROM</span>  xxx 
+<span class="token keyword">WHERE</span> ds <span class="token operator">in</span> <span class="token punctuation">(</span><span class="token string">'20231119'</span><span class="token punctuation">,</span><span class="token string">'20231120'</span><span class="token punctuation">)</span> 
+<span class="token keyword">GROUP</span> <span class="token keyword">by</span> ds<span class="token punctuation">,</span>client_type
+
+
+<span class="token keyword">SELECT</span>  client_type
+        <span class="token punctuation">,</span>ds   
+        <span class="token punctuation">,</span>RB_OR_AGG<span class="token punctuation">(</span>uid32_bitmap<span class="token punctuation">)</span>
+        <span class="token punctuation">,</span>RB_CARDINALITY<span class="token punctuation">(</span>RB_OR_AGG<span class="token punctuation">(</span>uid32_bitmap<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token keyword">AS</span> uv
+        <span class="token punctuation">,</span><span class="token function">sum</span><span class="token punctuation">(</span>pv<span class="token punctuation">)</span> <span class="token keyword">AS</span> pv
+<span class="token keyword">FROM</span>    dws_dau_app
+<span class="token keyword">WHERE</span>   ds <span class="token operator">in</span> <span class="token punctuation">(</span><span class="token string">'20231119'</span><span class="token punctuation">,</span><span class="token string">'20231120'</span><span class="token punctuation">)</span>
+<span class="token operator">AND</span> client_type <span class="token operator">=</span> <span class="token string">'travel'</span>
+<span class="token keyword">GROUP</span> <span class="token keyword">BY</span> client_type<span class="token punctuation">,</span>ds
+<span class="token punctuation">;</span>
+<span class="token comment">-- 等价于</span>
+<span class="token keyword">SELECT</span> ds<span class="token punctuation">,</span>client_type<span class="token punctuation">,</span><span class="token function">count</span><span class="token punctuation">(</span><span class="token keyword">distinct</span> imeisi<span class="token punctuation">)</span> 
+<span class="token keyword">FROM</span>  xxx 
+<span class="token keyword">WHERE</span> ds <span class="token operator">in</span> <span class="token punctuation">(</span><span class="token string">'20231119'</span><span class="token punctuation">,</span><span class="token string">'20231120'</span><span class="token punctuation">)</span> 
+<span class="token keyword">GROUP</span> <span class="token keyword">by</span> ds<span class="token punctuation">,</span>client_type
+
+
+<span class="token comment">--  两天同端的来访去重</span>
+<span class="token keyword">SELECT</span> client_type
+        <span class="token punctuation">,</span>RB_CARDINALITY<span class="token punctuation">(</span>RB_AND_AGG<span class="token punctuation">(</span>xx<span class="token punctuation">)</span><span class="token punctuation">)</span>
+<span class="token keyword">FROM</span> 
+<span class="token punctuation">(</span>
+     <span class="token keyword">SELECT</span>  client_type
+            <span class="token punctuation">,</span>ds   
+            <span class="token punctuation">,</span>RB_OR_AGG<span class="token punctuation">(</span>uid32_bitmap<span class="token punctuation">)</span> xx
+            <span class="token punctuation">,</span>RB_CARDINALITY<span class="token punctuation">(</span>RB_OR_AGG<span class="token punctuation">(</span>uid32_bitmap<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token keyword">AS</span> uv
+            <span class="token punctuation">,</span><span class="token function">sum</span><span class="token punctuation">(</span>pv<span class="token punctuation">)</span> <span class="token keyword">AS</span> pv
+    <span class="token keyword">FROM</span>    dws_dau_app
+    <span class="token keyword">WHERE</span>   ds <span class="token operator">in</span> <span class="token punctuation">(</span><span class="token string">'20231119'</span><span class="token punctuation">,</span><span class="token string">'20231120'</span><span class="token punctuation">)</span>
+    <span class="token keyword">GROUP</span> <span class="token keyword">BY</span> client_type<span class="token punctuation">,</span>ds
+<span class="token punctuation">)</span>t
+<span class="token keyword">GROUP</span> <span class="token keyword">BY</span> client_type
+<span class="token punctuation">;</span>
+
+<span class="token comment">-- 等价于</span>
+<span class="token keyword">SELECT</span> t1<span class="token punctuation">.</span>client_type<span class="token punctuation">,</span><span class="token function">count</span><span class="token punctuation">(</span><span class="token keyword">distinct</span> t1<span class="token punctuation">.</span>imeisi<span class="token punctuation">)</span> 
+<span class="token keyword">FROM</span>  xxx t1
+<span class="token keyword">INNER</span> <span class="token keyword">JOIN</span> xxx t2
+<span class="token keyword">ON</span> t1<span class="token punctuation">.</span>imeisi <span class="token operator">=</span> t2<span class="token punctuation">.</span>imeisi
+<span class="token operator">AND</span> t1<span class="token punctuation">.</span>client_type <span class="token operator">=</span> t2<span class="token punctuation">.</span>client_type
+<span class="token keyword">WHERE</span> t1<span class="token punctuation">.</span>ds <span class="token operator">=</span> <span class="token string">'20231119'</span>
+<span class="token operator">AND</span> t2<span class="token punctuation">.</span>ds <span class="token operator">=</span> <span class="token string">'20231120'</span>
+<span class="token keyword">GROUP</span> <span class="token keyword">by</span> t1<span class="token punctuation">.</span>client_type
+</code></pre>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/6a2983f1b9ba9916bc491398f7b91582/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Stable Diffusion XL网络结构-超详细原创</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f804cab2ba5eeb66e1b50525b5d1b5ae/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">python连接hive报错：TypeError: can‘t concat str to bytes</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,1022 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>linux进程的调度 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="linux进程的调度" />
+<meta property="og:description" content="进程状态 进程主要有7种状态：就绪状态、运行状态、轻度睡眠、中度睡眠、深度睡眠、僵尸状态、死亡状态。它们之间状态变迁如下：
+进程描述符task_struct结构体中有个成员state专门用来描述进程的状态。
+就绪状态：state为TASK_RUNNING，正在运行队列中等待调度器调度。运行状态：state为TASK_RUNNING，被调度器命中，正在处理器中运行。轻度睡眠：称为可打断的睡眠状态。state为TASK_INTERRUPTIBLE，可以被信号打断。中度睡眠：state为TASK_KILLABLE，只能被致命的信号打断。深度睡眠：不可打断的睡眠状态。state为TASK_UNINTERRUPTIBLE，不能被信号打断。死亡状态：state为TASK_DEAD。在task_struct中还另外有一个字段exit_state为EXIT_DEAD。僵尸状态：state为TASK_DEAD。在task_struct中还另外有一个字段exit_state为EXIT_ZOMBIE。如果父进程关注子进程退出事件，那么子进程在退出时
+发送SIGCHILD信号通知父进程，变成僵尸进程。父进程在查询子进程终止原因后收回子进程的进程描述符。 调度算法原则 良好的调度算法应该考虑以下几个问题：
+公平：保证每个进程得到合理的cpu时间。高效：使cpu保持忙碌状态，即总是有进程在cpu上执行响应时间：使交互用户的响应时间尽可能短周转时间：使批处理用户等待输出的时间尽可能短吞吐量：使单位时间内处理的进程数量尽可能多 举几个遵循以上原则的例子，比如unix系统采用的动态优先调度，windows的抢先多任务调度。
+进程调度的依据 在include/sched.h的task_struct结构体中，有以下几个成员，注意这些成员的代码不是在一起的，这里只是把它们贴在一起了。
+//在调度时机到来时检测该值，如果为1则调用schedule() volatile long need_resched; //进程处于运行状态时所剩的时钟嘀嗒数。每次时钟中断到来时，这个值减1，直到减为0 //如果该值为0，就把need_resched置为1。这个值也称为动态优先级 long counter; //进程的静态优先级。这个值决定了counter的初值 long nice; //实时进程的优先级 unsigned long rt_priority; //从整体上区分实时进程和普通进程，因为实时进程和普通进程的调度不同，实时进程应当优于普通进程执行。可以通过系统调用sched_setscheduler()来改变调度的策略 unsigned long policy; 进程调度策略 进程优先级 限期进程的优先级比实时进程高，实时进程的优先级比普通进程高。
+限制进程的优先级是-1。
+实时进程的实时优先级是1-99，优先级数值越大，表示优先级越高。
+普通进程的静态优先级是100-139，优先级值越小，表示优先级越高，可通过修改nice值改变普通进程的优先级，优先级等于120加上nice值。
+在task_struct结构体中，4个成员和优先级有关如下：
+int	prio; int	static_prio; int	normal_prio; unsigned int	rt_priority; 具体来说这4个成员的关系如下：
+有一点值得注意，如果优先级低的进程占有实时互斥锁，此时又有优先级高的进程等待实时互斥锁，这时会把占有实时互斥锁的进程的优先级临时提高到等待实时互斥锁的进程的优先级，这个现象叫优先级继承。
+限期调度策略 有三个参数：运行时间runtime、截止期限deadline和周期period。每个周期运行一次，一次运行的时长为runtime。
+具体的调度策略：选取一个绝对截止期限最小的进程，执行了runtime时长后，如果还未完成就让出cpu，并在运行队列中删除，下一个周期开始时再加入。
+实时进程调度策略 支持两种调度策略。
+先进先出调度策略：没有时间片，如果没有更高优先级的实时进程，并且该实时进程不睡眠，那么它将一直占有处理器。轮流调度策略：有时间片，进程用完时间片以后会加入优先级对应运行队列的队尾，把处理器给优先级相同的其他进程。 普通进程调度策略 标准轮流分时调度策略：使用完全公平调度算法，把处理器时间公平分给每个进程。空闲调度策略：该策略用来执行优先级非常低的进程，优先级比使用标准轮流分时调度策略中相对优先级（nice）为19的普通进程还低。进程的相对优先级对空闲调度策略没有影响。 调度类 注意是调度器里面包含进程，而不是进程里包含调度器，特别是不要因为看见task_struct中有个sched_class*成员，就记错了。不同的进程对应不同的调度器，但是一个进程只能属于一个调度器。
+停机调度类 停机调度类是优先级最高的调度类，支持限期调度类。停机进程优先级最高，可抢占其他所有进程。没有时间片，如果不主动让出cpu就会一直占有。目前只有停机线程属于停机调度类。设计停机调度类的目的，是为了让迁移线程的优先级比限期进程高，才能快速处理调度器发出的迁移指令，把进程从当前处理器迁移到其他处理器。停机进程对外伪装成最高优先级的实时进程。
+限期调度类 使用优先算法（使用红黑树）把进程按绝对截止期限从小到大排序，每次调度时选择绝对截止期限最小的进程。
+实时调度类 为每个优先级维护一个源码。
+/* * This is the priority-queue data structure of the RT scheduling class: */ struct rt_prio_array { DECLARE_BITMAP(bitmap, MAX_RT_PRIO&#43;1); /* include 1 bit for delimiter */ struct list_head queue[MAX_RT_PRIO]; }; 位图bitmap用来快速查找第一个非空队列，数组queue的下标是实时进程调度优先级，下标越小，优先级越高。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/ee1ecd74e824cd3239a79b8b1cd36f53/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-07-31T09:50:18+08:00" />
+<meta property="article:modified_time" content="2022-07-31T09:50:18+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">linux进程的调度</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="_0"></a>进程状态</h2> 
+<p>进程主要有7种状态：就绪状态、运行状态、轻度睡眠、中度睡眠、深度睡眠、僵尸状态、死亡状态。它们之间状态变迁如下：<br> <img src="https://images2.imgbox.com/a9/73/1dfvCDC1_o.jpg" alt="在这里插入图片描述"><br> 进程描述符task_struct结构体中有个成员state专门用来描述进程的状态。</p> 
+<ul><li>就绪状态：state为TASK_RUNNING，正在运行队列中等待调度器调度。</li><li>运行状态：state为TASK_RUNNING，被调度器命中，正在处理器中运行。</li><li>轻度睡眠：称为可打断的睡眠状态。state为TASK_INTERRUPTIBLE，可以被信号打断。</li><li>中度睡眠：state为TASK_KILLABLE，只能被致命的信号打断。</li><li>深度睡眠：不可打断的睡眠状态。state为TASK_UNINTERRUPTIBLE，不能被信号打断。</li><li>死亡状态：state为TASK_DEAD。在task_struct中还另外有一个字段exit_state为EXIT_DEAD。</li><li>僵尸状态：state为TASK_DEAD。在task_struct中还另外有一个字段exit_state为EXIT_ZOMBIE。如果父进程关注子进程退出事件，那么子进程在退出时<br> 发送SIGCHILD信号通知父进程，变成僵尸进程。父进程在查询子进程终止原因后收回子进程的进程描述符。</li></ul> 
+<h2><a id="_13"></a>调度算法原则</h2> 
+<p>良好的调度算法应该考虑以下几个问题：</p> 
+<ol><li>公平：保证每个进程得到合理的cpu时间。</li><li>高效：使cpu保持忙碌状态，即总是有进程在cpu上执行</li><li>响应时间：使交互用户的响应时间尽可能短</li><li>周转时间：使批处理用户等待输出的时间尽可能短</li><li>吞吐量：使单位时间内处理的进程数量尽可能多</li></ol> 
+<p>举几个遵循以上原则的例子，比如unix系统采用的动态优先调度，windows的抢先多任务调度。</p> 
+<h2><a id="_22"></a>进程调度的依据</h2> 
+<p>在include/sched.h的task_struct结构体中，有以下几个成员，注意这些成员的代码不是在一起的，这里只是把它们贴在一起了。</p> 
+<pre><code class="prism language-c"><span class="token comment">//在调度时机到来时检测该值，如果为1则调用schedule()</span>
+<span class="token keyword">volatile</span> <span class="token keyword">long</span> need_resched<span class="token punctuation">;</span>
+<span class="token comment">//进程处于运行状态时所剩的时钟嘀嗒数。每次时钟中断到来时，这个值减1，直到减为0</span>
+<span class="token comment">//如果该值为0，就把need_resched置为1。这个值也称为动态优先级</span>
+<span class="token keyword">long</span> counter<span class="token punctuation">;</span>
+<span class="token comment">//进程的静态优先级。这个值决定了counter的初值</span>
+<span class="token keyword">long</span> nice<span class="token punctuation">;</span>
+<span class="token comment">//实时进程的优先级</span>
+<span class="token keyword">unsigned</span> <span class="token keyword">long</span> rt_priority<span class="token punctuation">;</span>
+<span class="token comment">//从整体上区分实时进程和普通进程，因为实时进程和普通进程的调度不同，实时进程应当优于普通进程执行。可以通过系统调用sched_setscheduler()来改变调度的策略</span>
+<span class="token keyword">unsigned</span> <span class="token keyword">long</span> policy<span class="token punctuation">;</span>
+</code></pre> 
+<h2><a id="_37"></a>进程调度策略</h2> 
+<h3><a id="_38"></a>进程优先级</h3> 
+<p>限期进程的优先级比实时进程高，实时进程的优先级比普通进程高。<br> 限制进程的优先级是-1。<br> 实时进程的实时优先级是1-99，优先级数值越大，表示优先级越高。<br> 普通进程的静态优先级是100-139，优先级值越小，表示优先级越高，可通过修改nice值改变普通进程的优先级，优先级等于120加上nice值。<br> 在task_struct结构体中，4个成员和优先级有关如下：</p> 
+<pre><code class="prism language-c"><span class="token keyword">int</span>				prio<span class="token punctuation">;</span>
+<span class="token keyword">int</span>				static_prio<span class="token punctuation">;</span>
+<span class="token keyword">int</span>				normal_prio<span class="token punctuation">;</span>
+<span class="token keyword">unsigned</span> <span class="token keyword">int</span>			rt_priority<span class="token punctuation">;</span>
+</code></pre> 
+<p>具体来说这4个成员的关系如下：<br> <img src="https://images2.imgbox.com/e5/f2/X31DFtaL_o.png" alt="在这里插入图片描述"><br> 有一点值得注意，如果优先级低的进程占有实时互斥锁，此时又有优先级高的进程等待实时互斥锁，这时会把占有实时互斥锁的进程的优先级临时提高到等待实时互斥锁的进程的优先级，这个现象叫优先级继承。</p> 
+<h3><a id="_53"></a>限期调度策略</h3> 
+<p>有三个参数：运行时间runtime、截止期限deadline和周期period。每个周期运行一次，一次运行的时长为runtime。<br> <img src="https://images2.imgbox.com/fc/cb/PhJ0gnbB_o.png" alt="在这里插入图片描述"><br> 具体的调度策略：选取一个绝对截止期限最小的进程，执行了runtime时长后，如果还未完成就让出cpu，并在运行队列中删除，下一个周期开始时再加入。</p> 
+<h3><a id="_57"></a>实时进程调度策略</h3> 
+<p>支持两种调度策略。</p> 
+<ol><li>先进先出调度策略：没有时间片，如果没有更高优先级的实时进程，并且该实时进程不睡眠，那么它将一直占有处理器。</li><li>轮流调度策略：有时间片，进程用完时间片以后会加入优先级对应运行队列的队尾，把处理器给优先级相同的其他进程。</li></ol> 
+<h3><a id="_62"></a>普通进程调度策略</h3> 
+<ol><li>标准轮流分时调度策略：使用完全公平调度算法，把处理器时间公平分给每个进程。</li><li>空闲调度策略：该策略用来执行优先级非常低的进程，优先级比使用标准轮流分时调度策略中相对优先级（nice）为19的普通进程还低。进程的相对优先级对空闲调度策略没有影响。</li></ol> 
+<h2><a id="_65"></a>调度类</h2> 
+<p>注意是调度器里面包含进程，而不是进程里包含调度器，特别是不要因为看见task_struct中有个sched_class*成员，就记错了。不同的进程对应不同的调度器，但是一个进程只能属于一个调度器。</p> 
+<h3><a id="_67"></a>停机调度类</h3> 
+<p>停机调度类是优先级最高的调度类，支持限期调度类。停机进程优先级最高，可抢占其他所有进程。没有时间片，如果不主动让出cpu就会一直占有。目前只有停机线程属于停机调度类。设计停机调度类的目的，是为了让迁移线程的优先级比限期进程高，才能快速处理调度器发出的迁移指令，把进程从当前处理器迁移到其他处理器。停机进程对外伪装成最高优先级的实时进程。</p> 
+<h3><a id="_69"></a>限期调度类</h3> 
+<p>使用优先算法（使用红黑树）把进程按绝对截止期限从小到大排序，每次调度时选择绝对截止期限最小的进程。</p> 
+<h3><a id="_71"></a>实时调度类</h3> 
+<p>为每个优先级维护一个源码。</p> 
+<pre><code class="prism language-c"><span class="token comment">/*
+ * This is the priority-queue data structure of the RT scheduling class:
+ */</span>
+<span class="token keyword">struct</span> rt_prio_array <span class="token punctuation">{<!-- --></span>
+	<span class="token function">DECLARE_BITMAP</span><span class="token punctuation">(</span>bitmap<span class="token punctuation">,</span> MAX_RT_PRIO<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">/* include 1 bit for delimiter */</span>
+	<span class="token keyword">struct</span> list_head queue<span class="token punctuation">[</span>MAX_RT_PRIO<span class="token punctuation">]</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>位图bitmap用来快速查找第一个非空队列，数组queue的下标是实时进程调度优先级，下标越小，优先级越高。</p> 
+<h3><a id="_83"></a>公平调度类</h3> 
+<p>使用完全公平调度算法。引入了虚拟运行时间。<br> <code>虚拟运行时间=实际运行时间*nice0对应的权重（1024）/进程的权重</code><br> nice值n-1是n对应的权重约1.25倍。</p> 
+<pre><code class="prism language-c"><span class="token comment">/*
+ * Nice levels are multiplicative, with a gentle 10% change for every
+ * nice level changed. I.e. when a CPU-bound task goes from nice 0 to
+ * nice 1, it will get ~10% less CPU time than another CPU-bound task
+ * that remained on nice 0.
+ *
+ * The "10% effect" is relative and cumulative: from _any_ nice level,
+ * if you go up 1 level, it's -10% CPU usage, if you go down 1 level
+ * it's +10% CPU usage. (to achieve that we use a multiplier of 1.25.
+ * If a task goes up by ~10% and another task goes down by ~10% then
+ * the relative distance between them is ~25%.)
+ */</span>
+<span class="token keyword">const</span> <span class="token keyword">int</span> sched_prio_to_weight<span class="token punctuation">[</span><span class="token number">40</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+ <span class="token comment">/* -20 */</span>     <span class="token number">88761</span><span class="token punctuation">,</span>     <span class="token number">71755</span><span class="token punctuation">,</span>     <span class="token number">56483</span><span class="token punctuation">,</span>     <span class="token number">46273</span><span class="token punctuation">,</span>     <span class="token number">36291</span><span class="token punctuation">,</span>
+ <span class="token comment">/* -15 */</span>     <span class="token number">29154</span><span class="token punctuation">,</span>     <span class="token number">23254</span><span class="token punctuation">,</span>     <span class="token number">18705</span><span class="token punctuation">,</span>     <span class="token number">14949</span><span class="token punctuation">,</span>     <span class="token number">11916</span><span class="token punctuation">,</span>
+ <span class="token comment">/* -10 */</span>      <span class="token number">9548</span><span class="token punctuation">,</span>      <span class="token number">7620</span><span class="token punctuation">,</span>      <span class="token number">6100</span><span class="token punctuation">,</span>      <span class="token number">4904</span><span class="token punctuation">,</span>      <span class="token number">3906</span><span class="token punctuation">,</span>
+ <span class="token comment">/*  -5 */</span>      <span class="token number">3121</span><span class="token punctuation">,</span>      <span class="token number">2501</span><span class="token punctuation">,</span>      <span class="token number">1991</span><span class="token punctuation">,</span>      <span class="token number">1586</span><span class="token punctuation">,</span>      <span class="token number">1277</span><span class="token punctuation">,</span>
+ <span class="token comment">/*   0 */</span>      <span class="token number">1024</span><span class="token punctuation">,</span>       <span class="token number">820</span><span class="token punctuation">,</span>       <span class="token number">655</span><span class="token punctuation">,</span>       <span class="token number">526</span><span class="token punctuation">,</span>       <span class="token number">423</span><span class="token punctuation">,</span>
+ <span class="token comment">/*   5 */</span>       <span class="token number">335</span><span class="token punctuation">,</span>       <span class="token number">272</span><span class="token punctuation">,</span>       <span class="token number">215</span><span class="token punctuation">,</span>       <span class="token number">172</span><span class="token punctuation">,</span>       <span class="token number">137</span><span class="token punctuation">,</span>
+ <span class="token comment">/*  10 */</span>       <span class="token number">110</span><span class="token punctuation">,</span>        <span class="token number">87</span><span class="token punctuation">,</span>        <span class="token number">70</span><span class="token punctuation">,</span>        <span class="token number">56</span><span class="token punctuation">,</span>        <span class="token number">45</span><span class="token punctuation">,</span>
+ <span class="token comment">/*  15 */</span>        <span class="token number">36</span><span class="token punctuation">,</span>        <span class="token number">29</span><span class="token punctuation">,</span>        <span class="token number">23</span><span class="token punctuation">,</span>        <span class="token number">18</span><span class="token punctuation">,</span>        <span class="token number">15</span><span class="token punctuation">,</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>使用空闲调度的普通进程，权重为3。</p> 
+<h3><a id="_112"></a>空闲调度类</h3> 
+<p>每个处理器上有一个空闲线程，即0号线程。空闲调度类的优先级最低，仅当没有其他进程可以调度时，才会执行空闲线程。</p> 
+<p>总结一下<br> <img src="https://images2.imgbox.com/11/c9/qWuozhM1_o.jpg" alt="在这里插入图片描述"></p> 
+<h3><a id="_117"></a>运行队列</h3> 
+<p>每个处理器有一个运行队列，结构体是rq，定义的全局变量如下：</p> 
+<pre><code class="prism language-c"><span class="token function">DEFINE_PER_CPU_SHARED_ALIGNED</span><span class="token punctuation">(</span><span class="token keyword">struct</span> rq<span class="token punctuation">,</span> runqueues<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>rq描述就绪队列，其设计是为每个CPU一个就绪队列，本地进程在本地队列上排序。</p> 
+<h2><a id="_123"></a>调度器</h2> 
+<h3><a id="_124"></a>调度器函数</h3> 
+<p>调度器的实现基于两个函数：周期性调度器函数和主调度器函数。这些函数根据现有进程的优先级分配CPU时间。这也是为什么整个方法称之为优先调度的原因。</p> 
+<h4><a id="_126"></a>周期性调度器函数</h4> 
+<p>周期性调度器在scheduler_tick中实现，如果系统正在活动中，内核会按照频率HZ自动调用该函数。该函数主要有两个任务：</p> 
+<ol><li>更新相关统计量：管理内核中与整个系统和各个进程的调度相关的统计量。其间执行的主要操作是对各种计数器加1。</li><li>激活负责当前进程的调度类的周期性调度方法。</li></ol> 
+<pre><code class="prism language-c"><span class="token comment">/*
+ * This function gets called by the timer code, with HZ frequency.
+ * We call it with interrupts disabled.
+ */</span>
+<span class="token keyword">void</span> <span class="token function">scheduler_tick</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token comment">//获取当前cpu上的全局就绪队列rq和当前运行进程curr</span>
+    <span class="token comment">//在SMP的情况下，获取当前cpu的id，如果不是则返回0</span>
+	<span class="token keyword">int</span> cpu <span class="token operator">=</span> <span class="token function">smp_processor_id</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//获得cpu的全局就绪队列rq，每个cpu都有一个就绪队列rq</span>
+	<span class="token keyword">struct</span> rq <span class="token operator">*</span>rq <span class="token operator">=</span> <span class="token function">cpu_rq</span><span class="token punctuation">(</span>cpu<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//获取就绪队列上正在运行的进程curr</span>
+	<span class="token keyword">struct</span> task_struct <span class="token operator">*</span>curr <span class="token operator">=</span> rq<span class="token operator">-&gt;</span>curr<span class="token punctuation">;</span>
+	<span class="token keyword">struct</span> rq_flags rf<span class="token punctuation">;</span>
+
+	<span class="token function">sched_clock_tick</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token function">rq_lock</span><span class="token punctuation">(</span>rq<span class="token punctuation">,</span> <span class="token operator">&amp;</span>rf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token comment">//更新rq当前的时间戳，即rq-&gt;clock变为当前时间戳</span>
+    <span class="token comment">//处理就绪队列时钟的更新，本质上是增加struct rq当前实例的时钟时间戳</span>
+    <span class="token function">update_rq_clock</span><span class="token punctuation">(</span>rq<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//由于调度器的模块化结构，主要工作可以完全由特定调度器类方法实现，</span>
+    <span class="token comment">//task_tick实现模式取决于底层的调度器类</span>
+    <span class="token comment">//执行当前运行进程所在调度类的task_tick()函数，进行周期性调度</span>
+	curr<span class="token operator">-&gt;</span>sched_class<span class="token operator">-&gt;</span><span class="token function">task_tick</span><span class="token punctuation">(</span>rq<span class="token punctuation">,</span> curr<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//将当前负荷加入到数组的第一个位置</span>
+	<span class="token function">cpu_load_update_active</span><span class="token punctuation">(</span>rq<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//更新全局cpu的就绪队列calc_load_update</span>
+    <span class="token comment">//更新cpu的活动计数，主要是更新全局cpu就绪队列calc_load_update</span>
+	<span class="token function">calc_global_load_tick</span><span class="token punctuation">(</span>rq<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token function">rq_unlock</span><span class="token punctuation">(</span>rq<span class="token punctuation">,</span> <span class="token operator">&amp;</span>rf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//与perf计数事件相关</span>
+	<span class="token function">perf_event_task_tick</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token macro property">#<span class="token directive keyword">ifdef</span> CONFIG_SMP  </span><span class="token comment">//配置相关的SMP</span>
+    <span class="token comment">//判断cpu是否为空闲状态</span>
+	rq<span class="token operator">-&gt;</span>idle_balance <span class="token operator">=</span> <span class="token function">idle_cpu</span><span class="token punctuation">(</span>cpu<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//如果进行周期性负载均衡，则触发SCHED_SOFTIRQ</span>
+	<span class="token function">trigger_load_balance</span><span class="token punctuation">(</span>rq<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token macro property">#<span class="token directive keyword">endif</span></span>
+	<span class="token function">rq_last_tick_reset</span><span class="token punctuation">(</span>rq<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>再看下里面主要的两个任务</p> 
+<pre><code class="prism language-c"><span class="token keyword">void</span> <span class="token function">update_rq_clock</span><span class="token punctuation">(</span><span class="token keyword">struct</span> rq <span class="token operator">*</span>rq<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	s64 delta<span class="token punctuation">;</span>
+
+	<span class="token function">lockdep_assert_held</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>rq<span class="token operator">-&gt;</span>lock<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>rq<span class="token operator">-&gt;</span>clock_update_flags <span class="token operator">&amp;</span> RQCF_ACT_SKIP<span class="token punctuation">)</span>
+		<span class="token keyword">return</span><span class="token punctuation">;</span>
+
+<span class="token macro property">#<span class="token directive keyword">ifdef</span> CONFIG_SCHED_DEBUG</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">sched_feat</span><span class="token punctuation">(</span>WARN_DOUBLE_CLOCK<span class="token punctuation">)</span><span class="token punctuation">)</span>
+		<span class="token function">SCHED_WARN_ON</span><span class="token punctuation">(</span>rq<span class="token operator">-&gt;</span>clock_update_flags <span class="token operator">&amp;</span> RQCF_UPDATED<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	rq<span class="token operator">-&gt;</span>clock_update_flags <span class="token operator">|</span><span class="token operator">=</span> RQCF_UPDATED<span class="token punctuation">;</span>
+<span class="token macro property">#<span class="token directive keyword">endif</span></span>
+
+	delta <span class="token operator">=</span> <span class="token function">sched_clock_cpu</span><span class="token punctuation">(</span><span class="token function">cpu_of</span><span class="token punctuation">(</span>rq<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">-</span> rq<span class="token operator">-&gt;</span>clock<span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>delta <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+		<span class="token keyword">return</span><span class="token punctuation">;</span>
+	rq<span class="token operator">-&gt;</span>clock <span class="token operator">+</span><span class="token operator">=</span> delta<span class="token punctuation">;</span>
+	<span class="token function">update_rq_clock_task</span><span class="token punctuation">(</span>rq<span class="token punctuation">,</span> delta<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<pre><code class="prism language-c"><span class="token comment">/*
+ * Called from scheduler_tick() to periodically update this CPU's
+ * active count.
+ */</span>
+<span class="token keyword">void</span> <span class="token function">calc_global_load_tick</span><span class="token punctuation">(</span><span class="token keyword">struct</span> rq <span class="token operator">*</span>this_rq<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">long</span> delta<span class="token punctuation">;</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">time_before</span><span class="token punctuation">(</span>jiffies<span class="token punctuation">,</span> this_rq<span class="token operator">-&gt;</span>calc_load_update<span class="token punctuation">)</span><span class="token punctuation">)</span>
+		<span class="token keyword">return</span><span class="token punctuation">;</span>
+
+	delta  <span class="token operator">=</span> <span class="token function">calc_load_fold_active</span><span class="token punctuation">(</span>this_rq<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>delta<span class="token punctuation">)</span>
+		<span class="token function">atomic_long_add</span><span class="token punctuation">(</span>delta<span class="token punctuation">,</span> <span class="token operator">&amp;</span>calc_load_tasks<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	this_rq<span class="token operator">-&gt;</span>calc_load_update <span class="token operator">+</span><span class="token operator">=</span> LOAD_FREQ<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>里面还有具体的函数调用，就不再继续跟下去了。</p> 
+<h4><a id="_223"></a>主调度器函数</h4> 
+<p>在内核中的许多地方，如果要将CPU分配给与当前活动进程不同的另一个进程，都会直接调用主调度器函数（schedule）。</p> 
+<pre><code class="prism language-c">asmlinkage __visible <span class="token keyword">void</span> __sched <span class="token function">schedule</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">struct</span> task_struct <span class="token operator">*</span>tsk <span class="token operator">=</span> current<span class="token punctuation">;</span>
+
+	<span class="token function">sched_submit_work</span><span class="token punctuation">(</span>tsk<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">do</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">preempt_disable</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token function">__schedule</span><span class="token punctuation">(</span>false<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token function">sched_preempt_enable_no_resched</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span> <span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token function">need_resched</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+<span class="token function">EXPORT_SYMBOL</span><span class="token punctuation">(</span>schedule<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="_239"></a>调度进程</h3> 
+<p>主动调度进程的函数是schedule() ，即主调度器函数，该函数会把主要工作委托给__schedule()去处理。</p> 
+<pre><code class="prism language-c"><span class="token comment">/*
+ * __schedule() is the main scheduler function.
+ *
+ * The main means of driving the scheduler and thus entering this function are:
+ *
+ *   1. Explicit blocking: mutex, semaphore, waitqueue, etc.
+ *
+ *   2. TIF_NEED_RESCHED flag is checked on interrupt and userspace return
+ *      paths. For example, see arch/x86/entry_64.S.
+ *
+ *      To drive preemption between tasks, the scheduler sets the flag in timer
+ *      interrupt handler scheduler_tick().
+ *
+ *   3. Wakeups don't really cause entry into schedule(). They add a
+ *      task to the run-queue and that's it.
+ *
+ *      Now, if the new task added to the run-queue preempts the current
+ *      task, then the wakeup sets TIF_NEED_RESCHED and schedule() gets
+ *      called on the nearest possible occasion:
+ *
+ *       - If the kernel is preemptible (CONFIG_PREEMPT=y):
+ *
+ *         - in syscall or exception context, at the next outmost
+ *           preempt_enable(). (this might be as soon as the wake_up()'s
+ *           spin_unlock()!)
+ *
+ *         - in IRQ context, return from interrupt-handler to
+ *           preemptible context
+ *
+ *       - If the kernel is not preemptible (CONFIG_PREEMPT is not set)
+ *         then at the next:
+ *
+ *          - cond_resched() call
+ *          - explicit schedule() call
+ *          - return from syscall or exception to user-space
+ *          - return from interrupt-handler to user-space
+ *
+ * WARNING: must be called with preemption disabled!
+ */</span>
+<span class="token comment">//参数preempt表示是否抢占调度</span>
+<span class="token keyword">static</span> <span class="token keyword">void</span> __sched notrace <span class="token function">__schedule</span><span class="token punctuation">(</span>bool preempt<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">struct</span> task_struct <span class="token operator">*</span>prev<span class="token punctuation">,</span> <span class="token operator">*</span>next<span class="token punctuation">;</span>
+	<span class="token keyword">unsigned</span> <span class="token keyword">long</span> <span class="token operator">*</span>switch_count<span class="token punctuation">;</span>
+	<span class="token keyword">struct</span> rq_flags rf<span class="token punctuation">;</span>
+	<span class="token keyword">struct</span> rq <span class="token operator">*</span>rq<span class="token punctuation">;</span>
+	<span class="token keyword">int</span> cpu<span class="token punctuation">;</span>
+
+	cpu <span class="token operator">=</span> <span class="token function">smp_processor_id</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	rq <span class="token operator">=</span> <span class="token function">cpu_rq</span><span class="token punctuation">(</span>cpu<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	prev <span class="token operator">=</span> rq<span class="token operator">-&gt;</span>curr<span class="token punctuation">;</span>
+
+	<span class="token function">schedule_debug</span><span class="token punctuation">(</span>prev<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">sched_feat</span><span class="token punctuation">(</span>HRTICK<span class="token punctuation">)</span><span class="token punctuation">)</span>
+		<span class="token function">hrtick_clear</span><span class="token punctuation">(</span>rq<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token function">local_irq_disable</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">rcu_note_context_switch</span><span class="token punctuation">(</span>preempt<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token comment">/*
+	 * Make sure that signal_pending_state()-&gt;signal_pending() below
+	 * can't be reordered with __set_current_state(TASK_INTERRUPTIBLE)
+	 * done by the caller to avoid the race with signal_wake_up().
+	 */</span>
+	<span class="token function">smp_mb__before_spinlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">rq_lock</span><span class="token punctuation">(</span>rq<span class="token punctuation">,</span> <span class="token operator">&amp;</span>rf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token comment">/* Promote REQ to ACT */</span>
+	rq<span class="token operator">-&gt;</span>clock_update_flags <span class="token operator">&lt;&lt;=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+	<span class="token function">update_rq_clock</span><span class="token punctuation">(</span>rq<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	switch_count <span class="token operator">=</span> <span class="token operator">&amp;</span>prev<span class="token operator">-&gt;</span>nivcsw<span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>preempt <span class="token operator">&amp;&amp;</span> prev<span class="token operator">-&gt;</span>state<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">unlikely</span><span class="token punctuation">(</span><span class="token function">signal_pending_state</span><span class="token punctuation">(</span>prev<span class="token operator">-&gt;</span>state<span class="token punctuation">,</span> prev<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			prev<span class="token operator">-&gt;</span>state <span class="token operator">=</span> TASK_RUNNING<span class="token punctuation">;</span>
+		<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token function">deactivate_task</span><span class="token punctuation">(</span>rq<span class="token punctuation">,</span> prev<span class="token punctuation">,</span> DEQUEUE_SLEEP <span class="token operator">|</span> DEQUEUE_NOCLOCK<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			prev<span class="token operator">-&gt;</span>on_rq <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+			<span class="token keyword">if</span> <span class="token punctuation">(</span>prev<span class="token operator">-&gt;</span>in_iowait<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+				<span class="token function">atomic_inc</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>rq<span class="token operator">-&gt;</span>nr_iowait<span class="token punctuation">)</span><span class="token punctuation">;</span>
+				<span class="token function">delayacct_blkio_start</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+
+			<span class="token comment">/*
+			 * If a worker went to sleep, notify and ask workqueue
+			 * whether it wants to wake up a task to maintain
+			 * concurrency.
+			 */</span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span>prev<span class="token operator">-&gt;</span>flags <span class="token operator">&amp;</span> PF_WQ_WORKER<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+				<span class="token keyword">struct</span> task_struct <span class="token operator">*</span>to_wakeup<span class="token punctuation">;</span>
+
+				to_wakeup <span class="token operator">=</span> <span class="token function">wq_worker_sleeping</span><span class="token punctuation">(</span>prev<span class="token punctuation">)</span><span class="token punctuation">;</span>
+				<span class="token keyword">if</span> <span class="token punctuation">(</span>to_wakeup<span class="token punctuation">)</span>
+					<span class="token function">try_to_wake_up_local</span><span class="token punctuation">(</span>to_wakeup<span class="token punctuation">,</span> <span class="token operator">&amp;</span>rf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+		switch_count <span class="token operator">=</span> <span class="token operator">&amp;</span>prev<span class="token operator">-&gt;</span>nvcsw<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+    <span class="token comment">//此函数针对公平调度类做了优化</span>
+    <span class="token comment">//如果当前进程属于公平调度类或空闲调度类，并且所有运行队列中的进程属于公平调度类，就直接调用；</span>
+    <span class="token comment">//如果公平调度类没有选中下一个进程。则从空闲调度类中选择下一个进程</span>
+	next <span class="token operator">=</span> <span class="token function">pick_next_task</span><span class="token punctuation">(</span>rq<span class="token punctuation">,</span> prev<span class="token punctuation">,</span> <span class="token operator">&amp;</span>rf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">clear_tsk_need_resched</span><span class="token punctuation">(</span>prev<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">clear_preempt_need_resched</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">likely</span><span class="token punctuation">(</span>prev <span class="token operator">!=</span> next<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		rq<span class="token operator">-&gt;</span>nr_switches<span class="token operator">++</span><span class="token punctuation">;</span>
+		rq<span class="token operator">-&gt;</span>curr <span class="token operator">=</span> next<span class="token punctuation">;</span>
+		<span class="token operator">++</span><span class="token operator">*</span>switch_count<span class="token punctuation">;</span>
+
+		<span class="token function">trace_sched_switch</span><span class="token punctuation">(</span>preempt<span class="token punctuation">,</span> prev<span class="token punctuation">,</span> next<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+		<span class="token comment">/* Also unlocks the rq: */</span>
+		rq <span class="token operator">=</span> <span class="token function">context_switch</span><span class="token punctuation">(</span>rq<span class="token punctuation">,</span> prev<span class="token punctuation">,</span> next<span class="token punctuation">,</span> <span class="token operator">&amp;</span>rf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+		rq<span class="token operator">-&gt;</span>clock_update_flags <span class="token operator">&amp;</span><span class="token operator">=</span> <span class="token operator">~</span><span class="token punctuation">(</span>RQCF_ACT_SKIP<span class="token operator">|</span>RQCF_REQ_SKIP<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token function">rq_unlock_irq</span><span class="token punctuation">(</span>rq<span class="token punctuation">,</span> <span class="token operator">&amp;</span>rf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token function">balance_callback</span><span class="token punctuation">(</span>rq<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>函数__shcedule比较长，这里简要总结一下，其主要处理过程如下：</p> 
+<ul><li>调用pick_next_task()以选择下一个进程。注意每个调度类都有自己的pick_next_task函数，比如停机调度类pick_next_task_stop()、限期调度类pick_next_task_dl()等，一共5个。</li><li>调用context_switch()以切换进程。</li></ul> 
+<p>介绍一下切换进程。</p> 
+<pre><code class="prism language-c"><span class="token comment">/*
+ * context_switch - switch to the new MM and the new thread's register state.
+ */</span>
+<span class="token keyword">static</span> __always_inline <span class="token keyword">struct</span> rq <span class="token operator">*</span>
+<span class="token function">context_switch</span><span class="token punctuation">(</span><span class="token keyword">struct</span> rq <span class="token operator">*</span>rq<span class="token punctuation">,</span> <span class="token keyword">struct</span> task_struct <span class="token operator">*</span>prev<span class="token punctuation">,</span>
+	       <span class="token keyword">struct</span> task_struct <span class="token operator">*</span>next<span class="token punctuation">,</span> <span class="token keyword">struct</span> rq_flags <span class="token operator">*</span>rf<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">struct</span> mm_struct <span class="token operator">*</span>mm<span class="token punctuation">,</span> <span class="token operator">*</span>oldmm<span class="token punctuation">;</span>
+    <span class="token comment">//执行进程切换的准备工作</span>
+	<span class="token function">prepare_task_switch</span><span class="token punctuation">(</span>rq<span class="token punctuation">,</span> prev<span class="token punctuation">,</span> next<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	mm <span class="token operator">=</span> next<span class="token operator">-&gt;</span>mm<span class="token punctuation">;</span>
+	oldmm <span class="token operator">=</span> prev<span class="token operator">-&gt;</span>active_mm<span class="token punctuation">;</span>
+	<span class="token comment">/*
+	 * For paravirt, this is coupled with an exit in switch_to to
+	 * combine the page table reload and the switch backend into
+	 * one hypercall.
+	 */</span>
+    <span class="token comment">//开始上下文切换，是每种处理器架构必须定义的函数</span>
+	<span class="token function">arch_start_context_switch</span><span class="token punctuation">(</span>prev<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//如果下一个进程是内核线程（内核线程没有用户虚拟地址空间）</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>mm<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">//借用上一个进程的用户虚拟地址空间，把借来的空间保存在成员active_mm中</span>
+		next<span class="token operator">-&gt;</span>active_mm <span class="token operator">=</span> oldmm<span class="token punctuation">;</span>
+		<span class="token function">mmgrab</span><span class="token punctuation">(</span>oldmm<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//此函数通知处理器架构不需要切换用户虚拟地址空间，这种加速进程切换的技术叫TLB</span>
+		<span class="token function">enter_lazy_tlb</span><span class="token punctuation">(</span>oldmm<span class="token punctuation">,</span> next<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span> <span class="token keyword">else</span>
+        <span class="token comment">//如果下一个进程是用户进程，那么就调用此函数切换进程的用户虚拟地址空间</span>
+		<span class="token function">switch_mm_irqs_off</span><span class="token punctuation">(</span>oldmm<span class="token punctuation">,</span> mm<span class="token punctuation">,</span> next<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//如果上一个进程是内核线程，就把成员active_mm置空，断开它与借用的用户虚拟地址空间的联系</span>
+    <span class="token comment">//把它借用的用户虚拟地址空间保存在运行队列的成员prev_mm中</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>prev<span class="token operator">-&gt;</span>mm<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		prev<span class="token operator">-&gt;</span>active_mm <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+		rq<span class="token operator">-&gt;</span>prev_mm <span class="token operator">=</span> oldmm<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	rq<span class="token operator">-&gt;</span>clock_update_flags <span class="token operator">&amp;</span><span class="token operator">=</span> <span class="token operator">~</span><span class="token punctuation">(</span>RQCF_ACT_SKIP<span class="token operator">|</span>RQCF_REQ_SKIP<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token comment">/*
+	 * Since the runqueue lock will be released by the next
+	 * task (which is an invalid locking op but in the case
+	 * of the scheduler it's an obvious special-case), so we
+	 * do an early lockdep release here:
+	 */</span>
+	<span class="token function">rq_unpin_lock</span><span class="token punctuation">(</span>rq<span class="token punctuation">,</span> rf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">spin_release</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>rq<span class="token operator">-&gt;</span>lock<span class="token punctuation">.</span>dep_map<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> _THIS_IP_<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token comment">/* Here we just switch the register state and the stack. */</span>
+	<span class="token function">switch_to</span><span class="token punctuation">(</span>prev<span class="token punctuation">,</span> next<span class="token punctuation">,</span> prev<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//编译优化屏障，防止内核编译时调整运行顺序</span>
+	<span class="token function">barrier</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">return</span> <span class="token function">finish_task_switch</span><span class="token punctuation">(</span>prev<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>该函数有两个操作：切换用户虚拟地址空间和切换寄存器。</p> 
+<h4><a id="_432"></a>切换用户虚拟地址空间</h4> 
+<p>ARM64架构使用默认的switch_mm_irqs_off</p> 
+<pre><code class="prism language-c"><span class="token macro property">#<span class="token directive keyword">ifndef</span> switch_mm_irqs_off</span>
+<span class="token macro property"># <span class="token directive keyword">define</span> switch_mm_irqs_off switch_mm</span>
+<span class="token macro property">#<span class="token directive keyword">endif</span></span>
+</code></pre> 
+<p>看到arm架构中代码</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">inline</span> <span class="token keyword">void</span> <span class="token function">__switch_mm</span><span class="token punctuation">(</span><span class="token keyword">struct</span> mm_struct <span class="token operator">*</span>next<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">unsigned</span> <span class="token keyword">int</span> cpu <span class="token operator">=</span> <span class="token function">smp_processor_id</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token comment">/*
+	 * init_mm.pgd does not contain any user mappings and it is always
+	 * active for kernel addresses in TTBR1. Just set the reserved TTBR0.
+	 */</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>next <span class="token operator">==</span> <span class="token operator">&amp;</span>init_mm<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">cpu_set_reserved_ttbr0</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">return</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token function">check_and_switch_context</span><span class="token punctuation">(</span>next<span class="token punctuation">,</span> cpu<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">static</span> <span class="token keyword">inline</span> <span class="token keyword">void</span>
+<span class="token function">switch_mm</span><span class="token punctuation">(</span><span class="token keyword">struct</span> mm_struct <span class="token operator">*</span>prev<span class="token punctuation">,</span> <span class="token keyword">struct</span> mm_struct <span class="token operator">*</span>next<span class="token punctuation">,</span>
+	  <span class="token keyword">struct</span> task_struct <span class="token operator">*</span>tsk<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>prev <span class="token operator">!=</span> next<span class="token punctuation">)</span>
+		<span class="token function">__switch_mm</span><span class="token punctuation">(</span>next<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token comment">/*
+	 * Update the saved TTBR0_EL1 of the scheduled-in task as the previous
+	 * value may have not been initialised yet (activate_mm caller) or the
+	 * ASID has changed since the last run (following the context switch
+	 * of another thread of the same process). Avoid setting the reserved
+	 * TTBR0_EL1 to swapper_pg_dir (init_mm; e.g. via idle_task_exit).
+	 */</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>next <span class="token operator">!=</span> <span class="token operator">&amp;</span>init_mm<span class="token punctuation">)</span>
+		<span class="token function">update_saved_ttbr0</span><span class="token punctuation">(</span>tsk<span class="token punctuation">,</span> next<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="_475"></a>切换寄存器</h4> 
+<p>宏switch_to把这项工作委托给函数__switch_to</p> 
+<pre><code class="prism language-c"><span class="token macro property">#<span class="token directive keyword">define</span> switch_to(prev, next, last)					\
+	do {								\
+		((last) = __switch_to((prev), (next)));			\
+	} while (0)</span>
+</code></pre> 
+<p>一点一点往下跟，arm64架构中</p> 
+<pre><code class="prism language-c"><span class="token comment">/*
+ * Thread switching.
+ */</span>
+__notrace_funcgraph <span class="token keyword">struct</span> task_struct <span class="token operator">*</span><span class="token function">__switch_to</span><span class="token punctuation">(</span><span class="token keyword">struct</span> task_struct <span class="token operator">*</span>prev<span class="token punctuation">,</span>
+				<span class="token keyword">struct</span> task_struct <span class="token operator">*</span>next<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">struct</span> task_struct <span class="token operator">*</span>last<span class="token punctuation">;</span>
+
+    <span class="token comment">//切换浮点寄存器</span>
+    <span class="token comment">//为什么要切换？因为不同处理器架构的浮点寄存器可能不同，而且有的处理器架构不支持浮点运算，所以各种处理器架构需要自己实现浮点运算</span>
+    <span class="token comment">//arm64支持浮点运算和单指令多数据（SIMD）功能，共用32个128位寄存器</span>
+	<span class="token function">fpsimd_thread_switch</span><span class="token punctuation">(</span>next<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//切换线程本地存储相关的寄存器</span>
+    <span class="token function">tls_thread_switch</span><span class="token punctuation">(</span>next<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//切换调度寄存器</span>
+	<span class="token function">hw_breakpoint_thread_switch</span><span class="token punctuation">(</span>next<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//切换上下文标识符寄存器</span>
+	<span class="token function">contextidr_thread_switch</span><span class="token punctuation">(</span>next<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//使用当前处理器每处理器变量，记录下一个进程的进程描述符地址</span>
+	<span class="token function">entry_task_switch</span><span class="token punctuation">(</span>next<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">uao_thread_switch</span><span class="token punctuation">(</span>next<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token comment">/*
+	 * Complete any pending TLB or cache maintenance on this CPU in case
+	 * the thread migrates to a different CPU.
+	 */</span>
+    <span class="token comment">//在这个处理器上执行完前面的所有页表缓存或缓存维护操作，防止线程迁移到其他处理器</span>
+	<span class="token function">dsb</span><span class="token punctuation">(</span>ish<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token comment">/* the actual thread switch */</span>
+    <span class="token comment">//实际的线程切换</span>
+	last <span class="token operator">=</span> <span class="token function">cpu_switch_to</span><span class="token punctuation">(</span>prev<span class="token punctuation">,</span> next<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">return</span> last<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="_521"></a>调度时机</h3> 
+<p>调度进程的时机如下：</p> 
+<ol><li>进程主动调用schedule()函数。</li><li>周期性地调度，抢占当前进程，强迫当前进程让出处理器。</li><li>唤醒进程的时候，被唤醒的进程可能抢占当前进程。</li><li>创建新进程的时候，新进程可能抢占当前进程。</li></ol> 
+<p>如果我们编译内核时开启对内核抢占的支持，那么内核会增加一些抢占点。</p> 
+<h4><a id="_529"></a>主动调度</h4> 
+<p>进程在用户模式下运行的时候，无法直接调用schedule()函数，只能通过系统调用进入内核模式，如果系统调用需要等待某个资源，如互斥锁或信号量，就会把进程的状态设置为睡眠状态，然后调用schedule()函数来调度进程。<br> 进程也可以通过系统调用shced_yield()让出处理器，这种情况下进程不会睡眠。<br> 在内核中有3种主动调度方式：</p> 
+<ul><li>直接调用schedule()函数来调用进程。</li><li>调用有条件重调度函数cond_resched()。</li><li>如果需要等待某个资源。</li></ul> 
+<h4><a id="_536"></a>周期调度</h4> 
+<p>有些“地痞流氓”进程不主动让出处理器，内核只能依靠周期性的时钟中断夺回处理器的控制权，时钟中断是调度器的脉博。时钟中断处理程序检查当前进程的执行时间有没有超过限额，如果超过限额，设置需要重新调度的标志。当时钟中断处理程序准备返点处理器还给被打断的进程时，如果被打断的进程在用户模式下运行，就检查有没有设置需要重新调度的标志，如果设置了，调用schedule函数以调度进程。如果需要重新调度，就为当前进程的thread_info结构体的成员flags设置需要重新调度的标志。</p> 
+<h2><a id="SMP_538"></a>SMP调度</h2> 
+<p>SMP是对称多处理器系统。在SMP系统中，进程调度器必须支持如下：</p> 
+<ul><li>需要使用每个处理器的负载尽可能均衡。</li><li>可以设置进程的处理器亲和性，即允许进程在哪些处理器上执行。</li><li>可以把进程从一个处理器迁移到另一个处理器。</li></ul> 
+<h3><a id="_543"></a>进程的处理器亲和性</h3> 
+<p>设置进程的处理器亲和性，通俗就是把进程绑定到某些处理器，只允许进程在某些处理器上执行，默认情况是进程可以在所有处理器上执行。进程的task_struct中有一个成员cpus_allowed,表示本进程可以在哪些CPU上运行。<br> 应用编程接口，只有2个系统调用，一个是设置另一个是获取。</p> 
+<pre><code class="prism language-c"><span class="token comment">//设置进程的处理器亲和性掩码</span>
+<span class="token keyword">long</span> <span class="token function">sched_setaffinity</span><span class="token punctuation">(</span>pid_t pid<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">struct</span> cpumask <span class="token operator">*</span>in_mask<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	cpumask_var_t cpus_allowed<span class="token punctuation">,</span> new_mask<span class="token punctuation">;</span>
+	<span class="token keyword">struct</span> task_struct <span class="token operator">*</span>p<span class="token punctuation">;</span>
+	<span class="token keyword">int</span> retval<span class="token punctuation">;</span>
+
+	<span class="token function">rcu_read_lock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	p <span class="token operator">=</span> <span class="token function">find_process_by_pid</span><span class="token punctuation">(</span>pid<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>p<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">rcu_read_unlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">return</span> <span class="token operator">-</span>ESRCH<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token comment">/* Prevent p going away */</span>
+	<span class="token function">get_task_struct</span><span class="token punctuation">(</span>p<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">rcu_read_unlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>p<span class="token operator">-&gt;</span>flags <span class="token operator">&amp;</span> PF_NO_SETAFFINITY<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		retval <span class="token operator">=</span> <span class="token operator">-</span>EINVAL<span class="token punctuation">;</span>
+		<span class="token keyword">goto</span> out_put_task<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">alloc_cpumask_var</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>cpus_allowed<span class="token punctuation">,</span> GFP_KERNEL<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		retval <span class="token operator">=</span> <span class="token operator">-</span>ENOMEM<span class="token punctuation">;</span>
+		<span class="token keyword">goto</span> out_put_task<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">alloc_cpumask_var</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>new_mask<span class="token punctuation">,</span> GFP_KERNEL<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		retval <span class="token operator">=</span> <span class="token operator">-</span>ENOMEM<span class="token punctuation">;</span>
+		<span class="token keyword">goto</span> out_free_cpus_allowed<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	retval <span class="token operator">=</span> <span class="token operator">-</span>EPERM<span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">check_same_owner</span><span class="token punctuation">(</span>p<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">rcu_read_lock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">ns_capable</span><span class="token punctuation">(</span><span class="token function">__task_cred</span><span class="token punctuation">(</span>p<span class="token punctuation">)</span><span class="token operator">-&gt;</span>user_ns<span class="token punctuation">,</span> CAP_SYS_NICE<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token function">rcu_read_unlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token keyword">goto</span> out_free_new_mask<span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+		<span class="token function">rcu_read_unlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	retval <span class="token operator">=</span> <span class="token function">security_task_setscheduler</span><span class="token punctuation">(</span>p<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>retval<span class="token punctuation">)</span>
+		<span class="token keyword">goto</span> out_free_new_mask<span class="token punctuation">;</span>
+
+
+	<span class="token function">cpuset_cpus_allowed</span><span class="token punctuation">(</span>p<span class="token punctuation">,</span> cpus_allowed<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">cpumask_and</span><span class="token punctuation">(</span>new_mask<span class="token punctuation">,</span> in_mask<span class="token punctuation">,</span> cpus_allowed<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token comment">/*
+	 * Since bandwidth control happens on root_domain basis,
+	 * if admission test is enabled, we only admit -deadline
+	 * tasks allowed to run on all the CPUs in the task's
+	 * root_domain.
+	 */</span>
+<span class="token macro property">#<span class="token directive keyword">ifdef</span> CONFIG_SMP</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">task_has_dl_policy</span><span class="token punctuation">(</span>p<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token function">dl_bandwidth_enabled</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">rcu_read_lock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">cpumask_subset</span><span class="token punctuation">(</span><span class="token function">task_rq</span><span class="token punctuation">(</span>p<span class="token punctuation">)</span><span class="token operator">-&gt;</span>rd<span class="token operator">-&gt;</span>span<span class="token punctuation">,</span> new_mask<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			retval <span class="token operator">=</span> <span class="token operator">-</span>EBUSY<span class="token punctuation">;</span>
+			<span class="token function">rcu_read_unlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token keyword">goto</span> out_free_new_mask<span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+		<span class="token function">rcu_read_unlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token macro property">#<span class="token directive keyword">endif</span></span>
+again<span class="token punctuation">:</span>
+	retval <span class="token operator">=</span> <span class="token function">__set_cpus_allowed_ptr</span><span class="token punctuation">(</span>p<span class="token punctuation">,</span> new_mask<span class="token punctuation">,</span> true<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>retval<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">cpuset_cpus_allowed</span><span class="token punctuation">(</span>p<span class="token punctuation">,</span> cpus_allowed<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">cpumask_subset</span><span class="token punctuation">(</span>new_mask<span class="token punctuation">,</span> cpus_allowed<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token comment">/*
+			 * We must have raced with a concurrent cpuset
+			 * update. Just reset the cpus_allowed to the
+			 * cpuset's cpus_allowed
+			 */</span>
+			<span class="token function">cpumask_copy</span><span class="token punctuation">(</span>new_mask<span class="token punctuation">,</span> cpus_allowed<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token keyword">goto</span> again<span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+out_free_new_mask<span class="token punctuation">:</span>
+	<span class="token function">free_cpumask_var</span><span class="token punctuation">(</span>new_mask<span class="token punctuation">)</span><span class="token punctuation">;</span>
+out_free_cpus_allowed<span class="token punctuation">:</span>
+	<span class="token function">free_cpumask_var</span><span class="token punctuation">(</span>cpus_allowed<span class="token punctuation">)</span><span class="token punctuation">;</span>
+out_put_task<span class="token punctuation">:</span>
+	<span class="token function">put_task_struct</span><span class="token punctuation">(</span>p<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">return</span> retval<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<pre><code class="prism language-c"><span class="token comment">//获取进程的处理器亲和性掩码</span>
+<span class="token keyword">long</span> <span class="token function">sched_getaffinity</span><span class="token punctuation">(</span>pid_t pid<span class="token punctuation">,</span> <span class="token keyword">struct</span> cpumask <span class="token operator">*</span>mask<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">struct</span> task_struct <span class="token operator">*</span>p<span class="token punctuation">;</span>
+	<span class="token keyword">unsigned</span> <span class="token keyword">long</span> flags<span class="token punctuation">;</span>
+	<span class="token keyword">int</span> retval<span class="token punctuation">;</span>
+
+	<span class="token function">rcu_read_lock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	retval <span class="token operator">=</span> <span class="token operator">-</span>ESRCH<span class="token punctuation">;</span>
+	p <span class="token operator">=</span> <span class="token function">find_process_by_pid</span><span class="token punctuation">(</span>pid<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>p<span class="token punctuation">)</span>
+		<span class="token keyword">goto</span> out_unlock<span class="token punctuation">;</span>
+
+	retval <span class="token operator">=</span> <span class="token function">security_task_getscheduler</span><span class="token punctuation">(</span>p<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>retval<span class="token punctuation">)</span>
+		<span class="token keyword">goto</span> out_unlock<span class="token punctuation">;</span>
+
+	<span class="token function">raw_spin_lock_irqsave</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>p<span class="token operator">-&gt;</span>pi_lock<span class="token punctuation">,</span> flags<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">cpumask_and</span><span class="token punctuation">(</span>mask<span class="token punctuation">,</span> <span class="token operator">&amp;</span>p<span class="token operator">-&gt;</span>cpus_allowed<span class="token punctuation">,</span> cpu_active_mask<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">raw_spin_unlock_irqrestore</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>p<span class="token operator">-&gt;</span>pi_lock<span class="token punctuation">,</span> flags<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+out_unlock<span class="token punctuation">:</span>
+	<span class="token function">rcu_read_unlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">return</span> retval<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>内核中有两个函数用以设置处理器亲和性掩码</p> 
+<pre><code class="prism language-c"><span class="token comment">//把一个刚创建的进程绑定到一个处理器</span>
+<span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">__kthread_bind</span><span class="token punctuation">(</span><span class="token keyword">struct</span> task_struct <span class="token operator">*</span>p<span class="token punctuation">,</span> <span class="token keyword">unsigned</span> <span class="token keyword">int</span> cpu<span class="token punctuation">,</span> <span class="token keyword">long</span> state<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token function">__kthread_bind_mask</span><span class="token punctuation">(</span>p<span class="token punctuation">,</span> <span class="token function">cpumask_of</span><span class="token punctuation">(</span>cpu<span class="token punctuation">)</span><span class="token punctuation">,</span> state<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>具体流程就不再往下跟了。</p> 
+<pre><code class="prism language-c"><span class="token comment">//设置内核线程的处理器亲和性掩码</span>
+<span class="token keyword">void</span> <span class="token punctuation">(</span><span class="token operator">*</span>set_cpus_allowed<span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token keyword">struct</span> task_struct <span class="token operator">*</span>p<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">struct</span> cpumask <span class="token operator">*</span>newmask<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>具体定义就不看了。</p> 
+<h3><a id="_681"></a>限期调度类的处理器负载均衡</h3> 
+<p>限期调度类的处理器负载均衡简单，调度选择下一个限期进程的时候，如果当前正在执行的进程是限期进程，将会试图从限期进程超载的处理器把限期进程搞过来。<br> 限期进程超载定义：</p> 
+<ul><li>限期运行队列至少有两个限期进程。</li><li>至少有一个限期进程绑定到多个处理器。</li></ul> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">pull_dl_task</span><span class="token punctuation">(</span><span class="token keyword">struct</span> rq <span class="token operator">*</span>this_rq<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">int</span> this_cpu <span class="token operator">=</span> this_rq<span class="token operator">-&gt;</span>cpu<span class="token punctuation">,</span> cpu<span class="token punctuation">;</span>
+	<span class="token keyword">struct</span> task_struct <span class="token operator">*</span>p<span class="token punctuation">;</span>
+	bool resched <span class="token operator">=</span> false<span class="token punctuation">;</span>
+	<span class="token keyword">struct</span> rq <span class="token operator">*</span>src_rq<span class="token punctuation">;</span>
+	u64 dmin <span class="token operator">=</span> LONG_MAX<span class="token punctuation">;</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">likely</span><span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">dl_overloaded</span><span class="token punctuation">(</span>this_rq<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+		<span class="token keyword">return</span><span class="token punctuation">;</span>
+
+	<span class="token comment">/*
+	 * Match the barrier from dl_set_overloaded; this guarantees that if we
+	 * see overloaded we must also see the dlo_mask bit.
+	 */</span>
+	<span class="token function">smp_rmb</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token function">for_each_cpu</span><span class="token punctuation">(</span>cpu<span class="token punctuation">,</span> this_rq<span class="token operator">-&gt;</span>rd<span class="token operator">-&gt;</span>dlo_mask<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>this_cpu <span class="token operator">==</span> cpu<span class="token punctuation">)</span>
+			<span class="token keyword">continue</span><span class="token punctuation">;</span>
+
+		src_rq <span class="token operator">=</span> <span class="token function">cpu_rq</span><span class="token punctuation">(</span>cpu<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+		<span class="token comment">/*
+		 * It looks racy, abd it is! However, as in sched_rt.c,
+		 * we are fine with this.
+		 */</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>this_rq<span class="token operator">-&gt;</span>dl<span class="token punctuation">.</span>dl_nr_running <span class="token operator">&amp;&amp;</span>
+		    <span class="token function">dl_time_before</span><span class="token punctuation">(</span>this_rq<span class="token operator">-&gt;</span>dl<span class="token punctuation">.</span>earliest_dl<span class="token punctuation">.</span>curr<span class="token punctuation">,</span>
+				   src_rq<span class="token operator">-&gt;</span>dl<span class="token punctuation">.</span>earliest_dl<span class="token punctuation">.</span>next<span class="token punctuation">)</span><span class="token punctuation">)</span>
+			<span class="token keyword">continue</span><span class="token punctuation">;</span>
+
+		<span class="token comment">/* Might drop this_rq-&gt;lock */</span>
+		<span class="token function">double_lock_balance</span><span class="token punctuation">(</span>this_rq<span class="token punctuation">,</span> src_rq<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+		<span class="token comment">/*
+		 * If there are no more pullable tasks on the
+		 * rq, we're done with it.
+		 */</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>src_rq<span class="token operator">-&gt;</span>dl<span class="token punctuation">.</span>dl_nr_running <span class="token operator">&lt;=</span> <span class="token number">1</span><span class="token punctuation">)</span>
+			<span class="token keyword">goto</span> skip<span class="token punctuation">;</span>
+
+		p <span class="token operator">=</span> <span class="token function">pick_earliest_pushable_dl_task</span><span class="token punctuation">(</span>src_rq<span class="token punctuation">,</span> this_cpu<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+		<span class="token comment">/*
+		 * We found a task to be pulled if:
+		 *  - it preempts our current (if there's one),
+		 *  - it will preempt the last one we pulled (if any).
+		 */</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>p <span class="token operator">&amp;&amp;</span> <span class="token function">dl_time_before</span><span class="token punctuation">(</span>p<span class="token operator">-&gt;</span>dl<span class="token punctuation">.</span>deadline<span class="token punctuation">,</span> dmin<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span>
+		    <span class="token punctuation">(</span><span class="token operator">!</span>this_rq<span class="token operator">-&gt;</span>dl<span class="token punctuation">.</span>dl_nr_running <span class="token operator">||</span>
+		     <span class="token function">dl_time_before</span><span class="token punctuation">(</span>p<span class="token operator">-&gt;</span>dl<span class="token punctuation">.</span>deadline<span class="token punctuation">,</span>
+				    this_rq<span class="token operator">-&gt;</span>dl<span class="token punctuation">.</span>earliest_dl<span class="token punctuation">.</span>curr<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token function">WARN_ON</span><span class="token punctuation">(</span>p <span class="token operator">==</span> src_rq<span class="token operator">-&gt;</span>curr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token function">WARN_ON</span><span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">task_on_rq_queued</span><span class="token punctuation">(</span>p<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+			<span class="token comment">/*
+			 * Then we pull iff p has actually an earlier
+			 * deadline than the current task of its runqueue.
+			 */</span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">dl_time_before</span><span class="token punctuation">(</span>p<span class="token operator">-&gt;</span>dl<span class="token punctuation">.</span>deadline<span class="token punctuation">,</span>
+					   src_rq<span class="token operator">-&gt;</span>curr<span class="token operator">-&gt;</span>dl<span class="token punctuation">.</span>deadline<span class="token punctuation">)</span><span class="token punctuation">)</span>
+				<span class="token keyword">goto</span> skip<span class="token punctuation">;</span>
+
+			resched <span class="token operator">=</span> true<span class="token punctuation">;</span>
+
+			<span class="token function">deactivate_task</span><span class="token punctuation">(</span>src_rq<span class="token punctuation">,</span> p<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token function">set_task_cpu</span><span class="token punctuation">(</span>p<span class="token punctuation">,</span> this_cpu<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token function">activate_task</span><span class="token punctuation">(</span>this_rq<span class="token punctuation">,</span> p<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			dmin <span class="token operator">=</span> p<span class="token operator">-&gt;</span>dl<span class="token punctuation">.</span>deadline<span class="token punctuation">;</span>
+
+			<span class="token comment">/* Is there any other task even earlier? */</span>
+		<span class="token punctuation">}</span>
+skip<span class="token punctuation">:</span>
+		<span class="token function">double_unlock_balance</span><span class="token punctuation">(</span>this_rq<span class="token punctuation">,</span> src_rq<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>resched<span class="token punctuation">)</span>
+		<span class="token function">resched_curr</span><span class="token punctuation">(</span>this_rq<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>看下调度</p> 
+<pre><code class="prism language-c"><span class="token comment">/*
+ * Update the current task's runtime statistics (provided it is still
+ * a -deadline task and has not been removed from the dl_rq).
+ */</span>
+<span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">update_curr_dl</span><span class="token punctuation">(</span><span class="token keyword">struct</span> rq <span class="token operator">*</span>rq<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">struct</span> task_struct <span class="token operator">*</span>curr <span class="token operator">=</span> rq<span class="token operator">-&gt;</span>curr<span class="token punctuation">;</span>
+	<span class="token keyword">struct</span> sched_dl_entity <span class="token operator">*</span>dl_se <span class="token operator">=</span> <span class="token operator">&amp;</span>curr<span class="token operator">-&gt;</span>dl<span class="token punctuation">;</span>
+	u64 delta_exec<span class="token punctuation">;</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">dl_task</span><span class="token punctuation">(</span>curr<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token operator">!</span><span class="token function">on_dl_rq</span><span class="token punctuation">(</span>dl_se<span class="token punctuation">)</span><span class="token punctuation">)</span>
+		<span class="token keyword">return</span><span class="token punctuation">;</span>
+
+	<span class="token comment">/*
+	 * Consumed budget is computed considering the time as
+	 * observed by schedulable tasks (excluding time spent
+	 * in hardirq context, etc.). Deadlines are instead
+	 * computed using hard walltime. This seems to be the more
+	 * natural solution, but the full ramifications of this
+	 * approach need further study.
+	 */</span>
+	delta_exec <span class="token operator">=</span> <span class="token function">rq_clock_task</span><span class="token punctuation">(</span>rq<span class="token punctuation">)</span> <span class="token operator">-</span> curr<span class="token operator">-&gt;</span>se<span class="token punctuation">.</span>exec_start<span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">unlikely</span><span class="token punctuation">(</span><span class="token punctuation">(</span>s64<span class="token punctuation">)</span>delta_exec <span class="token operator">&lt;=</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">unlikely</span><span class="token punctuation">(</span>dl_se<span class="token operator">-&gt;</span>dl_yielded<span class="token punctuation">)</span><span class="token punctuation">)</span>
+			<span class="token keyword">goto</span> throttle<span class="token punctuation">;</span>
+		<span class="token keyword">return</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token comment">/* kick cpufreq (see the comment in kernel/sched/sched.h). */</span>
+	<span class="token function">cpufreq_update_this_cpu</span><span class="token punctuation">(</span>rq<span class="token punctuation">,</span> SCHED_CPUFREQ_DL<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token function">schedstat_set</span><span class="token punctuation">(</span>curr<span class="token operator">-&gt;</span>se<span class="token punctuation">.</span>statistics<span class="token punctuation">.</span>exec_max<span class="token punctuation">,</span>
+		      <span class="token function">max</span><span class="token punctuation">(</span>curr<span class="token operator">-&gt;</span>se<span class="token punctuation">.</span>statistics<span class="token punctuation">.</span>exec_max<span class="token punctuation">,</span> delta_exec<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	curr<span class="token operator">-&gt;</span>se<span class="token punctuation">.</span>sum_exec_runtime <span class="token operator">+</span><span class="token operator">=</span> delta_exec<span class="token punctuation">;</span>
+	<span class="token function">account_group_exec_runtime</span><span class="token punctuation">(</span>curr<span class="token punctuation">,</span> delta_exec<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	curr<span class="token operator">-&gt;</span>se<span class="token punctuation">.</span>exec_start <span class="token operator">=</span> <span class="token function">rq_clock_task</span><span class="token punctuation">(</span>rq<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">cpuacct_charge</span><span class="token punctuation">(</span>curr<span class="token punctuation">,</span> delta_exec<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token function">sched_rt_avg_update</span><span class="token punctuation">(</span>rq<span class="token punctuation">,</span> delta_exec<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	dl_se<span class="token operator">-&gt;</span>runtime <span class="token operator">-</span><span class="token operator">=</span> delta_exec<span class="token punctuation">;</span>
+
+throttle<span class="token punctuation">:</span>
+    <span class="token comment">//如果限期进程用完运行时间或主动让出处理器</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">dl_runtime_exceeded</span><span class="token punctuation">(</span>dl_se<span class="token punctuation">)</span> <span class="token operator">||</span> dl_se<span class="token operator">-&gt;</span>dl_yielded<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		dl_se<span class="token operator">-&gt;</span>dl_throttled <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>  <span class="token comment">//节流标志</span>
+        <span class="token comment">//把当前进程从限期运行队列中删除</span>
+		<span class="token function">__dequeue_task_dl</span><span class="token punctuation">(</span>rq<span class="token punctuation">,</span> curr<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//如果当前进程被临时提升为限期进程，即该进程占用了某个限期进程的实时互斥锁</span>
+        <span class="token comment">//或绝对截止期限过期</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">unlikely</span><span class="token punctuation">(</span>dl_se<span class="token operator">-&gt;</span>dl_boosted <span class="token operator">||</span> <span class="token operator">!</span><span class="token function">start_dl_timer</span><span class="token punctuation">(</span>curr<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+			<span class="token function">enqueue_task_dl</span><span class="token punctuation">(</span>rq<span class="token punctuation">,</span> curr<span class="token punctuation">,</span> ENQUEUE_REPLENISH<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">//如果当前进程不在截止期限运行队列中或截止期限不是最小</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">is_leftmost</span><span class="token punctuation">(</span>curr<span class="token punctuation">,</span> <span class="token operator">&amp;</span>rq<span class="token operator">-&gt;</span>dl<span class="token punctuation">)</span><span class="token punctuation">)</span>
+			<span class="token function">resched_curr</span><span class="token punctuation">(</span>rq<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token comment">/*
+	 * Because -- for now -- we share the rt bandwidth, we need to
+	 * account our runtime there too, otherwise actual rt tasks
+	 * would be able to exceed the shared quota.
+	 *
+	 * Account to the root rt group for now.
+	 *
+	 * The solution we're working towards is having the RT groups scheduled
+	 * using deadline servers -- however there's a few nasties to figure
+	 * out before that can happen.
+	 */</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">rt_bandwidth_enabled</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">struct</span> rt_rq <span class="token operator">*</span>rt_rq <span class="token operator">=</span> <span class="token operator">&amp;</span>rq<span class="token operator">-&gt;</span>rt<span class="token punctuation">;</span>
+
+		<span class="token function">raw_spin_lock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>rt_rq<span class="token operator">-&gt;</span>rt_runtime_lock<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">/*
+		 * We'll let actual RT tasks worry about the overflow here, we
+		 * have our own CBS to keep us inline; only account when RT
+		 * bandwidth is relevant.
+		 */</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">sched_rt_bandwidth_account</span><span class="token punctuation">(</span>rt_rq<span class="token punctuation">)</span><span class="token punctuation">)</span>
+			rt_rq<span class="token operator">-&gt;</span>rt_time <span class="token operator">+</span><span class="token operator">=</span> delta_exec<span class="token punctuation">;</span>
+		<span class="token function">raw_spin_unlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>rt_rq<span class="token operator">-&gt;</span>rt_runtime_lock<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="_857"></a>实时调度类的处理器负载均衡</h3> 
+<p>实时调度类的处理器负载均衡和限期调度类相似。调度器选择下一个实时进程时，如果当前处理器的实时运行队列中的进程的最高调度优先级比当前正在执行的进程的调度优先级低，将会试图从实时进程超载的处理器把可推送实时进程拉过来。<br> 实时进程超载的定义：</p> 
+<ul><li>实时运行队列至少有两个实时进程。</li><li>至少有一个可推送实时进程。</li></ul> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">pull_rt_task</span><span class="token punctuation">(</span><span class="token keyword">struct</span> rq <span class="token operator">*</span>this_rq<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">int</span> this_cpu <span class="token operator">=</span> this_rq<span class="token operator">-&gt;</span>cpu<span class="token punctuation">,</span> cpu<span class="token punctuation">;</span>
+	bool resched <span class="token operator">=</span> false<span class="token punctuation">;</span>
+	<span class="token keyword">struct</span> task_struct <span class="token operator">*</span>p<span class="token punctuation">;</span>
+	<span class="token keyword">struct</span> rq <span class="token operator">*</span>src_rq<span class="token punctuation">;</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">likely</span><span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">rt_overloaded</span><span class="token punctuation">(</span>this_rq<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+		<span class="token keyword">return</span><span class="token punctuation">;</span>
+
+	<span class="token comment">/*
+	 * Match the barrier from rt_set_overloaded; this guarantees that if we
+	 * see overloaded we must also see the rto_mask bit.
+	 */</span>
+	<span class="token function">smp_rmb</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token macro property">#<span class="token directive keyword">ifdef</span> HAVE_RT_PUSH_IPI</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">sched_feat</span><span class="token punctuation">(</span>RT_PUSH_IPI<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">tell_cpu_to_push</span><span class="token punctuation">(</span>this_rq<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">return</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token macro property">#<span class="token directive keyword">endif</span></span>
+
+	<span class="token function">for_each_cpu</span><span class="token punctuation">(</span>cpu<span class="token punctuation">,</span> this_rq<span class="token operator">-&gt;</span>rd<span class="token operator">-&gt;</span>rto_mask<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>this_cpu <span class="token operator">==</span> cpu<span class="token punctuation">)</span>
+			<span class="token keyword">continue</span><span class="token punctuation">;</span>
+
+		src_rq <span class="token operator">=</span> <span class="token function">cpu_rq</span><span class="token punctuation">(</span>cpu<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+		<span class="token comment">/*
+		 * Don't bother taking the src_rq-&gt;lock if the next highest
+		 * task is known to be lower-priority than our current task.
+		 * This may look racy, but if this value is about to go
+		 * logically higher, the src_rq will push this task away.
+		 * And if its going logically lower, we do not care
+		 */</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>src_rq<span class="token operator">-&gt;</span>rt<span class="token punctuation">.</span>highest_prio<span class="token punctuation">.</span>next <span class="token operator">&gt;=</span>
+		    this_rq<span class="token operator">-&gt;</span>rt<span class="token punctuation">.</span>highest_prio<span class="token punctuation">.</span>curr<span class="token punctuation">)</span>
+			<span class="token keyword">continue</span><span class="token punctuation">;</span>
+
+		<span class="token comment">/*
+		 * We can potentially drop this_rq's lock in
+		 * double_lock_balance, and another CPU could
+		 * alter this_rq
+		 */</span>
+		<span class="token function">double_lock_balance</span><span class="token punctuation">(</span>this_rq<span class="token punctuation">,</span> src_rq<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+		<span class="token comment">/*
+		 * We can pull only a task, which is pushable
+		 * on its rq, and no others.
+		 */</span>
+		p <span class="token operator">=</span> <span class="token function">pick_highest_pushable_task</span><span class="token punctuation">(</span>src_rq<span class="token punctuation">,</span> this_cpu<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+		<span class="token comment">/*
+		 * Do we have an RT task that preempts
+		 * the to-be-scheduled task?
+		 */</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>p <span class="token operator">&amp;&amp;</span> <span class="token punctuation">(</span>p<span class="token operator">-&gt;</span>prio <span class="token operator">&lt;</span> this_rq<span class="token operator">-&gt;</span>rt<span class="token punctuation">.</span>highest_prio<span class="token punctuation">.</span>curr<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token function">WARN_ON</span><span class="token punctuation">(</span>p <span class="token operator">==</span> src_rq<span class="token operator">-&gt;</span>curr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token function">WARN_ON</span><span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">task_on_rq_queued</span><span class="token punctuation">(</span>p<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+			<span class="token comment">/*
+			 * There's a chance that p is higher in priority
+			 * than what's currently running on its cpu.
+			 * This is just that p is wakeing up and hasn't
+			 * had a chance to schedule. We only pull
+			 * p if it is lower in priority than the
+			 * current task on the run queue
+			 */</span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span>p<span class="token operator">-&gt;</span>prio <span class="token operator">&lt;</span> src_rq<span class="token operator">-&gt;</span>curr<span class="token operator">-&gt;</span>prio<span class="token punctuation">)</span>
+				<span class="token keyword">goto</span> skip<span class="token punctuation">;</span>
+
+			resched <span class="token operator">=</span> true<span class="token punctuation">;</span>
+
+			<span class="token function">deactivate_task</span><span class="token punctuation">(</span>src_rq<span class="token punctuation">,</span> p<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token function">set_task_cpu</span><span class="token punctuation">(</span>p<span class="token punctuation">,</span> this_cpu<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token function">activate_task</span><span class="token punctuation">(</span>this_rq<span class="token punctuation">,</span> p<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token comment">/*
+			 * We continue with the search, just in
+			 * case there's an even higher prio task
+			 * in another runqueue. (low likelihood
+			 * but possible)
+			 */</span>
+		<span class="token punctuation">}</span>
+skip<span class="token punctuation">:</span>
+		<span class="token function">double_unlock_balance</span><span class="token punctuation">(</span>this_rq<span class="token punctuation">,</span> src_rq<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>resched<span class="token punctuation">)</span>
+		<span class="token function">resched_curr</span><span class="token punctuation">(</span>this_rq<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="_956"></a>公平调度类的处理器负载均衡</h3> 
+<p>目前多处理器系统有两种体系结构：NUMA和SMP。<br> 处理器内部的拓扑如下：</p> 
+<ul><li>核(core)：一个处理器包含多个核，每个核独立的一级缓存，所有核共享二级缓存。</li><li>硬件线程：也称为逻辑处理器或者虚拟处理器，一个处理器或者核包含多个硬件线程，硬件线程共享一级缓存和二级缓存。MIPS处理器的叫法是同步多线程(Simultaneous Multi-Threading,SMT)，英特尔对它的叫法是超线程。</li></ul> 
+<h2><a id="_961"></a>写在最后</h2> 
+<p>不知不觉写了不少，特别是贴了不少代码，阅读可能需要耐心。<br> 最后还要再提几个概念</p> 
+<h3><a id="_964"></a>运行队列</h3> 
+<p>没有必要的代码就不贴了。</p> 
+<pre><code class="prism language-c"><span class="token keyword">struct</span> rq <span class="token punctuation">{<!-- --></span>
+<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token keyword">struct</span> cfs_rq cfs<span class="token punctuation">;</span>
+    <span class="token keyword">struct</span> rt_rq rt<span class="token punctuation">;</span>
+    <span class="token keyword">struct</span> dl_rq dl<span class="token punctuation">;</span>
+<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token keyword">struct</span> task_struct <span class="token operator">*</span>curr<span class="token punctuation">,</span> <span class="token operator">*</span>idle<span class="token punctuation">,</span> <span class="token operator">*</span>stop<span class="token punctuation">;</span>
+<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>struct rq中嵌入公平队列cfs、实时运行队列rt、限期运行队列dl，但是停机调度和空闲调度没有队列。这是因为停机调度类和空闲调度类在每个处理器上只有一个内核线程，不需要运行队列，直接定义成员stop和idle指向迁移线程和空闲线程即可。</p> 
+<h3><a id="_978"></a>内核态和用户态</h3> 
+<p>由于需要限制不同程序的访问能力，所以有了内核态和用户态。</p> 
+<ul><li>内核态：cpu可以访问内存中所有的数据，包括外围设备（网卡、硬盘等），cpu也可以将自己从一个程序切换到另一个程序。</li><li>用户态：只能受限访问内存中的用户空间，并且不能访问外围设备。占用cpu的能力被剥夺，cpu资源可以被其他程序获取。</li></ul> 
+<p>用户态切换到内核态，一般是发生了系统调用或是发生了异常（如缺页异常、外设产生中断）。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/019ed30e7da10742f462a1a5dc790f58/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">将二维tensor矩阵中不为0元素转换为一维向量</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/96546cfb7a3ca0037a71e764bdf0399c/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Windows VsCode 配置 Eigen 库 - C&#43;&#43;矩阵计算库的配置 - 手把手教程</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

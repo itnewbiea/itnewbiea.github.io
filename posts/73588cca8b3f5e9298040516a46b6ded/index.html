@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>LVS部署 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="LVS部署" />
+<meta property="og:description" content="一、LVS-DR
+为方便进行原理分析，将Clinet与群集机器放在同一网络中
+1、数据包流向分析
+（1）客户端发送请求到 Director Server（负载均衡器），请求的数据报文（源IP是CIP,目标IP是VIP）到达内核空间。
+（2）Director Server 和 Real Server（节点服务器）在同一网络中，数据通过二层数据链路层来传输
+（3）内核空间判断数据包的目标IP是本机VIP，此时IPVS（IP虚拟服务器）比对数据包请求的服务是否为集群服务，是集群服务就重新封装数据包。修改源MAC地址为Director Server的MAC地址，修改目标MAC地址为Real Server的Mac地址，源IP地址与目标IP地址没有改变，然后将数据包发送给Real Server
+（4）到达Real Server的请求报文的MAC地址是自身的MAC地址，就接受此报文。数据包重新封装报文（源IP地址为VIP，目标IP为CIP），将响应报文通过lo接口传送给物理网卡然后向外发出，Real Server事先绑定了VIP
+（5）Real Server直接将响应报文传送到客户端
+注：如果跨网段，则报文通过路由器经由Internet返回给用户
+2、LVS-DR中的ARP问题
+（1）问题1
+在局域网中具有相同的IP地址，势必会造成各服务器ARP通信的紊乱
+1）当ARP广播发送到LVS-DR集群时，因为负载均衡器和节点服务器都是连接到相同网络上，它们都会接收到ARP广播
+2）只有前端的负载均衡器进行响应，其他节点服务器不应该响应ARP广播
+解决方案
+对节点服务器进行处理，使其不响应针对VIP的ARP请求
+1）使用虚接口lo:0承载VIP地址
+2）设置内核参数arp_ignore=1（系统只响应目的IP为本地 IP的ARP请求）
+（2）问题二
+RealServer返回报文(源IP是VIP)经路由器转发，重新封装报文时,需要先获取路由器的MAC地址。发送ARP请求时，Linux默认使用IP包的源IP地址(即VIP)作为ARP请求包中的源IP地址，而不使用发送接口的IP地址如：ens33
+1）路由器收到ARP请求后，将更新ARP表项。原有的VIP对应Director的MAC地址会被更新为VIP对应RealServer的MAC地址
+2）路由器根据ARP表项，会将新来的请求报文转发给Realserver，导致Director的VIP失效
+解决方案
+对节点服务器进行处理，设置内核参数 arp_announce=2（系统不使用IP包的源地址来设置ARP请求的源地址，而选择发送接口的IP地址）
+3、DR模式的特点
+（1）Director Server和Real Server必须在同一个物理网络中
+（2）Real Server可以使用私有地址，也可以使用公网地址，如果使用公网地址，可以通过互联网对RIP进行直接访问
+（3）Director Server作为集群的访问入口，但不作为网关使用
+（4）所有的请求报文经由Director Server，但回复响应报文不能经过Director Server
+（5）Real Server的网关不允许指向Director Server IP，即Real Server发送的数据包不允许经过Director Server
+（6）Real Server上的lo接口配置VIP的IP地址
+二、LVS-DR集群构建
+1、案例环境
+VIP:192.168.142.100
+负载调度器：192.168.142.4
+Web节点服务器1:192.168.142.5
+Web节点服务器2:192.168.142.6
+NFS服务器：192.168.142.10
+客户端：192.168.142.3
+2、配置负载调度器：192.168.142.4
+（1）配置虚拟IP地址（VIP:192.168.80.100）
+1
+2" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/73588cca8b3f5e9298040516a46b6ded/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-03-28T17:03:11+08:00" />
+<meta property="article:modified_time" content="2023-03-28T17:03:11+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">LVS部署</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p><strong>一、LVS-DR</strong></p> 
+<p>为方便进行原理分析，将Clinet与群集机器放在同一网络中</p> 
+<p><strong><a name="b"></a>1、数据包流向分析</strong></p> 
+<p>（1）客户端发送请求到 Director Server（负载均衡器），请求的数据报文（源IP是CIP,目标IP是VIP）到达内核空间。</p> 
+<p>（2）Director Server 和 Real Server（节点服务器）在同一网络中，数据通过二层数据链路层来传输</p> 
+<p>（3）内核空间判断数据包的目标IP是本机VIP，此时IPVS（IP虚拟服务器）比对数据包请求的服务是否为集群服务，是集群服务就重新封装数据包。修改源MAC地址为Director Server的MAC地址，修改目标MAC地址为Real Server的Mac地址，源IP地址与目标IP地址没有改变，然后将数据包发送给Real Server</p> 
+<p>（4）到达Real Server的请求报文的MAC地址是自身的MAC地址，就接受此报文。数据包重新封装报文（源IP地址为VIP，目标IP为CIP），将响应报文通过lo接口传送给物理网卡然后向外发出，Real Server事先绑定了VIP</p> 
+<p>（5）Real Server直接将响应报文传送到客户端</p> 
+<p>注：如果跨网段，则报文通过路由器经由Internet返回给用户</p> 
+<p><strong><a name="c"></a>2、LVS-DR中的ARP问题</strong></p> 
+<p>（1）问题1</p> 
+<p>在局域网中具有相同的IP地址，势必会造成各服务器ARP通信的紊乱<br> 1）当ARP广播发送到LVS-DR集群时，因为负载均衡器和节点服务器都是连接到相同网络上，它们都会接收到ARP广播<br> 2）只有前端的负载均衡器进行响应，其他节点服务器不应该响应ARP广播</p> 
+<p>解决方案</p> 
+<p>对节点服务器进行处理，使其不响应针对VIP的ARP请求<br> 1）使用虚接口lo:0承载VIP地址<br> 2）设置内核参数arp_ignore=1（系统只响应目的IP为本地 IP的ARP请求）</p> 
+<p>（2）问题二</p> 
+<p>RealServer返回报文(源IP是VIP)经路由器转发，重新封装报文时,需要先获取路由器的MAC地址。发送ARP请求时，Linux默认使用IP包的源IP地址(即VIP)作为ARP请求包中的源IP地址，而不使用发送接口的IP地址如：ens33<br> 1）路由器收到ARP请求后，将更新ARP表项。原有的VIP对应Director的MAC地址会被更新为VIP对应RealServer的MAC地址<br> 2）路由器根据ARP表项，会将新来的请求报文转发给Realserver，导致Director的VIP失效</p> 
+<p>解决方案</p> 
+<p>对节点服务器进行处理，设置内核参数 arp_announce=2（系统不使用IP包的源地址来设置ARP请求的源地址，而选择发送接口的IP地址）</p> 
+<p><strong><a name="d"></a>3、DR模式的特点</strong></p> 
+<p>（1）Director Server和Real Server必须在同一个物理网络中</p> 
+<p>（2）Real Server可以使用私有地址，也可以使用公网地址，如果使用公网地址，可以通过互联网对RIP进行直接访问</p> 
+<p>（3）Director Server作为集群的访问入口，但不作为网关使用</p> 
+<p>（4）所有的请求报文经由Director Server，但回复响应报文不能经过Director Server</p> 
+<p>（5）Real Server的网关不允许指向Director Server IP，即Real Server发送的数据包不允许经过Director Server</p> 
+<p>（6）Real Server上的lo接口配置VIP的IP地址</p> 
+<p><strong><a name="e"></a>二、LVS-DR集群构建</strong></p> 
+<p><strong><a name="f"></a>1、案例环境</strong></p> 
+<p>VIP:192.168.142.100</p> 
+<p>负载调度器：192.168.142.4</p> 
+<p>Web节点服务器1:192.168.142.5</p> 
+<p>Web节点服务器2:192.168.142.6</p> 
+<p>NFS服务器：192.168.142.10</p> 
+<p>客户端：192.168.142.3</p> 
+<p><strong><a name="g"></a>2、配置负载调度器：192.168.142.4</strong></p> 
+<p>（1）配置虚拟IP地址（VIP:192.168.80.100）</p> 
+<table border="0" cellpadding="0" cellspacing="0"><tbody><tr><td> <p>1</p> <p>2</p> <p>3</p> <p>4</p> <p>5</p> <p>6</p> <p>7</p> <p>8</p> <p>9</p> <p>10</p> <p>11</p> <p>12</p> <p>13</p> <p>14</p> <p>15</p> <p>16</p> </td><td> <p><code>#关闭防火墙</code></p> <p><code>systemctl stop firewalld.service</code></p> <p><code>systemctl disable firewalld.service</code></p> <p><code>setenforce 0</code></p> <p></p> <p><code>cd /etc/sysconfig/network-scripts/</code></p> <p><code>cp ifcfg-ens33 ifcfg-ens33:0   #若隧道模式，复制为ifcfg-tunl0</code></p> <p></p> <p><code>vim ifcfg-ens33:0</code></p> <p><code>DEVICE=ens33:0</code></p> <p><code>OBBOOT=yes</code></p> <p><code>IPADDR=192.168.142.100</code></p> <p><code>NETMASK=255.255.255.255  #设置为1</code></p> <p></p> <p><code>ifup ens33:0</code></p> <p><code>ifconfig ens33:0</code></p> </td></tr></tbody></table> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/14/77/9CWaXevY_o.png"></p> 
+<p> </p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/95/37/kc8ByaUp_o.png"></p> 
+<p> </p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/d8/dc/TBKI8Pho_o.png"></p> 
+<p>（2）调整proc响应参数</p> 
+<table border="0" cellpadding="0" cellspacing="0"><tbody><tr><td> <p>1</p> <p>2</p> <p>3</p> <p>4</p> <p>5</p> <p>6</p> <p>7</p> <p>8</p> <p>9</p> </td><td> <p><code>#由于LVS负载调度器和各节点需要共用VIP地址，需要关闭ICMP的重定向，不充当路由器</code></p> <p></p> <p><code>vim /etc/systcl.conf</code></p> <p><code>net.ipv4.ip_forward = 0</code></p> <p><code>net.ipv4.conf.all.send_redirects = 0</code></p> <p><code>net.ipv4.conf.</code><code>default</code><code>.send_redirects = 0</code></p> <p><code>net.ipv4.conf.ens33.send_redirects = 0</code></p> <p></p> <p><code>sysctl -p  #读取内容</code></p> </td></tr></tbody></table> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/e7/c7/wb5qRB4G_o.png"></p> 
+<p> </p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/cb/36/8bEPH0Zi_o.png"></p> 
+<p>（3）配置负载分配策略</p> 
+<table border="0" cellpadding="0" cellspacing="0"><tbody><tr><td> <p>1</p> <p>2</p> <p>3</p> <p>4</p> <p>5</p> <p>6</p> <p>7</p> <p>8</p> <p>9</p> <p>10</p> <p>11</p> <p>12</p> <p>13</p> <p>14</p> <p>15</p> <p>16</p> <p>17</p> <p>18</p> <p>19</p> <p>20</p> <p>21</p> <p>22</p> <p>23</p> <p>24</p> <p>25</p> <p>26</p> <p>27</p> <p>28</p> <p>29</p> </td><td> <p><code>yum -y install ipvsadm</code></p> <p></p> <p><code>#启动服务前须保存负载分配策略</code></p> <p><code>ipvsadm-save &gt; /etc/sysconfig/ipvsadm</code></p> <p><code>或</code></p> <p><code>ipvsadm --save &gt; /etc/sysconfig/ipvsadm</code></p> <p></p> <p><code>systemctl start ipvsadm</code></p> <p></p> <p><code>#清除原有配置</code></p> <p><code>ipvsadm -C</code></p> <p></p> <p><code>#添加虚拟服务器、指定VIP地址及端口、指定负载调度算法</code></p> <p><code>ipvsadm -A -t 192.168.142.100:80 -s rr</code></p> <p></p> <p><code>#添加真实节点服务器1，添加DR群集模式</code></p> <p><code>ipvsadm -a -t 192.168.142.100:80 -r 192.168.142.5:80 -g</code></p> <p></p> <p><code>#添加真实节点服务器2，添加DR群集模式</code></p> <p><code>ipvsadm -a -t 192.168.142.100:80 -r 192.168.142.6:80 -g</code></p> <p></p> <p><code>#启用策略</code></p> <p><code>ipvsadm</code></p> <p></p> <p><code>#查看节点状态，Route代表DR模式</code></p> <p><code>ipvsadm -ln</code></p> <p></p> <p><code>#保存策略</code></p> <p><code>ipvsadm --save &gt; /etc/sysconfig/ipvsadm</code></p> </td></tr></tbody></table> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/dc/e4/0sY5nMxM_o.png"></p> 
+<p> </p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/1d/a3/GrbUrWi9_o.png"></p> 
+<p><strong>3、署NFS服务器：192.168.142.10</strong></p> 
+<table border="0" cellpadding="0" cellspacing="0"><tbody><tr><td> <p>1</p> <p>2</p> <p>3</p> <p>4</p> <p>5</p> <p>6</p> <p>7</p> <p>8</p> <p>9</p> <p>10</p> <p>11</p> <p>12</p> <p>13</p> <p>14</p> <p>15</p> <p>16</p> <p>17</p> <p>18</p> <p>19</p> <p>20</p> <p>21</p> <p>22</p> <p>23</p> <p>24</p> <p>25</p> <p>26</p> <p>27</p> <p>28</p> <p>29</p> <p>30</p> </td><td> <p><code>#关闭防火墙</code></p> <p><code>systemctl stop firewalld.service</code></p> <p><code>systemctl disable firewalld.service</code></p> <p><code>setenforce 0</code></p> <p></p> <p><code>#安装nfs相关软件包</code></p> <p><code>yum -y install nfs-utils rpcbind</code></p> <p></p> <p><code>#启动服务</code></p> <p><code>systemctl start rpcbind.service</code></p> <p><code>systemctl start nfs.service</code></p> <p></p> <p><code>#创建共享文件</code></p> <p><code>mkdir /opt/111</code></p> <p><code>mkdir /opt/222</code></p> <p><code>echo </code><code>"111111"</code> <code>&gt; /opt/111/index.html</code></p> <p><code>echo </code><code>"222222"</code> <code>&gt; /opt/222/index.html\</code></p> <p></p> <p><code>#给目录最大权限</code></p> <p><code>chmod 777 /opt/111</code></p> <p><code>chmod 777 /opt/222</code></p> <p></p> <p><code>#创建共享权限</code></p> <p><code>vim /etc/exports</code></p> <p><code>/opt/111 192.168.142.0/24(rw,sync)</code></p> <p><code>/opt/222 192.168.142.0/24(rw,sync)</code></p> <p></p> <p><code>#发布共享并查看</code></p> <p><code>exportfs -rv</code></p> <p><code>showmount -e</code></p> </td></tr></tbody></table> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/64/b1/dFh2OoxV_o.png"></p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/44/e7/2aYlTG9i_o.png"></p> 
+<p></p> 
+<p> </p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/7d/d0/GQzQuLXY_o.png"></p> 
+<p><strong><a name="i"></a>4、Web节点服务器1:192.168.142.5</strong></p> 
+<p>（1）配置虚拟IP地址（VIP：192.168.142.100）</p> 
+<table border="0" cellpadding="0" cellspacing="0"><tbody><tr><td> <p>1</p> <p>2</p> <p>3</p> <p>4</p> <p>5</p> <p>6</p> <p>7</p> <p>8</p> <p>9</p> <p>10</p> <p>11</p> <p>12</p> <p>13</p> <p>14</p> <p>15</p> <p>16</p> </td><td> <p><code>#此地址仅用作发送Web响应数据包的源地址，并不需要监听客户机的访问请求（改由调度器监听并分发）。因此使用虚接口lo：0来承载VIP地址，并未本机添加一条路由记录，将访问VIP的数据限制在本地，以避免通信紊乱。</code></p> <p></p> <p><code>systemctl stop firewalld.service</code></p> <p><code>systemctl disable firewalld.service</code></p> <p><code>setenforce 0</code></p> <p></p> <p><code>cd /etc/sysconfig/network-scripts/</code></p> <p><code>cp ifcfg-lo ifcfg-lo:0</code></p> <p><code>vim ifcfg-lo:0</code></p> <p></p> <p><code>vim ifcfg-lo:0</code></p> <p><code>DEVICE=lo:0&lt;br&gt;OBBOOT=yes&lt;br&gt;IPADDR=192.168.142.5&lt;br&gt;NETMASK=255.255.255.255     #子网掩码必须全为1&lt;br&gt;ifup lo:0&lt;br&gt;ifconfig lo:0#添加路由</code></p> <p><code>route add -host 192.168.142.100 dev lo:0</code></p> <p><code>或</code></p> <p><code>vim /etc/rc.local</code></p> <p><code>/sbin/route add -host 192.168.142.100 dev lo:0    #添加为开机自启动</code></p> </td></tr></tbody></table> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/19/cb/6bI3DHLK_o.png"></p> 
+<p> </p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/b0/b8/mGfxPvOQ_o.png"></p> 
+<p> </p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/ec/ee/C2y71IdK_o.png"></p> 
+<p> </p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/88/1b/xdWiOC1o_o.png"></p> 
+<p>（2）调整内核的ARP响应参数以阻止更新VIP的MAC地址，避免发生冲突</p> 
+<table border="0" cellpadding="0" cellspacing="0"><tbody><tr><td> <p>1</p> <p>2</p> <p>3</p> <p>4</p> <p>5</p> <p>6</p> <p>7</p> <p>8</p> <p>9</p> <p>10</p> <p>11</p> <p>12</p> <p>13</p> <p>14</p> </td><td> <p><code>vim /etc/sysctl.conf</code></p> <p><code>......</code></p> <p><code>net.ipv4.conf.lo.arp_ignore = 1     #系统只响应目的IP为本地IP的ARP请求</code></p> <p><code>net.ipv4.conf.lo.arp_announce = 2   #系统不使用IP包的源地址来设置ARP请求的源地址，而选择发送接口的IP地址</code></p> <p><code>net.ipv4.conf.all.arp_ignore = 1</code></p> <p><code>net.ipv4.conf.all.arp_announce = 2</code></p> <p><code>syscti -p</code></p> <p></p> <p><code>或  </code></p> <p></p> <p><code>echo </code><code>"1"</code> <code>&gt; /etc/sys/net/ipv4/conf/lo/arp_ignore</code></p> <p><code>echo </code><code>"2"</code> <code>&gt; /etc/sys/net/ipv4/conf/lo/arp_announce</code></p> <p><code>echo </code><code>"1"</code> <code>&gt; /etc/sys/net/ipv4/conf/all/arp_ignore</code></p> <p><code>echo </code><code>"2"</code> <code>&gt; /etc/sys/net/ipv4/conf/all/arp_announce</code></p> </td></tr></tbody></table> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/28/07/E9qEp43Q_o.png"></p> 
+<p> </p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/48/c6/wdHAJwpi_o.png"></p> 
+<p>（3）部署web共享服务</p> 
+<table border="0" cellpadding="0" cellspacing="0"><tbody><tr><td> <p>1</p> <p>2</p> <p>3</p> <p>4</p> <p>5</p> <p>6</p> <p>7</p> <p>8</p> <p>9</p> <p>10</p> <p>11</p> <p>12</p> <p>13</p> <p>14</p> <p>15</p> <p>16</p> <p>17</p> </td><td> <p><code>#安装web服务</code></p> <p><code>yum install -y httpd</code></p> <p><code>systemctl start httpd</code></p> <p></p> <p><code>#安装NFS服务,查看共享文件</code></p> <p><code>yum -y install rpcbind nfs-utils</code></p> <p><code>showmount -e 192.168.142.10</code></p> <p></p> <p><code>#开启NFS服务</code></p> <p><code>systemctl start rpcbind</code></p> <p><code>systemctl start nfs</code></p> <p></p> <p><code>#挂载使用</code></p> <p><code>mount 192.168.142.10:/opt/111 /</code><code>var</code><code>/www/html</code></p> <p></p> <p><code>vim /etc/fstab              #配置自动挂载</code></p> <p><code>192.168.142.10:/opt/111 /</code><code>var</code><code>/www/html defaults，_netdev 0 0　</code></p> </td></tr></tbody></table> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/59/c8/CF3SIJ3e_o.png"></p> 
+<p><strong><a name="j"></a>5、Web节点服务器2:192.168.142.6</strong></p> 
+<p>（1）　</p> 
+<table border="0" cellpadding="0" cellspacing="0"><tbody><tr><td> <p>1</p> <p>2</p> </td><td> <p><code>#将节点服务器1配置好的内核参数配置文件通过SCP传输到节点服务器2当中</code></p> <p><code>scp /etc/sysctl.conf 192.168.142.6:/etc/</code></p> </td></tr></tbody></table> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/d6/82/3AAGcW2n_o.png"></p> 
+<p> </p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/bb/33/zYGsH2zC_o.png"></p> 
+<p>（2）</p> 
+<table border="0" cellpadding="0" cellspacing="0"><tbody><tr><td> <p>1</p> <p>2</p> </td><td> <p><code>#将将节点服务器1配置好的虚拟IP地址文件通过SCP传输到节点服务器2当中</code></p> <p><code>scp /etc/sysconfig/network-scripts/ifcfg-lo:0 192.168.142.6:/etc/sysconfig/network-scripts/ifcf</code></p> </td></tr></tbody></table> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/4e/66/fnYfGZ0A_o.png"></p> 
+<p> </p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/41/17/UG1qgNFN_o.png"></p> 
+<p>（3）部署web共享服务</p> 
+<table border="0" cellpadding="0" cellspacing="0"><tbody><tr><td> <p>1</p> <p>2</p> <p>3</p> <p>4</p> <p>5</p> <p>6</p> <p>7</p> <p>8</p> <p>9</p> <p>10</p> <p>11</p> <p>12</p> <p>13</p> <p>14</p> <p>15</p> <p>16</p> <p>17</p> </td><td> <p><code>#安装web服务</code></p> <p><code>yum install -y httpd</code></p> <p><code>systemctl start httpd</code></p> <p></p> <p><code>#安装NFS服务,查看共享文件</code></p> <p><code>yum -y install rpcbind nfs-utils</code></p> <p><code>showmount -e 192.168.142.10</code></p> <p></p> <p><code>#开启NFS服务</code></p> <p><code>systemctl start rpcbind</code></p> <p><code>systemctl start nfs</code></p> <p></p> <p><code>#挂载使用</code></p> <p><code>mount 192.168.142.10:/opt/222 /</code><code>var</code><code>/www/html</code></p> <p></p> <p><code>vim /etc/fstab              #配置自动挂载</code></p> <p><code>192.168.142.10:/opt/222 /</code><code>var</code><code>/www/html defaults，_netdev 0 0</code></p> </td></tr></tbody></table> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/74/cc/KWoijINO_o.png"></p> 
+<p>（4）添加路由</p> 
+<table border="0" cellpadding="0" cellspacing="0"><tbody><tr><td> <p>1</p> <p>2</p> </td><td> <p><code>route add -host 192.168.142.100 dev lo:0</code></p> <p><code>route -n</code></p> </td></tr></tbody></table> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/c0/83/KpGWX7IK_o.png"></p> 
+<p><strong><a name="k"></a>6、客户机访问测试　　</strong></p> 
+<p>　</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/c9/c4/yPKzd0T6_o.png"></p> 
+<p> </p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/1f/fe/05UcoZfd_o.png"></p> 
+<p></p> 
+<p> </p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/a5/f5/fQ0lg6FM_o.png"></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/5d7a15f43ca1b9bcb70109ee6db34a82/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">毕业设计stm32选题100例(四)</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f51919daab60c6da2c715c5fd9100c11/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">AHP层次分析法分析流程</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

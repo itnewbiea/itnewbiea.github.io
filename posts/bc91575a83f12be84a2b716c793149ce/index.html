@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【学习总结】Lidar与IMU标定 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【学习总结】Lidar与IMU标定" />
+<meta property="og:description" content="本文仅用于自己学习雷达与IMU标定过程中的一些记录。
+最近项目需要入手了镭神智能的“镭神C32”激光雷达，和KVH的1750IMU模块。在调用驱动完成初步数据读取之后，现在需要对雷达IMU系统进行标定。查阅了一些资料，发现并没有太多关于Lidar&#43;IMU标定的资料。大多数论文中只是提到一句“我们认为雷达和IMU已经完成了标定”或者“Lidar与IMU采用离线的方式完成标定”。真的让人摸不着头脑。
+标定需要标什么? 参考文献[1]中指出 “the LiDAR-IMU calibration mainly includes the LiDAR extrinsic parameters calibration, IMU intrinsic parameters calibration, and coordinate transformation between LiDAR and IMU”，即需要标定三个：Lidar的外参、IMU内参、Lidar与IMU之间的变换。
+Lidar外参是什么鬼，我也没搞清楚，好像和Lidar探测时球坐标系有关，但一般厂商都做了标定，所以不用管。
+IMU的内参，首先需要给出IMU的测量模型： a m = R G I ( a − g ) &#43; b a ( t ) &#43; n a a_m = R_G^I(a-g)&#43;b_a(t)&#43;n_a am​=RGI​(a−g)&#43;ba​(t)&#43;na​ w m = w &#43; b g ( t ) &#43; n g w_m=w&#43;b_g(t)&#43;n_g wm​=w&#43;bg​(t)&#43;ng​ 等号左侧是测量值， a , w a, w a,w是实际的真值， g g g是重力加速度（可以看出IMU在z轴正方时会有一个 &#43; g &#43;g &#43;g的输出，而且是归一化的，表示“几个 g g g”）， b a , b g b_a, b_g ba​,bg​ 是随机游走噪声，随时间变化，而 n g , n a n_g,n_a ng​,na​是测量高斯白噪声。在IMU启动后，需要确定到世界系/大地系/地球系的旋转矩阵 R R R，并需要实时估计两个bias。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/bc91575a83f12be84a2b716c793149ce/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-09-11T14:23:07+08:00" />
+<meta property="article:modified_time" content="2020-09-11T14:23:07+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【学习总结】Lidar与IMU标定</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>本文仅用于自己学习雷达与IMU标定过程中的一些记录。</p> 
+<p>最近项目需要入手了镭神智能的“镭神C32”激光雷达，和KVH的1750IMU模块。在调用驱动完成初步数据读取之后，现在需要对雷达IMU系统进行标定。查阅了一些资料，发现并没有太多关于Lidar+IMU标定的资料。大多数论文中只是提到一句“我们认为雷达和IMU已经完成了标定”或者“Lidar与IMU采用离线的方式完成标定”。真的让人摸不着头脑。</p> 
+<h4><a id="_4"></a>标定需要标什么?</h4> 
+<p>参考文献[1]中指出 “the LiDAR-IMU calibration mainly includes the LiDAR extrinsic parameters calibration, IMU intrinsic parameters calibration, and coordinate transformation between LiDAR and IMU”，即需要标定三个：Lidar的外参、IMU内参、Lidar与IMU之间的变换。</p> 
+<p>Lidar外参是什么鬼，我也没搞清楚，好像和Lidar探测时球坐标系有关，但一般厂商都做了标定，所以不用管。</p> 
+<p>IMU的内参，首先需要给出IMU的测量模型：<span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           a 
+          
+         
+           m 
+          
+         
+        
+          = 
+         
+         
+         
+           R 
+          
+         
+           G 
+          
+         
+           I 
+          
+         
+        
+          ( 
+         
+        
+          a 
+         
+        
+          − 
+         
+        
+          g 
+         
+        
+          ) 
+         
+        
+          + 
+         
+         
+         
+           b 
+          
+         
+           a 
+          
+         
+        
+          ( 
+         
+        
+          t 
+         
+        
+          ) 
+         
+        
+          + 
+         
+         
+         
+           n 
+          
+         
+           a 
+          
+         
+        
+       
+         a_m = R_G^I(a-g)+b_a(t)+n_a 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.58056em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">a</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">m</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.14133em; vertical-align: -0.25em;"></span><span class="mord"><span style="margin-right: 0.00773em;" class="mord mathdefault">R</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.891331em;"><span class="" style="top: -2.453em; margin-left: -0.00773em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">G</span></span></span><span class="" style="top: -3.113em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span style="margin-right: 0.07847em;" class="mord mathdefault mtight">I</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.247em;"><span class=""></span></span></span></span></span></span><span class="mopen">(</span><span class="mord mathdefault">a</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span style="margin-right: 0.03588em;" class="mord mathdefault">g</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord"><span class="mord mathdefault">b</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">a</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mopen">(</span><span class="mord mathdefault">t</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 0.58056em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">n</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">a</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span></span> <span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           w 
+          
+         
+           m 
+          
+         
+        
+          = 
+         
+        
+          w 
+         
+        
+          + 
+         
+         
+         
+           b 
+          
+         
+           g 
+          
+         
+        
+          ( 
+         
+        
+          t 
+         
+        
+          ) 
+         
+        
+          + 
+         
+         
+         
+           n 
+          
+         
+           g 
+          
+         
+        
+       
+         w_m=w+b_g(t)+n_g 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.58056em; vertical-align: -0.15em;"></span><span class="mord"><span style="margin-right: 0.02691em;" class="mord mathdefault">w</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: -0.02691em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">m</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.66666em; vertical-align: -0.08333em;"></span><span style="margin-right: 0.02691em;" class="mord mathdefault">w</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1.03611em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault">b</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span style="margin-right: 0.03588em;" class="mord mathdefault mtight">g</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span><span class="mopen">(</span><span class="mord mathdefault">t</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 0.716668em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault">n</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span style="margin-right: 0.03588em;" class="mord mathdefault mtight">g</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span></span></span></span></span></span> 等号左侧是测量值，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         a 
+        
+       
+         , 
+        
+       
+         w 
+        
+       
+      
+        a, w 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.625em; vertical-align: -0.19444em;"></span><span class="mord mathdefault">a</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span style="margin-right: 0.02691em;" class="mord mathdefault">w</span></span></span></span></span>是实际的真值，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         g 
+        
+       
+      
+        g 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.625em; vertical-align: -0.19444em;"></span><span style="margin-right: 0.03588em;" class="mord mathdefault">g</span></span></span></span></span>是重力加速度（可以看出IMU在z轴正方时会有一个<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         + 
+        
+       
+         g 
+        
+       
+      
+        +g 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.77777em; vertical-align: -0.19444em;"></span><span class="mord">+</span><span style="margin-right: 0.03588em;" class="mord mathdefault">g</span></span></span></span></span>的输出，而且是归一化的，表示“几个<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         g 
+        
+       
+      
+        g 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.625em; vertical-align: -0.19444em;"></span><span style="margin-right: 0.03588em;" class="mord mathdefault">g</span></span></span></span></span>”），<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          b 
+         
+        
+          a 
+         
+        
+       
+         , 
+        
+        
+        
+          b 
+         
+        
+          g 
+         
+        
+       
+      
+        b_a, b_g 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.980548em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault">b</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">a</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault">b</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span style="margin-right: 0.03588em;" class="mord mathdefault mtight">g</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 是随机游走噪声，随时间变化，而<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          n 
+         
+        
+          g 
+         
+        
+       
+         , 
+        
+        
+        
+          n 
+         
+        
+          a 
+         
+        
+       
+      
+        n_g,n_a 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.716668em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault">n</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span style="margin-right: 0.03588em;" class="mord mathdefault mtight">g</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault">n</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">a</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>是测量高斯白噪声。在IMU启动后，需要确定到世界系/大地系/地球系的旋转矩阵<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         R 
+        
+       
+      
+        R 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span style="margin-right: 0.00773em;" class="mord mathdefault">R</span></span></span></span></span>，并需要实时估计两个bias。</p> 
+<p>Lidar与IMU之间的变换，包括两部分：6DoF的刚体变换，与传感器延迟的时间差。首先说这个时间差，参考文献[2]中指出，由于传感器在测量（采样）时并不是同步的，同时由于传感器到系统有一个延迟，两者信号之间具有时差，这影响了测量值插值的精度。如图，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          t 
+         
+        
+          a 
+         
+        
+       
+         , 
+        
+        
+        
+          t 
+         
+        
+          b 
+         
+        
+       
+      
+        t_a, t_b 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.80952em; vertical-align: -0.19444em;"></span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">a</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.336108em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">b</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>分别是IMU和camera的延迟，延迟后相差一个<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          t 
+         
+        
+          d 
+         
+        
+       
+      
+        t_d 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.76508em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.336108em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">d</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>，所以对于采样到的camera需要加上这个<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          t 
+         
+        
+          d 
+         
+        
+       
+      
+        t_d 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.76508em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.336108em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">d</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>才能得到在IMU时间系统中采样的时刻（一般论文都将IMU时间作为系统参考时间）。</p> 
+<p><img src="https://images2.imgbox.com/c2/1c/ge8Mkbj1_o.png" alt="在这里插入图片描述" width="640"><br> 再说刚体变换，即计算Lidar到IMU的刚体变换，一般论文中为了方便，多将IMU系作为机器人机体系，而将Lidar的点云数据变换到IMU系，因此需要得到从Lidar到IMU的刚体变换。论文[1]采用多种特征进行计算，论文[3]采用因子图优化的方式得到一段儿时间内优化的<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         R 
+        
+       
+         , 
+        
+       
+         t 
+        
+       
+      
+        R,t 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.87777em; vertical-align: -0.19444em;"></span><span style="margin-right: 0.00773em;" class="mord mathdefault">R</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault">t</span></span></span></span></span>参数。</p> 
+<p><img src="https://images2.imgbox.com/0c/9a/pKl4Nyz0_o.png" alt="在这里插入图片描述" width="320"></p> 
+<h4><a id="LidarIMUlidar_align_17"></a>Lidar+IMU标定工具：lidar_align</h4> 
+<p>发现ETHZ在github的一个lidar和IMU标定的代码，lidar_align：<a href="https://github.com/ethz-asl/lidar_align">https://github.com/ethz-asl/lidar_align</a></p> 
+<p>自己学习这个代码做的总结：<a href="https://blog.csdn.net/tfb760/article/details/108581092">https://blog.csdn.net/tfb760/article/details/108581092</a></p> 
+<p><strong>后续补充</strong>：这种方法如果拿不到IMU准确的数据，效果可能不好。所以可以看到代码里面命名都是Odom而不是IMU。IMU的准确数据可以由GPS或轮式里程计纠偏，否则漂移太过于严重。</p> 
+<p><strong>再次补充：lidar_align不适用于纯IMU与Lidar进行标定！</strong> 纯IMU进行积分，无法得到准确的Odom数据。所以无法使用纯IMU获得odom，进行与Lidar标定。</p> 
+<blockquote> 
+ <p><strong>来自lidar_align代码维护者Alex:</strong><br> Unfortunately our toolbox is not suitable for pure imu-to-lidar calibration. I have seen other papers about this problem, but to be honest I’m not up to date with that literature so I don’t know if there is an open-source toolbox available.<br> Our typical use case is one where we have a camera-imu-lidar system. We typically perform visual-inertial odometry and use this as the odom transform to which you’re referring. If you don’t have an option for obtaining odometry in a similar manner you might be out of luck with this toolbox…</p> 
+</blockquote> 
+<h4><a id="_32"></a>参考文献</h4> 
+<p>[1]. A Novel Multifeature Based On-Site Calibration Method for LiDAR-IMU System<br> [2]. Online temporal calibration for camera–IMU systems: Theory and algorithms<br> [3]. 3D Lidar-IMU Calibration based on Upsampled Preintegrated Measurements for Motion Distortion Correction</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/a08fd5f9a0ade784232ff113fd236b45/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">zynq之ps端开发</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/2c19320e3bf2a86d9a1215ff248368ea/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Docker常用命令-自用</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

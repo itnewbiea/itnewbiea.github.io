@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>流批一体历史背景及基础介绍 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="流批一体历史背景及基础介绍" />
+<meta property="og:description" content="目录 一、历史背景1.BI系统2.传统大数据架构3.流式架构4.Lambda架构5.Kappa架构 二、流批一体与数据架构的关系数据分析型应用数据管道型应用 三、流与批的桥梁Dataflow模型四、Dataflow模型的本质一个基本点两个时间域三个子模型1.窗口模型2.触发器模型3. 增量计算模型 四个分析维度 五、举例固定窗口，批处理固定窗口，流处理，多种触发方式 一、历史背景 1.BI系统 BI（Business Intelligence，商业智能）的概念很早就有了。到了上世纪九十年代，BI系统迎来了它的第一个辉煌时期，Gartner将各种类型的类BI系统全部统称为BI，BI产品也基本确定为了是一套集数据清洗、数据分析、数据挖掘、报表展示等功能于一体的完整解决方案，数据仓库也基于此建立。从此BI系统一统江湖，江湖上再也没了DSS（Decision Support System, 决策支持系统）、EIS
+（Executive Information System, 主管信息系统）的名字。
+BI系统的核心是Cube，它是一个业务模型抽象，在Cube上可以上钻、下钻、切片，为了更方便多维分析，还配套了MDX查询语言。当然，大多数BI系统都构建在关系型数据库之上，或者说很多BI系统本就是商业关系型数据库的配套产品，因此也都是支持SQL语言的。在计算和存储上可能类似于开源框架Apache Kylin。
+初代BI系统没落的原因主要是：
+底层构建在传统关系型数据库之上，因为存在数据一致性约束等问题，支持不了大数据。（这也暗合了网传了很多年的阿里技术规范中提到的一条——不要设置外键，要通过其他技术手段保证数据一致性。）不支持非结构化数据。 2.传统大数据架构 为了解决上述问题，一些公司开始研发分布式的计算引擎和分布式的存储平台。其中最成功、最知名的便是Google研发的分布式文件系统与MapReduce计算引擎，后来这套技术被开源重写为了Hadoop体系的多个项目，其生态圈也不断扩大。
+在Miravia的技术选型中，通常业务数据通过binlog同步到TT，或者流量日志直接上报到日志服务器，再同步到TT。TT定期将一个时间区间内的数据同步到ODPS，ODPS再通过每日调度的任务对这些数据进行处理，最终落到ADS层的表。结果表的数据再同步到Holo或Lindorm等介质中，供消费方使用。因此单看这整个流程，实际上就是典型的传统大数据架构的一种实现。但需要注意的是，该架构并没有对输入数据有结构化的要求，也没有规定ETL过程使用的工具和编程语言。
+下图是一个典型的传统大数据架构
+3.流式架构 虽然传统大数据架构在技术选型上与BI系统比已经算是脱胎换骨，但其精神还是一脉相承。流式架构干脆扔掉一整套离线的数据采集、数据同步和ETL工作，直接让流式计算引擎消费业务数据库产生的增量数据，并直接输出给消费方，以此提供实时的计算结果。
+而早期的技术储备明显不足以同时高质量保证实时性和结果的准确性，因此只被用在了极少数对结果实时性十分敏感却对准确性要求不高的场景中。随着技术的进步和业务复杂度的提高，这种架构也基本销声匿迹了。
+下图是流式架构的典型代表：
+4.Lambda架构 Lambda架构的逻辑是，流任务与批任务读取相同的数据源，实时计算结果由流任务产出；批任务通常按天执行，计算T-1的数据，并写入到结果表中。最终数据应用根据自己的需要对两个结果表的结果进行合并。其核心思路是：用流任务保证结果的实时性，同时用批任务保证结果的最终一致性。
+有一位叫做Nathan Marz的大佬提出了Lambda架构。先看Lambda架构的示意图：
+但Lambda架构有几个显而易见的缺点：
+需要开发、维护两套系统，成本太大。两套系统难以保证计算口径的一致。甚至不同计算引擎提供的计算语义完全不同。 5.Kappa架构 在流处理技术不成熟的时期，主要问题之一就是吞吐量上不去。随着Kafka等大数据消息队列的出现，吞吐量不再是瓶颈。Kappa架构的主要贡献之一就是引入了分布式消息队列。如下图所示：
+与Lambda架构不通，Kappa架构只保留了流处理层，完全舍弃了批处理层。让其中一个流处理层正常运行，数据应用读取它的输出；当数据出现错误，或是业务逻辑发生变更时，启动另一个流处理层，利用消息队列的重播机制，重新消费先前的数据并输出到另一个结果表中，当确定可以替换线上表时，完成替换。当然，在实际生产中这个过程会复杂得多。而且受限于消息队列数据生命周期的限制，这种架构在生产中被应用得较少。
+二、流批一体与数据架构的关系 流批一体听起来很简单，但内涵却十分复杂。它包含了计算语义、编程模型、API、调度、执行、shuffle等各个方面的统一，不过对于我们数据开发的同学来说，我认为流批一体最终想要达到的效果可以这样描述：给定确定的数据源（可以是物理的也可以是逻辑上的），编写一套代码（Java代码或SQL），执行引擎能够根据需要（例如根据用户配置“STREAMING/BATCH”或自动识别）将代码转换为流任务（增量地读取、流式地处理）或批任务（全量地读取、批式地处理），并输出相同的结果。
+数据分析型应用 流批一体与Lambda架构结合得最为自然。如下图所示：
+这里引入了消息队列，算是Jay Kreps在提出Kappa架构时给我们提供的改进思路。因为流任务和批任务对输入的要求是不一样的，前者一般读取的都是类似Kafka这样的消息流，后者则读取的是数据库在某一刻的全量快照，所以我们暂且认为两个任务需要用不同的连接器读取不同的数据源。
+为了保证输入统一，我们可以让流任务直接读取消息队列中的数据，这样它就在一刻不停地读取业务上的增量数据；在离线侧，我们周期性地将消息队列中的数据落盘，然后每日单独处理当天的增量数据，由此批任务也达成了周期性处理增量数据的效果。理想情况下，当批任务把T-1的数据输出时，结果应与流任务先前输出的T-1的结果相同。
+这就是流批一体在数据分析型应用中的典型案例，它是Lambda架构的一种高级实现，解决了原Lambda架构中需要开发两套代码、维护两套系统、计算逻辑口径不一致的问题。Dataphin提供给大家的解决方案就是针对这种应用而来的。
+不过要特别注意的是，计算逻辑口径一致不是因为你使用了相同的代码，而是基于相同的代码，计算引擎内部将其翻译成批任务和流任务时在语义、编程模型等方面达到了统一。如果计算引擎内部没有做到这一点，即便写了相同的代码也是无济于事的。
+数据管道型应用 除了数据分析型应用，还有一类应用，比如数据同步，这部分工作其实也可以通过计算引擎来实现，流批一体在这其中还能发挥大作用。这类应用可以叫做数据管道型应用。
+比如需求是将一个线上数据库中的数据迁移到另一个数据库中，在同步的过程中线上数据库仍然会继续发生增删改查等业务操作。以往的方式往往是先通过一个离线同步工具同步全量数据，再通过另一个增量同步工具不断地同步新增数据。在这个过程中选择从哪一时刻开始增量同步是一大难点。如果在同步的过程中需要对数据做一些清洗或转换，则难度又大了一截。
+而通过计算引擎的流批一体能力和对应的connector，则可以解决上述问题。我们可以直接通过写SQL的方式声明数据转换的逻辑，配合connector的能力，计算引擎会先批量读取数据，然后在某一时刻自动切换成流任务增量读取后续数据，而计算引擎内部流批一体的能力保证了语义的相同。
+三、流与批的桥梁Dataflow模型 流与批的本质区别是什么？两者的本质在于，批处理中数据是完整的、有界的，是可以将其作为一个整体来进行全局处理的，而流处理中数据是不完整的、无界的，在此情况下何时对数据进行聚合计算并将结果发送到下游就成了十分复杂的问题，因为可能存在数据迟到或乱序的情况。
+Google于2015年发表了一篇在流式处理领域具有指导性意义的论文——《The Dataflow Model: A Practical Approach to Balancing Correctness, Latency, and Cost in Massive-Scale Unbounded, Out-of-Order Data Processing》，该论文全面系统地阐述了流与批的本质区别，并提出了Dataflow模型作为流与批之间的桥梁（该模型中批处理是流处理的一种特例）。通过对该模型的实现，计算引擎可以在正确性、延迟、成本之间进行调整，无缝地在不同的应用场景间进行切换。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/347b21cf7ece6488eec1cf871c07e089/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-12-04T10:44:58+08:00" />
+<meta property="article:modified_time" content="2023-12-04T10:44:58+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">流批一体历史背景及基础介绍</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-github-gist">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>目录</h4> 
+ <ul><li><a href="#_1" rel="nofollow">一、历史背景</a></li><li><ul><li><a href="#1BI_2" rel="nofollow">1.BI系统</a></li><li><a href="#2_10" rel="nofollow">2.传统大数据架构</a></li><li><a href="#3_18" rel="nofollow">3.流式架构</a></li><li><a href="#4Lambda_28" rel="nofollow">4.Lambda架构</a></li><li><a href="#5Kappa_38" rel="nofollow">5.Kappa架构</a></li></ul> 
+  </li><li><a href="#_44" rel="nofollow">二、流批一体与数据架构的关系</a></li><li><ul><li><a href="#_47" rel="nofollow">数据分析型应用</a></li><li><a href="#_59" rel="nofollow">数据管道型应用</a></li></ul> 
+  </li><li><a href="#Dataflow_67" rel="nofollow">三、流与批的桥梁Dataflow模型</a></li><li><a href="#Dataflow_72" rel="nofollow">四、Dataflow模型的本质</a></li><li><ul><li><a href="#_78" rel="nofollow">一个基本点</a></li><li><a href="#_83" rel="nofollow">两个时间域</a></li><li><a href="#_98" rel="nofollow">三个子模型</a></li><li><ul><li><a href="#1_101" rel="nofollow">1.窗口模型</a></li><li><a href="#2_109" rel="nofollow">2.触发器模型</a></li><li><a href="#3__116" rel="nofollow">3. 增量计算模型</a></li></ul> 
+   </li><li><a href="#_135" rel="nofollow">四个分析维度</a></li></ul> 
+  </li><li><a href="#_143" rel="nofollow">五、举例</a></li><li><ul><li><a href="#_144" rel="nofollow">固定窗口，批处理</a></li><li><a href="#_149" rel="nofollow">固定窗口，流处理，多种触发方式</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_1"></a>一、历史背景</h2> 
+<h3><a id="1BI_2"></a>1.BI系统</h3> 
+<p>BI（Business Intelligence，商业智能）的概念很早就有了。到了上世纪九十年代，BI系统迎来了它的第一个辉煌时期，Gartner将各种类型的类BI系统全部统称为BI，BI产品也基本确定为了是一套集数据清洗、数据分析、数据挖掘、报表展示等功能于一体的完整解决方案，数据仓库也基于此建立。从此BI系统一统江湖，江湖上再也没了DSS（Decision Support System, 决策支持系统）、EIS</p> 
+<p>（Executive Information System, 主管信息系统）的名字。<br> BI系统的核心是Cube，它是一个业务模型抽象，在Cube上可以上钻、下钻、切片，为了更方便多维分析，还配套了MDX查询语言。当然，大多数BI系统都构建在关系型数据库之上，或者说很多BI系统本就是商业关系型数据库的配套产品，因此也都是支持SQL语言的。在计算和存储上可能类似于开源框架Apache Kylin。<br> 初代BI系统没落的原因主要是：</p> 
+<ol><li>底层构建在传统关系型数据库之上，因为存在数据一致性约束等问题，支持不了大数据。（这也暗合了网传了很多年的阿里技术规范中提到的一条——不要设置外键，要通过其他技术手段保证数据一致性。）</li><li>不支持非结构化数据。</li></ol> 
+<h3><a id="2_10"></a>2.传统大数据架构</h3> 
+<p>为了解决上述问题，一些公司开始研发分布式的计算引擎和分布式的存储平台。其中最成功、最知名的便是Google研发的分布式文件系统与MapReduce计算引擎，后来这套技术被开源重写为了Hadoop体系的多个项目，其生态圈也不断扩大。</p> 
+<p><strong>在Miravia的技术选型中，通常业务数据通过binlog同步到TT，或者流量日志直接上报到日志服务器，再同步到TT。TT定期将一个时间区间内的数据同步到ODPS，ODPS再通过每日调度的任务对这些数据进行处理，最终落到ADS层的表。结果表的数据再同步到Holo或Lindorm等介质中，供消费方使用</strong>。因此单看这整个流程，实际上就是典型的传统大数据架构的一种实现。但需要注意的是，该架构并没有对输入数据有结构化的要求，也没有规定ETL过程使用的工具和编程语言。</p> 
+<p>下图是一个典型的传统大数据架构<br> <img src="https://images2.imgbox.com/5c/44/bAbDpqay_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="3_18"></a>3.流式架构</h3> 
+<p>虽然传统大数据架构在技术选型上与BI系统比已经算是脱胎换骨，但其精神还是一脉相承。流式架构干脆扔掉一整套离线的数据采集、数据同步和ETL工作，直接让流式计算引擎消费业务数据库产生的增量数据，并直接输出给消费方，以此提供实时的计算结果。</p> 
+<p>而早期的技术储备明显不足以同时高质量保证实时性和结果的准确性，因此只被用在了极少数对结果实时性十分敏感却对准确性要求不高的场景中。随着技术的进步和业务复杂度的提高，这种架构也基本销声匿迹了。</p> 
+<p>下图是流式架构的典型代表：</p> 
+<p><img src="https://images2.imgbox.com/ab/3c/WXChuNUx_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="4Lambda_28"></a>4.Lambda架构</h3> 
+<p>Lambda架构的逻辑是，流任务与批任务读取相同的数据源，实时计算结果由流任务产出；批任务通常按天执行，计算T-1的数据，并写入到结果表中。最终数据应用根据自己的需要对两个结果表的结果进行合并。其核心思路是：用流任务保证结果的实时性，同时用批任务保证结果的最终一致性。</p> 
+<p>有一位叫做Nathan Marz的大佬提出了Lambda架构。先看Lambda架构的示意图：<br> <img src="https://images2.imgbox.com/7b/a1/mBAixNK1_o.png" alt="在这里插入图片描述"></p> 
+<p>但Lambda架构有几个显而易见的缺点：</p> 
+<ol><li>需要开发、维护两套系统，成本太大。</li><li>两套系统难以保证计算口径的一致。甚至不同计算引擎提供的计算语义完全不同。</li></ol> 
+<h3><a id="5Kappa_38"></a>5.Kappa架构</h3> 
+<p>在流处理技术不成熟的时期，主要问题之一就是吞吐量上不去。随着Kafka等大数据消息队列的出现，吞吐量不再是瓶颈。Kappa架构的主要贡献之一就是引入了分布式消息队列。如下图所示：</p> 
+<p><img src="https://images2.imgbox.com/e4/9f/BDXggHmv_o.png" alt="在这里插入图片描述"></p> 
+<p>与Lambda架构不通，Kappa架构只保留了流处理层，完全舍弃了批处理层。让其中一个流处理层正常运行，数据应用读取它的输出；当数据出现错误，或是业务逻辑发生变更时，启动另一个流处理层，利用消息队列的重播机制，重新消费先前的数据并输出到另一个结果表中，当确定可以替换线上表时，完成替换。当然，在实际生产中这个过程会复杂得多。而且受限于消息队列数据生命周期的限制，这种架构在生产中被应用得较少。</p> 
+<h2><a id="_44"></a>二、流批一体与数据架构的关系</h2> 
+<p>流批一体听起来很简单，但内涵却十分复杂。它包含了计算语义、编程模型、API、调度、执行、shuffle等各个方面的统一，不过对于我们数据开发的同学来说，我认为流批一体最终想要达到的效果可以这样描述：给定确定的数据源（可以是物理的也可以是逻辑上的），编写一套代码（Java代码或SQL），执行引擎能够根据需要（例如根据用户配置“STREAMING/BATCH”或自动识别）将代码转换为流任务（增量地读取、流式地处理）或批任务（全量地读取、批式地处理），并输出相同的结果。</p> 
+<h3><a id="_47"></a>数据分析型应用</h3> 
+<p>流批一体与Lambda架构结合得最为自然。如下图所示：<br> <img src="https://images2.imgbox.com/a9/e6/ExCNnIPS_o.png" alt="在这里插入图片描述"></p> 
+<p>这里引入了消息队列，算是Jay Kreps在提出Kappa架构时给我们提供的改进思路。因为流任务和批任务对输入的要求是不一样的，前者一般读取的都是类似Kafka这样的消息流，后者则读取的是数据库在某一刻的全量快照，所以我们暂且认为两个任务需要用不同的连接器读取不同的数据源。</p> 
+<p>为了保证输入统一，我们可以让流任务直接读取消息队列中的数据，这样它就在一刻不停地读取业务上的增量数据；在离线侧，我们周期性地将消息队列中的数据落盘，然后每日单独处理当天的增量数据，由此批任务也达成了周期性处理增量数据的效果。理想情况下，当批任务把T-1的数据输出时，结果应与流任务先前输出的T-1的结果相同。</p> 
+<p>这就是流批一体在数据分析型应用中的典型案例，它是Lambda架构的一种高级实现，解决了原Lambda架构中需要开发两套代码、维护两套系统、计算逻辑口径不一致的问题。Dataphin提供给大家的解决方案就是针对这种应用而来的。</p> 
+<p>不过要特别注意的是，计算逻辑口径一致不是因为你使用了相同的代码，而是基于相同的代码，计算引擎内部将其翻译成批任务和流任务时在语义、编程模型等方面达到了统一。如果计算引擎内部没有做到这一点，即便写了相同的代码也是无济于事的。</p> 
+<h3><a id="_59"></a>数据管道型应用</h3> 
+<p>除了数据分析型应用，还有一类应用，比如数据同步，这部分工作其实也可以通过计算引擎来实现，流批一体在这其中还能发挥大作用。这类应用可以叫做数据管道型应用。</p> 
+<p>比如需求是将一个线上数据库中的数据迁移到另一个数据库中，在同步的过程中线上数据库仍然会继续发生增删改查等业务操作。以往的方式往往是先通过一个离线同步工具同步全量数据，再通过另一个增量同步工具不断地同步新增数据。在这个过程中选择从哪一时刻开始增量同步是一大难点。如果在同步的过程中需要对数据做一些清洗或转换，则难度又大了一截。</p> 
+<p>而通过计算引擎的流批一体能力和对应的connector，则可以解决上述问题。我们可以直接通过写SQL的方式声明数据转换的逻辑，配合connector的能力，计算引擎会先批量读取数据，然后在某一时刻自动切换成流任务增量读取后续数据，而计算引擎内部流批一体的能力保证了语义的相同。</p> 
+<h2><a id="Dataflow_67"></a>三、流与批的桥梁Dataflow模型</h2> 
+<blockquote> 
+ <p>流与批的本质区别是什么？两者的本质在于，批处理中数据是完整的、有界的，是可以将其作为一个整体来进行全局处理的，而流处理中数据是不完整的、无界的，在此情况下何时对数据进行聚合计算并将结果发送到下游就成了十分复杂的问题，因为可能存在数据迟到或乱序的情况。</p> 
+</blockquote> 
+<p>Google于2015年发表了一篇在流式处理领域具有指导性意义的论文——《The Dataflow Model: A Practical Approach to Balancing Correctness, Latency, and Cost in Massive-Scale Unbounded, Out-of-Order Data Processing》，该论文全面系统地阐述了流与批的本质区别，并提出了Dataflow模型作为流与批之间的桥梁（该模型中批处理是流处理的一种特例）。通过对该模型的实现，计算引擎可以在正确性、延迟、成本之间进行调整，无缝地在不同的应用场景间进行切换。</p> 
+<h2><a id="Dataflow_72"></a>四、Dataflow模型的本质</h2> 
+<p>Dataflow模型的本质是一种窗口模型。它针对的是面对无界（该模型认为有界是无界的一种特例）输入源时由业务需求催生出的聚合计算需求（例如SQL语句中包含group by子句的聚合计算）。它将这类问题拆分成了几个子问题，主要包括：</p> 
+<ol><li>数据应该被分配到哪个窗口，以及在必要的场景下如何对窗口进行合并。</li><li>数据普遍存在乱序和迟到，何时认为窗口内的数据已经可以用于触发一次计算，将结果向下游输出。</li><li>如果触发完计算后有迟到的数据到来，应该如何处理。</li><li>如果多次触发计算，那么后续的计算结果与先前的计算结果之间有什么关系。</li></ol> 
+<h3><a id="_78"></a>一个基本点</h3> 
+<p><strong>“流”与“批”不是本质区别，“有界”和“无界”才是本质区别。</strong></p> 
+<p>我们可以通过不断运行批处理程序用以处理流式数据，也可以用流处理程序很自然地处理一个批次的有限数据。</p> 
+<h3><a id="_83"></a>两个时间域</h3> 
+<p>上图展示了不同时间域的含义。但我们主要理解两个时间域即可：</p> 
+<ol><li>处理时间。代表处理事件时系统时钟记录的时间。</li><li>事件时间。代表事件真实发生的时间。<br> <img src="https://images2.imgbox.com/07/91/ts5j8Wuy_o.png" alt="在这里插入图片描述"></li></ol> 
+<p>为什么需要引入两种时间域的概念？因为我们在触发计算或发送结果时，需要指定一个时间，这个时间表示的是数据自带的时间还是系统时间，这一点需要说清楚。</p> 
+<p>图中出现了一个Watermark的概念。Watermark这一概念在许多系统中都存在，例如Kafka、Flink、Spark等，但作用不同。简单来讲可以认为它就是通过某种算法计算出来的一个时间戳（这个算法通常会用到数据中的时间字段），至于这个时间戳的作用是什么，则根据系统需求而定。千万不要混淆各系统间Watermark的概念和内涵。下图非常具体地展示了两种时间域的关系，横轴是处理时间，纵轴是事件时间：<br> <img src="https://images2.imgbox.com/79/ef/hq4FOWdZ_o.png" alt="在这里插入图片描述"></p> 
+<p>在上图中，数据自带一个时间字段，Watermark则是每五分钟（处理时间）计算一次，计算方式是用当前数据中时间字段最大值减10分钟。例如在横轴12:15时，Watermark的值是由(12:14, dog)这一条数据的12:14-10m=12:04计算得到的。到了横轴的12:20时，计算方式同理。在上图中，Watermark的作用是用来判断数据是否迟到。例如，当Watermark更新到12:04时，在横轴12:15~12:20之间，又来了(12:08, dog)和(12:13, owl)这两条数据，虽然它们的事件时间12:08、12:13都小于横轴时间12:15，但仍大于Watermark，因此系统仍然认为它们不算迟到的数据。而图中(12:04, donkey)那条数据就被当作了迟到数据。</p> 
+<p>这是Watermark一种非常经典的用法，因为数据自带的时间字段是上游系统添加的，等数据到了下游系统时，又会花费一定的时间，如果这时再用处理时间来作为判断迟到的标准，则所有数据都会被判定为迟到，因此用此时系统中数据的最大时间减去一个值作为Watermark的值就十分的合理，如果超过这个时间还没有达到的数据，才会被判定为迟到数据。</p> 
+<h3><a id="_98"></a>三个子模型</h3> 
+<p>Dataflow模型由3个子模型构成——窗口模型、触发器模型和增量计算模型。这三个模型分别解决了“数据如何被聚合”、“聚合在一起的数据何时触发聚合计算”和“后续的计算结果如何影响之前的计算结果”这三个问题。</p> 
+<h4><a id="1_101"></a>1.窗口模型</h4> 
+<p>窗口模型是Dataflow模型的核心。定义了窗口的分配方式（数据应该被放到哪个窗口）和合并方式。<br> 有三种窗口类型：</p> 
+<ol><li>固定窗口（滚动窗口）。创建时指定窗口大小。</li><li>滑动窗口。创建时指定窗口大小和滑动周期。固定窗口可以视为滑动周期与窗口大小相等的滑动窗口。</li><li>会话窗口。创建时指定超时时间。如果新输入数据的事件时间与先前数据的事件时间相比超过了超时时间，则新输入数据属于新的会话窗口；如果没有超过超时时间，则它形成的窗口与先前的窗口合并。<br> <img src="https://images2.imgbox.com/1d/8f/9Zqx7hmh_o.png" alt="在这里插入图片描述"></li></ol> 
+<h4><a id="2_109"></a>2.触发器模型</h4> 
+<p>触发器模型规定了窗口中的数据何时触发计算。很多现有的计算引擎采用了Watermark作为窗口计算的触发器。例如，每次Watermark更新时，就将当前窗口中的数据计算一次。<br> 但是Watermark存在两个问题：</p> 
+<ol><li>有时Watermark上升太快。这意味着可能有Watermark以下的数据晚到。对于很多分布式数据源，要得到一个完美的事件时间Watermark是很难的，因此我们不可能依靠它得到100%的正确性。</li><li>有时Watermark上升太慢。因为Watermark是全局进度的度量，整个数据管道的Watermark可能被单条数据拖慢。就算是一个事件时间偏差保持稳定的健康数据管道，根据不同的数据源，基本的偏差仍会达到几分钟甚至更多。因此，单单使用Watermark来判断窗口计算结果是否可以发往下游大概率会产生比Lambda架构更大的延迟。</li></ol> 
+<p>Lambda架构在处理这一问题的方式上给了我们启示，它规避了这个问题：它不追求更快地给出正确的计算结果，它只是简单地用流处理尽快提供正确计算结果的估计值，而批处理最终会保证这个值的一致性与正确性。我们将需要一种方式针对一个给定窗口提供多个计算结果。我们称这个特性为触发器，因为它规定了一个窗口何时触发计算得到输出结果。</p> 
+<h4><a id="3__116"></a>3. 增量计算模型</h4> 
+<p>有了窗口模型规定数据被放在哪个窗口，又有触发器模型规定了窗口内的数据何时触发计算，为什么还需要增量计算模型呢？这是因为在处理无界数据时，我们没有办法等到数据全部“到齐”再触发一次计算，而是要通过触发器模型基于某种条件触发一次或多次计算。如果触发多次计算，那么后续的结果与先前的结果之间应该是什么关系呢？这是增量计算模型要回答的问题。</p> 
+<p>增量计算模型将计算结果的处理方式归纳为了三种策略：</p> 
+<ol><li>丢弃：触发计算后，窗口内容被丢弃，后续的计算结果与先前的计算结果没有关系。</li><li>累积：触发计算后，窗口内容被完整保留在持久化状态中，后续的计算结果会修正先前的结果。</li><li>累积并撤回：触发计算后，在累积语义的基础上，输出结果的拷贝也被存储在了持久化状态中。当之后窗口再次触发计算时，会先引发先前结果的撤回，然后新的计算结果再发往下游。<br> 以下面的数据流为例：<br> <img src="https://images2.imgbox.com/fd/6e/4Uku27Q6_o.png" alt="在这里插入图片描述"></li></ol> 
+<p>假设我们定义触发器的触发条件是窗口中每来3条数据就触发一次计算。<br> 丢弃策略：<br> First trigger firing: [5, 8, 3]<br> Second trigger firing: [15, 19, 23]<br> Third trigger firing: [9, 13, 10]<br> 累积策略：<br> First trigger firing: [5, 8, 3]<br> Second trigger firing: [5, 8, 3, 15, 19, 23]<br> Third trigger firing: [5, 8, 3, 15, 19, 23, 9, 13, 10]</p> 
+<h3><a id="_135"></a>四个分析维度</h3> 
+<p>论文中用4个问题总结了Dataflow模型解决的问题。<br> 分别是：</p> 
+<ol><li>计算什么结果。（What results are being computed.）第一个问题实际上是在说用什么聚合方式来对数据进行聚合。在SQL中指的就是SUM、COUNT、COUNT DISTINCT这些聚合方式。</li><li>如何按照事件时间来进行计算。（Where in event time they are being computed.）第二个问题对应了窗口子模型。在解决真实场景的业务问题时，通常都是用数据自带的时间字段（事件时间）作为窗口划分的依据。</li><li>何时触发计算。（When in processing time they are materialized.）第三个问题对应了触发器子模型。</li><li>早期的计算结果如何在后期被修正。（How earlier results relate to later refinements.）第四个问题对应了增量计算子模型。</li></ol> 
+<h2><a id="_143"></a>五、举例</h2> 
+<h3><a id="_144"></a>固定窗口，批处理</h3> 
+<p><img src="https://images2.imgbox.com/d6/82/Qa96TxvC_o.png" alt="在这里插入图片描述"></p> 
+<p>这个示例与上例相比，仅仅将全局窗口换成了固定窗口。对应到SQL语句，相当于SUM聚合，并且GROUP BY event_time。<br> 批处理的延迟是最高的，因为必须等数据到齐后才触发计算。它的存储成本也是较高的，因为在触发计算前，必须保留所有的明细数据。计算成本则不高，因为只触发一次计算。正确性是最高的，因为它处理的是完整的数据，没有为了低延迟而仅用部分数据进行计算。</p> 
+<h3><a id="_149"></a>固定窗口，流处理，多种触发方式</h3> 
+<p><img src="https://images2.imgbox.com/77/b9/KiTD62gX_o.png" alt="在这里插入图片描述"></p> 
+<p>最后，我们来看一种复杂的场景。在这个示例中，我们采用固定窗口，即SUM GROUP BY event_time语义。触发策略采用两种策略的组合，其一是在处理时间上每分钟触发一次，其二是有迟到数据到来时，对应窗口触发一次计算。增量计算策略是累积，即触发计算后窗口内数据不清空。<br> 以[12:00, 12:02)这个窗口为例，在处理时间12:06触发了一次计算，此时窗口中只有5，因此结果为5。到了处理时间12:08~12:09之间的某个时刻，9这条数据到来，此时由于Watermark的推进，这条数据被视为了迟到的数据，它触发了[12:00, 12:02)这个窗口的再次计算，得到5+9=14这个结果。<br> 在这个例子中，我们通过更复杂的触发策略，更精细地调节了正确性与成本间的平衡。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/845ac61b6bf1a242a7e904cdde697c65/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">yolov5 安全帽检测 全流程 全资源 技术交流（相互学习）！！！</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/b634aa8971450151a5c8e9dacc8e0042/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">JWT令牌的获取与过滤器Filter的使用</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

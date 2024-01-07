@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>一文通透想颠覆Transformer的Mamba：从SSM、S4到mamba、线性transformer(含RWKV解析) - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="一文通透想颠覆Transformer的Mamba：从SSM、S4到mamba、线性transformer(含RWKV解析)" />
+<meta property="og:description" content="前言 不知读者发现没有，本文标题的信息含量很大，比如
+出来了一个新的序列模型：Mamba，其基于SSM或S4(Structured State Space for Sequence Modeling，连起来4个S，故简称S4)发展为S6(S4 models with a selection mechanism and computed with a scan)，其对应的论文为《Mamba: Linear-Time Sequence Modeling with Selective State Spaces》该Mamba模型的提出者为Albert Gu、Tri Dao，前者现在是CMU助理教授，多年来一直推动SSM架构发展，曾在DeepMind 工作，后者为FlashAttention的一作
+换言之，除了论文中展示的效果确实不错之外，由于提出者的背景不一般，所以关注的人比较多Transformer统治各大领域近7年了，7年来，挑战Transformer的模型其实不少 (比如linear attention, gated convolution and recurrent models, and SSMs)，该模型能否真正颠覆Transformer的霸权呢？对此，我们可以细究其原理细节，看看其创新到底是否靠谱、力度是否大 加之有一大模型项目开发营的朋友问道，可否在论文100课上解读下Mamba这篇论文，于此，便有了此文，且具备4个特点
+清晰易懂：也为「不需要天天看paper的朋友」而写
+在ChatGPT诞生后的一年来，以大模型为代表的技术发展特别快，经常一个月会出来很多新的技术、模型
+而不一定非得是每天在实验室扎根于科研的人 才有资格去追踪前沿技术发展，还有一大帮可能是出于对前沿技术的了解、兴趣、热爱、应用而想追踪，可这帮朋友平时或因工作或事太多而不一定对每个新技术、新模型都去看一遍论文，即不可能天天看paper
+那咋办呢？他们可能通过一些比如公众号之类的文章去了解，但有的公号文章写的不错，有的则写的不够清晰易懂甚至漏洞百出，会因此让读到这种文章的朋友对新技术、新模型产生畏难心理甚至被误导
+故，我和我司来了，为帮助更多朋友更好、更快、更细致的了解大模型相关技术及其实践，我个人算是笔耕不辍(我自今年年初以来也史无前例的写了近30篇，详见：大模型/AIGC/ChatGPT系列：原理、论文、代码、实战)、团队和我算讲课不停中英对比：部分关键的阐述中英文对照学习
+考虑到这些新技术、新模型刚推出的时候，论文还是相对最严谨的参考，所以本文会延续前几篇文章的风格：对于一些关键的阐述会把原英文的表述用斜体且淡色的黑体表示，毕竟有的描述对其翻译相比，用原英文阐述更精准足够细致：从HiPPO、SSM、S4起步，逐步推导到Mamba
+目前介绍mamba模型的文章，少部分写得很不错，大部分不是这个细节没深入，便是那个细节没深入，考虑到如果很多关键细节没有介绍的话，那没法彻底理解mamba模型
+因此，本文会尽可能兼顾所有必须写清楚的细节(比如如果不理解SSM和S4则无法理解mamba模型，故本文会从HiPPO、SSM、S4起步，逐步推导到mamba)，尽可能一文通透mamba模型足够全面：Mamba之外，更精讲「线性Transformer」相关
+友人钟博士曾评论，不带点积注意力机制的开源模型中，有希望超越带注意力机制的Llama架构的，一个是mamba，一个便是TransnormerLLM
+mamba之外，为帮助大家更深入、更全面的理解不带点积注意力机制的线性transformer，本文第三部分将精讲国内的两个相关工作：TransnormerLLM和RWKV 第一部分 背景知识：Transformer时间复杂度、HiPPO、SSM、S4 1.1 Transformer的二次复杂度 通过之前本博客内的另一篇文章《通透理解FlashAttention与FlashAttention2：让大模型上下文长度突破32K的技术之一》，可知
+简单理解的话，计算复杂度和序列长度的平方成正比，可以看一个小例子，比如两个相乘的矩阵大小分别为() 和()，矩阵乘法的一种计算方式是使用第一个矩阵的每一行与第二个矩阵的每一列做​点乘​
+因为我们需要拿第一个矩阵的每一行去与第二个矩阵的每一列做点乘，所以总共就需要 次点乘。而每次点乘又需要 次乘法，所以总复杂度就为 精确理解的话，当输入批次大小为 ​ ，序列长度为 ​ 时，
+​ 层transformer模型的计算量为 ​，​则代表词向量的维度或者隐藏层的维度(隐藏层维度通常等于词向量维度)
+但这个结果是怎么一步一步计算得到的呢？请看原文" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/dc926fd30ec82f64e0af09506d1becf4/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-12-23T18:41:44+08:00" />
+<meta property="article:modified_time" content="2023-12-23T18:41:44+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">一文通透想颠覆Transformer的Mamba：从SSM、S4到mamba、线性transformer(含RWKV解析)</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2>前言</h2> 
+<p>不知读者发现没有，本文标题的信息含量很大，比如</p> 
+<ol><li>出来了一个新的序列模型：Mamba，其基于SSM或S4(<span style="color:#7b7f82;"><em>Structured State Space for Sequence Modeling<em>，连</em>起来4个S，故简称S4</em></span>)发展为S6(<span style="color:#7b7f82;"><em>S4 models with a <strong>selection</strong> mechanism and computed with a <strong>scan</strong></em></span>)，其对应的论文为《<span style="color:#000000;"><a class="link-info" href="https://arxiv.org/abs/2312.00752" rel="nofollow" title="Mamba: Linear-Time Sequence Modeling with Selective State Spaces">Mamba: Linear-Time Sequence Modeling with Selective State Spaces</a></span>》</li><li>该Mamba模型的提出者为Albert Gu、Tri Dao，前者现在是CMU助理教授，多年来一直推动SSM架构发展，曾在DeepMind 工作，后者为FlashAttention的一作<br> 换言之，除了论文中展示的效果确实不错之外，由于提出者的背景不一般，所以关注的人比较多</li><li>Transformer统治各大领域近7年了，7年来，挑战Transformer的模型其实不少 (<span style="color:#7b7f82;"><em>比如linear attention, gated convolution and recurrent models, and SSMs</em></span>)，该模型能否真正颠覆Transformer的霸权呢？对此，我们可以细究其原理细节，看看其创新到底是否靠谱、力度是否大</li></ol> 
+<p>加之有一大模型项目开发营的朋友问道，可否在论文100课上解读下Mamba这篇论文，于此，便有了此文，且具备4个特点</p> 
+<ol><li><strong>清晰易懂：也为「不需要天天看paper的朋友」而写</strong><br> 在ChatGPT诞生后的一年来，以大模型为代表的技术发展特别快，经常一个月会出来很多新的技术、模型<br> 而不一定非得是每天在实验室扎根于科研的人 才有资格去追踪前沿技术发展，还有一大帮可能是出于对前沿技术的了解、兴趣、热爱、应用而想追踪，可这帮朋友平时或因工作或事太多而不一定对每个新技术、新模型都去看一遍论文，即不可能天天看paper<br><br> 那咋办呢？他们可能通过一些比如公众号之类的文章去了解，但有的公号文章写的不错，有的则写的不够清晰易懂甚至漏洞百出，会因此让读到这种文章的朋友对新技术、新模型产生畏难心理甚至被误导<br><br> 故，我和我司来了，为帮助更多朋友更好、更快、更细致的了解大模型相关技术及其实践，我个人算是笔耕不辍(<em><span style="color:#7b7f82;">我自今年年初以来也史无前例的写了近30篇，详见：<em><span style="color:#7b7f82;"><em><span style="color:#7b7f82;"><em><span style="color:#7b7f82;"><a class="link-info" href="https://blog.csdn.net/v_july_v/category_12306170.html" title="大模型/AIGC/ChatGPT系列：原理、论文、代码、实战">大模型/AIGC/ChatGPT系列：原理、论文、代码、实战</a></span></em></span></em></span></em></span></em>)、团队和我算讲课不停</li><li><strong>中英对比：部分关键的阐述中英文对照学习</strong><br> 考虑到这些新技术、新模型刚推出的时候，论文还是相对最严谨的参考，所以本文会延续前几篇文章的风格：对于一些关键的阐述会把原英文的表述用斜体且淡色的黑体表示，毕竟有的描述对其翻译相比，用原英文阐述更精准</li><li><strong>足够细致：从HiPPO、SSM、S4起步，逐步推导到Mamba</strong><br> 目前介绍mamba模型的文章，少部分写得很不错，大部分不是这个细节没深入，便是那个细节没深入，考虑到如果很多关键细节没有介绍的话，那没法彻底理解mamba模型<br> 因此，本文会尽可能兼顾所有必须写清楚的细节(<span style="color:#7b7f82;"><em>比如如果不理解SSM和S4则无法理解mamba模型，故本文会</em></span><strong><span style="color:#7b7f82;"><em>从HiPPO、SSM、S4起步，逐步推导到mamba</em></span></strong>)，尽可能一文通透mamba模型</li><li><strong>足够全面：Mamba之外，更精讲「线性Transformer」相关</strong><br> 友人钟博士曾评论，不带点积注意力机制的开源模型中，有希望超越带注意力机制的Llama架构的，一个是mamba，一个便是TransnormerLLM<br> mamba之外，为帮助大家更深入、更全面的理解不带点积注意力机制的线性transformer，本文第三部分将精讲国内的两个相关工作：TransnormerLLM和RWKV</li></ol> 
+<p></p> 
+<h2>第一部分 背景知识：Transformer时间复杂度、HiPPO、SSM、S4</h2> 
+<h3>1.1 Transformer的二次复杂度</h3> 
+<p>通过之前本博客内的另一篇文章《<a class="link-info" href="https://blog.csdn.net/v_JULY_v/article/details/133619540" title="通透理解FlashAttention与FlashAttention2：让大模型上下文长度突破32K的技术之一">通透理解FlashAttention与FlashAttention2：让大模型上下文长度突破32K的技术之一</a>》，可知</p> 
+<blockquote> 
+ <p>简单理解的话，计算复杂度和序列长度的平方<img alt="N^2" src="https://images2.imgbox.com/8b/d7/qh5cEVm5_o.png">成正比，可以看一个小例子，比如两个相乘的矩阵大小分别为(<img alt="N \times d" src="https://images2.imgbox.com/bf/56/qSzbg4fP_o.png">) 和(<img alt="d \times N" src="https://images2.imgbox.com/c2/09/JDbcCcze_o.png">)，矩阵乘法的一种计算方式是使用第一个矩阵的每一行与第二个矩阵的每一列做​点乘​</p> 
+ <p class="img-center"><img alt="" height="277" src="https://images2.imgbox.com/c3/15/cjlQd7tM_o.png" width="800"></p> 
+ <p>因为我们需要拿第一个矩阵的每一行去与第二个矩阵的每一列做点乘，所以总共就需要 <img alt="N^2" src="https://images2.imgbox.com/35/a3/4HBoTNmU_o.png"> 次点乘。而每次点乘又需要 <img alt="d" src="https://images2.imgbox.com/b7/36/dbq8QhzR_o.png"> 次乘法，所以总复杂度就为 <img alt="\mathrm O(N^2d)" src="https://images2.imgbox.com/65/2c/PRGVdxcm_o.png"></p> 
+ <hr> 
+ <p>精确理解的话，当输入批次大小为 <img alt="b" src="https://images2.imgbox.com/8a/57/yOJXGSdb_o.png">​ ，序列长度为 <img alt="N" src="https://images2.imgbox.com/60/b0/dViDx4BE_o.png">​ 时，<br><img alt="l" src="https://images2.imgbox.com/73/78/l91vI0sX_o.png">​ 层transformer模型的计算量为 <img alt="l *\left(24 b N d^{2}+4 b N^{2} d\right)" src="https://images2.imgbox.com/b8/1d/8Ub9Yy2p_o.png">​，<img alt="d" src="https://images2.imgbox.com/e9/7e/BZTA6clg_o.png">​则代表词向量的维度或者隐藏层的维度(隐藏层维度通常等于词向量维度)</p> 
+ <p>但这个结果是怎么一步一步计算得到的呢？请看<a class="link-info" href="https://blog.csdn.net/v_JULY_v/article/details/133619540" title="原文">原文</a></p> 
+</blockquote> 
+<p>正因为现有的ChatGPT等大模型处理长文本算力消耗巨大，背后原因是Transformer架构中注意力机制的二次复杂度</p> 
+<ol><li>一方面，有了针对注意力机制的各种所谓魔改，甚至也有S4、FlashAttention及其二代等</li><li>二方面，S4、FlashAttention等作者提出了新的序列模型：Mamba，在很多语言任务上击败/匹配Transformer性能，具有线性复杂度和5倍推理吞吐量，下文详述</li></ol> 
+<p></p> 
+<h3>1.2 状态空间模型SSM(State Space Model)</h3> 
+<p>SSM可以视为从输入信号到输出信号的参数化映射</p> 
+<ol><li>SSMs可以当做是RNN与CNN的结合「<span style="color:#7b7f82;"><em>These models can be interpreted as acombination of recurrent neural networks (RNNs) and convolutional neural networks (CNNs)</em></span>」</li><li>这类模型可以非常高效地计算为递归或卷积，在序列长度上具有线性或近线性缩放(<span style="color:#7b7f82;"><em>This class of models can be computed very efficiently as either arecurrence or convolution, with linear or near-linear scaling in sequence length</em></span>)</li></ol> 
+<p>然而，他们在对文本等离散且信息密集的数据进行建模时效果较差(<span style="color:#7b7f82;"><em>they have been less effective at modeling discrete and information-dense data such as text</em></span>)</p> 
+<p>从而有了本文要介绍的一类新的选择性状态空间模型(下文详述)，它改进了先前的工作，以实现模型在“序列长度线性缩放(scaling linearly in sequence length)”情况下的建模能力</p> 
+<h3>1.3 S4的前身：HiPPO</h3> 
+<h4>1.3.1 改进transformer不擅长处理超长的序列的问题：输入u到状态x</h4> 
+<p>如本文开头所说，mamba论文的一作Albert Gu多年来一直在推动SSM的发展</p> 
+<ul><li>他在SSM的基础上，通过此篇论文《<a class="link-info" href="https://arxiv.org/pdf/2111.00396" rel="nofollow" title="Efficiently Modeling Long Sequences with Structured State Spaces">Efficiently Modeling Long Sequences with Structured State Spaces</a>》首次提出了结构化状态空间S4(<em><span style="color:#7b7f82;">这里有<a class="link-info" href="http://aixpaper.com/similar/efficiently_modeling_long_sequences_with_structured_state_spaces" rel="nofollow" title="关于S4的更多论文">关于S4的更多论文</a></span></em>)，但这篇论文的可读性比较差</li><li>好在作者在YouTube上有一个关于这篇<a class="link-info" href="https://www.youtube.com/watch?v=luCBXCErkCs" rel="nofollow" title="S4论文的精彩解读">S4论文的精彩解读</a>，下面便以他这个解读视频梳理一下(以下PPT截取自该解读视频中)</li></ul> 
+<p>简单来讲，序列数据一般都是离散的数据 比如文本、图、DNA</p> 
+<ol><li>但现实生活中还有很多连续的数据，比如音频、视频，对于音视频这种信号而言，其一个重要特点就是有极长的context window</li><li>而在transformer长context上往往会失败，或者注意力机制在有着超长上下文长度的任务上并不擅长(<span style="color:#7b7f82;"><em>所以你才看到各种对注意力机制的改进，比如flashattention等等，即便如此一般也就32K的上下文长度，在面对100w的序列长度则无能为力</em></span>)，而S4擅长这类任务 <p class="img-center"><img alt="" height="209" src="https://images2.imgbox.com/af/8a/Mj3Kjxbb_o.png" width="600"></p> </li></ol> 
+<p>为了方便大家更好的理解，Albert Gu举了一个金融领域的例子</p> 
+<ol><li>即根据输入，计算其EMA(如下图所示，黑色的一直在跳跃着的曲线是<strong>输入x</strong>，<span style="color:#1a439c;">输出y</span>是蓝色的线) <p class="img-center"><img alt="" height="302" src="https://images2.imgbox.com/79/24/Dwz3TeWu_o.png" width="600"></p> 由于EMA(Exponential Decaying Measure)有着unbounded context(无限长度)，Transformers和Convolution因为都只有着有限的上下文窗口而不好计算</li><li>Albert Gu发现EMA其实是整个signal的一个summary，相当于是过往所有信号历史的加权平均值，其权重呈指数衰减之势(下图中<span style="color:#1c7331;">绿色的线即相当于投影到的指数衰减</span>) <p class="img-center"><img alt="" height="238" src="https://images2.imgbox.com/0a/30/qi3rpahL_o.png" width="600"></p> </li><li>如果用<strong><img alt="u" class="mathcode" src="https://images2.imgbox.com/6e/b8/akMQDHGO_o.png">表示input</strong>，<span style="color:#1a439c;">且<img alt="x" class="mathcode" src="https://images2.imgbox.com/fa/a9/G6nQ9U55_o.png">表示对应的summary</span>(<span style="color:#7b7f82;"><em>可能你看到这里 觉得表示有点乱，毕竟上面还是输入x 输出y，不过 不要急，很快你会看到：<strong><u>输入u、状态x</u>、输出y</strong></em></span>)<br> 那么该summary可以在常数时间内快速计算得到(<span style="color:#7b7f82;"><em>即summary of entire context update in constant time</em></span>)： <p class="img-center"><img alt="" height="20" src="https://images2.imgbox.com/93/3d/RbeUiOby_o.png" width="187"></p> 这个summary作为对之前信息的一个总结，也可以认为是对“当前事物所处在一个什么样的状态”的建模，而随着新信息的不断输入，那么当前事物所处的状态也会不断更新</li></ol> 
+<h4>1.3.2 HiPPO的推导：state compresses the history of input</h4> 
+<p>假设 <img alt="t_0" class="mathcode" src="https://images2.imgbox.com/1c/c8/AGM7vbdA_o.png">时刻我们看到了信号 <img alt="u(t)" class="mathcode" src="https://images2.imgbox.com/3c/c3/c6XMTolO_o.png"> 的之前部分：</p> 
+<ol><li>我们希望在一个memory budget来压缩前面这一段的input来学习特征，一个很容易想到的方法是用多项式去近似这段input <p class="img-center"><img alt="" height="97" src="https://images2.imgbox.com/b8/a4/av5rT7uX_o.png" width="148"></p> </li><li>在我们接收到更多signal的时候，我们希望仍然在这个memory budget内对整段signal进行压缩，自然，你得更新你的多项式的各项系数，如下图底部所示 <p class="img-center"><img alt="" height="323" src="https://images2.imgbox.com/a5/62/MI0NzlIr_o.png" width="600"></p> </li><li>以上，会涌现出两个问题：<br> 1. 如何找到这些最优的近似？<br> 2. 如何快速地更新多项式的参数？<br> 为了解决这两个问题，我们需要一个measure去定义一个近似的好坏程度。例如，可以使用EDM <p class="img-center"><img alt="" height="323" src="https://images2.imgbox.com/b5/bc/dItWCfcK_o.png" width="600"></p> </li><li>这就引出了HiPPO(High-order Polynomial Projection Operator)的正式定义，其为两个信号和两个矩阵的组合： <p class="img-center"><img alt="" height="337" src="https://images2.imgbox.com/a3/d5/VaariEGb_o.png" width="600"></p> 这个矩阵A就是HiPPO矩阵，比如可以是这样： <p class="img-center"><img alt="" height="97" src="https://images2.imgbox.com/b3/6a/JiGxNFnN_o.png" width="120"></p> </li><li>HiPPO相当于将函数映射到函数，这里给个通俗的例子解释一下： <p class="img-center"><img alt="" height="267" src="https://images2.imgbox.com/1b/ed/eEBBAXMW_o.png" width="600"></p> 和上面一样，这里的<strong><img alt="u" class="mathcode" src="https://images2.imgbox.com/82/f1/NHyG7bAm_o.png">是原信号，<span style="color:#1a439c;"><img alt="x" class="mathcode" src="https://images2.imgbox.com/ed/46/Vvs3749R_o.png">是压缩后的信号</span></strong>。给定一个持续增长的<img alt="u" class="mathcode" src="https://images2.imgbox.com/1d/3b/Z5IMY3xU_o.png">，HiPPO允许online update压缩的<img alt="x" class="mathcode" src="https://images2.imgbox.com/c2/03/YrcjWVah_o.png">。如果使用一个64unit的polynomial压缩器(完全表示需要10000unit，所以是非常高度的压缩)，可以发现EDM很不错，保留了大量之前的信息： <p class="img-center"><img alt="" height="262" src="https://images2.imgbox.com/9e/5e/yHOTQQsn_o.png" width="600"></p> 其中<span style="color:#ed7976;">红色的线</span>相当于对输入的重建(<span style="color:#7b7f82;"><em>可以看出来，离当下最近时刻的 其刻画最准确，至于离当下最远的时刻 则其刻画的不那么准确 </em></span>)<br> 这里要注意，HiPPO只需要看到这个时刻的多项式(polynomial)参数和在此之前的signal <img alt="u" class="mathcode" src="https://images2.imgbox.com/1d/a3/od3sJ66A_o.png">，不需要看到之前的多项式参数..</li><li>上面都是用EDM这个measure的，但是我们在学习过程中用的往往不只一个measure(例如一个time-varying measure can change over time)，这个时候如何去建模？<br> 最终，作者得到了一个结论：HiPPO可以在各种measure上面成立 <p class="img-center"><img alt="" height="288" src="https://images2.imgbox.com/4c/11/G9LxvL32_o.png" width="600"></p> </li></ol> 
+<h3>1.4 S4的推出：Structured State Space Models</h3> 
+<h4>1.4.1 HiPPO的高阶化(输入u到状态x最后输出y)</h4> 
+<p>发现HiPPO在低阶信号上work后，我们希望将它扩展到高阶信号上。阶数越高，与LLM越相似，工作的价值就越大</p> 
+<ol><li>但是我们不能直接堆叠HiPPO算子，因为不断增加维度会引起维数爆炸： <p class="img-center"><img alt="" height="243" src="https://images2.imgbox.com/9d/ce/4L07RLrH_o.png" width="600"></p> </li><li>作者想到了非常精妙的一个方法：不考虑input <img alt="u" class="mathcode" src="https://images2.imgbox.com/4d/e1/7Hc8dLA6_o.png"> 到state <img alt="x" class="mathcode" src="https://images2.imgbox.com/b9/7a/bkkpYtgs_o.png">，而是直接从state <img alt="x" class="mathcode" src="https://images2.imgbox.com/c3/cb/VoYzlefz_o.png"> 到output <img alt="y" class="mathcode" src="https://images2.imgbox.com/e8/93/0mloUa0Q_o.png"><br> 如下图所示，通过<span style="color:#1a439c;">蓝色<img alt="x(t)" class="mathcode" src="https://images2.imgbox.com/ee/3f/uQcoSTVn_o.png">的线性组合</span>得到最终的<span style="color:#be191c;">输出红色<img alt="y(t)" class="mathcode" src="https://images2.imgbox.com/8b/86/gGO7GNsj_o.png"></span>，这里的 <img alt="Cx" class="mathcode" src="https://images2.imgbox.com/8a/7a/P3o7c3eU_o.png"> 就是state <img alt="x" class="mathcode" src="https://images2.imgbox.com/39/80/xZnt5a22_o.png"> 的线性组合，而 <img alt="D" class="mathcode" src="https://images2.imgbox.com/55/07/u7giMpVR_o.png"> 就是skip connection，是绕开state <img alt="x" class="mathcode" src="https://images2.imgbox.com/d9/75/DKbFRSGT_o.png"> ，直接从<strong>input <img alt="u" class="mathcode" src="https://images2.imgbox.com/02/cd/H6lqb7IW_o.png"> </strong>到<span style="color:#be191c;">输出 <img alt="y" class="mathcode" src="https://images2.imgbox.com/7c/e6/IDWqLRB0_o.png"> </span>的一个连接： <p class="img-center"><img alt="" height="304" src="https://images2.imgbox.com/53/45/D9YbeiKO_o.png" width="600"></p> </li><li>这样，我们通过两个方程定义S4<br><img alt="\rightarrow" class="mathcode" src="https://images2.imgbox.com/55/20/4dckyPed_o.png">  一个是之前定义的 <img alt="x'" class="mathcode" src="https://images2.imgbox.com/47/3e/AbiGjhet_o.png">(下一时刻的 <img alt="x" class="mathcode" src="https://images2.imgbox.com/b9/c2/Viin0Z0O_o.png">) 来将input <img alt="u" class="mathcode" src="https://images2.imgbox.com/f6/5f/gieuFc79_o.png"> 记忆成state，如下图左侧所示<br><img alt="\rightarrow" class="mathcode" src="https://images2.imgbox.com/ba/7d/tKY4VVIY_o.png">  现在又定义了 <img alt="y" class="mathcode" src="https://images2.imgbox.com/42/17/OTDFNAup_o.png"> 来将state <img alt="x" class="mathcode" src="https://images2.imgbox.com/95/e1/kmDKHnDQ_o.png"> 线性组合成一个输出，如下图右侧所示 <p><img alt="" height="184" src="https://images2.imgbox.com/d8/13/LStJXjAF_o.png" width="400"><img alt="" height="186" src="https://images2.imgbox.com/db/15/4JopYgwy_o.png" width="400"></p> 相当于<span style="color:#fe2c24;">输入到状态、状态到输出</span>，至此，也算终于写清楚了S4</li><li>有意思的是，推出来的这些公式组成了一个1960年在ASME会议上提出的State Space Machine! SSM由Kalman提出，原文在这：<a href="http://160.78.24.2/Public/Kalman/Kalman1960.pdf" rel="nofollow" title="A New Approach to Linear Filtering and Prediction Problems">A New Approach to Linear Filtering and Prediction Problems</a> <p class="img-center"><img alt="" height="231" src="https://images2.imgbox.com/c4/f6/co4CY80g_o.png" width="500"></p> </li></ol> 
+<h4>1.4.2 Structured SSM</h4> 
+<p>我们正式定义下S4</p> 
+<ol><li>首先，有一个state space model，简称为SSM</li><li>其次，在下图所示的两个方程中插入特定的矩阵值 <p class="img-center"><img alt="" height="267" src="https://images2.imgbox.com/29/3a/ZTCDCUYQ_o.png" width="600"></p> </li><li>接着，学习对应的参数</li></ol> 
+<h3>1.5 S4的性质：连续的表示、用Recurrent快速infer、用Convolutional快速训练</h3> 
+<p>接下来，我们来看下如下图所示的S4的三个性质</p> 
+<p class="img-center"><img alt="" height="216" src="https://images2.imgbox.com/38/a9/RG540WFx_o.png" width="600"></p> 
+<h4><strong>1.5.1 连续的表示</strong></h4> 
+<p>第一个性质是连续的表示，且就算SSM在离散数据上训练，它仍能学习到底层蕴含的连续信息，因为在SSM眼里，sequence不过是连续信号signal的采样(离散形式)，或者说连续的信号模型是离散的序列模型的概括</p> 
+<p class="img-center"><img alt="" height="1150" src="https://images2.imgbox.com/27/75/y8KNPodo_o.png" width="600"></p> 
+<h4><strong>1.5.2 用Recurrent表示进行快速的infer</strong></h4> 
+<p>第二个性质是有效的online计算，这点之前在HiPPO提到了，就是计算下一时刻的state <img alt="x'" class="mathcode" src="https://images2.imgbox.com/c4/83/h2DJ41TN_o.png"> 只需要<span style="color:#1a439c;">这一时刻的state <img alt="x" class="mathcode" src="https://images2.imgbox.com/ab/bb/ZOku8pNy_o.png"> </span>和全局输入 <img alt="u" class="mathcode" src="https://images2.imgbox.com/c5/65/ewsxhl6g_o.png"></p> 
+<p class="img-center"><img alt="" height="240" src="https://images2.imgbox.com/70/f1/5RTwVd1o_o.png" width="600"></p> 
+<p><img alt="\rightarrow" class="mathcode" src="https://images2.imgbox.com/49/25/wDamJ7Qq_o.png">  虽然需要全局输入，但是这个全局的计算是常数时间的，这与RNN相同，而与Transformer/CNN不同<br><img alt="\rightarrow" class="mathcode" src="https://images2.imgbox.com/0d/36/yXzDSXSK_o.png">  之所以是常数时间，也与RNN相同，因为<span style="color:#1a439c;">有state(中间这条蓝线)</span>，<strong>这导致下一个state的计算只需要上一个state + 全局的输入</strong></p> 
+<h4><strong>1.5.3 用Convolutional表示进行快速的训练</strong></h4> 
+<p>SSM的一个问题是，当知道未来的signal的时候，训练是低效的。有没有办法并行化SSM？作者提出了使用一个卷积核 <img alt="K" class="mathcode" src="https://images2.imgbox.com/fb/74/nx8safCa_o.png"> ，绕过状态 <img alt="x" class="mathcode" src="https://images2.imgbox.com/5d/df/8StI5tcE_o.png"> ，直接从输入 <img alt="u" class="mathcode" src="https://images2.imgbox.com/b3/e8/x3ow3Hgm_o.png"> 到输出 <img alt="y" class="mathcode" src="https://images2.imgbox.com/3d/e1/bbvVtgD9_o.png">(<span style="color:#7b7f82;"><em>而非先输入到状态、状态再到输出</em></span>)</p> 
+<p class="img-center"><img alt="" height="1200" src="https://images2.imgbox.com/23/a6/dVCPFcCO_o.png" width="600"></p> 
+<p>输入<img alt="u" class="mathcode" src="https://images2.imgbox.com/c4/95/dyeGOcND_o.png">怎么到输出<img alt="y" class="mathcode" src="https://images2.imgbox.com/79/2d/TleJ8Uc1_o.png">呢？相当于通过特定的<span style="color:#1c7331;">卷积滤波器K</span>对输入进行卷积(<span style="color:#7b7f82;"><em>即you can involve the input by an <strong>exponentially decaying convolution kernel</strong></em></span>)，该滤波器在上图中用绿色线表示</p> 
+<p>问题好像解决了，但SSM还是存在两个问题</p> 
+<ol><li>一个是计算复杂度的问题，最终通过给SSM做结构化(<em><span style="color:#7b7f82;">比如使用HiPPO矩阵，相当于变成了S4</span></em>)，即structured state space can be computed faster <p class="img-center"><img alt="" height="216" src="https://images2.imgbox.com/8a/ed/vslDEcKU_o.png" width="600"></p> </li><li>另一个是，作者意识到这个S4某种意义上就是一个很fancy的CNN(包括可以以不同的方式参数化卷积内核)，但是context window有时是无限长的<br> 而刚好convolutional kernel可以无限长(<em>至于单纯的CNN则是有限长的窗口</em>)，那其如何设计以适应有时无限长的context window呢？如下图所示 <p class="img-center"><img alt="" height="314" src="https://images2.imgbox.com/3c/23/9UWIW1Mp_o.png" width="600"></p> </li></ol> 
+<p>// 待更</p> 
+<p></p> 
+<h2>第二部分 Mamba的组成结构与原理解析</h2> 
+<p>Mamba在语言、音频、DNA序列模态上都实现SOTA，在最受关注的语言任务上，Mamba-3B超越同等规模的Transformer，与两倍大的Transformer匹敌，并且相关代码、预训练模型checkpoint都已开源</p> 
+<p>简言之，Mamba是一种状态空间模型(SSM)，建立在更现代的适用于深度学习的结构化SSM (简称S6)基础上，与经典架构RNN有相似之处</p> 
+<h3>2.1 Mamba = 有选择处理信息 + 硬件感知算法 + 更简单的SSM架构</h3> 
+<p>与先前的研究相比，Mamba主要有三点创新：</p> 
+<ol><li><strong>对输入信息有选择性处理(Selection Mechanism)</strong><br> 具体而言，设计了一个简单的选择机制，通过“<strong>参数化SSM的输入</strong>”，以便关注或忽略特定的输入。这样一来，模型能够过滤掉与问题无关的信息，并且可以长期记住与问题相关的信息<br><em><span style="color:#7b7f82;">focus on or ignore particular inputs. we design a simple selection mechanism by <strong>parameterizing the SSM parameters based on the input</strong>. This allows the model to filter out irrelevant information and remember relevant information indefinitely</span></em></li><li><strong>硬件感知的算法(Hardware-aware Algorithm)</strong><br> 该算法采用“扫描”而非“卷积”来进行模型的循环计算，但为了避免GPU内存层次结构中不同级别之间的IO访问，它没有具体化扩展状态<br><span style="color:#7b7f82;"><em>algorithm that computes the model recurrently with a <strong>scan</strong> instead of convolution, but does not materialize the expanded state in order to avoid IO access between different levels of theGPU memory hierarchy</em></span><br><br> 当然，这点也是受到了S5(<em><span style="color:#7b7f82;">Simplified State Space Layers for Sequence Modeling</span></em>)的启发</li><li><strong>更简单的架构</strong><br> 将SSM架构的设计与transformer的MLP块合并为一个块(<span style="color:#7b7f82;"><em>combining the design of prior SSM architectures with the MLP block of Transformers into a single block</em></span>)，来简化过去的深度序列模型架构，从而得到一个包含selective state space的架构设计</li></ol> 
+<h4>2.1.1 选择性状态空间模型：从S4到S6</h4> 
+<p>作者认为，序列建模的一个基础问题是把上下文压缩成更小的状态(<span style="color:#7b7f82;"><em>We argue that a fundamental problem of sequence modeling is compressing context into a smaller state</em></span>)</p> 
+<ul><li>从这个角度来看，注意力机制虽然有效果但效率不算很高，毕竟其需要显式地存储整个上下文(也就是KV缓存)，直接导致训练和推理消耗算力大<br><span style="color:#7b7f82;"><em>For example, attention is both effective and inefficient because it explicitly does not compress context at all. This can be seen from the fact that auto regressive inference requires explicitly <strong>storing the entire context</strong> (i.e. the KV cache), which directly causes the slow linear-time inference and quadratic-time training of Transformers.</em></span><br><br> 好比，Transformer就像人类每写一个字之前，都把前面的所有字+输入都复习一遍，所以写的慢</li><li>RNN的推理和训练效率高，但性能容易受到对上下文压缩程度的限制<br><span style="color:#7b7f82;"><em>On the other hand, recurrent models are efficient because they have a finite state, implying constant-time inference and linear-time training. However, their effectiveness is limited by how well this state has compressed the context.</em></span><br><br> 好比，RNN每次只参考前面固定的字数，写的快，但容易忘掉更前面的内容</li><li>Mamba的解决办法是，让模型对信息有选择性处理，可以关注或忽略<strong>特定</strong>的内容，即使状态大小固定也能压缩上下文<br> 好比，Mamba每次参考前面所有内容的一个概括，越往后写对前面内容概括得越狠，丢掉细节、保留大意</li></ul> 
+<p>总之，序列模型的效率与效果的权衡点在于它们对状态的压缩程度：高效的模型必须有一个小的状态，而有效的模型必须有一个包含来自上下文的所有必要信息的状态，而mamba为了兼顾效率和效果，选择性的关注必须关注的、过滤掉可以忽略的</p> 
+<p>在其前身结构化状态空间模型S4中，其有4个参数<span style="color:#000000;">(∆, </span><span style="color:#000000;"><strong><em>A</em></strong></span><span style="color:#000000;">, </span><span style="color:#000000;"><strong><em>B</em></strong></span><span style="color:#000000;">, </span><span style="color:#000000;"><strong><em>C</em></strong></span><span style="color:#000000;">)</span></p> 
+<blockquote> 
+ <p class="img-center"><img alt="" height="216" src="https://images2.imgbox.com/0e/c2/lXiz8J1K_o.png" width="600"></p> 
+</blockquote> 
+<p>且它们都是固定的，不随输入变化(即与输入无关)，这些参数控制了以下两个阶段</p> 
+<p class="img-center"><img alt="" height="81" src="https://images2.imgbox.com/c3/b8/FXalgO7R_o.png" width="800"></p> 
+<ul><li><strong>第一阶段(<em>1a 1b</em>)</strong>，通常采用固定公式A = 𝑓𝐴(∆, A)和B = 𝑓𝐵(∆, A, B)，将“连续参数”(∆，A,B)转化为“离散参数”(A,B)，其中(𝑓𝐴, 𝑓𝐵) 称为离散化规则，且可以使用多种规则来实现这一转换，例如下述方程中定义的零阶保持(ZOH)<br><span style="color:#7b7f82;"><em>The first stage transforms the “continuous parameters” (∆, <strong>A</strong>, <strong>B</strong>) to “discrete parameters” (<strong>A</strong>, <strong>B</strong>) through fixed formulas <strong>A </strong>= 𝑓𝐴(∆, <strong>A</strong>) and <strong>B </strong>= 𝑓𝐵(∆, <strong>A</strong>, <strong>B</strong>), where the pair (𝑓𝐴, 𝑓𝐵) is called a discretization rule. Various rules can be used such as the zero-order hold (ZOH) defined in equation (4).</em></span><br><span style="color:#7b7f82;"><em><img alt="\overline{\boldsymbol{A}}=\exp (\Delta \boldsymbol{A}) \quad \overline{\boldsymbol{B}}=(\Delta \boldsymbol{A})^{-1}(\exp (\Delta \boldsymbol{A})-\boldsymbol{I}) \cdot \Delta \boldsymbol{B}" class="mathcode" src="https://images2.imgbox.com/80/eb/3M9093e7_o.png"></em></span></li><li><strong>第二阶段(<em>2a 2b，和3a 3b</em>)</strong>，在参数由(∆，A, B, C)变换为(A, B, C)后，模型可以用两种方式计算，即线性递归(2)或全局卷积(3) 
+  <div> 
+   <span style="color:#7b7f82;"><em>After the parameters have been transformed from (∆, <strong>A</strong>, <strong>B</strong>, <strong>C</strong>) ↦ (<strong>A</strong>, <strong>B</strong>, <strong>C</strong>), the model can be computed in two ways, either as a linear recurrence (2) or a global convolution (3)</em></span> 
+   <br> 
+   <br> 通常，如第一部分最后所讲的，模型使用卷积模式(3)可以进行高效的并行化训练(其中整个输入序列提前看到)，并切换到循环模式(2)以高效的自回归推理(其中输入每次只看到一个时间步) 
+   <br> 
+   <span style="color:#7b7f82;"><em>the model uses the convolutional mode (3) for efficient parallelizable training (where the whole input sequence is seen ahead of time), and switched into recurrent mode (2) for efficient autoregressive inference (wheret he inputs are seen one timestep at a time)</em></span> 
+   <br> 
+   <br> 为何可以做高效的并行化呢，因为该模式能够绕过状态计算，并实现仅包含(B, L, D)的卷积核(3a) 
+   <br> 
+   <span style="color:#7b7f82;"><em>Thus the more efficient convolution mode wasintroduced which could bypass the state computation and materializes a convolution kernel (3a) of only (𝙱, 𝙻, 𝙳)</em></span> 
+  </div> </li></ul> 
+<blockquote> 
+ <p>为了方便大家更好的理解，再解释下</p> 
+ <hr> 
+ <p>通过第一部分的讲解，可知<img alt="\boldsymbol{A} \in \mathbb{R}^{N \times N}, \boldsymbol{B} \in \mathbb{R}^{N \times 1}, \boldsymbol{C} \in \mathbb{R}^{1 \times N}" class="mathcode" src="https://images2.imgbox.com/2e/b0/udtdlYda_o.png">矩阵都可以由N个数字表示，为了对批量大小为B、长度为L、具有D个通道的输入序列x进行操作，SSM被独立地应用于每个通道(<span style="color:#7b7f82;"><em>the <strong>A </strong>∈ ℝ𝑁×𝑁, <strong>B </strong>∈ ℝ𝑁×1 , <strong>C </strong>∈ ℝ1×𝑁 matrices can all be represented by 𝑁 numbers. To operate over an input sequence 𝑥 of batch size 𝐵 and length 𝐿 with 𝐷 channels, the SSM is applied independently to each channel.</em></span>)</p> 
+ <div>
+   请注意，在这种情况下，每个输入的总隐状态具有DN维，在序列长度上计算它需要O(BLDN)时间和内存( 
+  <span style="color:#7b7f82;"><em>the total hidden state has dimension 𝐷𝑁 per input, and computing it over the sequence length requires 𝑂(𝐵𝐿𝐷𝑁) time and memory</em></span>) 
+ </div> 
+ <hr> 
+ <p>下面，再分析下各个变量的含义</p> 
+ <ul><li><img alt="\Delta" class="mathcode" src="https://images2.imgbox.com/40/35/4Itg8FY8_o.png">，一个标量，类似遗忘门<br> 如sonta所说，这个量跟RNN里的gating有着深刻的联系(<span style="color:#7b7f82;"><em>∆ in SSMs can be seen to play a generalized role of the RNN gating mechanism</em></span>)，data dependent的 Δ 跟RNN的forget gate的功能类似(<span style="color:#7b7f82;"><em><strong>step size </strong>Δ that represents the resolution of the input discretization of SSMs is the principled foundation of heuristic gating mechanisms.</em></span>) <p class="img-center"><img alt="" height="176" src="https://images2.imgbox.com/25/cc/ASXSK0ya_o.png" width="800"></p> </li><li><img alt="B" class="mathcode" src="https://images2.imgbox.com/1f/bc/GHujmTGR_o.png">，起到的作用类似于：进RNN的memory</li><li><img alt="C" class="mathcode" src="https://images2.imgbox.com/13/7d/kMPVLLFq_o.png">，起到的作用类似于：取RNN的memory<br> 所以有人说，data dependent的B/C的功能跟RNN的input/output gate类似</li><li><img alt="A" class="mathcode" src="https://images2.imgbox.com/cf/bc/uf0QihVE_o.png">，意味着对应这个维度的SSM来说，A在每个hidden state维度上的作用可以不相同，起到multi-scale/fine-grained gating的作用，这也是LSTM网络里面用element-wise product的原因</li></ul> 
+</blockquote> 
+<p>而在Mamaba中，作者让这些参数<img alt="B" class="mathcode" src="https://images2.imgbox.com/92/40/9lI5XR1G_o.png">、<img alt="C" class="mathcode" src="https://images2.imgbox.com/a2/6f/0sX21ls1_o.png">、<img alt="\Delta" class="mathcode" src="https://images2.imgbox.com/bf/2a/FPiuQUcS_o.png">成为输入的函数，让模型能够根据输入内容自适应地调整其行为</p> 
+<p class="img-center"><img alt="" height="242" src="https://images2.imgbox.com/41/d9/XypYwofH_o.png" width="800"></p> 
+<ol><li>从S4到S6的过程中，可以看出<img alt="B" class="mathcode" src="https://images2.imgbox.com/f1/4f/vK0G18Do_o.png">、<img alt="C" class="mathcode" src="https://images2.imgbox.com/4c/26/swDCN4SL_o.png">的大小从原来的<img alt="(D,N)" class="mathcode" src="https://images2.imgbox.com/41/b2/055MUINR_o.png">变成了<img alt="(B,L,N)" class="mathcode" src="https://images2.imgbox.com/03/89/cpuFIsP9_o.png">，<img alt="\Delta" class="mathcode" src="https://images2.imgbox.com/11/c1/OGa5GjxK_o.png">的大小由原来的<img alt="D" class="mathcode" src="https://images2.imgbox.com/bf/cd/GwPm1tQg_o.png">变成了<img alt="(B,L,D)" class="mathcode" src="https://images2.imgbox.com/bf/c0/aCm0nRRk_o.png"><br> 进一步，咱们通过<br><img alt="s_{B}(x)=\operatorname{Linear}_{N}(x)" class="mathcode" src="https://images2.imgbox.com/30/f4/z5AmJIRN_o.png"><br><img alt="s_{C}(x)=\operatorname{Linear}_{N}(x)" class="mathcode" src="https://images2.imgbox.com/ed/70/glorOm8a_o.png"><br><img alt="s_{\Delta}(x)=\operatorname{Linear}_{D}(x)" class="mathcode" src="https://images2.imgbox.com/9c/a3/wkIPgs94_o.png"><br><img alt="\tau_{\Delta}=\text { softplus }" class="mathcode" src="https://images2.imgbox.com/38/47/k0whvoWv_o.png"><br> 来逐一将<img alt="B, C, \Delta" class="mathcode" src="https://images2.imgbox.com/f9/c2/cAYQUYbF_o.png">数据依赖(data dependent)化<br> 至于上面的所谓<img alt="\text { Linear }_{d}(x)" class="mathcode" src="https://images2.imgbox.com/6d/f0/STHgMDJi_o.png">代表把<img alt="D" class="mathcode" src="https://images2.imgbox.com/a6/e3/KTJ5pb0U_o.png">维的输入向量x经过一个线性层map到d维<br> 而<img alt="N" class="mathcode" src="https://images2.imgbox.com/2d/50/CXrbRZte_o.png">即SSM的隐藏层维度(hidden dimension)，当然 一般设的比较小<br><br> 且每个位置的<img alt="B" class="mathcode" src="https://images2.imgbox.com/64/0a/pa7fI9AT_o.png">、<img alt="C" class="mathcode" src="https://images2.imgbox.com/98/ce/X2RKTF11_o.png">、<img alt="\Delta" class="mathcode" src="https://images2.imgbox.com/75/f2/iyQGBRPn_o.png">都不相同(S4时是所有位置共享)</li><li>虽然A没有变成data dependent，但是通过state space model的离散化操作之后，<img alt="(\bar{A}, \bar{B})" class="mathcode" src="https://images2.imgbox.com/c3/51/G5yp20dW_o.png">会经过outer product变成<img alt="(B, L, N, D)" class="mathcode" src="https://images2.imgbox.com/b0/4e/zDoZj62p_o.png">的data dependent张量，以一种<strong>parameter efficient</strong>的方式来达到data dependent的目的<br><br><span style="color:#7b7f82;">当然，到底效果变好的最大原因是哪一块，可以参考这篇做下相关的实验：<a class="link-info" href="https://arxiv.org/pdf/2312.06635" rel="nofollow" title="Gated Linear Attention Transformers with Hardware-Efficient Training">Gated Linear Attention Transformers with Hardware-Efficient Training</a></span></li></ol> 
+<h4>2.1.2 硬件感知的状态扩展：借鉴Flash Attention</h4> 
+<p>为了让传统的SSM在现代GPU上也能高效计算，Mamba中也使用了Flash Attention技术</p> 
+<p>核心思想是利用内存的不同层级结构处理SSM的状态，减少高带宽但慢速的HBM内存反复读写这个瓶颈，即</p> 
+<ol><li>在更高速的SRAM内存中执行离散化和递归操作，再将输出写回HBM<br> 具体来说，我们不是在GPU HBM(高带宽内存)中将大小(𝙱，𝙻，𝙳，𝙽)的扫描输入(A, B)，而是<br><img alt="\rightarrow" class="mathcode" src="https://images2.imgbox.com/5f/0e/QQ4mGcCW_o.png">  首先，直接将SSM参数(∆,A,B,C)从<span style="color:#1c7331;">慢速HBM</span>加载到<span style="color:#ff9900;">快速SRAM</span>中<br><img alt="\rightarrow" class="mathcode" src="https://images2.imgbox.com/74/b0/tkq4LwNn_o.png">  然后，<span style="color:#ff9900;">在SRAM中进行离散化和递归计算</span><br><img alt="\rightarrow" class="mathcode" src="https://images2.imgbox.com/32/31/Oo1Vc1yV_o.png">  最后，将大小为(B,L,D)的最终输出写回<span style="color:#1c7331;">HBM</span> 
+  <div> 
+   <span style="color:#7b7f82;"><em>Concretely, instead of preparing the scan input (<strong>A</strong>, <strong>B</strong>) of size (𝙱, 𝙻, 𝙳, 𝙽) in GPU HBM (high-bandwidth memory), </em></span> 
+   <span style="color:#7b7f82;"><em>we load the SSM parameters (∆, <strong>A</strong>, <strong>B</strong>, <strong>C</strong>) directly from slow HBM to fast SRAM, perform the discretization and </em></span> 
+   <span style="color:#7b7f82;"><em>recurrence in SRAM, and then write the final outputs of size (𝙱, 𝙻, 𝙳) back to HBM.</em></span> 
+  </div> </li><li>通过并行扫描算法实现并行化</li><li>当输入从HBM加载到SRAM时，中间状态不被保存，而是在反向传播中重新计算<br><span style="color:#7b7f82;"><em>the intermediate states are not stored but recomputed in the backward pass when the inputs are loaded from HBM to SRAM</em></span></li></ol> 
+<p>如下图所示</p> 
+<p class="img-center"><img alt="" height="307" src="https://images2.imgbox.com/cb/ea/CVfgUEmN_o.png" width="800"></p> 
+<ol><li>结构化SSM通过一个更高维的潜在状态ℎ(例如 𝑁= 4)，独立地将输入𝑥的每个通道(例如 𝐷= 5)映射到输出𝑦<br><span style="color:#7b7f82;"><em>Structured SSMs independently map each channel (e.g. 𝐷= 5) of an input 𝑥 to output 𝑦t hrough a higher dimensional latent state ℎ(e.g. 𝑁= 4).</em></span></li><li>先前的SSM通过巧妙的替代计算路径，避免实现这个大的有效状态「𝐷𝑁，乘以批量大小𝐵和序列长度𝐿」，且要求：(∆, A, B, C)参数随时间保持不变<br><span style="color:#7b7f82;"><em>Prior SSMs avoid materializing this large effective state 「<strong>𝐷𝑁, times batch size 𝐵and sequence length 𝐿</strong>」 through <u>clever alternate computation paths</u><em> </em>requiring time-invariance: the (∆, A, B, C) parameters are constant across time.</em></span></li><li>我们的选择机制重新添加了依赖于输入的动态特性，这也需要一个精心设计的、考虑硬件的算法，以便只在GPU内存层次结构中更有效的级别上实现这些扩展状态<br><span style="color:#7b7f82;"><em>Our selection mechanism adds back <strong>input-dependent </strong>dynamics, which also requires a careful hardware-aware algorithm toonly materialize the expanded states in more efficient levels of the GPU memory hierarchy.</em></span></li></ol> 
+<h4>2.1.3 简化的SSM架构</h4> 
+<p>将大多数SSM架构比如H3的基础块，与现代神经网络比如transformer中普遍存在的门控MLP相结合，组成新的Mamba块，重复这个块，与归一化和残差连接结合，便构成了Mamba架构</p> 
+<p class="img-center"><img alt="" height="318" src="https://images2.imgbox.com/13/34/YDm0h0Sd_o.png" width="800"></p> 
+<p>顺带提一嘴，transformer quality in linear time以及mega moving average equipped gated attention的这两个工作，也用了类似的结构：即删除transformer的ffn/glu结构</p> 
+<h3>2.2 对Improving SSMs with Selection的进一步阐述</h3> 
+<h4>2.2.1 三个任务的对比：copying、selective copying、induction heads</h4> 
+<div>
+  如下图所示，有三个任务 
+</div> 
+<div> 
+ <p class="img-center"><img alt="" height="206" src="https://images2.imgbox.com/3e/b7/QQT1RHVT_o.png" width="800"></p> 
+</div> 
+<div></div> 
+<ol><li><strong>(左)复制任务</strong>的标准版本涉及输入和输出元素之间的固定间距，可以通过线性递归和全局卷积等时不变模型轻松解决<br><em><span style="color:#7b7f82;">(Left) The standard version of the Copying task involves constant spacing between input and output elements and is easily solved by time-invariant models such as linear recurrences and global convolutions.</span></em></li><li><strong>(右上)选择性复制任务</strong>在输入之间具有随机间距，需要使用时变模型，在内容上能够灵活地选择记忆或忽略输入<br><span style="color:#7b7f82;"><em>(Right Top) The Selective Copying task has random spacing in between inputs and requires time-varying models that can selectively remember or ignore inputs depending on their content.</em></span><br><br> 相当于选择性复制任务通过改变“要记忆的tokens的位置”来改进纯粹的复制任务(Arjovsky, Shah和Bengio 2016)。它需要内容感知推理，以便能够记住相关的标记(有色)，并过滤掉不相关的标记(白色)<br><span style="color:#7b7f82;"><em>The Selective Copying task modifies the popular Copying task (Arjovsky, Shah, and Bengio 2016) by <strong>varying the position of the tokens to memorize</strong>. It requires content-aware reasoning to be able to memorize the relevant</em></span></li><li><strong>(右下)归纳头部任务</strong>是联想回忆的一个例子，需要根据上下文检索答案，这是LLM关键的能力<span style="color:#000000;"> </span><br><span style="color:#7b7f82;"><em>(Right Bottom) The Induction Heads task is an example of associative recall that requires retrieving an answer</em></span> 
+  <div> 
+   <span style="color:#7b7f82;"><em>based on context, a key ability for LLMs.</em></span> 
+   <br> 
+   <br> 其实，归纳头部任务是一种众所周知的机制，据推测可以解释LLMs的大部分上下文学习能力(Olsson et al. 2022)。它需要上下文感知的推理，以便知道何时在适当的上下文中产生正确的输出(黑色) 
+   <br> 
+   <span style="color:#7b7f82;"><em>The Induction Heads task is a well-known mechanism hypothesized to explain the majority of in-context learning abilities of LLMs (Olsson et al. 2022). It requires context-aware reasoning to know when to produce the correct output in the appropriate context (black).</em></span> 
+  </div> <span style="color:#000000;"> </span><span style="color:#000000;"> </span></li></ol> 
+<h4>2.2.2</h4> 
+<div>
+  // 待更 
+</div> 
+<div></div> 
+<h3 style="background-color:transparent;">2.3 实验结果</h3> 
+<p>Mamba在Chinchilla缩放定律下预训练时，语言任务优于同类开源模型</p> 
+<p class="img-center"><img alt="" height="253" src="https://images2.imgbox.com/73/e4/TG8Zwl6C_o.png" width="1000"></p> 
+<p>下游任务上，每个规模尺寸的Mamba都是同类最佳，并且通常与两倍规模的基线性能匹配，特别是当序列长度增加到512k时，相比使用FlashAttention-2的Transformer快几个数量级，而且不会内存不足</p> 
+<p class="img-center"><img alt="" height="368" src="https://images2.imgbox.com/b4/7d/CXOqkKkp_o.png" width="800"></p> 
+<p>最后，有的新闻稿会说Mamba是第一个实现匹配Transformer性能的线性时间序列模型，其实第一个是TransNormerLLM</p> 
+<p></p> 
+<h2>第三部分 Mamba近似工作之线性Transformer：从TransnormerLLM到RWKV</h2> 
+<h3>3.1 从线性Transformer谈到TransnormerLLM</h3> 
+<h4>3.1.1 什么是线性transformer：cosformer</h4> 
+<p>我们已知，Dot-product attention与softmax归一化是transformer捕捉长程依赖关系的基石。然而，其关于序列长度的二次空间和时间复杂性使其计算开销令人望而却步，特别是对于长输入。为了解决这个问题，最近提出了许多方法，如稀疏注意力矩阵(<span style="color:#000000;">sparse attention matrix</span>)，低秩表示(<span style="color:#000000;">lowrank representations</span>)或基于核的方法(<span style="color:#000000;">kernel-based methods</span>)等，让这些方法皆有其各自的局限性</p> 
+<p>以上之外，另一个重要的方法便是线性Transformer(Linear Transformer)，其将transformer的复杂度从O(N^2)降低为O(N)，这对加快Transformer整体的加速非常重要</p> 
+<blockquote> 
+ <p>关于线性Transformer，可以看下这两篇论文：《Fast Autoregressive Transformers with Linear Attention》、以及友人钟博士团队的《<a class="link-info" href="https://arxiv.org/pdf/2202.08791" rel="nofollow" title="COSFORMER : RETHINKING SOFTMAX IN ATTENTION">COSFORMER : RETHINKING SOFTMAX IN ATTENTION</a>》</p> 
+ <hr> 
+ <p>线性Transformer的核⼼思想是通过Kernel trick的⽅式，如下图右侧所示，将QKV的左乘变成右乘，从⽽将理论计算复杂度降为线性</p> 
+ <p class="img-center"><img alt="" height="198" src="https://images2.imgbox.com/ba/9d/5CvRmyIr_o.png" width="800"></p> 
+</blockquote> 
+<p>我们已知</p> 
+<ul><li>Transformer中self-attention的典型计算如下：<br><img alt="O =\operatorname{softmax}\left(\frac{Q K^{T^{\prime}}}{\sqrt{d}}\right) V" class="mathcode" src="https://images2.imgbox.com/6c/e1/HPD6CJN5_o.png"><br> 其中矩阵Q、K、V是由输入 x 经线性变化得到的query、key、value</li><li>如果暂不考虑缩放因子，则自注意力的计算可以分解为向量运算<br><img alt="\operatorname{Attn}(Q, K, V)_{t}=\frac{\sum_{i=1}^{T} e^{q_{t}^{\top} k_{i}} \odot v_{i}}{\sum_{i=1}^{T} e^{q_{t}^{\top} k_{i}}}" class="mathcode" src="https://images2.imgbox.com/6f/d5/HuuNonEF_o.png"><br> 其中，上式的分母是一个归一化因子，确保所有的注意力得分加起来等于1<br><br> 这一步怎么做到的呢，援引HeptaAI的一个说明图如下 <p class="img-center"><img alt="" height="216" src="https://images2.imgbox.com/dc/a7/Gh8viA1H_o.png" width="800"></p> </li></ul> 
+<p>接下来，便有以下一系列推导</p> 
+<ol><li>如果用下标<img alt="i" class="mathcode" src="https://images2.imgbox.com/50/c9/IoVTHdHB_o.png">来表示矩阵的第<img alt="i" class="mathcode" src="https://images2.imgbox.com/e7/5c/mK8Wct4K_o.png">行（如 <img alt="Q_i" class="mathcode" src="https://images2.imgbox.com/a7/eb/jE4fCN0u_o.png">表示矩阵 <img alt="Q" class="mathcode" src="https://images2.imgbox.com/44/14/NW00ppnY_o.png"> 的第<img alt="i" class="mathcode" src="https://images2.imgbox.com/24/fd/J7KyBKRW_o.png">行），那么可以将上述公式中的计算用如下形式抽象出来：<br><img alt="O_{i} =\frac{\sum_{j=1}^{N} \operatorname{sim}\left(Q_{i}, K_{j}\right) }{\sum_{j=1}^{N} \operatorname{sim}\left(Q_{i}, K_{j}\right)} V_{j}" class="mathcode" src="https://images2.imgbox.com/05/08/rVVr997t_o.png"><br> 其中<img alt="sim()" class="mathcode" src="https://images2.imgbox.com/81/9a/ss3lfCL9_o.png">为抽象出的计算Query和Key相似度的函数</li><li>Linear Transformer采用了kernel来定义sim()：<br><img alt="\operatorname{sim}\left(Q_{i}, K_{j}\right)=\phi\left(Q_{i}\right) \phi\left(K_{j}\right)^{T}" class="mathcode" src="https://images2.imgbox.com/ba/dc/Ly1ucYWk_o.png"><br> 其中 <img alt="\phi" class="mathcode" src="https://images2.imgbox.com/80/5b/MpEedrOZ_o.png"> 是一个特征映射函数，可根据情况自行设计<br><br> 考虑到<span style="color:#ed7976;">矩阵乘法有结合律，softmax只能左乘，linear可以右乘，而右乘更快</span>，正因为矩阵乘积的这个属性可以实现注意力操作的线性复杂度：<br><img alt="\left(\phi(Q) \phi(K)^{T}\right) V=\phi(Q)\left(\phi(K)^{T} V\right)" class="mathcode" src="https://images2.imgbox.com/f5/10/RzHPoOEn_o.png"><br><br><span style="color:#7b7f82;">相当于不是显式地计算注意力矩阵<img alt="A=Q K^{T} \in \mathbb{R}^{N \times N}" class="mathcode" src="https://images2.imgbox.com/39/a9/QjDn30SD_o.png">，而是先计算<img alt="\phi(K)^{T} V \in \mathbb{R}^{d \times d}" class="mathcode" src="https://images2.imgbox.com/1d/76/3m1mKbn9_o.png">，然后乘以<img alt="\phi(Q) \in \mathbb{R}^{N \times d}" class="mathcode" src="https://images2.imgbox.com/c5/f2/01ARcNxK_o.png">，从而最终的时间复杂度为<img alt="O\left(N d^{2}\right)" class="mathcode" src="https://images2.imgbox.com/4c/8e/JyY185qf_o.png"><br> 考虑到，在一般的NLP任务中，一个头<img alt="d" class="mathcode" src="https://images2.imgbox.com/de/bd/ZUbSlRMi_o.png">的特征维度总是比输入序列长度<img alt="N" class="mathcode" src="https://images2.imgbox.com/77/d7/hOGg96VB_o.png"> (<img alt="d \ll N" class="mathcode" src="https://images2.imgbox.com/fe/5e/rnm1lS05_o.png">)小得多，因此可以忽略<img alt="d" class="mathcode" src="https://images2.imgbox.com/c6/3c/gDdkG9IQ_o.png">，实现<img alt="O(N)" class="mathcode" src="https://images2.imgbox.com/39/35/aigZCSDN_o.png">的计算复杂度</span></li><li>因此，self-attention可以从<br><img alt="O_{i}=\frac{\sum_{j=1}^{N}\left(\phi\left(Q_{i}\right) \phi\left(K_{j}\right)^{T}\right) V_{j}}{\sum_{j=1}^{N}\left(\phi\left(Q_{i}\right) \phi\left(K_{j}\right)^{T}\right)}" class="mathcode" src="https://images2.imgbox.com/f7/4e/hjhzKKN7_o.png"><br> 转化为：<br><img alt="O_{i}^{\prime}=\frac{\phi\left(Q_{i}\right) \sum_{j=1}^{N} \phi\left(K_{j}\right)^{T} V_{j}}{\phi\left(Q_{i}\right) \sum_{j-1}^{N} \phi\left(K_{j}\right)^{T}}" class="mathcode" src="https://images2.imgbox.com/5c/46/4BmojB88_o.png"><br><br> 原始Transformer的计算复杂度之所以随序列长<img alt="N" class="mathcode" src="https://images2.imgbox.com/c5/80/v9PG134w_o.png">呈二次方增长，这是因为attention的计算包含两层for循环<br><img alt="\rightarrow" class="mathcode" src="https://images2.imgbox.com/67/2f/TFxxDuKq_o.png">  外层是对于每一个Query，我们需要计算它对应token的新表征<br><img alt="\rightarrow" class="mathcode" src="https://images2.imgbox.com/e3/05/b1skI7IC_o.png">  内层for循环是为了计算每一个Query对应的新表征，需要让该Query与每一个Key进行计算<br> 所以外层是 for q in Queries，内层是 for k in Keys，Queries数量和Keys数量都是N，从而复杂度是 <img alt="O(N^2)" class="mathcode" src="https://images2.imgbox.com/16/52/N4Fex0Py_o.png"><br><br><span style="color:#7b7f82;"><em>好比军训时，甲乙丙丁4个人列成一队，计算注意力机制的过程相当于<br> 首先把甲站到队伍的前面，算“其”与“自己在内所有人”的相似度，即计算这些的内积值：<br><strong>甲q甲k、甲q乙k、甲q丙k、甲q丁k</strong><br> 接着，再乙站到队伍的前面，算“其”与“自己在内所有人”的相似度，即计算这些的内积值：<br><strong>乙q甲k、乙q乙k、乙q丙k、乙q丁k</strong><br><br> 丙、丁以此类推，即分别计算这两批内积值：<br><strong>丙q甲k、丙q乙k、丙q丁k、丙q丙k</strong><br><strong>丁q甲k、丁q乙k、丁q丙k、丁q丁k</strong></em></span><br><br> 而Linear Transformer，它只有外层for q in Queries这个循环了，因为求和项的计算与<img alt="i" class="mathcode" src="https://images2.imgbox.com/e5/eb/H2FOJbcw_o.png"> 无关，所以所有的 <img alt="Q_i" class="mathcode" src="https://images2.imgbox.com/1a/f8/orbVfQVl_o.png">可以共享求和项的值。换言之，求和项的值可以只计算一次，然后存在内存中供所有 <img alt="Q_i" class="mathcode" src="https://images2.imgbox.com/98/8c/itEnHGOV_o.png"> 去使用，所以Linear Transformer的计算复杂度是O(N)</li><li>引入以下两个新符号：<br><img alt="\begin{array}{c} S_{i}=\sum_{j=1}^{i} \phi\left(K_{j}\right)^{T} V_{j} \\ Z_{i}=\sum_{j=1}^{i} \phi\left(K_{j}\right)^{T} \end{array}" class="mathcode" src="https://images2.imgbox.com/82/bc/IZqBAPAb_o.png"><br><br> 稍作变换，可以将Si 和Zi 写作递归形式：<br><img alt="\begin{array}{l} S_{i}=\sum_{j=1}^{i} \phi\left(K_{j}\right)^{T} V_{j}=\phi\left(K_{i}\right)^{T} V_{i}+\sum_{j=1}^{i-1} \phi\left(K_{j}\right)^{T} V_{j}=\phi\left(K_{i}\right)^{T} V_{i}+S_{i-1} \\ Z_{i}=\sum_{j=1}^{i} \phi\left(K_{j}\right)^{T}=\phi\left(K_{i}\right)^{T}+\sum_{j=1}^{i-1} \phi\left(K_{j}\right)^{T}=\phi\left(K_{i}\right)^{T}+Z_{i-1} \end{array}" class="mathcode" src="https://images2.imgbox.com/c9/b9/pvPzVuL0_o.png"><br> 因此，在inference阶段，当需要计算第i时刻的输出时，Linear Transformer可以复用之前的状态 Si−1 和 Zi−1 ，再额外加上一个与当前时刻相关的计算量即可。而Transformer在计算第i时刻的输出时，它在第i-1个时刻的所有计算都无法被i时刻所复用。因此，Linear Transformer更加高效</li></ol> 
+<p>总结一下：</p> 
+<ul><li>Linear Transformer的计算复杂度为 O(N) （不考虑embedding的维度的情况下）</li><li>因为Si可由Si−1计算得到(Zi同理)，所以它可实现Sequential Decoding(先算S1，由S1算S2，以此类推)。能Sequential Decoding是让这类Transformer看起来像RNN的核心原因</li></ul> 
+<h4>3.1.2 TransnormerLLM</h4> 
+<p>如qinzhen所说，transnomerLLM相比cosformer，最本质的区别是其位置编码的不同，剩下就是结构细微的优化以及工程</p> 
+<p class="img-center"><img alt="" height="202" src="https://images2.imgbox.com/c5/fc/uM5uvNyH_o.png" width="600"></p> 
+<p>// 待更</p> 
+<h3>3.2 从AFT到RWKV</h3> 
+<h4>3.2.1 AFT(Attention Free Transformer)</h4> 
+<p>Attention Free Transformer (AFT) 是Apple公司提出的一种新型的神经网络模型，它在传统的 Transformer 模型的基础上，通过使用像Residual Connection之类的技术来消除注意力机制，从而减少计算量和提升性能</p> 
+<p>AFT在不同的资料中有不同的表达形式</p> 
+<ul><li>比如有的资料会写成<br><img alt="O_{i}^{\prime}=\sigma\left(Q_{i}\right) \odot \frac{\sum_{j-1}^{i} \exp \left(K_{j}+w_{i, j}\right) \odot V_{j}}{\sum_{j=1}^{j} \exp \left(K_{j}+w_{i, j}\right)}" class="mathcode" src="https://images2.imgbox.com/d4/36/Cm5nOkvM_o.png"><br> 其中<img alt="\sigma" class="mathcode" src="https://images2.imgbox.com/b9/3d/JGBmZ0ja_o.png">是sigmoid函数；⊙是逐元素相乘（element-wise product）， <img alt="w_{i,j}" class="mathcode" src="https://images2.imgbox.com/da/68/1wVshklh_o.png">是待训练的参数<br><br> AFT采用的形式和上面的Linear Transformer不一样<br><img alt="\rightarrow" class="mathcode" src="https://images2.imgbox.com/8a/90/3OixjKdt_o.png">  首先是attention score，Linear Transformer仍然是同Transformer一样，为每一个Value赋予一个weight，而AFT会为每个dimension赋予weight<br> 换言之，在Linear Transformer中，同一个Value中不同dimension的weight是一致的，而AFT同一Value中不同dimension的weight不同<br><img alt="\rightarrow" class="mathcode" src="https://images2.imgbox.com/25/13/WTkEplMP_o.png">  此外，attention score的计算也变得格外简单，用K去加一个可训练的bias。Q的用法很像一个gate<br><br><span style="color:#7b7f82;"><em>可以很容易把AFT也写成递归形式，这样容易看出，AFT也可以像Linear Transformer，在inference阶段复用前面时刻的计算结果，表现如RNN形式，从而相比于Transformer变得更加高效</em></span></li><li>还有的资料比如RWKV论文会写成(和上式一个意思)<br><img alt="\operatorname{Attn}^{+}(W, K, V)_{t}=\frac{\sum_{i=1}^{t} e^{w_{t, i}+k_{i}} v_{i}}{\sum_{i=1}^{t} e^{w_{t, i}+k_{i}}}" class="mathcode" src="https://images2.imgbox.com/9a/b9/F8qHHHlD_o.png"><br> 其中，其中 <img alt="\left\{w_{t, i}\right\} \in R^{T \times T}" class="mathcode" src="https://images2.imgbox.com/e4/6f/0wdFdHBZ_o.png"> 是学习的pair-wise位置偏差，每个 <img alt="w_{t, i}" class="mathcode" src="https://images2.imgbox.com/82/c6/hPqFxzeE_o.png"> 是一个标量<br><br><strong><span style="color:#7b7f82;"><em>下图是对该式的解释说明</em></span></strong> <p class="img-center"><img alt="" height="247" src="https://images2.imgbox.com/7e/ef/t2ixPueP_o.png" width="600"></p> <strong><span style="color:#7b7f82;"><em> 其实从式子上看，AFT无非是将矩阵乘改成了矩阵加，加上模型只能看到前面的token。注意这里的 <img alt="w" class="mathcode" src="https://images2.imgbox.com/59/45/nOAprqbf_o.png"> 是一个二维矩阵，和attention中的positional encoding作用相似，都是为了给模型输入位置信息</em></span></strong></li></ul> 
+<h4>3.2.2 RWKV：试图在Transformer时代重塑RNN</h4> 
+<p>RWKV其实是我司论文审稿GPT第一版(<strong><em><span style="color:#7b7f82;">详见此文的<a class="link-info" href="https://blog.csdn.net/v_JULY_v/article/details/132178447" title="第三部分 七月论文审稿GPT第一版：基于论文审稿语料微调RWKV">第三部分 七月论文审稿GPT第一版：基于论文审稿语料微调RWKV</a></span></em></strong> )选用的模型之一，虽然当时第一版用RWKV的效果没符合预期，但在有些任务上的表现还是不错的，加之因为写mamba模型而再次关注到有点类似的RWKV，故本文也顺带讲一下</p> 
+<p>据RWKV论文可知，RWKV 架构的名称源自<strong><em>timemixing</em></strong>和<strong><em>channel-mixing</em></strong>模块中使用的四个主要模型元素(<span style="color:#7b7f82;"><em>defined by four fundamental elements that are intrinsic to the timemixing and channel-mixing blocks</em></span>)：</p> 
+<ul><li>R：表示过去的信息，用的sigmoid激活函数</li><li>W：权重是位置权重衰减向量，是可训练的模型参数(<em>后面还会再出来个U，是对当前位置信号的补偿</em>)</li><li>K：Key    是类似于传统注意力中的K 的向量</li><li>V ：value 是类似于传统注意力中的V 的向量</li></ul> 
+<p>每个时间步的主要元素之间的相互作用都是<strong>乘法</strong>的，如下图所示</p> 
+<p class="img-center"><img alt="" height="559" src="https://images2.imgbox.com/4b/9c/MjCggZ5e_o.png" width="500"></p> 
+<p>在RWKV的结构中，其中的递归被表述为<strong>当前输入和前一个时间步的输入之间的线性插值</strong>(我们将这种技术称为time-shift mixing或token shift，如下图中的对角线所示)</p> 
+<p class="img-center"><img alt="" height="503" src="https://images2.imgbox.com/ea/da/wUhQCejN_o.png" width="500"></p> 
+<ul><li>可以表示为针对输入嵌入的每个线性投影(<em>例如，<strong>timemixing</strong>中的 R、K、V，以及<strong>channel-mixing</strong>中的 R、K</em>)进行独立调整，并作为 WKV 的时间相关更新</li><li>WKV 计算与 AFT 类似，但 W 现在是“通道向量”乘以“相对位置”(下文详述)，而不是 AFT 中的pairwise position matrix。我们还引入了一个向量 U 来单独关注当前token，以补偿 W 的潜在退化</li></ul> 
+<p>一看有点懵，没事，因为其中有不少细节，咱们来逐一阐述</p> 
+<h5>3.2.2.1 RWKV的时间混合(time mix)模块与通道混合(<strong>channel mix</strong>)模块</h5> 
+<p>如下图所示，假设输入sequence是<strong>My name is</strong>，目前 <img alt="t = 2" class="mathcode" src="https://images2.imgbox.com/54/d9/cP4Izmpi_o.png"> ，则这里 <img alt="x_{t-1}" class="mathcode" src="https://images2.imgbox.com/f4/5b/KFJDufmF_o.png">是上一个输入token(My)， <img alt="x_t" class="mathcode" src="https://images2.imgbox.com/f2/77/n3v3Fe0n_o.png">是这个输入token(name)<br><img alt="\mu" class="mathcode" src="https://images2.imgbox.com/24/3a/UvvqIEH9_o.png">是遗忘因子，越大对上个token(My)就忘的越多，也就是对这个token(name)更专注，黄色(μ)表示token shift「<span style="color:#7b7f82;"><em>至于红色(1)表示分母，蓝色(2)表示分子，粉色(3)表示16种分数计算，h代表了分子和分母的元组</em></span>」</p> 
+<p class="img-center"><img alt="" height="311" src="https://images2.imgbox.com/af/f3/emGZpCLV_o.png" width="500"></p> 
+<p>可有以下五个公式</p> 
+<p class="img-center"><img alt="" height="167" src="https://images2.imgbox.com/ca/92/50Ij2wQG_o.png" width="319"></p> 
+<p><span style="color:#be191c;">先解释前三个公式</span></p> 
+<ul><li>在传统Transformer中， <img alt="q" class="mathcode" src="https://images2.imgbox.com/02/4d/5dPfF0jD_o.png">,<img alt="k" class="mathcode" src="https://images2.imgbox.com/6e/55/vDqD52dO_o.png">,<img alt="v" class="mathcode" src="https://images2.imgbox.com/3b/09/04vHgncL_o.png"> 本质上都是 <img alt="x_t" class="mathcode" src="https://images2.imgbox.com/fa/6b/T5W3vFjo_o.png"> 的线性变换，可以用来动态调整表示的子空间维度且增大参数量</li><li>在RWKV中， <img alt="r" class="mathcode" src="https://images2.imgbox.com/e7/4b/ne9WGyXR_o.png">,<img alt="k" class="mathcode" src="https://images2.imgbox.com/ce/1c/2GkKAjj8_o.png">,<img alt="v" class="mathcode" src="https://images2.imgbox.com/03/d6/tbGOZnQc_o.png"> 本质上都是 <img alt="x_t" class="mathcode" src="https://images2.imgbox.com/0f/42/wibkEXFW_o.png">,<img alt="x_{t-1}" class="mathcode" src="https://images2.imgbox.com/b6/bb/lCZFjkDb_o.png"> 线性组合的变换，且作为计算<span style="color:#1a439c;">RKV的输入的<img alt="x" class="mathcode" src="https://images2.imgbox.com/b9/ba/UuPbzELe_o.png">：不再是当前token的embedding，而是当前token与上一个token embedding的加权和</span></li></ul> 
+<p style="text-align:center;"><img alt="\begin{aligned} r_{t} &amp; =W_{r} \cdot\left(\mu_{r} x_{t}+\left(1-\mu_{r}\right) x_{t-1}\right) \\ k_{t} &amp; =W_{k} \cdot\left(\mu_{k} x_{t}+\left(1-\mu_{k}\right) x_{t-1}\right) \\ v_{t} &amp; =W_{v} \cdot\left(\mu_{v} x_{t}+\left(1-\mu_{v}\right) x_{t-1}\right) \end{aligned}" class="mathcode" src="https://images2.imgbox.com/18/b2/WUzdxmIn_o.png"></p> 
+<p>接下来 重点解释下其中最难的部分<span style="color:#be191c;">第4个公式</span>：<img alt="w k v_{t}" class="mathcode" src="https://images2.imgbox.com/f8/e2/ZLU4rnrT_o.png"></p> 
+<ul><li>原始的attention是这样的：</li></ul> 
+<p style="text-align:center;"><img alt="\operatorname{Attn}(Q, K, V)_{t}=\frac{\sum_{i=1}^{T} e^{q_{t}^{\top} k_{i}} \odot v_{i}}{\sum_{i=1}^{T} e^{q_{t}^{\top} k_{i}}}" class="mathcode" src="https://images2.imgbox.com/e6/ad/6LZzmjRi_o.png"></p> 
+<ul><li>AFT的attention</li></ul> 
+<p style="text-align:center;"><img alt="\operatorname{Attn}^{+}(W, K, V)_{t}=\frac{\sum_{i=1}^{t} e^{w_{t, i}+k_{i}} v_{i}}{\sum_{i=1}^{t} e^{w_{t, i}+k_{i}}}" class="mathcode" src="https://images2.imgbox.com/81/a5/d49apau6_o.png"></p> 
+<ul><li>RWKV的attention<br>                                         <img alt="w k v_{t}=\frac{\sum_{i=1}^{t-1} e^{-(t-1-i) w+k_{i}} \odot v_{i}+e^{u+k_{t}} \odot v_{t}}{\sum_{i=1}^{t-1} e^{-(t-1-i) w+k_{i}}+e^{u+k_{t}}}" class="mathcode" src="https://images2.imgbox.com/b1/8b/FtNO5Vbk_o.png"><br><br> 怎么理解这个RWKV attention的这个表达式呢？<br> 受 AFT 的启发，RWKV 中的每个 <img alt="w_{t, i}" class="mathcode" src="https://images2.imgbox.com/a9/93/TF734rN7_o.png"> 都代表一个「通道时间衰减向量」，该向量乘以相对位置，并且在衰减时从当前时间开始向后追踪(<span style="color:#7b7f82;"><em>Each wt,i in RWKV is <strong>a channelwise time decay vector</strong> multiplied by the relative position and traced backward from current time as it decays</em></span>)：<br>                                         <img alt="w_{t, i}=-(t-i) w" class="mathcode" src="https://images2.imgbox.com/97/5f/kKf4gOEw_o.png"><br><br> 其中 <img alt="w \in\left(R_{\geq 0}\right)^{d}" class="mathcode" src="https://images2.imgbox.com/18/88/7fGACC38_o.png"> ， <img alt="d" class="mathcode" src="https://images2.imgbox.com/18/41/dv3QCBZp_o.png"> 是通道数，RWKV要求 <img alt="w" class="mathcode" src="https://images2.imgbox.com/2a/47/D66SzHHS_o.png">为非负数，以确保 <img alt="e^{w_{t, i}} \leq 1" class="mathcode" src="https://images2.imgbox.com/f0/b3/u8wbEdhh_o.png"> 并且确保每个通道的权重在时间上向后衰减(<span style="color:#7b7f82;"><em>ensure that e wt,i ≤ 1 and the per-channel weights decay backwards in time</em></span>)<br> 这个操作与后面的 <img alt="e^{u}" class="mathcode" src="https://images2.imgbox.com/4b/f3/6b15PPlJ_o.png"> 都是用来建模序列的time decay的<br><br><strong><span style="color:#7b7f82;"><em>以上可能解释的比较绕，不够通俗，其实说白了，相比AFT，原来的依靠绝对位置的偏置<img alt="w_{t, i}" class="mathcode" src="https://images2.imgbox.com/66/e1/s0R6XF5h_o.png">没有了，改成了相对位置，并且只有一个参数<img alt="w" class="mathcode" src="https://images2.imgbox.com/d5/fe/vd5mf0p0_o.png">向量需要训练<br> 其次，对当前位置单独处理，增加了参数<img alt="u" class="mathcode" src="https://images2.imgbox.com/17/77/1Yr6NrUk_o.png"></em></span></strong></li></ul> 
+<p>最后，再解释<span style="color:#be191c;">第5个公式</span></p> 
+<ul><li>其中 <img alt="W K V" class="mathcode" src="https://images2.imgbox.com/77/9c/8EuEY1rc_o.png">计算， <img alt="w k v_{t}" class="mathcode" src="https://images2.imgbox.com/28/ff/4WgfQkcE_o.png"> ， 在 Transformers 中扮演 <img alt="\operatorname{Attn}(Q, K, V)" class="mathcode" src="https://images2.imgbox.com/c9/05/OeSJPmEq_o.png">的角色，而不会产生quadratic成本，因为计算的都是标量，这就是上面的第5个公式</li></ul> 
+<p>                                              <img alt="o_{t}=W_{o} \cdot\left(\sigma\left(r_{t}\right) \odot w k v_{t}\right)" class="mathcode" src="https://images2.imgbox.com/36/69/5Vi81yyv_o.png"></p> 
+<ul><li>直观上，随着时间 <img alt="t" class="mathcode" src="https://images2.imgbox.com/06/00/IaqAeBfW_o.png"> 的增加，向量 <img alt="o_{t}" class="mathcode" src="https://images2.imgbox.com/bb/9e/mNnUB1Cz_o.png"> 取决于较长的历史，由越来越多的项的总和表示。对于目标位置 <img alt="t" class="mathcode" src="https://images2.imgbox.com/57/5a/S3WrYrsC_o.png"> ，RWKV在 <img alt="[1, t]" class="mathcode" src="https://images2.imgbox.com/4f/5c/oSmLzWRS_o.png">的位置区间进行加权求和，然后乘以接受度 <img alt="\sigma(r)" class="mathcode" src="https://images2.imgbox.com/14/21/jECJJaDb_o.png"> <br> 因此，交互作用在给定的时间步长内是乘法的，并在不同的时间步长上求和</li></ul> 
+<p>最后，通道混合块(<strong>channel mix </strong>block)根据time-mixing block的输出，然后使用下述三个公式的前两个公式计算一组心的R、K，最后根据下面第三个公式计算最终输出</p> 
+<p style="text-align:center;"><img alt="\begin{aligned} r_{t} &amp; =W_{r} \cdot\left(\mu_{r} x_{t}+\left(1-\mu_{r}\right) x_{t-1}\right) \\ k_{t} &amp; =W_{k} \cdot\left(\mu_{k} x_{t}+\left(1-\mu_{k}\right) x_{t-1}\right) \\ o_{t} &amp; =\sigma\left(r_{t}\right) \odot\left(W_{v} \cdot \max \left(k_{t}, 0\right)^{2}\right) \end{aligned}" class="mathcode" src="https://images2.imgbox.com/37/ed/0qWumN3p_o.png"></p> 
+<h5>3.2.2.2 RWKV的训练阶段与推理阶段</h5> 
+<h6>训练阶段：时间并行模式</h6> 
+<p>在训练复杂度上，我们对比下标准注意力与RWKV</p> 
+<p class="img-center"><img alt="" height="156" src="https://images2.imgbox.com/9d/44/C65gB9Mt_o.png" width="800"></p> 
+<ul><li>对于标准注意力而言，假设是<img alt="T" class="mathcode" src="https://images2.imgbox.com/3c/c9/GKEu6cpZ_o.png">个最大token，因为RWKV<strong>只需要上一时刻的state vector和这一时刻的输入</strong>。因此，生成的每一个token只要考虑常数个变量，所以复杂度为<img alt="\mathcal{O}(T)" class="mathcode" src="https://images2.imgbox.com/b1/5e/0ezOvhQv_o.png"><br><br> 如果是<img alt="d" class="mathcode" src="https://images2.imgbox.com/16/19/6LkomJg0_o.png">个通道，则每个 <img alt="\operatorname{Attn}_{t}" class="mathcode" src="https://images2.imgbox.com/92/a5/y3Vk400q_o.png"> 需要进行 <img alt="T" class="mathcode" src="https://images2.imgbox.com/3c/69/gVAK1LAW_o.png"> 次求和，每次求和都涉及一维向量分别点乘，复杂度为<img alt="\mathcal{O}(T d)" class="mathcode" src="https://images2.imgbox.com/31/d6/oCsXmQDx_o.png">，因此对于整个序列的复杂度为<img alt="\left(T^{2} d\right)" class="mathcode" src="https://images2.imgbox.com/37/9d/QOoFhPb8_o.png"><br><img alt="\operatorname{Attn}(Q, K, V)_{t}=\frac{\sum_{i=1}^{T} e^{q_{t}^{\top} k_{i}} \odot v_{i}}{\sum_{i=1}^{T} e^{q_{t}^{\top} k_{i}}}" class="mathcode" src="https://images2.imgbox.com/e6/63/yuTRePLC_o.png"><br> 当然，如果是<img alt="B" class="mathcode" src="https://images2.imgbox.com/75/00/CHtStJaH_o.png">个序列，则复杂度为<img alt="O\left(B T^{2} d\right)" class="mathcode" src="https://images2.imgbox.com/da/df/vUox2VYc_o.png"></li><li>对于RWKV而言<br><img alt="w k v_{t}=\frac{\sum_{i=1}^{t-1} e^{-(t-1-i) w+k_{i}} v_{i}+e^{u+k_{t}} v_{t}}{\sum_{i=1}^{t-1} e^{-(t-1-i) w+k_{i}}+e^{u+k_{t}}}" class="mathcode" src="https://images2.imgbox.com/b4/06/fglCqJCl_o.png"><br><br><img alt="\rightarrow" class="mathcode" src="https://images2.imgbox.com/ff/7f/1CSmDu7Q_o.png">  针对<img alt="\sum_{i=1}^{t-1} e^{(-t-1-i) w+k_{i}} v_{i}" class="mathcode" src="https://images2.imgbox.com/1c/af/EtNzhpE7_o.png">， <img alt="t" class="mathcode" src="https://images2.imgbox.com/da/91/C03Hdp6B_o.png">不是向量下标，意味着对每个 <img alt="t" class="mathcode" src="https://images2.imgbox.com/d1/c8/kSadPQsW_o.png">，我们知道 <img alt="w" class="mathcode" src="https://images2.imgbox.com/e5/86/ex4ilX2j_o.png">,<img alt="k_i" class="mathcode" src="https://images2.imgbox.com/50/35/096RG62h_o.png"> 是复用的，因此，<img alt="t" class="mathcode" src="https://images2.imgbox.com/13/80/74AxkV1e_o.png"> → <img alt="T" class="mathcode" src="https://images2.imgbox.com/83/88/9sGQuyH5_o.png"> 时复杂度为<img alt="\mathcal{O}(T d)" class="mathcode" src="https://images2.imgbox.com/11/8c/gc9pTq5Y_o.png"><br><img alt="\rightarrow" class="mathcode" src="https://images2.imgbox.com/62/3f/IQvcvTyh_o.png">  针对 <img alt="\sum_{i=1}^{t-1} e^{u+k_{t}} v_{t}" class="mathcode" src="https://images2.imgbox.com/a3/f9/WjP2ddL1_o.png">， <img alt="i" class="mathcode" src="https://images2.imgbox.com/77/e0/GyCHuqp2_o.png"> 不是向量下标，意味着对每个 <img alt="i" class="mathcode" src="https://images2.imgbox.com/ca/1a/GwMM3QGS_o.png"> ，我们知道 <img alt="k_t" class="mathcode" src="https://images2.imgbox.com/c9/41/dXDTUWBQ_o.png">,<img alt="v_t" class="mathcode" src="https://images2.imgbox.com/10/2f/N8gnZ7bH_o.png"> 是复用的，因此，时间复杂度为 <img alt="\mathcal{O}(T d)+\mathcal{O}(T d)=\mathcal{O}(T d)" class="mathcode" src="https://images2.imgbox.com/61/fe/GsuRC2tQ_o.png"><br><br> 也就是说，在内层循环，算出的<img alt="\sum_{i=1}^{t-1} e^{(-t-1-i) w+k_{i}} v_{i}" class="mathcode" src="https://images2.imgbox.com/d1/54/yHBX0xHd_o.png">可以直接存起来供外层循环使用。即，RWKV的内外层循环是解耦的<br> 当然，如果是<img alt="B" class="mathcode" src="https://images2.imgbox.com/59/90/jyCpHUis_o.png">个序列，则复杂度为<img alt="O(B T d)" class="mathcode" src="https://images2.imgbox.com/99/e9/W1jnWkam_o.png"></li></ul> 
+<h6>推理阶段：时间顺序模式</h6> 
+<p>在循环网络中，使用状态 <img alt="t" class="mathcode" src="https://images2.imgbox.com/92/b7/FJueO3SY_o.png"> 的输出作为状态 <img alt="t+1" class="mathcode" src="https://images2.imgbox.com/36/66/TiVluDzC_o.png"> 的输入是很常见的。这在语言模型的自回归解码推理中尤其明显，要求每个标记在输入下一步之前进行计算，从而使得RWKV 利用其类似 RNN 的结构，称为时间顺序模式（time-sequence mode），如下图所示(来自小冬瓜AIGC)</p> 
+<p class="img-center"><img alt="" height="473" src="https://images2.imgbox.com/f9/5d/EfXvurgc_o.png" width="600"></p> 
+<ul><li>在这种情况下，可以方便地递归地制定 RWKV 以便在推理过程中进行解码，它利用了每个输出token仅依赖于最新状态的优点，该状态具有恒定的大小，而与序列长度无关</li><li>然后，它充当 RNN 解码器，根据序列长度产生恒定的速度和内存占用，从而能够更有效地处理较长的序列。相比之下，自注意力通常需要 KV 缓存相对于序列长度线性增长，从而导致效率下降，并且随着序列变长而增加内存占用和时间</li></ul> 
+<hr> 
+<h2>参考文献与推荐阅读</h2> 
+<ol><li><a class="link-info" href="https://zhuanlan.zhihu.com/p/670481271" rel="nofollow" title="Transformer挑战者出现！FlashAttention作者参与，模型代码都开源，公司已创办">Transformer挑战者出现！FlashAttention作者参与，模型代码都开源，公司已创办</a></li><li><a class="link-info" href="https://zhuanlan.zhihu.com/p/661237120" rel="nofollow" title="[线性RNN系列] Mamba: S4史诗级升级">[线性RNN系列] Mamba: S4史诗级升级</a></li><li><a class="link-info" href="https://hazyresearch.stanford.edu/blog/2022-01-14-s4-1" rel="nofollow" title="Structured State Spaces for Sequence Modeling (S4)">Structured State Spaces for Sequence Modeling (S4)</a></li><li><a class="link-info" href="https://zhuanlan.zhihu.com/p/670820688" rel="nofollow" title="S4: 使用结构化状态空间对长序列进行高效建模">S4: 使用结构化状态空间对长序列进行高效建模</a></li><li>《<a class="link-info" href="https://arxiv.org/pdf/2111.00396" rel="nofollow" title="Efficiently Modeling Long Sequences with Structured State Spaces">Efficiently Modeling Long Sequences with Structured State Spaces</a>》<br> 首次提出了结构化状态空间S4</li><li>S4作者在YouTube上对<a class="link-info" href="https://www.youtube.com/watch?v=luCBXCErkCs" rel="nofollow" title="S4论文的精彩解读">S4论文的精彩解读</a></li><li><a class="link-info" href="https://arxiv.org/pdf/2006.16236" rel="nofollow" title="Transformers are RNNs: Fast Autoregressive Transformers with Linear Attention">Transformers are RNNs: Fast Autoregressive Transformers with Linear Attention</a></li><li><a class="link-info" href="https://arxiv.org/pdf/2305.13048" rel="nofollow" title="RWKV: Reinventing RNNs for the Transformer Era">RWKV: Reinventing RNNs for the Transformer Era</a>(<a class="link-info" href="https://www.semanticscholar.org/paper/RWKV%3A-Reinventing-RNNs-for-the-Transformer-Era-Peng-Alcaide/026b3396a63ed5772329708b7580d633bb86bec9" rel="nofollow" title="下载地址2">下载地址2</a>)，这是<a class="link-info" href="https://zhuanlan.zhihu.com/p/656136892" rel="nofollow" title="其翻译">其翻译</a>，这是<a class="link-info" href="https://zhuanlan.zhihu.com/p/656323242" rel="nofollow" title="其解读之一">其解读之一</a></li><li><a class="link-info" href="https://zhuanlan.zhihu.com/p/655991768" rel="nofollow" title="【手撕LLM-RWKV】重塑RNN 效率">【手撕LLM-RWKV】重塑RNN 效率</a></li><li>..</li></ol> 
+<h2></h2> 
+<h2 style="background-color:transparent;">创作、修订、完善记录</h2> 
+<p class="img-center"><img alt="" height="223" src="https://images2.imgbox.com/f5/35/I49YW4nI_o.png" width="800"></p> 
+<ol><li>12.11，开写，且发现Google抓的也是真快(当天用Google搜：mamba模型，本文已排第一)</li><li>12.12，考虑到想理解好mamba，则需要先理解好SSM，故全力完善这几节的内容：“1.2 状态空间模型SSM”、“1.3 S4的前身：HiPPO”、“1.4 S4的推出：Structured State Space Models”</li><li>12.13，完善此节：“1.5 S4的性质：连续的表示、用Recurrent快速infer、用Convolutional快速训练”</li><li>12.14，结合mamba论文，开始精修“第二部分 Mamba的组成结构与原理解析”<br> 特别是以下这两节<br> 2.1.1 选择性状态空间模型：从S4到S6<br> 2.1.2 硬件感知的状态扩展：借鉴Flash Attention</li><li>12.15，开始写：“第三部分 Mamba近似工作之线性Transformer：从AFT、RWKV谈到TransnormerLLM”<br> 特别是此节：“3.2 RWKV：试图在Transformer时代重塑RNN”</li><li>12.17，修正1.4节中的一个笔误，已修正为：“作者想到了非常精妙的一个方法：不考虑input <img alt="u" class="mathcode" src="https://images2.imgbox.com/bd/ca/9SfGTNk4_o.png"> 到state <img alt="x" class="mathcode" src="https://images2.imgbox.com/37/d5/JA7dBFcM_o.png">，而是直接从state <img alt="x" class="mathcode" src="https://images2.imgbox.com/cc/6c/ezwR47tx_o.png"> 到output y ”</li><li>12.19，在TransNormer的提出者qinzhen的建议之下，补充关于线性transformer的一些解释说明，特别是关键的这一句<br> “考虑到矩阵乘法有结合律，softmax只能左乘，linear可以右乘，而右乘更快，正因为矩阵乘积的这个属性可以实现注意力操作的线性复杂度”</li><li>12.23，根据友人钟博士的反馈，在文中强调：第一个实现匹配Transformer性能的线性时间序列模型是TransNormerLLM..</li></ol>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/0c1f6e64a14cc798a7a47ed22524524d/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">中心性算法归纳</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/d36337d448c90e9b2666dc067e0be4ff/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">ubuntu 安装使用annconda，yolact_ros示例</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

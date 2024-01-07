@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>STM32 SPI&#43;DMA驱动WS2812 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="STM32 SPI&#43;DMA驱动WS2812" />
+<meta property="og:description" content="【举报再看养成习惯，噢 不对，点赞再看养成习惯。感谢支持】
+开头不多叨叨，直接进入主题：
+WS2812的驱动原理：
+首先明白高低电平的表示方法：
+低电平（0 code）： 0.35us的高电平&#43;0.8us的低电平
+高电平（1 code）：0.7us的高电平&#43;0.6us的低电平
+之前有一期使用PWM&#43;DMA 使用Dshot协议驱动电调的文章，里面表示高低电平也是这种方式。
+==================================================================
+然后看一下数据包怎么发送到每个灯珠：D1、D2、D3、D4
+1、红框左侧是第一包数据，我们先看D1拿到了一包3*24的数据，然后自己留下first 24bit。
+然后将剩下的2*24bit传给D2，D2留下second 24bit，将最后24bit传给D3。D4没有数据可拿，就不会亮。
+2、然后中间间隔&gt;=50us后，认为是第二包数据。
+3、所以原理类似于：从第一排往后传卷子，一人留一张。【来自上学时的恐惧】
+==========================分割线========================
+所以我们就需要将每颗灯珠需要的24bit，按照它要求的高低电平的表示方式传输即可。如果你看过我之前写的Dshot驱动电调的文章，那么可以利用PWM&#43;DMA组成数据包发送。今天我选择使用另一种方式：SPI&#43;DMA模拟灯珠需要的信号。
+首先解决SPI发送要求的高低电平的问题：
+我们只需要让SPI_MOSI发送引脚输出一个0xE0，就可以模拟0 code。
+发送0xF8模拟 1 code。
+举个例子：如果要发送R:0x80 G:0x08 B:0x11. 即发送
+1000 0000 0000 1000 0001 0001
+用0xE0代替0、0xF8代替1，那么实际输出：（低位往后放、高位往前放）
+0xE0 0xE0 0xE0 0xE0 0xE0 0xE0 0xE0 0xF8 0xE0 0xE0 0xE0 0xF8 0xE0 0xE0 0xE0 0xE0
+0xF8 0xE0 0xE0 0xE0 0xF8 0xE0 0xE0 0xE0
+============================================================
+再来解决发送频率的问题：
+从上面我们可以知道： 最短需要0.85us发出一个 0 Code（低电平）。最长可以1.45us" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/5d32415b5a389f9b21542e552c59ee51/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-03-27T15:33:35+08:00" />
+<meta property="article:modified_time" content="2023-03-27T15:33:35+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">STM32 SPI&#43;DMA驱动WS2812</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p><strong>【举报再看养成习惯，噢 不对，点赞再看养成习惯。感谢支持】</strong></p> 
+<p></p> 
+<p>开头不多叨叨，直接进入主题：</p> 
+<p>WS2812的驱动原理：</p> 
+<p><img alt="" height="437" src="https://images2.imgbox.com/f6/15/K5vDdkix_o.png" width="668"></p> 
+<p>首先明白高低电平的表示方法：</p> 
+<p><strong>低电平（0 code）： 0.35us的高电平+0.8us的低电平</strong></p> 
+<p><strong>高电平（1 code）：0.7us的高电平+0.6us的低电平</strong></p> 
+<p>之前有一期使用PWM+DMA 使用Dshot协议驱动电调的文章，里面表示高低电平也是这种方式。</p> 
+<p style="text-align:center;"><strong>==================================================================</strong></p> 
+<p><img alt="" height="632" src="https://images2.imgbox.com/5d/74/eYgqcDdo_o.png" width="769"></p> 
+<p>然后看一下数据包怎么发送到每个灯珠：D1、D2、D3、D4</p> 
+<p>        1、红框左侧是第一包数据，我们先看D1拿到了一包3*24的数据，然后自己留下<strong>first 24bit。</strong></p> 
+<p>然后将剩下的<strong>2*24bit</strong>传给D2<strong>，</strong>D2留下<strong>second 24bit，</strong>将最后<strong>24bit</strong>传给D3<strong>。</strong>D4没有数据可拿，就不会亮。</p> 
+<p>        2、然后中间间隔&gt;=50us后，认为是第二包数据。</p> 
+<p>        3、所以原理类似于：<strong>从第一排往后传卷子，一人留一张。【来自上学时的恐惧】</strong></p> 
+<p style="text-align:center;"><strong>==========================分割线========================</strong></p> 
+<p>所以我们就需要将每颗灯珠需要的24bit，按照它要求的高低电平的表示方式传输即可。如果你看过我之前写的Dshot驱动电调的文章，那么可以利用PWM+DMA组成数据包发送。今天我选择使用另一种方式：SPI+DMA模拟灯珠需要的信号。</p> 
+<p>首先解决SPI发送要求的高低电平的问题：</p> 
+<p><img alt="" height="245" src="https://images2.imgbox.com/e6/ad/IOyYOBMe_o.png" width="788"></p> 
+<p> <strong>我们只需要让SPI_MOSI发送引脚输出一个0xE0，就可以模拟0 code。</strong></p> 
+<p><strong>发送0xF8模拟 1 code。</strong></p> 
+<p><strong>举个例子：</strong>如果要发送<strong>R:0x80    G:0x08     B:0x11.  即发送</strong></p> 
+<p style="text-align:center;"><strong>1000 0000           0000 1000         0001 0001</strong></p> 
+<p>用<strong>0xE0代替0</strong>、<strong>0xF8代替1</strong>，那么实际输出：（低位往后放、高位往前放）</p> 
+<p style="text-align:center;"> 0xE0 0xE0 0xE0 0xE0      0xE0 0xE0 0xE0 <strong>0xF8</strong> </p> 
+<p style="text-align:center;">0xE0 0xE0 0xE0 <strong>0xF8</strong>      0xE0 0xE0 0xE0  0xE0</p> 
+<p style="text-align:center;"><strong> 0xF8</strong>  0xE0 0xE0  0xE0    <strong>0xF8</strong>  0xE0 0xE0  0xE0</p> 
+<p></p> 
+<p style="text-align:center;"><strong> ============================================================</strong></p> 
+<p>再来解决发送频率的问题：</p> 
+<p><img alt="" height="74" src="https://images2.imgbox.com/12/73/UiPQUfYt_o.png" width="643"></p> 
+<p>从上面我们可以知道： 最短需要0.85us发出一个 0 Code（低电平）。最长可以1.45us</p> 
+<p>SPI模拟一个0 code要发出0xE0，即8个bit。</p> 
+<p><strong>拿低电平来计算：</strong>  </p> 
+<p><strong>        最快：单个bit耗时：0.85/8    频率：1/0.85*8</strong>≈<strong>9.41MHz</strong></p> 
+<p>        <strong>最慢：单个bit耗时：1.45/8    频率：1/1.45*8≈5.52MHz</strong></p> 
+<p>所以我们的SPI通信频率只要保持在这个区间内，应该就没问题。</p> 
+<p style="text-align:center;"><strong>===========================================================</strong></p> 
+<p><strong>上CubeMx配置图：</strong></p> 
+<p><img alt="" height="855" src="https://images2.imgbox.com/fc/74/s4whfi1V_o.png" width="1200">因为我们只需要使用SPI的发送引脚，所以选择只发送模式。</p> 
+<p><img alt="" height="441" src="https://images2.imgbox.com/12/05/W9dzbDfA_o.png" width="783"></p> 
+<p> 打开DMA模式。配置好之后就可以生成代码了。</p> 
+<p style="text-align:center;"><strong>==============================================================</strong></p> 
+<p>核心代码：</p> 
+<pre><code class="language-cpp">// GRB格式
+
+/*************************************************************
+** Function name:       CreatData
+** Descriptions:        组合数据 并拷贝到BUFF中对应的位置
+** Input parameters:    None
+** Output parameters:   None
+** Returned value:      None
+** Remarks:             None
+*************************************************************/
+static void CreatData(PWS2812_Struct pWs2812, uint8_t index, uint8_t R,uint8_t G,uint8_t B){
+    // 先组合成8*3个字节的数据
+    uint8_t temp[24] = {0};
+    for (uint8_t i=0;i&lt;8;i++){
+        temp[7-i] =  (G &amp; 0x01) ? WS_BIT_1 : WS_BIT_0; 
+        G = G &gt;&gt; 1;
+    }
+    for (uint8_t i=0;i&lt;8;i++){
+        temp[15-i] =  (R &amp; 0x01) ? WS_BIT_1 : WS_BIT_0; 
+        R = R &gt;&gt; 1;
+    }
+    for (uint8_t i=0;i&lt;8;i++){
+        temp[23-i] =  (B &amp; 0x01) ? WS_BIT_1 : WS_BIT_0; 
+        B = B &gt;&gt; 1;
+    }
+    // 拷贝到对应的Buff中
+    memcpy(&amp;pWs2812-&gt;sendBuff[index*24], temp, 24);
+}
+</code></pre> 
+<p> 我们需要填入RGB的参数来输出对应的数据包，利用位运算即可。</p> 
+<p></p> 
+<p></p> 
+<p>完整代码：</p> 
+<p>【.c文件】</p> 
+<pre><code class="language-cpp">#include "ws2812Frame.h"
+
+uint32_t gWS2812_TimeCNT;
+
+// GRB格式
+
+/*************************************************************
+** Function name:       WS2812SendMassge
+** Descriptions:        通过SPI发送WS2812的数据
+** Input parameters:    None
+** Output parameters:   None
+** Returned value:      None
+** Remarks:             None
+*************************************************************/
+void WS2812SendMassge(uint8_t *sendBuff, uint16_t sendSize){
+
+    HAL_SPI_Transmit_DMA(&amp;hspi1, sendBuff, sendSize);
+
+}
+
+
+/*************************************************************
+** Function name:       CreatData
+** Descriptions:        组合数据 并拷贝到BUFF中对应的位置
+** Input parameters:    None
+** Output parameters:   None
+** Returned value:      None
+** Remarks:             None
+*************************************************************/
+static void CreatData(PWS2812_Struct pWs2812, uint8_t index, uint8_t R,uint8_t G,uint8_t B){
+    // 先组合成8*3个字节的数据
+    uint8_t temp[24] = {0};
+    for (uint8_t i=0;i&lt;8;i++){
+        temp[7-i] =  (G &amp; 0x01) ? WS_BIT_1 : WS_BIT_0; 
+        G = G &gt;&gt; 1;
+    }
+    for (uint8_t i=0;i&lt;8;i++){
+        temp[15-i] =  (R &amp; 0x01) ? WS_BIT_1 : WS_BIT_0; 
+        R = R &gt;&gt; 1;
+    }
+    for (uint8_t i=0;i&lt;8;i++){
+        temp[23-i] =  (B &amp; 0x01) ? WS_BIT_1 : WS_BIT_0; 
+        B = B &gt;&gt; 1;
+    }
+    // 拷贝到对应的Buff中
+    memcpy(&amp;pWs2812-&gt;sendBuff[index*24], temp, 24);
+}
+
+/*************************************************************
+** Function name:       SetWSColor
+** Descriptions:        设置WS2812颜色
+** Input parameters:    None
+** Output parameters:   None
+** Returned value:      None
+** Remarks:             None
+*************************************************************/
+void SetWSColor(PWS2812_Struct pWs2812, uint8_t index, uint8_t R,uint8_t G,uint8_t B){
+    CreatData(pWs2812,index,R,G,B);
+}
+
+
+/*************************************************************
+** Function name:       ClearAllColor
+** Descriptions:        清除所有颜色（关闭灯光）
+** Input parameters:    None
+** Output parameters:   None
+** Returned value:      None
+** Remarks:             None
+*************************************************************/
+void ClearAllColor(PWS2812_Struct pWs2812){
+    for (uint8_t i=0;i&lt;pWs2812-&gt;num;i++){
+        CreatData(pWs2812,i,0,0,0);
+    }
+}
+
+
+/*************************************************************
+** Function name:       ClearIndexColor
+** Descriptions:        清除指定WS2812的颜色
+** Input parameters:    index ： 灯珠的序号  从0开始
+** Output parameters:   None
+** Returned value:      None
+** Remarks:             None
+*************************************************************/
+void ClearIndexColor(PWS2812_Struct pWs2812,uint8_t index){
+    if (index &gt;= pWs2812-&gt;num){
+        return ;
+    }
+    CreatData(pWs2812,index,0,0,0);
+}
+
+
+/*************************************************************
+** Function name:       WS2812SendDataLoop
+** Descriptions:        WS2812数据发送函数，需要放到循环中
+** Input parameters:    None
+** Output parameters:   None
+** Returned value:      None
+** Remarks:             None
+*************************************************************/
+void WS2812SendDataLoop(PWS2812_Struct ws2812){
+    static uint32_t startTime = 0;
+    if  ( WS2812_TIMEOUT(10,startTime) ){
+        // 这里会指向SPI的发送函数  最上面的第一个函数
+        ws2812-&gt;WS2812DataTransmit(ws2812-&gt;sendBuff, ws2812-&gt;num * WS_DATALENGTH);
+        startTime = WS2812_GETTIME();
+    }
+}</code></pre> 
+<p>【.h文件】</p> 
+<pre><code class="language-cpp">
+#ifndef ws2812Frame_h
+#define ws2812Frame_h
+
+#include "main.h"
+#include "stdint.h"
+#include "string.h"
+
+#define WS_BIT_1            0xF8
+#define WS_BIT_0            0xE0
+#define WS_RESET            0x00
+
+#define WS_DATALENGTH          24
+
+struct SWS2812_Struct {
+    void (*WS2812DataTransmit)(uint8_t *pData, uint16_t dataSize);
+    uint8_t num;
+    uint8_t index;
+    uint8_t *sendBuff;
+};
+
+typedef struct SWS2812_Struct WS2812_Struct;
+typedef WS2812_Struct *PWS2812_Struct;
+
+#define WS2812_INIT(name,xNum,xSendBuff,xWS2812DataTransmit)      \
+WS2812_Struct name = {                                      \
+    .num = xNum,                                            \
+    .index = 0,                                             \
+    .sendBuff = xSendBuff,                                   \
+    .WS2812DataTransmit = xWS2812DataTransmit,                  \
+};
+
+/*************************************************************
+** Function name:       WS2812_TIMEBASE
+** Descriptions:        时基,放在周期为1ms的函数里面执行
+** Input parameters:    None
+** Output parameters:   None
+** Returned value:      None
+*************************************************************/
+#define WS2812_TIMEBASE(ms)                \
+        gWS2812_TimeCNT+= ms
+
+/*************************************************************
+** Function name:       WS2812_GETTIME
+** Descriptions:        获取起始时间
+** Input parameters:    None
+** Output parameters:   None
+** Returned value:      (uint32_t)起始时间
+*************************************************************/
+#define WS2812_GETTIME(void)                        \
+    gWS2812_TimeCNT
+
+/*************************************************************
+** Function name:       WS2812_TIMEOUT
+** Descriptions:        检查超时
+** Input parameters:    timeOut：(uint32_t)超时时间
+**                      startTime:(uint32_t)开始的时间
+** Output parameters:   None
+** Returned value:      false,未超时，true，超时
+*************************************************************/
+#define WS2812_TIMEOUT(timeOut,startTime)                \
+    ((gWS2812_TimeCNT - startTime) &gt;= timeOut ? 1 : 0)
+
+
+void SetWSColor(PWS2812_Struct pWs2812, uint8_t index, uint8_t R,uint8_t G,uint8_t B);
+void ClearAllColor(PWS2812_Struct pWs2812);
+void ClearIndexColor(PWS2812_Struct pWs2812,uint8_t index);
+void WS2812SendDataLoop(PWS2812_Struct ws2812);
+
+extern uint32_t gWS2812_TimeCNT;
+
+
+#endif /* ws2812Frame_h */
+</code></pre> 
+<p>最后使用SetWSColor函数成功点亮！</p> 
+<p>上图：</p> 
+<p style="text-align:center;"><img alt="" height="632" src="https://images2.imgbox.com/2c/e1/YCo7KtkY_o.png" width="593"></p> 
+<p></p> 
+<p></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/e2398cd6da93cb27c941e980e4fde119/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Direct IO</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/77ef5800d43b6e57d34373d276932a0d/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">DBeaver 下载安装</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

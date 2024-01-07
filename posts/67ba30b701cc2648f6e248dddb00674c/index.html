@@ -1,0 +1,1260 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>I2C驱动框架介绍以及Linux下sht20驱动开发温湿度传感器获取温湿度 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="I2C驱动框架介绍以及Linux下sht20驱动开发温湿度传感器获取温湿度" />
+<meta property="og:description" content="文章目录 一、I2C驱动框架（1）I2C驱动框架介绍（2）I2C总线驱动介绍【1】i2c_adapter结构体【2】i2c_algorithm结构体【3】I2C总线驱动工作介绍 （3）I2C设备驱动介绍【1】i2c_client结构体【2】i2c_driver结构体 （4）I2C 核心介绍 二、sht20驱动开发流程（1）sht20相关命令（2）驱动程序结构 三、sht20驱动开发（1）硬件连接（2）修改编译设备树（3）编写驱动代码（4）执行结果 四、重难点分析（1）Linux下DEVICE_ATTR介绍【1】DEVICE_ATTR宏定义【2】代码实现【3】测试讲解 （2）container_of介绍【1】作用介绍【2】举个栗子 源码是学习上一届学长的，想要参考的可以去拜访一下gitee：源码链接
+对于I2C不了解的可以参考这篇文章，里面有介绍I2C的相关知识以及时序：I2C协议介绍以及HAL库实现I2C对SHT30温湿度采样
+sht20获取数据具体流程（软复位、数据处理公式）可以参考这篇文章：IGKBoard（imx6ull）-I2C接口编程之SHT20温湿度采样
+具体tftp服务器搭建不懂的可以参考这篇文章：wpa_supplicant无线网络配置imx6ull以及搭建tftp服务器
+uboot使用tftp从网络启动设备树和zImage的可以参考这篇文章：Linux嵌入式uboot使用tftp网络启动加载zImage、设备树
+一、I2C驱动框架 （1）I2C驱动框架介绍 在 Linux 内核中 I2C 的体系结构分为 3 个部分：
+I2C 总线驱动： I2C 总线驱动是对 I2C 硬件体系结构中适配器端的实现， 适配器可由CPU 控制， 甚至可以直接集成在 CPU 内部。I2C 总线驱动就是 SOC 的 I2C 控制器驱动，也叫做 I2C 适配器驱动。I2C 设备驱动： I2C 设备驱动是对 I2C 硬件体系结构中设备端的实现， 设备一般挂接在受 CPU 控制的 I2C 适配器上， 通过 I2C 适配器与 CPU 交换数据。I2C 核心： I2C 核心提供了 I2C 总线驱动和设备驱动的注册、 注销方法 在 Linux 系统中则采用了总线、设备驱动模型。我们之前讲解的平台设备也是采用了这种模型，只不过平台总线是一个虚拟的总线。
+我们知道一个i2c(例如i2c1)上可以挂在多个i2c设备，例如sht20、i2c接口的OLED显示屏、摄像头（摄像头通过i2c接口发送控制信息）等等， 这些设备共用一个i2c，这个i2c的驱动我们称为i2c总线驱动。而对应具体的设备，例如sht20的驱动就是i2c设备驱动。 这样我们要使用sht20就需要拥有“两个驱动”一个是i2c总线驱动和sht20设备驱动。i
+2c总线驱动由芯片厂商提供（驱动复杂，官方提供了经过测试的驱动，我们直接用)。sht20设备驱动可以从sht20芯片厂家那里获得，也可以我们手动编写。 i2c 总线包括 i2c 设备 (i2c_client) 和 i2c 驱动 (i2c_driver), 当我们向 linux 中注册设备或驱动的时候，按照 i2c 总线匹配规则进行配对，配对成功，则可以通过 i2c_driver 中." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/67ba30b701cc2648f6e248dddb00674c/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-04-25T19:07:03+08:00" />
+<meta property="article:modified_time" content="2023-04-25T19:07:03+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">I2C驱动框架介绍以及Linux下sht20驱动开发温湿度传感器获取温湿度</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><ul><li><a href="#I2C_15" rel="nofollow">一、I2C驱动框架</a></li><li><ul><li><a href="#1I2C_16" rel="nofollow">（1）I2C驱动框架介绍</a></li><li><a href="#2I2C_35" rel="nofollow">（2）I2C总线驱动介绍</a></li><li><ul><li><a href="#1i2c_adapter_39" rel="nofollow">【1】i2c_adapter结构体</a></li><li><a href="#2i2c_algorithm_68" rel="nofollow">【2】i2c_algorithm结构体</a></li><li><a href="#3I2C_87" rel="nofollow">【3】I2C总线驱动工作介绍</a></li></ul> 
+    </li><li><a href="#3I2C_96" rel="nofollow">（3）I2C设备驱动介绍</a></li><li><ul><li><a href="#1i2c_client_99" rel="nofollow">【1】i2c_client结构体</a></li><li><a href="#2i2c_driver_117" rel="nofollow">【2】i2c_driver结构体</a></li></ul> 
+    </li><li><a href="#4I2C__156" rel="nofollow">（4）I2C 核心介绍</a></li></ul> 
+   </li><li><a href="#sht20_197" rel="nofollow">二、sht20驱动开发流程</a></li><li><ul><li><a href="#1sht20_198" rel="nofollow">（1）sht20相关命令</a></li><li><a href="#2_209" rel="nofollow">（2）驱动程序结构</a></li></ul> 
+   </li><li><a href="#sht20_313" rel="nofollow">三、sht20驱动开发</a></li><li><ul><li><a href="#1_314" rel="nofollow">（1）硬件连接</a></li><li><a href="#2_318" rel="nofollow">（2）修改编译设备树</a></li><li><a href="#3_369" rel="nofollow">（3）编写驱动代码</a></li><li><a href="#4_1012" rel="nofollow">（4）执行结果</a></li></ul> 
+   </li><li><a href="#_1060" rel="nofollow">四、重难点分析</a></li><li><ul><li><a href="#1LinuxDEVICE_ATTR_1061" rel="nofollow">（1）Linux下DEVICE_ATTR介绍</a></li><li><ul><li><a href="#1DEVICE_ATTR_1065" rel="nofollow">【1】DEVICE_ATTR宏定义</a></li><li><a href="#2_1076" rel="nofollow">【2】代码实现</a></li><li><a href="#3_1140" rel="nofollow">【3】测试讲解</a></li></ul> 
+    </li><li><a href="#2container_of_1157" rel="nofollow">（2）container_of介绍</a></li><li><ul><li><a href="#1_1158" rel="nofollow">【1】作用介绍</a></li><li><a href="#2_1174" rel="nofollow">【2】举个栗子</a></li></ul> 
+   </li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<hr> 
+<p>源码是学习上一届学长的，想要参考的可以去拜访一下gitee：<a href="https://gitee.com/wei-huihong" rel="nofollow">源码链接</a></p> 
+<p>对于I2C不了解的可以参考这篇文章，里面有介绍I2C的相关知识以及时序：<a href="https://blog.csdn.net/m0_51429770/article/details/127661382?spm=1001.2014.3001.5502">I2C协议介绍以及HAL库实现I2C对SHT30温湿度采样</a></p> 
+<p>sht20获取数据具体流程（软复位、数据处理公式）可以参考这篇文章：<a href="https://blog.csdn.net/m0_51429770/article/details/129280135?spm=1001.2014.3001.5502">IGKBoard（imx6ull）-I2C接口编程之SHT20温湿度采样</a></p> 
+<p>具体tftp服务器搭建不懂的可以参考这篇文章：<a href="https://blog.csdn.net/m0_51429770/article/details/128584897?spm=1001.2014.3001.5502">wpa_supplicant无线网络配置imx6ull以及搭建tftp服务器</a></p> 
+<p>uboot使用tftp从网络启动设备树和zImage的可以参考这篇文章：<a href="https://blog.csdn.net/m0_51429770/article/details/130030462?spm=1001.2014.3001.5502">Linux嵌入式uboot使用tftp网络启动加载zImage、设备树</a></p> 
+<hr> 
+<h3><a id="I2C_15"></a>一、I2C驱动框架</h3> 
+<h4><a id="1I2C_16"></a>（1）I2C驱动框架介绍</h4> 
+<p>在 Linux 内核中 I2C 的体系结构分为 3 个部分：</p> 
+<ul><li><mark>I2C 总线驱动</mark>： I2C 总线驱动是对 I2C 硬件体系结构中适配器端的实现， 适配器可由CPU 控制， 甚至可以直接集成在 CPU 内部。I2C 总线驱动就是 SOC 的 I2C 控制器驱动，也叫做 I2C 适配器驱动。</li><li><mark>I2C 设备驱动</mark>： I2C 设备驱动是对 I2C 硬件体系结构中设备端的实现， 设备一般挂接在受 CPU 控制的 I2C 适配器上， 通过 I2C 适配器与 CPU 交换数据。</li><li><mark>I2C 核心</mark>： I2C 核心提供了 I2C 总线驱动和设备驱动的注册、 注销方法</li></ul> 
+<p>在 Linux 系统中则采用了总线、设备驱动模型。我们之前讲解的平台设备也是采用了这种模型，只不过平台总线是一个虚拟的总线。</p> 
+<p>我们知道一个i2c(例如i2c1)上可以挂在多个i2c设备，例如sht20、i2c接口的OLED显示屏、摄像头（摄像头通过i2c接口发送控制信息）等等， 这些设备共用一个i2c，这个i2c的驱动我们称为i2c总线驱动。而对应具体的设备，例如sht20的驱动就是i2c设备驱动。 这样我们要使用sht20就需要拥有“两个驱动”一个是<mark>i2c总线驱动</mark>和<mark>sht20设备驱动</mark>。i</p> 
+<ul><li>2c总线驱动由芯片厂商提供（驱动复杂，官方提供了经过测试的驱动，我们直接用)。</li><li>sht20设备驱动可以从sht20芯片厂家那里获得，也可以我们手动编写。</li></ul> 
+<p><img src="https://images2.imgbox.com/b0/36/Mg19mqZl_o.png" alt="在这里插入图片描述"><br> i2c 总线包括 i2c 设备 (i2c_client) 和 i2c 驱动 (i2c_driver), 当我们向 linux 中注册设备或驱动的时候，按照 i2c 总线匹配规则进行配对，配对成功，则可以通过 i2c_driver 中.prob 函数创建具体的设备驱动。</p> 
+<p>在现代 linux 中，i2c 设备不再需要手动创建，而是使用设备树机制引入，设备树节点是与 paltform 总线相配合使用的。</p> 
+<p>设备驱动创建成功，我们还需要实现设备的文件操作接口 (file_operations),file_operations 中会使用到内核中 i2c 核心函数 (i2c 系统已经实现的函数，专门开放给驱动工程师使用)。使用这些函数会涉及到 i2c 适配器，也就是 i2c 控制器。由于 ic2 控制器有不同的配置，所有 linux 将每一个 i2c控制器抽象成 i2c 适配器对象。这个对象中存在一个很重要的成员变量——Algorithm，Algorithm中存在一系列函数指针，这些函数指针指向真正硬件操作代码。下面会介绍到。</p> 
+<h4><a id="2I2C_35"></a>（2）I2C总线驱动介绍</h4> 
+<p>I2C 总线和 platform 总线类似， 区别在于platform 总线是虚拟的一条总线， 而 I2C 总线是实际<br> 存在的。 对于使用 I2C 通信的设备， 在驱动中直接使用 I2C 总结即可。 I2C 总线驱动的重点是 I2C 适配器驱动， 主要涉及到两个结构体： <mark>i2c_adapter</mark> 和 <mark>i2c_algorithm</mark>。</p> 
+<h5><a id="1i2c_adapter_39"></a>【1】i2c_adapter结构体</h5> 
+<p>i2c_ 适配器对应一个 i2c 控制器，是用于标识物理 i2c 总线以及访问它所需的访问算法的结构。</p> 
+<p>在 Linux 内核中用 i2c_adapter 结构体来表示 I2C 适配器。 i2c_adapter 结构体定义在 include/linux/i2c.h 文件中。</p> 
+<pre><code class="prism language-c"><span class="token keyword">struct</span> <span class="token class-name">i2c_adapter</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">struct</span> <span class="token class-name">module</span> <span class="token operator">*</span>owner<span class="token punctuation">;</span>
+    <span class="token keyword">unsigned</span> <span class="token keyword">int</span> class<span class="token punctuation">;</span> <span class="token comment">/* classes to allow probing for */</span>
+    <span class="token keyword">const</span> <span class="token keyword">struct</span> <span class="token class-name">i2c_algorithm</span> <span class="token operator">*</span>algo<span class="token punctuation">;</span> <span class="token comment">/* 总线访问算法 */</span>
+    <span class="token keyword">void</span> <span class="token operator">*</span>algo_data<span class="token punctuation">;</span>
+ 
+    <span class="token comment">/* data fields that are valid for all devices */</span>
+    <span class="token keyword">struct</span> <span class="token class-name">rt_mutex</span> bus_lock<span class="token punctuation">;</span>
+ 
+    <span class="token keyword">int</span> timeout<span class="token punctuation">;</span> <span class="token comment">/* in jiffies */</span>
+    <span class="token keyword">int</span> retries<span class="token punctuation">;</span>
+    <span class="token keyword">struct</span> <span class="token class-name">device</span> dev<span class="token punctuation">;</span> <span class="token comment">/* the adapter device */</span>
+ 
+    <span class="token keyword">int</span> nr<span class="token punctuation">;</span>
+    <span class="token keyword">char</span> name<span class="token punctuation">[</span><span class="token number">48</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+    <span class="token keyword">struct</span> <span class="token class-name">completion</span> dev_released<span class="token punctuation">;</span>
+ 
+    <span class="token keyword">struct</span> <span class="token class-name">mutex</span> userspace_clients_lock<span class="token punctuation">;</span>
+    <span class="token keyword">struct</span> <span class="token class-name">list_head</span> userspace_clients<span class="token punctuation">;</span>
+ 
+    <span class="token keyword">struct</span> <span class="token class-name">i2c_bus_recovery_info</span> <span class="token operator">*</span>bus_recovery_info<span class="token punctuation">;</span>
+    <span class="token keyword">const</span> <span class="token keyword">struct</span> <span class="token class-name">i2c_adapter_quirks</span> <span class="token operator">*</span>quirks<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h5><a id="2i2c_algorithm_68"></a>【2】i2c_algorithm结构体</h5> 
+<p>structi2c_algorithm（/ˈælɡərɪðəm/） 结构体用于指定访问总线（i2c）的算法，在这里就是用于指定外部访问 i2c 总线的接口，这个“接口”体现到代码就是一些接口函数。从下面代码不难看出 i2c_algorithm 结构体实际提供了一些函数指针，这些函数就是外部访问 i2c 总线的接口，更直白的说，i2c 设备sht20、i2c 接口的 oled 屏等等就是通过这些函数接口使用i2c 总线实现收、发数据的。</p> 
+<p>i2c_algorithm 是 I2C 适配器与 IIC 设备进行通信的方法。i2c_algorithm 结构体定义在 include/linux/i2c.h 文件中。</p> 
+<pre><code class="prism language-c"> 
+<span class="token keyword">struct</span> <span class="token class-name">i2c_algorithm</span> 
+<span class="token punctuation">{<!-- --></span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token keyword">int</span> <span class="token punctuation">(</span><span class="token operator">*</span>master_xfer<span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">i2c_adapter</span> <span class="token operator">*</span>adap<span class="token punctuation">,</span><span class="token keyword">struct</span> <span class="token class-name">i2c_msg</span> <span class="token operator">*</span>msgs<span class="token punctuation">,</span><span class="token keyword">int</span> num<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">int</span> <span class="token punctuation">(</span><span class="token operator">*</span>smbus_xfer<span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">i2c_adapter</span> <span class="token operator">*</span>adap<span class="token punctuation">,</span> u16 addr<span class="token punctuation">,</span>
+    <span class="token keyword">unsigned</span> <span class="token keyword">short</span> flags<span class="token punctuation">,</span> <span class="token keyword">char</span> read_write<span class="token punctuation">,</span>
+    u8 command<span class="token punctuation">,</span> <span class="token keyword">int</span> size<span class="token punctuation">,</span> <span class="token keyword">union</span> i2c_smbus_data <span class="token operator">*</span>data<span class="token punctuation">)</span><span class="token punctuation">;</span>
+ 
+    <span class="token comment">/* To determine what the adapter supports */</span>
+    <span class="token function">u32</span> <span class="token punctuation">(</span><span class="token operator">*</span>functionality<span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">i2c_adapter</span> <span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h5><a id="3I2C_87"></a>【3】I2C总线驱动工作介绍</h5> 
+<p>I2C 总线驱动（I2C 适配器驱动）的主要工作就是初始化 i2c_adapter 结构体变量，然后设置 i2c_algorithm 中的 master_xfer 函数。最后通过 i2c_add_numbered_adapter或 i2c_add_adapter 这两个函数向系统注册i2c_adapter。</p> 
+<pre><code class="prism language-c"><span class="token keyword">int</span> <span class="token function">i2c_add_adapter</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">i2c_adapter</span> <span class="token operator">*</span>adapter<span class="token punctuation">)</span>
+<span class="token keyword">int</span> <span class="token function">i2c_add_numbered_adapter</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">i2c_adapter</span> <span class="token operator">*</span>adap<span class="token punctuation">)</span>
+</code></pre> 
+<p>一般 SOC 的 I2C 总线驱动都是由半导体厂商编写的，所以大多数只要专注于 I2C 设备驱动即可。</p> 
+<h4><a id="3I2C_96"></a>（3）I2C设备驱动介绍</h4> 
+<p>在I2C设备驱动中主要有两个重要的结构体： <mark>i2c_client</mark> 和 <mark>i2c_driver</mark>。 i2c_client 是描述设备信息的，i2c_driver 描述驱动内容。</p> 
+<h5><a id="1i2c_client_99"></a>【1】i2c_client结构体</h5> 
+<p>i2c_client表示 i2c 从设备，当驱动和设备匹配成功后，每检测到一个 I2C 设备就会给这个 I2C 设备分配一个i2c_client，这个ic_client存储着这个设备的所有信息，如芯片地址。</p> 
+<pre><code class="prism language-c"><span class="token keyword">struct</span> <span class="token class-name">i2c_client</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">unsigned</span> <span class="token keyword">short</span> flags<span class="token punctuation">;</span> <span class="token comment">/* 标志 */</span>
+    <span class="token keyword">unsigned</span> <span class="token keyword">short</span> addr<span class="token punctuation">;</span> <span class="token comment">/* 芯片地址， 7 位，存在低 7 位*/</span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token keyword">char</span> name<span class="token punctuation">[</span>I2C_NAME_SIZE<span class="token punctuation">]</span><span class="token punctuation">;</span> <span class="token comment">/* 名字 */</span>
+    <span class="token keyword">struct</span> <span class="token class-name">i2c_adapter</span> <span class="token operator">*</span>adapter<span class="token punctuation">;</span> <span class="token comment">/* 对应的 I2C 适配器 */</span>
+    
+    <span class="token keyword">struct</span> <span class="token class-name">device</span> dev<span class="token punctuation">;</span> <span class="token comment">/* 设备结构体 */</span>
+    
+    <span class="token keyword">int</span> irq<span class="token punctuation">;</span> <span class="token comment">/* 中断 */</span>
+    
+    <span class="token keyword">struct</span> <span class="token class-name">list_head</span> detected<span class="token punctuation">;</span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h5><a id="2i2c_driver_117"></a>【2】i2c_driver结构体</h5> 
+<p>i2c 设备驱动程序，当 I2C 设备和驱动匹配成功以后 probe 函数就会执行device_driver 驱动结构体：</p> 
+<pre><code class="prism language-c"><span class="token keyword">struct</span> <span class="token class-name">i2c_driver</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">unsigned</span> <span class="token keyword">int</span> class<span class="token punctuation">;</span>
+ 
+    <span class="token comment">/* Notifies the driver that a new bus has appeared. You should
+    * avoid using this, it will be removed in a near future.
+    */</span>
+    <span class="token keyword">int</span> <span class="token punctuation">(</span><span class="token operator">*</span>attach_adapter<span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">i2c_adapter</span> <span class="token operator">*</span><span class="token punctuation">)</span> __deprecated<span class="token punctuation">;</span>
+ 
+    <span class="token comment">/* Standard driver model interfaces */</span>
+    <span class="token comment">/*i2c 设备和 i2c 驱动匹配后，回调该函数指针。*/</span>
+    <span class="token keyword">int</span> <span class="token punctuation">(</span><span class="token operator">*</span>probe<span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">i2c_client</span> <span class="token operator">*</span><span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">struct</span> <span class="token class-name">i2c_device_id</span> <span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">int</span> <span class="token punctuation">(</span><span class="token operator">*</span>remove<span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">i2c_client</span> <span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+ 
+    <span class="token comment">/* driver model interfaces that don't relate to enumeration */</span>
+    <span class="token keyword">void</span> <span class="token punctuation">(</span><span class="token operator">*</span>shutdown<span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">i2c_client</span> <span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+ 
+    <span class="token comment">/* Alert callback, for example for the SMBus alert protocol.
+    * The format and meaning of the data value depends on the
+    * protocol.For the SMBus alert protocol, there is a single bit
+    * of data passed as the alert response's low bit ("eventflag"). */</span>
+    <span class="token keyword">void</span> <span class="token punctuation">(</span><span class="token operator">*</span>alert<span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">i2c_client</span> <span class="token operator">*</span><span class="token punctuation">,</span> <span class="token keyword">unsigned</span> <span class="token keyword">int</span> data<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">/* a ioctl like command that can be used to perform specific
+    * functions with the device.
+    */</span>
+    <span class="token keyword">int</span> <span class="token punctuation">(</span><span class="token operator">*</span>command<span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">i2c_client</span> <span class="token operator">*</span>client<span class="token punctuation">,</span> <span class="token keyword">unsigned</span> <span class="token keyword">int</span> cmd<span class="token punctuation">,</span><span class="token keyword">void</span> <span class="token operator">*</span>arg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+ 
+    <span class="token keyword">struct</span> <span class="token class-name">device_driver</span> driver<span class="token punctuation">;</span>
+    <span class="token keyword">const</span> <span class="token keyword">struct</span> <span class="token class-name">i2c_device_id</span> <span class="token operator">*</span>id_table<span class="token punctuation">;</span>
+ 
+    <span class="token comment">/* Device detection callback for automatic device creation */</span>
+    <span class="token keyword">int</span> <span class="token punctuation">(</span><span class="token operator">*</span>detect<span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">i2c_client</span> <span class="token operator">*</span><span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">i2c_board_info</span> <span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">const</span> <span class="token keyword">unsigned</span> <span class="token keyword">short</span> <span class="token operator">*</span>address_list<span class="token punctuation">;</span>
+    <span class="token keyword">struct</span> <span class="token class-name">list_head</span> clients<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h4><a id="4I2C__156"></a>（4）I2C 核心介绍</h4> 
+<p>在 I2C 核心层完成的是I2C设备和I2C驱动的匹配过程。设备和驱动的匹配过程是在 I2C 总线完成的， I2C 总线的数据结构为 i2c_bus_type：</p> 
+<pre><code class="prism language-c"><span class="token keyword">struct</span> <span class="token class-name">bus_type</span> i2c_bus_type <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token punctuation">.</span>name <span class="token operator">=</span> <span class="token string">"i2c"</span><span class="token punctuation">,</span>
+    <span class="token punctuation">.</span>match <span class="token operator">=</span> i2c_device_match<span class="token punctuation">,</span>
+    <span class="token punctuation">.</span>probe <span class="token operator">=</span> i2c_device_probe<span class="token punctuation">,</span>
+    <span class="token punctuation">.</span>remove <span class="token operator">=</span> i2c_device_remove<span class="token punctuation">,</span>
+    <span class="token punctuation">.</span>shutdown <span class="token operator">=</span> i2c_device_shutdown<span class="token punctuation">,</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>match 成员变量是 I2C 总线上设备和驱动匹配函数，即i2c_device_match函数。</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">i2c_device_match</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">device</span> <span class="token operator">*</span>dev<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">device_driver</span> <span class="token operator">*</span>drv<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">struct</span> <span class="token class-name">i2c_client</span> <span class="token operator">*</span>client <span class="token operator">=</span> <span class="token function">i2c_verify_client</span><span class="token punctuation">(</span>dev<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">struct</span> <span class="token class-name">i2c_driver</span> <span class="token operator">*</span>driver<span class="token punctuation">;</span>
+ 
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>client<span class="token punctuation">)</span>
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+ 
+    <span class="token comment">/* Attempt an OF style match */</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">of_driver_match_device</span><span class="token punctuation">(</span>dev<span class="token punctuation">,</span> drv<span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token keyword">return</span> <span class="token number">1</span><span class="token punctuation">;</span>
+ 
+    <span class="token comment">/* Then ACPI style match */</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">acpi_driver_match_device</span><span class="token punctuation">(</span>dev<span class="token punctuation">,</span> drv<span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token keyword">return</span> <span class="token number">1</span><span class="token punctuation">;</span>
+ 
+    driver <span class="token operator">=</span> <span class="token function">to_i2c_driver</span><span class="token punctuation">(</span>drv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">/* match on an id table if there is one */</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>driver<span class="token operator">-&gt;</span>id_table<span class="token punctuation">)</span>
+    <span class="token keyword">return</span> <span class="token function">i2c_match_id</span><span class="token punctuation">(</span>driver<span class="token operator">-&gt;</span>id_table<span class="token punctuation">,</span> client<span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+ 
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>of_driver_match_device 函数用于完成设备树设备和驱动匹配。比较 I2C 设备节点的 compatible 属性和 of_device_id 中的 compatible 属性是否相等，如果相当的话就表示 I2C设备和驱动匹配。</p> 
+<hr> 
+<h3><a id="sht20_197"></a>二、sht20驱动开发流程</h3> 
+<h4><a id="1sht20_198"></a>（1）sht20相关命令</h4> 
+<p>宏定义如下：</p> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">DEV_NAME</span>                        <span class="token string">"sht20"</span>  <span class="token comment">//设备名</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SHT20_SOFERESET</span>                 <span class="token expression"><span class="token number">0xFE</span>    </span><span class="token comment">// 软复位</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SHT20_TEMPERATURE_NO_HOLD_CMD</span>   <span class="token expression"><span class="token number">0xF3</span>    </span><span class="token comment">// 无主机模式触发温度测量</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SHT20_HUMIDITY_NO_HOLD_CMD</span>      <span class="token expression"><span class="token number">0xF5</span>    </span><span class="token comment">// 无主机模式触发湿度测量</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SHT20_TEMPERATURE_HOLD_CMD</span>      <span class="token expression"><span class="token number">0xE3</span>    </span><span class="token comment">// 主机模式触发温度测量</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SHT20_HUMIDITY_HOLD_CMD</span>         <span class="token expression"><span class="token number">0xE5</span>    </span><span class="token comment">// 主机模式触发湿度测量</span></span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/a5/cf/hsrbvEBk_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="2_209"></a>（2）驱动程序结构</h4> 
+<pre><code class="prism language-c"><span class="token comment">/*sht20 打开设备 */</span>
+<span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">sht20_open</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">inode</span> <span class="token operator">*</span>inode<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">file</span> <span class="token operator">*</span>filp<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">/*从设备读取文件*/</span>
+<span class="token keyword">static</span> <span class="token class-name">ssize_t</span> <span class="token function">sht20_read</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">file</span> <span class="token operator">*</span>filp<span class="token punctuation">,</span> <span class="token keyword">char</span> __user <span class="token operator">*</span>buf<span class="token punctuation">,</span> <span class="token class-name">size_t</span> cnt<span class="token punctuation">,</span> <span class="token class-name">loff_t</span> <span class="token operator">*</span>off<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>data<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">/*关闭设备*/</span>
+<span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">sht20_release</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">inode</span> <span class="token operator">*</span>inode<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">file</span> <span class="token operator">*</span>filp<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">/*设备操作函数*/</span>
+<span class="token keyword">static</span> <span class="token keyword">struct</span> <span class="token class-name">file_operations</span> sht20_fops <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token punctuation">.</span>owner <span class="token operator">=</span> THIS_MODULE<span class="token punctuation">,</span>
+    <span class="token punctuation">.</span>open  <span class="token operator">=</span> sht20_open<span class="token punctuation">,</span>
+    <span class="token punctuation">.</span>read  <span class="token operator">=</span> sht20_read<span class="token punctuation">,</span>
+    <span class="token punctuation">.</span>release <span class="token operator">=</span> sht20_release<span class="token punctuation">,</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token comment">/* 软复位初始化sht20*/</span>
+<span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">sht20_init</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">i2c_client</span> <span class="token operator">*</span>client<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>    
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">/*CRC校验*/</span>
+<span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">crc_check</span><span class="token punctuation">(</span><span class="token keyword">unsigned</span> <span class="token keyword">char</span> <span class="token operator">*</span>data<span class="token punctuation">,</span> <span class="token keyword">int</span> len<span class="token punctuation">,</span> <span class="token keyword">unsigned</span> <span class="token keyword">char</span> checksum<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">/*读取sht20 的温度数据*/</span>
+<span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">read_temperature</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">i2c_client</span> <span class="token operator">*</span>client<span class="token punctuation">,</span> <span class="token keyword">unsigned</span> <span class="token keyword">char</span> <span class="token operator">*</span>buf<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">/*读取sht20 的湿度数据*/</span>
+<span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">read_humidity</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">i2c_client</span> <span class="token operator">*</span>client<span class="token punctuation">,</span> <span class="token keyword">unsigned</span> <span class="token keyword">char</span> <span class="token operator">*</span>buf<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">/*温度属性显示函数*/</span>
+<span class="token keyword">static</span> <span class="token class-name">ssize_t</span> <span class="token function">sht20_temp_humi_show</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">device</span> <span class="token operator">*</span>dev<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">device_attribute</span> <span class="token operator">*</span>attr<span class="token punctuation">,</span> <span class="token keyword">char</span> <span class="token operator">*</span>buf<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> <span class="token function">sprintf</span><span class="token punctuation">(</span>buf<span class="token punctuation">,</span> <span class="token string">"temperature=%d humidity=%d\n"</span><span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>data<span class="token punctuation">[</span><span class="token number">3</span><span class="token punctuation">]</span> <span class="token operator">&lt;&lt;</span> <span class="token number">8</span><span class="token punctuation">)</span> <span class="token operator">|</span> data<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>data<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">&lt;&lt;</span> <span class="token number">8</span><span class="token punctuation">)</span> <span class="token operator">|</span> data<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">)</span> <span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//1000倍</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">/*sysfs - echo写入属性函数*/</span>
+<span class="token keyword">static</span> <span class="token class-name">ssize_t</span> <span class="token function">sht20_temp_humi_store</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">device</span> <span class="token operator">*</span>dev<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">device_attribute</span> <span class="token operator">*</span>attr<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">char</span> <span class="token operator">*</span>buf<span class="token punctuation">,</span> <span class="token class-name">size_t</span> count<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> count<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">/*初始化属性值*/</span>
+<span class="token keyword">static</span> <span class="token function">DEVICE_ATTR</span><span class="token punctuation">(</span>sht20_temp_humi<span class="token punctuation">,</span> <span class="token number">0644</span><span class="token punctuation">,</span> sht20_temp_humi_show<span class="token punctuation">,</span> sht20_temp_humi_store<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">/*i2c驱动probe函数，设备和驱动匹配后执行*/</span>
+<span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">sht20_probe</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">i2c_client</span> <span class="token operator">*</span>client<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">struct</span> <span class="token class-name">i2c_device_id</span> <span class="token operator">*</span>id<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+
+<span class="token comment">/*i2c驱动的remove函数，移除时候执行*/</span>
+<span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">sht20_remove</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">i2c_client</span> <span class="token operator">*</span>client<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">/*传统方式ID列表*/</span>
+<span class="token keyword">static</span> <span class="token keyword">const</span> <span class="token keyword">struct</span> <span class="token class-name">i2c_device_id</span> sht20_id<span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token punctuation">{<!-- --></span><span class="token string">"sht20"</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">}</span><span class="token punctuation">,</span>
+    <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+<span class="token comment">/*定义i2c设备结构体*/</span>
+<span class="token keyword">static</span> <span class="token keyword">struct</span> <span class="token class-name">i2c_driver</span> sht20_drv <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token punctuation">.</span>probe <span class="token operator">=</span> sht20_probe<span class="token punctuation">,</span>
+    <span class="token punctuation">.</span>remove <span class="token operator">=</span> sht20_remove<span class="token punctuation">,</span>
+    <span class="token punctuation">.</span>id_table <span class="token operator">=</span> sht20_id<span class="token punctuation">,</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token comment">/*注册sht20驱动*/</span>
+<span class="token function">module_i2c_driver</span><span class="token punctuation">(</span>sht20_drv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token function">MODULE_LICENSE</span><span class="token punctuation">(</span><span class="token string">"GPL"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<ul><li>第一步我们定义 i2c 总线设备结构体并实现 i2c 总线设备的注册和注销函数，在这里就是程驱动程序的入口和出口函数。</li><li>第二步实现 i2c 总线设备结构体中定义的操作函数，主要是.probe 匹配函数，在.probe函数中添加、注册一个字符设备，这个字符设备用于实现 sht20 的具体功能。</li><li>第三不定义并实现字符设备操作函数集。在应用程序中的 open、read 操作传到内核后就是执行这些函数，所以他们要真正实现对sht20的初始化以及读取转换结果。</li><li>具体的读、写 sht20 的函数，它们被第三部分的函数调用，用户自行定义。</li></ul> 
+<hr> 
+<h3><a id="sht20_313"></a>三、sht20驱动开发</h3> 
+<h4><a id="1_314"></a>（1）硬件连接</h4> 
+<p><img src="https://images2.imgbox.com/bf/70/SA0kvhdI_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/88/a5/t9sRBLIU_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/47/7d/kKzOWLlz_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="2_318"></a>（2）修改编译设备树</h4> 
+<p>添加设备节点：</p> 
+<pre><code class="prism language-c"><span class="token operator">&amp;</span>i2c1 <span class="token punctuation">{<!-- --></span>
+    clock<span class="token operator">-</span>frequency <span class="token operator">=</span> <span class="token operator">&lt;</span><span class="token number">100000</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+    pinctrl<span class="token operator">-</span>names <span class="token operator">=</span> <span class="token string">"default"</span><span class="token punctuation">;</span>
+    pinctrl<span class="token operator">-</span><span class="token number">0</span> <span class="token operator">=</span> <span class="token operator">&lt;</span><span class="token operator">&amp;</span>pinctrl_i2c1<span class="token operator">&gt;</span><span class="token punctuation">;</span>
+    status <span class="token operator">=</span> <span class="token string">"okay"</span><span class="token punctuation">;</span>
+
+    sht20<span class="token operator">-</span>i2c@<span class="token number">40</span><span class="token punctuation">{<!-- --></span>
+        compatible <span class="token operator">=</span> <span class="token string">"sht20"</span><span class="token punctuation">;</span>
+        reg <span class="token operator">=</span> <span class="token operator">&lt;</span><span class="token number">0x40</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token operator">&amp;</span>iomuxc <span class="token punctuation">{<!-- --></span>
+    pinctrl<span class="token operator">-</span>names <span class="token operator">=</span> <span class="token string">"default"</span><span class="token punctuation">;</span>
+        pinctrl_i2c1<span class="token operator">:</span> i2c1grp <span class="token punctuation">{<!-- --></span>
+            fsl<span class="token punctuation">,</span>pins <span class="token operator">=</span> <span class="token operator">&lt;</span>
+                MX6UL_PAD_GPIO1_IO03__I2C1_SDA      <span class="token number">0x4001b8b0</span>
+                MX6UL_PAD_GPIO1_IO02__I2C1_SCL      <span class="token number">0x4001b8b0</span>
+            <span class="token operator">&gt;</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+</code></pre> 
+<p>在源码目录下执行<code>make dtbo</code>编译之后放在tftp目录下，然后可以tftp从网络启动设备树和zImage。不懂的可以看文章开头的文章。</p> 
+<p>重启之后我们在设备树日常的<code>proc/device-tree</code>目录下是看不见i2c1设备树节点的，因为主节点在头文件<code>imx6ul.dtsi</code>中已经定义好了。<br> <code>linux-imx/arch/arm/boot/dts$ vim imx6ul.dtsi</code>:</p> 
+<pre><code class="prism language-c">            i2c1<span class="token operator">:</span> i2c@<span class="token number">21</span>a0000 <span class="token punctuation">{<!-- --></span>
+                <span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">address</span><span class="token expression"><span class="token operator">-</span>cells <span class="token operator">=</span> <span class="token operator">&lt;</span><span class="token number">1</span><span class="token operator">&gt;</span><span class="token punctuation">;</span> </span></span>
+                <span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">size</span><span class="token expression"><span class="token operator">-</span>cells <span class="token operator">=</span> <span class="token operator">&lt;</span><span class="token number">0</span><span class="token operator">&gt;</span><span class="token punctuation">;</span> </span></span>
+                compatible <span class="token operator">=</span> <span class="token string">"fsl,imx6ul-i2c"</span><span class="token punctuation">,</span> <span class="token string">"fsl,imx21-i2c"</span><span class="token punctuation">;</span>
+                reg <span class="token operator">=</span> <span class="token operator">&lt;</span><span class="token number">0x021a0000</span> <span class="token number">0x4000</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+                interrupts <span class="token operator">=</span> <span class="token operator">&lt;</span>GIC_SPI <span class="token number">36</span> IRQ_TYPE_LEVEL_HIGH<span class="token operator">&gt;</span><span class="token punctuation">;</span>
+                clocks <span class="token operator">=</span> <span class="token operator">&lt;</span><span class="token operator">&amp;</span>clks IMX6UL_CLK_I2C1<span class="token operator">&gt;</span><span class="token punctuation">;</span>
+                status <span class="token operator">=</span> <span class="token string">"disabled"</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span><span class="token punctuation">;</span>  
+</code></pre> 
+<p>具体位置：</p> 
+<pre><code class="prism language-c">root@igkboard<span class="token operator">:</span><span class="token operator">/</span>proc<span class="token operator">/</span>device<span class="token operator">-</span>tree# find <span class="token operator">-</span>name i2c@<span class="token number">21</span>a0000 
+<span class="token punctuation">.</span><span class="token operator">/</span>soc<span class="token operator">/</span>bus@<span class="token number">2100000</span><span class="token operator">/</span>i2c@<span class="token number">21</span>a0000
+<span class="token punctuation">.</span><span class="token operator">/</span>__local_fixups__<span class="token operator">/</span>soc<span class="token operator">/</span>bus@<span class="token number">2100000</span><span class="token operator">/</span>i2c@<span class="token number">21</span>a0000
+</code></pre> 
+<h4><a id="3_369"></a>（3）编写驱动代码</h4> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;linux/module.h&gt;</span>       <span class="token comment">//所有模块都需要的头文件</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;linux/init.h&gt;</span>         <span class="token comment">// init和exit相关宏</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;linux/kernel.h&gt;</span>       <span class="token comment">// printk()，内核打印函数</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;linux/delay.h&gt;</span>        <span class="token comment">// 延时函数头文件</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;linux/device.h&gt;</span>       <span class="token comment">// 用于设备创建的函数头文件</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;linux/fs.h&gt;</span>           <span class="token comment">//和fops相关的头文件</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;linux/cdev.h&gt;</span>         <span class="token comment">//字符设备 初始化相关</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;linux/version.h&gt;</span></span>
+<span class="token comment">//#include &lt;linux/ide.h&gt;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;linux/gpio.h&gt;</span>         <span class="token comment">//gpio子系统头文件</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;linux/of_gpio.h&gt;</span>      <span class="token comment">//gpio子系统和设备树相关</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;linux/platform_device.h&gt;</span>  <span class="token comment">//platform总线设备相关</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;linux/err.h&gt;</span>          <span class="token comment">//错误码相关</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;linux/timer.h&gt;</span>        <span class="token comment">//定时器相关</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;linux/i2c.h&gt;</span>          <span class="token comment">//i2c子系统相关</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">DEV_NAME</span>                        <span class="token string">"sht20"</span>  <span class="token comment">//设备名</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SHT20_SOFERESET</span>                 <span class="token expression"><span class="token number">0xFE</span>    </span><span class="token comment">// 软复位</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SHT20_TEMPERATURE_NO_HOLD_CMD</span>   <span class="token expression"><span class="token number">0xF3</span>    </span><span class="token comment">// 无主机模式触发温度测量</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SHT20_HUMIDITY_NO_HOLD_CMD</span>      <span class="token expression"><span class="token number">0xF5</span>    </span><span class="token comment">// 无主机模式触发湿度测量</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SHT20_TEMPERATURE_HOLD_CMD</span>      <span class="token expression"><span class="token number">0xE3</span>    </span><span class="token comment">// 主机模式触发温度测量</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SHT20_HUMIDITY_HOLD_CMD</span>         <span class="token expression"><span class="token number">0xE5</span>    </span><span class="token comment">// 主机模式触发湿度测量</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">CRC_MODEL</span>                   <span class="token expression"><span class="token number">0x131</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">CRC_SUCCESS</span>                 <span class="token expression"><span class="token number">0</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">CRC_FAIL</span>                    <span class="token expression"><span class="token number">1</span></span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifndef</span> <span class="token expression">DEV_MAJOR</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">DEV_MAJOR</span>       <span class="token expression"><span class="token number">0</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+<span class="token keyword">static</span> <span class="token keyword">int</span> dev_major <span class="token operator">=</span> DEV_MAJOR<span class="token punctuation">;</span>   <span class="token comment">//主机号</span>
+
+<span class="token keyword">struct</span> <span class="token class-name">sht20_priv</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">struct</span> <span class="token class-name">cdev</span>         cdev<span class="token punctuation">;</span>
+    <span class="token keyword">struct</span> <span class="token class-name">class</span>        <span class="token operator">*</span>dev_class<span class="token punctuation">;</span>
+    <span class="token keyword">struct</span> <span class="token class-name">i2c_client</span>   <span class="token operator">*</span>client<span class="token punctuation">;</span>
+    <span class="token keyword">struct</span> <span class="token class-name">device</span>       <span class="token operator">*</span>dev<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token comment">/* @description: 初始化sht20
+ *
+ * @parm  : client - i2c 设备
+ * @parm  : 
+ * @return: 0 successfully , !0 failure
+ */</span>
+<span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">sht20_init</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">i2c_client</span> <span class="token operator">*</span>client<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>    
+    <span class="token keyword">int</span> rv<span class="token punctuation">;</span>
+    <span class="token keyword">char</span> data <span class="token operator">=</span> SHT20_SOFERESET<span class="token punctuation">;</span>
+    
+    rv <span class="token operator">=</span> <span class="token function">i2c_master_send</span><span class="token punctuation">(</span>client<span class="token punctuation">,</span> <span class="token operator">&amp;</span>data<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>rv <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">dev_err</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>client<span class="token operator">-&gt;</span>dev<span class="token punctuation">,</span> <span class="token string">"i2c send init cmd failure.\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token function">msleep</span><span class="token punctuation">(</span><span class="token number">50</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">crc_check</span><span class="token punctuation">(</span><span class="token keyword">unsigned</span> <span class="token keyword">char</span> <span class="token operator">*</span>data<span class="token punctuation">,</span> <span class="token keyword">int</span> len<span class="token punctuation">,</span> <span class="token keyword">unsigned</span> <span class="token keyword">char</span> checksum<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">unsigned</span> <span class="token keyword">char</span>   crc <span class="token operator">=</span> <span class="token number">0x00</span><span class="token punctuation">;</span> 
+    <span class="token keyword">int</span>             i<span class="token punctuation">,</span> j<span class="token punctuation">;</span>  
+ 
+    <span class="token keyword">for</span><span class="token punctuation">(</span>i<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span> i<span class="token operator">&lt;</span>len<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        crc <span class="token operator">^=</span> <span class="token operator">*</span>data<span class="token operator">++</span><span class="token punctuation">;</span>  		   
+		
+        <span class="token keyword">for</span> <span class="token punctuation">(</span>j<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span> j<span class="token operator">&lt;</span><span class="token number">8</span><span class="token punctuation">;</span> j<span class="token operator">++</span><span class="token punctuation">)</span>     
+        <span class="token punctuation">{<!-- --></span> 
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>crc <span class="token operator">&amp;</span> <span class="token number">0x80</span><span class="token punctuation">)</span>
+			<span class="token punctuation">{<!-- --></span>
+				crc <span class="token operator">=</span> <span class="token punctuation">(</span>crc <span class="token operator">&lt;&lt;</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token operator">^</span> CRC_MODEL<span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>    
+            <span class="token keyword">else</span>
+            <span class="token punctuation">{<!-- --></span>
+                crc <span class="token operator">=</span> <span class="token punctuation">(</span>crc <span class="token operator">&lt;&lt;</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">// printk("crc clu data : [%x]\n", crc);</span>
+ 
+    <span class="token keyword">if</span><span class="token punctuation">(</span>checksum <span class="token operator">==</span> crc<span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> CRC_SUCCESS<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">else</span> 
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> CRC_FAIL<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">/* @description: 读取sht20 的温度数据 
+ *
+ * @parm  : client - i2c 设备
+ * @parm  : buf - 存储读取的数据
+ * @return: 0 successfully , !0 failure
+ */</span>
+<span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">read_temperature</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">i2c_client</span> <span class="token operator">*</span>client<span class="token punctuation">,</span> <span class="token keyword">unsigned</span> <span class="token keyword">char</span> <span class="token operator">*</span>buf<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">int</span> rv <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token keyword">int</span> temperature <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">unsigned</span> <span class="token keyword">char</span> tmp<span class="token punctuation">[</span><span class="token number">3</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token number">0</span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+    <span class="token keyword">char</span> data <span class="token operator">=</span> SHT20_TEMPERATURE_HOLD_CMD<span class="token punctuation">;</span>
+
+    <span class="token comment">//形参判断</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token operator">!</span>client <span class="token operator">||</span> <span class="token operator">!</span>buf<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">printk</span><span class="token punctuation">(</span><span class="token string">"%s line [%d] %s() get invalid input arguments\n"</span><span class="token punctuation">,</span> <span class="token constant">__FILE__</span><span class="token punctuation">,</span> <span class="token constant">__LINE__</span><span class="token punctuation">,</span> <span class="token constant">__func__</span> <span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">//发送CMD</span>
+    rv <span class="token operator">=</span> <span class="token function">i2c_master_send</span><span class="token punctuation">(</span>client<span class="token punctuation">,</span> <span class="token operator">&amp;</span>data<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//rv = i2c_smbus_write_byte(client, SHT20_TEMPERATURE_NO_HOLD_CMD);</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>rv <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">dev_err</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>client<span class="token operator">-&gt;</span>dev<span class="token punctuation">,</span> <span class="token string">"i2c send tmper cmd failure.\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">//delay 85ms</span>
+    <span class="token function">msleep</span><span class="token punctuation">(</span><span class="token number">85</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//读取数据</span>
+    rv <span class="token operator">=</span> <span class="token function">i2c_master_recv</span><span class="token punctuation">(</span>client<span class="token punctuation">,</span> tmp<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>tmp<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>rv <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">dev_err</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>client<span class="token operator">-&gt;</span>dev<span class="token punctuation">,</span> <span class="token string">"i2c recv tmper data failure.\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span> 
+    <span class="token punctuation">}</span>
+    
+    <span class="token comment">// printk("read temperature: tmp[0] %x tmp[1] %x ; crc : tmp[2] %x\n", tmp[0], tmp[1], tmp[2]); //验证 crc校验结果</span>
+    <span class="token comment">//数据处理</span>
+    temperature <span class="token operator">=</span> <span class="token punctuation">(</span>tmp<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">&lt;&lt;</span> <span class="token number">8</span><span class="token punctuation">)</span> <span class="token operator">|</span> <span class="token punctuation">(</span>tmp<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token operator">&amp;</span><span class="token number">0xFC</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    temperature <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>temperature <span class="token operator">*</span> <span class="token number">175720</span><span class="token punctuation">)</span> <span class="token operator">&gt;&gt;</span> <span class="token number">16</span><span class="token punctuation">)</span> <span class="token operator">-</span> <span class="token number">46850</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//printk("temperature : %d\n", temperature);</span>
+    <span class="token comment">//TODO: 可以加上CRC校验</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token number">0</span> <span class="token operator">!=</span> <span class="token function">crc_check</span><span class="token punctuation">(</span>tmp<span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">,</span> tmp<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">dev_err</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>client<span class="token operator">-&gt;</span>dev<span class="token punctuation">,</span> <span class="token string">"tmperature data fails to pass cyclic redundancy check\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    buf<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">=</span> temperature <span class="token operator">&amp;</span> <span class="token number">0xFF</span><span class="token punctuation">;</span>
+    buf<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">(</span>temperature <span class="token operator">&gt;&gt;</span> <span class="token number">8</span><span class="token punctuation">)</span> <span class="token operator">&amp;</span> <span class="token number">0xFF</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">/* @description: 读取sht20 的相对数据数据
+ *
+ * @parm  : client - i2c 设备/客户端
+ * @parm  : buf - 存储读取的数据
+ * @return: 0 successfully , !0 failure
+ */</span>
+<span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">read_humidity</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">i2c_client</span> <span class="token operator">*</span>client<span class="token punctuation">,</span> <span class="token keyword">unsigned</span> <span class="token keyword">char</span> <span class="token operator">*</span>buf<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">int</span> rv <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token keyword">int</span> humidity <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">unsigned</span> <span class="token keyword">char</span> tmp<span class="token punctuation">[</span><span class="token number">3</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token number">0</span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+    <span class="token keyword">char</span> data <span class="token operator">=</span> SHT20_HUMIDITY_HOLD_CMD<span class="token punctuation">;</span>
+
+    <span class="token comment">//形参判断</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token operator">!</span>client <span class="token operator">||</span> <span class="token operator">!</span>buf<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">printk</span><span class="token punctuation">(</span><span class="token string">"%s line [%d] %s() get invalid input arguments\n"</span><span class="token punctuation">,</span> <span class="token constant">__FILE__</span><span class="token punctuation">,</span> <span class="token constant">__LINE__</span><span class="token punctuation">,</span> <span class="token constant">__func__</span> <span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">//发送CMD</span>
+    rv <span class="token operator">=</span> <span class="token function">i2c_master_send</span><span class="token punctuation">(</span>client<span class="token punctuation">,</span> <span class="token operator">&amp;</span>data<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//rv = i2c_smbus_write_byte(client, SHT20_HUMIDITY_NO_HOLD_CMD);</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>rv <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">dev_err</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>client<span class="token operator">-&gt;</span>dev<span class="token punctuation">,</span> <span class="token string">"i2c send humidity cmd failure.\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">//delay 29ms</span>
+    <span class="token function">msleep</span><span class="token punctuation">(</span><span class="token number">29</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//读取数据</span>
+    rv <span class="token operator">=</span> <span class="token function">i2c_master_recv</span><span class="token punctuation">(</span>client<span class="token punctuation">,</span> tmp<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>tmp<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>rv <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">dev_err</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>client<span class="token operator">-&gt;</span>dev<span class="token punctuation">,</span> <span class="token string">"i2c recv humidity data failure.\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span> 
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// printk("read humidity: tmp[0] %x tmp[1] %x ; crc : tmp[2] %x\n", tmp[0], tmp[1], tmp[2]);</span>
+
+    <span class="token comment">//数据处理</span>
+    humidity <span class="token operator">=</span> <span class="token punctuation">(</span>tmp<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">&lt;&lt;</span> <span class="token number">8</span><span class="token punctuation">)</span> <span class="token operator">|</span> <span class="token punctuation">(</span>tmp<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token operator">&amp;</span><span class="token number">0xFC</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    humidity <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>humidity <span class="token operator">*</span> <span class="token number">125000</span><span class="token punctuation">)</span> <span class="token operator">&gt;&gt;</span> <span class="token number">16</span><span class="token punctuation">)</span> <span class="token operator">-</span> <span class="token number">6000</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//crc-8 校验</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token number">0</span> <span class="token operator">!=</span> <span class="token function">crc_check</span><span class="token punctuation">(</span>tmp<span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">,</span> tmp<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">dev_err</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>client<span class="token operator">-&gt;</span>dev<span class="token punctuation">,</span> <span class="token string">"tmperature data fails to pass cyclic redundancy check\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    buf<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">=</span> humidity <span class="token operator">&amp;</span> <span class="token number">0xFF</span><span class="token punctuation">;</span>
+    buf<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">(</span>humidity <span class="token operator">&gt;&gt;</span> <span class="token number">8</span><span class="token punctuation">)</span> <span class="token operator">&amp;</span> <span class="token number">0xFF</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+
+<span class="token comment">/* @description: sht20 打开设备 
+ *
+ * @parm  : inode - 传递给驱动的inode
+ * @parm  : filp - 设备文件，利用其私有数据成员
+ * @return: 0 successfully , !0 failure
+ */</span>
+<span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">sht20_open</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">inode</span> <span class="token operator">*</span>inode<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">file</span> <span class="token operator">*</span>filp<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">struct</span> <span class="token class-name">sht20_priv</span> <span class="token operator">*</span>priv <span class="token operator">=</span> <span class="token function">container_of</span><span class="token punctuation">(</span>inode<span class="token operator">-&gt;</span>i_cdev<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">sht20_priv</span><span class="token punctuation">,</span> cdev<span class="token punctuation">)</span><span class="token punctuation">;</span>  
+    <span class="token keyword">int</span> rv<span class="token punctuation">;</span>
+
+    <span class="token comment">//初始化sht20 </span>
+    rv <span class="token operator">=</span> <span class="token function">sht20_init</span><span class="token punctuation">(</span>priv<span class="token operator">-&gt;</span>client<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>rv <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">dev_err</span><span class="token punctuation">(</span>priv<span class="token operator">-&gt;</span>dev<span class="token punctuation">,</span> <span class="token string">"sht20 init failure.\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">//dev_info(priv-&gt;dev, "sht20 init successfully.\n");</span>
+
+    filp<span class="token operator">-&gt;</span>private_data <span class="token operator">=</span> priv<span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">/* @description: 从设备读取文件
+ *
+ * @parm  : filp - 设备文件，文件描述符
+ * @parm  : buf - 返回给用户空间的数据缓冲区
+ * @parm  : cnt - 要读取的数据长度
+ * @parm  : offt - 相对于文件首地址的偏移
+ * @return: 读取的字节数，负数 - 读取失败
+ */</span>
+<span class="token keyword">static</span> <span class="token class-name">ssize_t</span> <span class="token function">sht20_read</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">file</span> <span class="token operator">*</span>filp<span class="token punctuation">,</span> <span class="token keyword">char</span> __user <span class="token operator">*</span>buf<span class="token punctuation">,</span> <span class="token class-name">size_t</span> cnt<span class="token punctuation">,</span> <span class="token class-name">loff_t</span> <span class="token operator">*</span>off<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">int</span> rv <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token comment">//struct i2c_client *client = filp-&gt;private_data;</span>
+    <span class="token keyword">struct</span> <span class="token class-name">sht20_priv</span> <span class="token operator">*</span>priv <span class="token operator">=</span> filp<span class="token operator">-&gt;</span>private_data<span class="token punctuation">;</span>
+    <span class="token keyword">unsigned</span> <span class="token keyword">char</span> data<span class="token punctuation">[</span><span class="token number">4</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token number">0</span><span class="token punctuation">,</span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token operator">!</span>priv<span class="token operator">-&gt;</span>client<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">printk</span><span class="token punctuation">(</span><span class="token string">"failure to get i2c_client.\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span>EFAULT<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    rv <span class="token operator">=</span> <span class="token function">read_temperature</span><span class="token punctuation">(</span>priv<span class="token operator">-&gt;</span>client<span class="token punctuation">,</span> data<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>rv<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">dev_err</span><span class="token punctuation">(</span>priv<span class="token operator">-&gt;</span>dev<span class="token punctuation">,</span> <span class="token string">"read_temperature failure.\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    data<span class="token punctuation">[</span><span class="token number">3</span><span class="token punctuation">]</span> <span class="token operator">=</span> data<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+    data<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span> <span class="token operator">=</span> data<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+
+    rv <span class="token operator">=</span> <span class="token function">read_humidity</span><span class="token punctuation">(</span>priv<span class="token operator">-&gt;</span>client<span class="token punctuation">,</span> data<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>rv<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">dev_err</span><span class="token punctuation">(</span>priv<span class="token operator">-&gt;</span>dev<span class="token punctuation">,</span> <span class="token string">"read_humidity failure.\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    
+    <span class="token comment">//printk("test %x %x %x %X \n", data[3], data[2], data[1], data[0]);</span>
+    rv <span class="token operator">=</span> <span class="token function">copy_to_user</span><span class="token punctuation">(</span>buf<span class="token punctuation">,</span> data<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>data<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>rv<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">dev_err</span><span class="token punctuation">(</span>priv<span class="token operator">-&gt;</span>dev<span class="token punctuation">,</span> <span class="token string">"copy to user error.\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span>EFAULT<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">return</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>data<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">/* @description: 关闭设备
+ *
+ * @parm  : inode - 传递给驱动的inode
+ * @parm  : filp - 设备文件，file结构体有个私有数据区可以使用
+ * @return: 0 successfully , !0 failure
+ */</span>
+<span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">sht20_release</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">inode</span> <span class="token operator">*</span>inode<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">file</span> <span class="token operator">*</span>filp<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//设备操作函数</span>
+<span class="token keyword">static</span> <span class="token keyword">struct</span> <span class="token class-name">file_operations</span> sht20_fops <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token punctuation">.</span>owner <span class="token operator">=</span> THIS_MODULE<span class="token punctuation">,</span>
+    <span class="token punctuation">.</span>open  <span class="token operator">=</span> sht20_open<span class="token punctuation">,</span>
+    <span class="token punctuation">.</span>read  <span class="token operator">=</span> sht20_read<span class="token punctuation">,</span>
+    <span class="token punctuation">.</span>release <span class="token operator">=</span> sht20_release<span class="token punctuation">,</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token comment">/* @description: sysfs - 温度属性显示函数
+ *
+ * @parm  : dev - 设备指针,创建file时候会指定dev
+ * @parm  : attr - 设备属性,创建时候传入
+ * @parm  : buf - 传出给sysfs中显示的buf
+ * @return: 显示的字节数
+ * @TODO: 函数不够正规,了解PAGE_SIZE
+ */</span>
+<span class="token keyword">static</span> <span class="token class-name">ssize_t</span> <span class="token function">sht20_temp_humi_show</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">device</span> <span class="token operator">*</span>dev<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">device_attribute</span> <span class="token operator">*</span>attr<span class="token punctuation">,</span> <span class="token keyword">char</span> <span class="token operator">*</span>buf<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">struct</span> <span class="token class-name">sht20_priv</span> <span class="token operator">*</span>priv <span class="token operator">=</span> <span class="token function">dev_get_drvdata</span><span class="token punctuation">(</span>dev<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">int</span> rv <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token keyword">unsigned</span> <span class="token keyword">char</span> data<span class="token punctuation">[</span><span class="token number">4</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token number">0</span><span class="token punctuation">,</span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token operator">!</span>priv<span class="token operator">-&gt;</span>client<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">printk</span><span class="token punctuation">(</span><span class="token string">"failure to get i2c_client.\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span>EFAULT<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    rv <span class="token operator">=</span> <span class="token function">read_temperature</span><span class="token punctuation">(</span>priv<span class="token operator">-&gt;</span>client<span class="token punctuation">,</span> data<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>rv<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">dev_err</span><span class="token punctuation">(</span>priv<span class="token operator">-&gt;</span>dev<span class="token punctuation">,</span> <span class="token string">"read_temperature failure.\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    data<span class="token punctuation">[</span><span class="token number">3</span><span class="token punctuation">]</span> <span class="token operator">=</span> data<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+    data<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span> <span class="token operator">=</span> data<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+
+    rv <span class="token operator">=</span> <span class="token function">read_humidity</span><span class="token punctuation">(</span>priv<span class="token operator">-&gt;</span>client<span class="token punctuation">,</span> data<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>rv<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">dev_err</span><span class="token punctuation">(</span>priv<span class="token operator">-&gt;</span>dev<span class="token punctuation">,</span> <span class="token string">"read_humidity failure.\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    
+    <span class="token comment">//printk("test %x %x %x %X \n", data[3], data[2], data[1], data[0]);</span>
+
+    <span class="token keyword">return</span> <span class="token function">sprintf</span><span class="token punctuation">(</span>buf<span class="token punctuation">,</span> <span class="token string">"temperature=%d humidity=%d\n"</span><span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>data<span class="token punctuation">[</span><span class="token number">3</span><span class="token punctuation">]</span> <span class="token operator">&lt;&lt;</span> <span class="token number">8</span><span class="token punctuation">)</span> <span class="token operator">|</span> data<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>data<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">&lt;&lt;</span> <span class="token number">8</span><span class="token punctuation">)</span> <span class="token operator">|</span> data<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">)</span> <span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//1000倍</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">/* @description: sysfs - echo写入属性函数
+ *
+ * @parm  : dev - 设备指针,创建file时候会指定dev
+ * @parm  : attr - 设备属性,创建时候传入
+ * @parm  : buf - 用户空间的buf
+ * @parm  : count - 传入buf的size
+ * @return: 写入的buf大小
+ */</span>
+<span class="token keyword">static</span> <span class="token class-name">ssize_t</span> <span class="token function">sht20_temp_humi_store</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">device</span> <span class="token operator">*</span>dev<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">device_attribute</span> <span class="token operator">*</span>attr<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">char</span> <span class="token operator">*</span>buf<span class="token punctuation">,</span> <span class="token class-name">size_t</span> count<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">char</span> k_buf<span class="token punctuation">[</span><span class="token number">10</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token number">0</span><span class="token punctuation">,</span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+    <span class="token function">snprintf</span><span class="token punctuation">(</span>k_buf<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>k_buf<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token string">"%s"</span><span class="token punctuation">,</span> buf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token function">dev_info</span><span class="token punctuation">(</span>dev<span class="token punctuation">,</span> <span class="token string">"Don't echo to me  -&gt; [%s] size [%d]\n"</span><span class="token punctuation">,</span> k_buf<span class="token punctuation">,</span> count<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> count<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//初始化属性值</span>
+<span class="token keyword">static</span> <span class="token function">DEVICE_ATTR</span><span class="token punctuation">(</span>sht20_temp_humi<span class="token punctuation">,</span> <span class="token number">0644</span><span class="token punctuation">,</span> sht20_temp_humi_show<span class="token punctuation">,</span> sht20_temp_humi_store<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">/* @description: i2c驱动probe函数，设备和驱动匹配后执行
+ *
+ * @parm  : client - i2c设备
+ * @parm  : id - i2c设备ID
+ * @return: 0 successfully , !0 failure
+ */</span>
+<span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">sht20_probe</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">i2c_client</span> <span class="token operator">*</span>client<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">struct</span> <span class="token class-name">i2c_device_id</span> <span class="token operator">*</span>id<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">struct</span> <span class="token class-name">sht20_priv</span> <span class="token operator">*</span>priv <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+    <span class="token comment">//struct device *dev;</span>
+    <span class="token class-name">dev_t</span> devno<span class="token punctuation">;</span> <span class="token comment">//设备号</span>
+    <span class="token keyword">int</span> rv <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//0.给priv分配空间</span>
+    priv <span class="token operator">=</span> <span class="token function">devm_kzalloc</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>client<span class="token operator">-&gt;</span>dev<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">sht20_priv</span><span class="token punctuation">)</span><span class="token punctuation">,</span> GFP_KERNEL<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token operator">!</span>priv<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token operator">-</span>ENOMEM<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">//1.创建设备号</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token number">0</span> <span class="token operator">!=</span> dev_major<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        devno <span class="token operator">=</span> <span class="token function">MKDEV</span><span class="token punctuation">(</span>dev_major<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        rv <span class="token operator">=</span> <span class="token function">register_chrdev_region</span><span class="token punctuation">(</span>devno<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> DEV_NAME<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">//静态创建</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">else</span>
+    <span class="token punctuation">{<!-- --></span>
+        rv <span class="token operator">=</span> <span class="token function">alloc_chrdev_region</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>devno<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> DEV_NAME<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//动态创建</span>
+        dev_major <span class="token operator">=</span> <span class="token function">MAJOR</span><span class="token punctuation">(</span>devno<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//获主设备号</span>
+    <span class="token punctuation">}</span>
+    
+    <span class="token keyword">if</span><span class="token punctuation">(</span>rv <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">dev_err</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>client<span class="token operator">-&gt;</span>dev<span class="token punctuation">,</span> <span class="token string">"%s driver can't get major %d\n"</span><span class="token punctuation">,</span> DEV_NAME<span class="token punctuation">,</span> dev_major<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> rv<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">//2.注册字符设备</span>
+    <span class="token function">cdev_init</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>priv<span class="token operator">-&gt;</span>cdev<span class="token punctuation">,</span> <span class="token operator">&amp;</span>sht20_fops<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">//初始化cdev</span>
+    priv<span class="token operator">-&gt;</span>cdev<span class="token punctuation">.</span>owner <span class="token operator">=</span> THIS_MODULE<span class="token punctuation">;</span>
+
+    rv <span class="token operator">=</span> <span class="token function">cdev_add</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>priv<span class="token operator">-&gt;</span>cdev<span class="token punctuation">,</span> devno<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token number">0</span> <span class="token operator">!=</span> rv<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">dev_err</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>client<span class="token operator">-&gt;</span>dev<span class="token punctuation">,</span> <span class="token string">"error %d add %s device failure.\n"</span><span class="token punctuation">,</span> rv<span class="token punctuation">,</span> DEV_NAME<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">goto</span> undo_major<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">//3.创建类，驱动进行节点创建</span>
+    priv<span class="token operator">-&gt;</span>dev_class <span class="token operator">=</span> <span class="token function">class_create</span><span class="token punctuation">(</span>THIS_MODULE<span class="token punctuation">,</span> DEV_NAME<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token function">IS_ERR</span><span class="token punctuation">(</span>priv<span class="token operator">-&gt;</span>dev_class<span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">dev_err</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>client<span class="token operator">-&gt;</span>dev<span class="token punctuation">,</span> <span class="token string">"%s driver create class failure.\n"</span><span class="token punctuation">,</span> DEV_NAME<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        rv <span class="token operator">=</span> <span class="token operator">-</span>ENOMEM<span class="token punctuation">;</span>
+        <span class="token keyword">goto</span> undo_cdev<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">//4.创建设备 </span>
+    priv<span class="token operator">-&gt;</span>dev <span class="token operator">=</span> <span class="token function">device_create</span><span class="token punctuation">(</span>priv<span class="token operator">-&gt;</span>dev_class<span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">,</span> devno<span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">,</span> DEV_NAME<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token function">IS_ERR</span><span class="token punctuation">(</span>priv<span class="token operator">-&gt;</span>dev<span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        rv <span class="token operator">=</span> <span class="token operator">-</span>ENOMEM<span class="token punctuation">;</span>
+        <span class="token keyword">goto</span> undo_class<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">//5. 创建sys 属性 在platform下</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token function">device_create_file</span><span class="token punctuation">(</span>priv<span class="token operator">-&gt;</span>dev<span class="token punctuation">,</span> <span class="token operator">&amp;</span>dev_attr_sht20_temp_humi<span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        rv <span class="token operator">=</span> <span class="token operator">-</span>ENOMEM<span class="token punctuation">;</span>
+        <span class="token keyword">goto</span> undo_device<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">//6. 保存私有数据</span>
+    priv<span class="token operator">-&gt;</span>client <span class="token operator">=</span> client<span class="token punctuation">;</span>
+    <span class="token function">i2c_set_clientdata</span><span class="token punctuation">(</span>client<span class="token punctuation">,</span> priv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">dev_set_drvdata</span><span class="token punctuation">(</span>priv<span class="token operator">-&gt;</span>dev<span class="token punctuation">,</span> priv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token function">dev_info</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>client<span class="token operator">-&gt;</span>dev<span class="token punctuation">,</span> <span class="token string">"sht20 i2c driver probe okay.\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+undo_device<span class="token operator">:</span>
+    <span class="token function">device_destroy</span><span class="token punctuation">(</span>priv<span class="token operator">-&gt;</span>dev_class<span class="token punctuation">,</span> devno<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+undo_class<span class="token operator">:</span>
+    <span class="token function">class_destroy</span><span class="token punctuation">(</span>priv<span class="token operator">-&gt;</span>dev_class<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+undo_cdev<span class="token operator">:</span>
+    <span class="token function">cdev_del</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>priv<span class="token operator">-&gt;</span>cdev<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+undo_major<span class="token operator">:</span>
+    <span class="token function">unregister_chrdev_region</span><span class="token punctuation">(</span>devno<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token function">devm_kfree</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>client<span class="token operator">-&gt;</span>dev<span class="token punctuation">,</span> priv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> rv<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+
+<span class="token comment">/* @description: i2c驱动的remove函数，移除时候执行
+ *
+ * @parm  : client - i2c 
+ * @parm  : 
+ * @return: 0 successfully , !0 failure
+ */</span>
+<span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">sht20_remove</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">i2c_client</span> <span class="token operator">*</span>client<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">struct</span> <span class="token class-name">sht20_priv</span> <span class="token operator">*</span>priv <span class="token operator">=</span> <span class="token function">i2c_get_clientdata</span><span class="token punctuation">(</span>client<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token class-name">dev_t</span> devno <span class="token operator">=</span> <span class="token function">MKDEV</span><span class="token punctuation">(</span>dev_major<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//删除sys中的属性</span>
+    <span class="token function">device_remove_file</span><span class="token punctuation">(</span>priv<span class="token operator">-&gt;</span>dev<span class="token punctuation">,</span> <span class="token operator">&amp;</span>dev_attr_sht20_temp_humi<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//设备销毁</span>
+    <span class="token function">device_destroy</span><span class="token punctuation">(</span>priv<span class="token operator">-&gt;</span>dev_class<span class="token punctuation">,</span> devno<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//注销类</span>
+    <span class="token function">class_destroy</span><span class="token punctuation">(</span>priv<span class="token operator">-&gt;</span>dev_class<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//删除字符设备</span>
+    <span class="token function">cdev_del</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>priv<span class="token operator">-&gt;</span>cdev<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">unregister_chrdev_region</span><span class="token punctuation">(</span>devno<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//释放堆</span>
+    <span class="token function">devm_kfree</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>client<span class="token operator">-&gt;</span>dev<span class="token punctuation">,</span> priv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">dev_info</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>client<span class="token operator">-&gt;</span>dev<span class="token punctuation">,</span> <span class="token string">"sht20 driver remove.\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//传统方式ID列表</span>
+<span class="token keyword">static</span> <span class="token keyword">const</span> <span class="token keyword">struct</span> <span class="token class-name">i2c_device_id</span> sht20_id<span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token punctuation">{<!-- --></span><span class="token string">"sht20"</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">}</span><span class="token punctuation">,</span>
+    <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token comment">//设备树匹配列表</span>
+<span class="token keyword">static</span> <span class="token keyword">const</span> <span class="token keyword">struct</span> <span class="token class-name">of_device_id</span> of_sht20_match <span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token punctuation">{<!-- --></span><span class="token punctuation">.</span>compatible<span class="token operator">=</span><span class="token string">"sht20"</span><span class="token punctuation">}</span><span class="token punctuation">,</span>
+    <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+<span class="token function">MODULE_DEVICE_TABLE</span><span class="token punctuation">(</span>of<span class="token punctuation">,</span> of_sht20_match<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token keyword">static</span> <span class="token keyword">struct</span> <span class="token class-name">i2c_driver</span> sht20_drv <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token punctuation">.</span>probe <span class="token operator">=</span> sht20_probe<span class="token punctuation">,</span>
+    <span class="token punctuation">.</span>remove <span class="token operator">=</span> sht20_remove<span class="token punctuation">,</span>
+    <span class="token punctuation">.</span>driver <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token punctuation">.</span>name <span class="token operator">=</span> <span class="token string">"sht20 driver 0.1"</span><span class="token punctuation">,</span> <span class="token comment">//name 不重要</span>
+        <span class="token punctuation">.</span>owner <span class="token operator">=</span> THIS_MODULE<span class="token punctuation">,</span>
+        <span class="token punctuation">.</span>of_match_table <span class="token operator">=</span> of_sht20_match<span class="token punctuation">,</span>
+    <span class="token punctuation">}</span><span class="token punctuation">,</span>
+    <span class="token punctuation">.</span>id_table <span class="token operator">=</span> sht20_id<span class="token punctuation">,</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token comment">//注册sht20驱动</span>
+<span class="token function">module_i2c_driver</span><span class="token punctuation">(</span>sht20_drv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token function">MODULE_AUTHOR</span><span class="token punctuation">(</span><span class="token string">"Wei Huihong &lt;weihuihui586@gmail.com&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">MODULE_DESCRIPTION</span><span class="token punctuation">(</span><span class="token string">"i.MX6ULL sht20 driver"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">MODULE_LICENSE</span><span class="token punctuation">(</span><span class="token string">"GPL"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">MODULE_ALIAS</span><span class="token punctuation">(</span><span class="token string">"i2c:imx_sht20_i2c_driver"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+</code></pre> 
+<p>测试代码：</p> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdio.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;string.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdlib.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;unistd.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/types.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/stat.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;fcntl.h&gt;</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">DEV_STH20</span>   <span class="token string">"/dev/sht20"</span></span>
+
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token keyword">int</span> argc<span class="token punctuation">,</span> <span class="token keyword">char</span> <span class="token operator">*</span>argv<span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">float</span> temperature <span class="token operator">=</span> <span class="token number">0.0</span><span class="token punctuation">;</span>
+    <span class="token keyword">float</span> humidity <span class="token operator">=</span> <span class="token number">0.0</span><span class="token punctuation">;</span>
+    <span class="token keyword">unsigned</span> <span class="token keyword">char</span> data<span class="token punctuation">[</span><span class="token number">4</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token number">0</span><span class="token punctuation">,</span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">int</span> rv <span class="token operator">=</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token keyword">int</span> fd_sht20 <span class="token operator">=</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+
+    fd_sht20 <span class="token operator">=</span> <span class="token function">open</span><span class="token punctuation">(</span>DEV_STH20<span class="token punctuation">,</span> O_RDONLY<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>fd_sht20 <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"open %s failure.\n"</span><span class="token punctuation">,</span> DEV_STH20<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"open %s successful.\n"</span><span class="token punctuation">,</span> DEV_STH20<span class="token punctuation">)</span><span class="token punctuation">;</span>    
+
+    <span class="token keyword">while</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">//printf("start read temperature and humidity.\n");</span>
+        <span class="token function">memset</span><span class="token punctuation">(</span>data<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>data<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        rv <span class="token operator">=</span> <span class="token function">read</span><span class="token punctuation">(</span>fd_sht20<span class="token punctuation">,</span> data<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>data<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>rv <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+        <span class="token punctuation">{<!-- --></span>
+            <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"read data failure.\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">else</span>
+        <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//printf("data[0-3] : %x %x %x %x\n",data[0], data[1], data[2], data[3]);</span>
+            humidity <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>data<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">&lt;&lt;</span> <span class="token number">8</span><span class="token punctuation">)</span> <span class="token operator">|</span> data<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">)</span> <span class="token operator">/</span> <span class="token number">1000.0</span><span class="token punctuation">;</span>
+            temperature <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>data<span class="token punctuation">[</span><span class="token number">3</span><span class="token punctuation">]</span> <span class="token operator">&lt;&lt;</span> <span class="token number">8</span><span class="token punctuation">)</span> <span class="token operator">|</span> data<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span><span class="token punctuation">)</span> <span class="token operator">/</span><span class="token number">1000.0</span><span class="token punctuation">;</span>
+
+            <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"temperature : %.4f℃ humidity : %.4f %%\n"</span><span class="token punctuation">,</span> temperature<span class="token punctuation">,</span> humidity<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token function">sleep</span><span class="token punctuation">(</span><span class="token number">5</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token function">close</span><span class="token punctuation">(</span>fd_sht20<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>Makefile：</p> 
+<pre><code class="prism language-c">LINUX_SRC <span class="token operator">=</span> <span class="token operator">/</span>home<span class="token operator">/</span>wangdengtao<span class="token operator">/</span>imx6ull<span class="token operator">/</span>imx6ull<span class="token operator">/</span>bsp<span class="token operator">/</span>kernel<span class="token operator">/</span>linux<span class="token operator">-</span>imx
+CROSS_COMPILE<span class="token operator">=</span>arm<span class="token operator">-</span>linux<span class="token operator">-</span>gnueabihf<span class="token operator">-</span>
+
+INST_PATH<span class="token operator">=</span><span class="token operator">/</span>tftp
+APP<span class="token operator">=</span>sht20_app
+
+PWD <span class="token operator">:</span><span class="token operator">=</span> $<span class="token punctuation">(</span>shell pwd<span class="token punctuation">)</span>
+
+EXTRA_CFLAGS<span class="token operator">+=</span><span class="token operator">-</span>DMODULE
+
+obj<span class="token operator">-</span>m <span class="token operator">+=</span> sht20_i2c_drv<span class="token punctuation">.</span>o
+
+modules<span class="token operator">:</span>
+	@make clean
+	@echo $<span class="token punctuation">{<!-- --></span>LINUX_SRC<span class="token punctuation">}</span>
+	@make <span class="token operator">-</span>C $<span class="token punctuation">(</span>LINUX_SRC<span class="token punctuation">)</span> M<span class="token operator">=</span>$<span class="token punctuation">(</span>PWD<span class="token punctuation">)</span> modules
+	@make clear
+	@$<span class="token punctuation">(</span>CROSS_COMPILE<span class="token punctuation">)</span>gcc $<span class="token punctuation">(</span>APP<span class="token punctuation">)</span><span class="token punctuation">.</span>c <span class="token operator">-</span>o $<span class="token punctuation">(</span>APP<span class="token punctuation">)</span>
+
+uninstall<span class="token operator">:</span>
+	rm <span class="token operator">-</span>f $<span class="token punctuation">{<!-- --></span>INST_PATH<span class="token punctuation">}</span><span class="token comment">/*.ko
+
+install: uninstall
+	cp -af *.ko ${INST_PATH}
+
+clear:
+	@rm -f *.o *.cmd *.mod.c .*.cmd *.mod
+	@rm -rf  *~ core .depend  .tmp_versions Module.symvers modules.order -f
+	@rm -f .*ko.cmd .*.o.cmd .*.o.d
+
+clean: clear
+	@rm -f *.ko
+	@rm -f $(APP)
+</span></code></pre> 
+<p>生成驱动文件以及可执行文件：</p> 
+<pre><code class="prism language-c">wangdengtao@wangdengtao<span class="token operator">-</span>virtual<span class="token operator">-</span>machine<span class="token operator">:</span><span class="token operator">~</span><span class="token operator">/</span>ldd_learning_code<span class="token operator">/</span>LDD4_I2C$ make
+make<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token operator">:</span> 进入目录“<span class="token operator">/</span>home<span class="token operator">/</span>wangdengtao<span class="token operator">/</span>ldd_learning_code<span class="token operator">/</span>LDD4_I2C”
+make<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token operator">:</span> 离开目录“<span class="token operator">/</span>home<span class="token operator">/</span>wangdengtao<span class="token operator">/</span>ldd_learning_code<span class="token operator">/</span>LDD4_I2C”
+<span class="token operator">/</span>home<span class="token operator">/</span>wangdengtao<span class="token operator">/</span>imx6ull<span class="token operator">/</span>imx6ull<span class="token operator">/</span>bsp<span class="token operator">/</span>kernel<span class="token operator">/</span>linux<span class="token operator">-</span>imx
+make<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token operator">:</span> 进入目录“<span class="token operator">/</span>home<span class="token operator">/</span>wangdengtao<span class="token operator">/</span>imx6ull<span class="token operator">/</span>imx6ull<span class="token operator">/</span>bsp<span class="token operator">/</span>kernel<span class="token operator">/</span>linux<span class="token operator">-</span>imx”
+  CC <span class="token punctuation">[</span>M<span class="token punctuation">]</span>  <span class="token operator">/</span>home<span class="token operator">/</span>wangdengtao<span class="token operator">/</span>ldd_learning_code<span class="token operator">/</span>LDD4_I2C<span class="token operator">/</span>sht20_i2c_drv<span class="token punctuation">.</span>o
+  MODPOST <span class="token operator">/</span>home<span class="token operator">/</span>wangdengtao<span class="token operator">/</span>ldd_learning_code<span class="token operator">/</span>LDD4_I2C<span class="token operator">/</span>Module<span class="token punctuation">.</span>symvers
+  CC <span class="token punctuation">[</span>M<span class="token punctuation">]</span>  <span class="token operator">/</span>home<span class="token operator">/</span>wangdengtao<span class="token operator">/</span>ldd_learning_code<span class="token operator">/</span>LDD4_I2C<span class="token operator">/</span>sht20_i2c_drv<span class="token punctuation">.</span>mod<span class="token punctuation">.</span>o
+  LD <span class="token punctuation">[</span>M<span class="token punctuation">]</span>  <span class="token operator">/</span>home<span class="token operator">/</span>wangdengtao<span class="token operator">/</span>ldd_learning_code<span class="token operator">/</span>LDD4_I2C<span class="token operator">/</span>sht20_i2c_drv<span class="token punctuation">.</span>ko
+make<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token operator">:</span> 离开目录“<span class="token operator">/</span>home<span class="token operator">/</span>wangdengtao<span class="token operator">/</span>imx6ull<span class="token operator">/</span>imx6ull<span class="token operator">/</span>bsp<span class="token operator">/</span>kernel<span class="token operator">/</span>linux<span class="token operator">-</span>imx”
+make<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token operator">:</span> 进入目录“<span class="token operator">/</span>home<span class="token operator">/</span>wangdengtao<span class="token operator">/</span>ldd_learning_code<span class="token operator">/</span>LDD4_I2C”
+make<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token operator">:</span> 离开目录“<span class="token operator">/</span>home<span class="token operator">/</span>wangdengtao<span class="token operator">/</span>ldd_learning_code<span class="token operator">/</span>LDD4_I2C”
+wangdengtao@wangdengtao<span class="token operator">-</span>virtual<span class="token operator">-</span>machine<span class="token operator">:</span><span class="token operator">~</span><span class="token operator">/</span>ldd_learning_code<span class="token operator">/</span>LDD4_I2C$ ls
+Makefile  sht20_app  sht20_app<span class="token punctuation">.</span>c  sht20_i2c_drv<span class="token punctuation">.</span>c  sht20_i2c_drv<span class="token punctuation">.</span>ko
+</code></pre> 
+<h4><a id="4_1012"></a>（4）执行结果</h4> 
+<p>将我们编译生成的驱动文件以及测试可执行文件上传到我们的开发板：</p> 
+<pre><code class="prism language-c">root@igkboard<span class="token operator">:</span><span class="token operator">~</span># tftp <span class="token operator">-</span>gr sht20_i2c_drv<span class="token punctuation">.</span>ko <span class="token number">192.168</span><span class="token number">.137</span><span class="token number">.224</span>
+root@igkboard<span class="token operator">:</span><span class="token operator">~</span># tftp <span class="token operator">-</span>gr sht20_app <span class="token number">192.168</span><span class="token number">.137</span><span class="token number">.224</span>          
+root@igkboard<span class="token operator">:</span><span class="token operator">~</span># chmod a<span class="token operator">+</span>x sht20_app
+</code></pre> 
+<p>安装驱动完成之后可以看见我们的设备节点(<code>sht20</code>)了：</p> 
+<pre><code class="prism language-c">root@igkboard<span class="token operator">:</span><span class="token operator">~</span># insmod sht20_i2c_drv<span class="token punctuation">.</span>ko  
+root@igkboard<span class="token operator">:</span><span class="token operator">~</span># lsmod
+Module                  Size  Used by
+sht20_i2c_drv          <span class="token number">16384</span>  <span class="token number">0</span>
+rtl8188fu             <span class="token number">999424</span>  <span class="token number">0</span>
+imx_rngc               <span class="token number">16384</span>  <span class="token number">0</span>
+rng_core               <span class="token number">20480</span>  <span class="token number">1</span> imx_rngc
+secvio                 <span class="token number">16384</span>  <span class="token number">0</span>
+error                  <span class="token number">20480</span>  <span class="token number">1</span> secvio
+root@igkboard<span class="token operator">:</span><span class="token operator">~</span># ls <span class="token operator">-</span>l <span class="token operator">/</span>dev<span class="token operator">/</span>sht20 
+crw<span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">-</span> <span class="token number">1</span> root root <span class="token number">243</span><span class="token punctuation">,</span> <span class="token number">0</span> Apr <span class="token number">25</span> <span class="token number">06</span><span class="token operator">:</span><span class="token number">52</span> <span class="token operator">/</span>dev<span class="token operator">/</span>sht20
+</code></pre> 
+<p>并且我们到路径<code>、sys/class/sht20/sht20/</code>路径下，可以看见我们的温度湿度值：</p> 
+<pre><code class="prism language-c">root@igkboard<span class="token operator">:</span><span class="token operator">/</span>sys<span class="token operator">/</span>class<span class="token operator">/</span>sht20<span class="token operator">/</span>sht20# ls
+dev  power  sht20_temp_humi  subsystem  uevent
+root@igkboard<span class="token operator">:</span><span class="token operator">/</span>sys<span class="token operator">/</span>class<span class="token operator">/</span>sht20<span class="token operator">/</span>sht20# cat sht20_temp_humi 
+temperature<span class="token operator">=</span><span class="token number">20374</span> humidity<span class="token operator">=</span><span class="token number">59147</span>
+</code></pre> 
+<p>执行可执行文件：</p> 
+<pre><code class="prism language-c">root@igkboard<span class="token operator">:</span><span class="token operator">~</span># <span class="token punctuation">.</span><span class="token operator">/</span>sht20_app 
+open <span class="token operator">/</span>dev<span class="token operator">/</span>sht20 successful<span class="token punctuation">.</span>
+temperature <span class="token operator">:</span> <span class="token number">20.1810</span>℃ humidity <span class="token operator">:</span> <span class="token number">60.7110</span> <span class="token operator">%</span>
+temperature <span class="token operator">:</span> <span class="token number">20.1810</span>℃ humidity <span class="token operator">:</span> <span class="token number">60.7950</span> <span class="token operator">%</span>
+temperature <span class="token operator">:</span> <span class="token number">22.2730</span>℃ humidity <span class="token operator">:</span> <span class="token number">14.6530</span> <span class="token operator">%</span>
+temperature <span class="token operator">:</span> <span class="token number">24.1930</span>℃ humidity <span class="token operator">:</span> <span class="token number">26.8060</span> <span class="token operator">%</span>
+temperature <span class="token operator">:</span> <span class="token number">22.9160</span>℃ humidity <span class="token operator">:</span> <span class="token number">29.9120</span> <span class="token operator">%</span>
+temperature <span class="token operator">:</span> <span class="token number">23.0880</span>℃ humidity <span class="token operator">:</span> <span class="token number">29.9650</span> <span class="token operator">%</span>
+temperature <span class="token operator">:</span> <span class="token number">26.5740</span>℃ humidity <span class="token operator">:</span> <span class="token number">27.3020</span> <span class="token operator">%</span>
+root@igkboard<span class="token operator">:</span><span class="token operator">~</span># rmmod sht20_i2c_drv<span class="token punctuation">.</span>ko
+root@igkboard<span class="token operator">:</span><span class="token operator">~</span># dmesg <span class="token operator">|</span> tail <span class="token operator">-</span><span class="token number">2</span>
+<span class="token punctuation">[</span>   <span class="token number">59.500836</span><span class="token punctuation">]</span> sht20 driver <span class="token number">0.1</span> <span class="token number">0</span><span class="token operator">-</span><span class="token number">0040</span><span class="token operator">:</span> sht20 i2c driver probe okay<span class="token punctuation">.</span>
+<span class="token punctuation">[</span>  <span class="token number">331.569054</span><span class="token punctuation">]</span> sht20 driver <span class="token number">0.1</span> <span class="token number">0</span><span class="token operator">-</span><span class="token number">0040</span><span class="token operator">:</span> sht20 driver remove<span class="token punctuation">.</span>
+</code></pre> 
+<hr> 
+<h3><a id="_1060"></a>四、重难点分析</h3> 
+<h4><a id="1LinuxDEVICE_ATTR_1061"></a>（1）Linux下DEVICE_ATTR介绍</h4> 
+<p>我们为什么能够在<code>sys/class/sht20/sht20/</code>目录下看见我们的温度呢？</p> 
+<p>使用DEVICE_ATTR，可以实现驱动在sys目录自动创建文件，我们只需要实现show和store函数即可。然后在应用层就能通过cat和echo命令来对sys创建出来的文件进行读写驱动设备，实现交互。</p> 
+<h5><a id="1DEVICE_ATTR_1065"></a>【1】DEVICE_ATTR宏定义</h5> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name function">DEVICE_ATTR</span><span class="token expression"><span class="token punctuation">(</span>_name<span class="token punctuation">,</span> _mode<span class="token punctuation">,</span> _show<span class="token punctuation">,</span> _store<span class="token punctuation">)</span> </span><span class="token punctuation">\</span>
+    <span class="token expression"><span class="token keyword">struct</span> <span class="token class-name">device_attribute</span> dev_attr_</span><span class="token punctuation">##</span><span class="token expression">_name <span class="token operator">=</span> <span class="token function">__ATTR</span><span class="token punctuation">(</span>_name<span class="token punctuation">,</span> _mode<span class="token punctuation">,</span> _show<span class="token punctuation">,</span> _store<span class="token punctuation">)</span></span></span>
+</code></pre> 
+<p><code>DEVICE_ATTR(_name, _mode, _show, _store)</code></p> 
+<ul><li>_name：名称，也就是将在sysfs中生成的文件名称。</li><li>_mode：上述文件的访问权限，与普通文件相同，UGO的格式。</li><li>_show：显示函数，cat该文件时，此函数被调用。</li><li>_store：写函数，echo内容到该文件时，此函数被调用。</li></ul> 
+<h5><a id="2_1076"></a>【2】代码实现</h5> 
+<p>这是上述驱动的代码，后面测试讲解。我们的show函数可以cat查看我们的内容，但是store函数表示我的这个文件不允许写内容进去修改。</p> 
+<pre><code class="prism language-c"><span class="token comment">/* @description: sysfs - 温度属性显示函数
+ *
+ * @parm  : dev - 设备指针,创建file时候会指定dev
+ * @parm  : attr - 设备属性,创建时候传入
+ * @parm  : buf - 传出给sysfs中显示的buf
+ * @return: 显示的字节数
+ * @TODO: 函数不够正规,了解PAGE_SIZE
+ */</span>
+<span class="token keyword">static</span> <span class="token class-name">ssize_t</span> <span class="token function">sht20_temp_humi_show</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">device</span> <span class="token operator">*</span>dev<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">device_attribute</span> <span class="token operator">*</span>attr<span class="token punctuation">,</span> <span class="token keyword">char</span> <span class="token operator">*</span>buf<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">struct</span> <span class="token class-name">sht20_priv</span> <span class="token operator">*</span>priv <span class="token operator">=</span> <span class="token function">dev_get_drvdata</span><span class="token punctuation">(</span>dev<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">int</span> rv <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token keyword">unsigned</span> <span class="token keyword">char</span> data<span class="token punctuation">[</span><span class="token number">4</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token number">0</span><span class="token punctuation">,</span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token operator">!</span>priv<span class="token operator">-&gt;</span>client<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">printk</span><span class="token punctuation">(</span><span class="token string">"failure to get i2c_client.\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span>EFAULT<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    rv <span class="token operator">=</span> <span class="token function">read_temperature</span><span class="token punctuation">(</span>priv<span class="token operator">-&gt;</span>client<span class="token punctuation">,</span> data<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>rv<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">dev_err</span><span class="token punctuation">(</span>priv<span class="token operator">-&gt;</span>dev<span class="token punctuation">,</span> <span class="token string">"read_temperature failure.\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    data<span class="token punctuation">[</span><span class="token number">3</span><span class="token punctuation">]</span> <span class="token operator">=</span> data<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+    data<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span> <span class="token operator">=</span> data<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+
+    rv <span class="token operator">=</span> <span class="token function">read_humidity</span><span class="token punctuation">(</span>priv<span class="token operator">-&gt;</span>client<span class="token punctuation">,</span> data<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>rv<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">dev_err</span><span class="token punctuation">(</span>priv<span class="token operator">-&gt;</span>dev<span class="token punctuation">,</span> <span class="token string">"read_humidity failure.\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    
+    <span class="token comment">//printk("test %x %x %x %X \n", data[3], data[2], data[1], data[0]);</span>
+
+    <span class="token keyword">return</span> <span class="token function">sprintf</span><span class="token punctuation">(</span>buf<span class="token punctuation">,</span> <span class="token string">"temperature=%d humidity=%d\n"</span><span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>data<span class="token punctuation">[</span><span class="token number">3</span><span class="token punctuation">]</span> <span class="token operator">&lt;&lt;</span> <span class="token number">8</span><span class="token punctuation">)</span> <span class="token operator">|</span> data<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>data<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">&lt;&lt;</span> <span class="token number">8</span><span class="token punctuation">)</span> <span class="token operator">|</span> data<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">)</span> <span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//1000倍</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">/* @description: sysfs - echo写入属性函数
+ *
+ * @parm  : dev - 设备指针,创建file时候会指定dev
+ * @parm  : attr - 设备属性,创建时候传入
+ * @parm  : buf - 用户空间的buf
+ * @parm  : count - 传入buf的size
+ * @return: 写入的buf大小
+ */</span>
+<span class="token keyword">static</span> <span class="token class-name">ssize_t</span> <span class="token function">sht20_temp_humi_store</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">device</span> <span class="token operator">*</span>dev<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">device_attribute</span> <span class="token operator">*</span>attr<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">char</span> <span class="token operator">*</span>buf<span class="token punctuation">,</span> <span class="token class-name">size_t</span> count<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">char</span> k_buf<span class="token punctuation">[</span><span class="token number">10</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token number">0</span><span class="token punctuation">,</span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+    <span class="token function">snprintf</span><span class="token punctuation">(</span>k_buf<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>k_buf<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token string">"%s"</span><span class="token punctuation">,</span> buf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token function">dev_info</span><span class="token punctuation">(</span>dev<span class="token punctuation">,</span> <span class="token string">"Don't echo to me  -&gt; [%s] size [%d]\n"</span><span class="token punctuation">,</span> k_buf<span class="token punctuation">,</span> count<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> count<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//初始化属性值</span>
+<span class="token keyword">static</span> <span class="token function">DEVICE_ATTR</span><span class="token punctuation">(</span>sht20_temp_humi<span class="token punctuation">,</span> <span class="token number">0644</span><span class="token punctuation">,</span> sht20_temp_humi_show<span class="token punctuation">,</span> sht20_temp_humi_store<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<h5><a id="3_1140"></a>【3】测试讲解</h5> 
+<p>前面我们已经安装了我们的驱动，我们去<code>sys/class/sht20/sht20/</code>目录下测试一下能不能写数据进去。</p> 
+<p>读数据成功：</p> 
+<pre><code class="prism language-c">root@igkboard<span class="token operator">:</span><span class="token operator">/</span>sys<span class="token operator">/</span>class<span class="token operator">/</span>sht20<span class="token operator">/</span>sht20# cat sht20_temp_humi 
+temperature<span class="token operator">=</span><span class="token number">20503</span> humidity<span class="token operator">=</span><span class="token number">59635</span>
+</code></pre> 
+<p>写数据失败：</p> 
+<pre><code class="prism language-c">root@igkboard<span class="token operator">:</span><span class="token operator">/</span>sys<span class="token operator">/</span>class<span class="token operator">/</span>sht20<span class="token operator">/</span>sht20# echo <span class="token number">123</span> <span class="token operator">&gt;</span> sht20_temp_humi 
+root@igkboard<span class="token operator">:</span><span class="token operator">/</span>sys<span class="token operator">/</span>class<span class="token operator">/</span>sht20<span class="token operator">/</span>sht20# dmesg <span class="token operator">|</span> tail <span class="token operator">-</span><span class="token number">1</span>
+root@igkboard<span class="token operator">:</span><span class="token operator">/</span>sys<span class="token operator">/</span>class<span class="token operator">/</span>sht20<span class="token operator">/</span>sht20# dmesg <span class="token operator">|</span> tail <span class="token operator">-</span><span class="token number">2</span>
+<span class="token punctuation">[</span> <span class="token number">3651.603397</span><span class="token punctuation">]</span> sht20 sht20<span class="token operator">:</span> Don't echo to me  <span class="token operator">-&gt;</span> <span class="token punctuation">[</span><span class="token number">123</span>
+               <span class="token punctuation">]</span> size <span class="token punctuation">[</span><span class="token number">4</span><span class="token punctuation">]</span>
+</code></pre> 
+<h4><a id="2container_of_1157"></a>（2）container_of介绍</h4> 
+<h5><a id="1_1158"></a>【1】作用介绍</h5> 
+<p>container_of的主要作用是：通过已知的一个数据结构成员指针<mark>ptr</mark>，数据结构类型<mark>type</mark>，以及这个成员指针在这个数据结构中的成员名<mark>member</mark>，来获取指向这个数据结构的指针<mark>type *</mark>。</p> 
+<pre><code class="prism language-c"><span class="token comment">/**
+ * container_of - 通过三个参数，返回指向数据结构的指针
+ * @ptr:	数据结构中指向某一成员的指针
+ * @type:	数据结构类型
+ * @member:	在数据结构中的成员
+ *
+ */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name function">offsetof</span><span class="token expression"><span class="token punctuation">(</span>TYPE<span class="token punctuation">,</span> MEMBER<span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token class-name">size_t</span><span class="token punctuation">)</span> <span class="token operator">&amp;</span><span class="token punctuation">(</span><span class="token punctuation">(</span>TYPE <span class="token operator">*</span><span class="token punctuation">)</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span>MEMBER<span class="token punctuation">)</span></span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name function">container_of</span><span class="token expression"><span class="token punctuation">(</span>ptr<span class="token punctuation">,</span> type<span class="token punctuation">,</span> member<span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token punctuation">{<!-- --></span>			</span><span class="token punctuation">\</span>
+	<span class="token expression"><span class="token keyword">const</span> <span class="token keyword">typeof</span><span class="token punctuation">(</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>type <span class="token operator">*</span><span class="token punctuation">)</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span>member <span class="token punctuation">)</span> <span class="token operator">*</span>__mptr <span class="token operator">=</span> <span class="token punctuation">(</span>ptr<span class="token punctuation">)</span><span class="token punctuation">;</span>	</span><span class="token punctuation">\</span>
+	<span class="token expression"><span class="token punctuation">(</span>type <span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">(</span> <span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span><span class="token punctuation">)</span>__mptr <span class="token operator">-</span> <span class="token function">offsetof</span><span class="token punctuation">(</span>type<span class="token punctuation">,</span>member<span class="token punctuation">)</span> <span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token punctuation">}</span><span class="token punctuation">)</span></span></span>
+</code></pre> 
+<h5><a id="2_1174"></a>【2】举个栗子</h5> 
+<pre><code class="prism language-c"><span class="token comment">/*********************************************************************************
+ *      Copyright:  (C) 2023 WangDengtao&lt;1799055460@qq.com&gt;
+ *                  All rights reserved.
+ *
+ *       Filename:  container.c
+ *    Description:  This file 
+ *                 
+ *        Version:  1.0.0(2023年04月23日)
+ *         Author:  WangDengtao &lt;1799055460@qq.com&gt;
+ *      ChangeLog:  1, Release initial version on "2023年04月23日 17时14分31秒"
+ *                 
+ ********************************************************************************/</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdio.h&gt;</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name function">offsetof</span><span class="token expression"><span class="token punctuation">(</span>TYPE<span class="token punctuation">,</span> MEMBER<span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token class-name">size_t</span><span class="token punctuation">)</span> <span class="token operator">&amp;</span><span class="token punctuation">(</span><span class="token punctuation">(</span>TYPE <span class="token operator">*</span><span class="token punctuation">)</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span>MEMBER<span class="token punctuation">)</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name function">container_of</span><span class="token expression"><span class="token punctuation">(</span>ptr<span class="token punctuation">,</span> type<span class="token punctuation">,</span> member<span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token punctuation">{<!-- --></span>			</span><span class="token punctuation">\</span>
+			<span class="token expression"><span class="token keyword">const</span> <span class="token keyword">typeof</span><span class="token punctuation">(</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>type <span class="token operator">*</span><span class="token punctuation">)</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span>member <span class="token punctuation">)</span> <span class="token operator">*</span>__mptr <span class="token operator">=</span> <span class="token punctuation">(</span>ptr<span class="token punctuation">)</span><span class="token punctuation">;</span>	</span><span class="token punctuation">\</span>
+			<span class="token expression"><span class="token punctuation">(</span>type <span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">(</span> <span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span><span class="token punctuation">)</span>__mptr <span class="token operator">-</span> <span class="token function">offsetof</span><span class="token punctuation">(</span>type<span class="token punctuation">,</span>member<span class="token punctuation">)</span> <span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token punctuation">}</span><span class="token punctuation">)</span></span></span>
+
+<span class="token keyword">typedef</span> <span class="token keyword">struct</span> <span class="token class-name">profile</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">char</span> <span class="token operator">*</span>name<span class="token punctuation">;</span>
+	<span class="token keyword">unsigned</span> <span class="token keyword">int</span> age<span class="token punctuation">;</span>
+	<span class="token keyword">char</span> <span class="token operator">*</span>sex<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token class-name">profile_t</span><span class="token punctuation">;</span>
+
+<span class="token keyword">static</span> <span class="token class-name">profile_t</span> prop <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token punctuation">.</span>name <span class="token operator">=</span> <span class="token string">"WangDengtao"</span><span class="token punctuation">,</span>
+	<span class="token punctuation">.</span>age <span class="token operator">=</span> <span class="token number">23</span><span class="token punctuation">,</span>
+	<span class="token punctuation">.</span>sex <span class="token operator">=</span> <span class="token string">"male"</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token class-name">profile_t</span> <span class="token operator">*</span>p <span class="token operator">=</span> <span class="token function">container_of</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>prop<span class="token punctuation">.</span>sex<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">profile</span><span class="token punctuation">,</span> sex<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"name = %s, age = %u, sex = %s\n"</span><span class="token punctuation">,</span> p<span class="token operator">-&gt;</span>name<span class="token punctuation">,</span> p<span class="token operator">-&gt;</span>age<span class="token punctuation">,</span> p<span class="token operator">-&gt;</span>sex<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"This number is = %d\n"</span><span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token punctuation">{<!-- --></span><span class="token number">1</span><span class="token punctuation">;</span><span class="token number">2</span><span class="token punctuation">;</span><span class="token number">3</span><span class="token punctuation">;</span><span class="token number">4</span><span class="token punctuation">;</span><span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<pre><code class="prism language-c">wangdengtao@wangdengtao<span class="token operator">-</span>virtual<span class="token operator">-</span>machine<span class="token operator">:</span><span class="token operator">~</span>$ gcc container<span class="token punctuation">.</span>c 
+wangdengtao@wangdengtao<span class="token operator">-</span>virtual<span class="token operator">-</span>machine<span class="token operator">:</span><span class="token operator">~</span>$ <span class="token punctuation">.</span><span class="token operator">/</span>a<span class="token punctuation">.</span>out 
+name <span class="token operator">=</span> WangDengtao<span class="token punctuation">,</span> age <span class="token operator">=</span> <span class="token number">23</span><span class="token punctuation">,</span> sex <span class="token operator">=</span> male
+This number is <span class="token operator">=</span> <span class="token number">4</span>
+</code></pre> 
+<hr>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/1ec0d5ab98361dc0584e01f4ffbff28e/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">VMware workstation 17 pro 配置虚拟机(Cent OS7)的保姆机教程</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/2fa3849227411f4cde1a9aec7a1d9269/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">卷积神经网络（LeNet）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

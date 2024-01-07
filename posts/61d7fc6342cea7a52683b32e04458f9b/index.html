@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【MySql】多版本并发控制MVCC前置知识——隐藏字段、undo日志与Read View - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【MySql】多版本并发控制MVCC前置知识——隐藏字段、undo日志与Read View" />
+<meta property="og:description" content="文章目录 3个记录隐藏列字段undo日志模拟 MVCCRead View 数据库并发的场景有三种： 读-读 ：不存在任何问题，也不需要并发控制
+读-写 ：有线程安全问题，可能会造成事务隔离性问题，可能遇到脏读，幻读，不可重复读
+写-写 ：有线程安全问题，可能会存在更新丢失问题，比如第一类更新丢失，第二类更新丢失
+一个数据库大部分情况下是读写并发。
+多版本并发控制（ MVCC ）是一种用来解决读-写冲突的无锁并发控制
+1.每个事务都要有自己的事务ID，可以根据事务ID的大小，来决定事务到来的先后顺序
+2.mysqld可能会面临处理多个事务的情况，事务也有之间的生命周期，mysqld要对多个事务进行管理，先描述，在组织，在事务看来，mysqld中一定是对应的一个或者一套结构体对象/类对象。事务也要有自己的结构体。
+理解 MVCC 需要知道三个前提知识： 3个记录隐藏字段、undo 日志、Read View
+3个记录隐藏列字段 建表时虽然指明了表中有多少列，但是mysql都会默认添加3个隐藏列字段。
+DB_TRX_ID ：6 byte，最近修改( 修改/插入 )事务ID，记录创建这条记录/最后一次修改该记录的事务ID
+DB_ROLL_PTR : 7 byte，回滚指针，指向这条记录的上一个版本（简单理解成，指向历史版本就行，这些数据一般在 undo log 中）
+DB_ROW_ID : 6 byte，隐含的自增ID（隐藏主键），如果数据表没有主键， InnoDB 会自动以DB_ROW_ID 产生一个聚簇索引
+补充：实际还有一个删除flag隐藏字段, 既记录被更新或删除并不代表真的删除，而是删除flag变了
+mysql&gt; create table student( -&gt; name varchar(11) not null, -&gt; age int not null -&gt; ); Query OK, 0 rows affected (0.20 sec) mysql&gt; insert into student (name, age) values (&#39;张三&#39;, 28); Query OK, 1 row affected (0." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/61d7fc6342cea7a52683b32e04458f9b/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-06-24T21:18:44+08:00" />
+<meta property="article:modified_time" content="2023-06-24T21:18:44+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【MySql】多版本并发控制MVCC前置知识——隐藏字段、undo日志与Read View</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#3_17" rel="nofollow">3个记录隐藏列字段</a></li><li><a href="#undo_45" rel="nofollow">undo日志</a></li><li><a href="#_MVCC_51" rel="nofollow">模拟 MVCC</a></li><li><a href="#Read_View_88" rel="nofollow">Read View</a></li></ul> 
+</div> 
+<br> 数据库并发的场景有三种： 
+<p></p> 
+<blockquote> 
+ <p><strong>读-读</strong> ：不存在任何问题，也不需要并发控制<br> <strong>读-写</strong> ：<strong>有线程安全问题，可能会造成事务隔离性问题，可能遇到脏读，幻读，不可重复读</strong><br> <strong>写-写</strong> ：有线程安全问题，可能会存在更新丢失问题，比如第一类更新丢失，第二类更新丢失</p> 
+</blockquote> 
+<p>一个数据库大部分情况下是读写并发。</p> 
+<p><strong><code>多版本并发控制（ MVCC ）</code>是一种用来解决读-写冲突的无锁并发控制</strong></p> 
+<p><strong>1.每个事务都要有自己的事务ID，可以根据事务ID的大小，来决定事务到来的先后顺序</strong></p> 
+<p><strong>2.mysqld可能会面临处理多个事务的情况，事务也有之间的生命周期，mysqld要对多个事务进行管理，先描述，在组织，在事务看来，mysqld中一定是对应的一个或者一套结构体对象/类对象。事务也要有自己的结构体。</strong></p> 
+<p>理解 MVCC 需要知道三个前提知识： <strong>3个记录隐藏字段、undo 日志、Read View</strong></p> 
+<h2><a id="3_17"></a>3个记录隐藏列字段</h2> 
+<p>建表时虽然指明了表中有多少列，但是mysql都会默认添加3个隐藏列字段。</p> 
+<p><code>DB_TRX_ID </code>：6 byte，最近修改( 修改/插入 )事务ID，记录创建这条记录/最后一次修改该记录的事务ID</p> 
+<p><code>DB_ROLL_PTR</code> : 7 byte，回滚指针，指向这条记录的上一个版本（简单理解成，指向历史版本就行，这些数据一般在 undo log 中）</p> 
+<p><code>DB_ROW_ID</code> : 6 byte，隐含的自增ID（隐藏主键），如果数据表没有主键， InnoDB 会自动以DB_ROW_ID 产生一个<strong>聚簇索引</strong><br> 补充：实际还有一个删除flag隐藏字段, 既记录被更新或删除并不代表真的删除，而是删除flag变了</p> 
+<pre><code class="prism language-mysql">mysql&gt; create table student(
+    -&gt; name varchar(11) not null,
+    -&gt; age int not null
+    -&gt; );
+Query OK, 0 rows affected (0.20 sec)
+
+mysql&gt; insert into student (name, age) values ('张三', 28);
+Query OK, 1 row affected (0.04 sec)
+</code></pre> 
+<p>上面实则为：</p> 
+<p><img src="https://images2.imgbox.com/13/d9/Bb9Onx23_o.png" alt="image-20230624091540594"></p> 
+<p>我们目前并不知道创建该记录的事务ID，隐式主键，我们就默认设置成null，1。第一条记录也没有其他版本，我们设置回滚指针为null</p> 
+<h2><a id="undo_45"></a>undo日志</h2> 
+<p><strong>undo日志是mysql比较重要的日志模块。MySQL 将来是以服务进程的方式，在内存中运行。我们之前所说的所有机制：索引，事务，隔离性，日志等，都是在内存中完成的，即在 MySQL 内部的相关缓冲区中，保存相关数据，完成各种判断操作。然后在合适的时候，将相关数据刷新到磁盘当中的</strong></p> 
+<p><strong>undo log，简单理解成就是 MySQL 中的一段内存缓冲区，用来保存日志数据</strong></p> 
+<h2><a id="_MVCC_51"></a>模拟 MVCC</h2> 
+<p>现在有一个事务10(仅仅为了好区分)，对student表中记录进行修改(update)：将name(张三)改成name(李四)</p> 
+<blockquote> 
+ <p>事务10,因为要修改，所以要先给该记录加行锁</p> 
+ <p>修改前，现将改行记录拷贝到undo log中，所以，undo log中就有了一行副本数据。(原理就是写时拷贝)</p> 
+ <p>所以现在 MySQL 中有两行同样的记录。现在修改原始记录中的name，改成 ‘李四’。并且修改原始记录的隐藏字段 DB_TRX_ID 为当前 事务10 的ID, 我们默认从 10 开始，之后递增。而原始记录的回滚指针 DB_ROLL_PTR 列，里面写入undo log中副本数据的地址，从而指向副本记录，既表示我的上一个版本就是它。</p> 
+ <p>事务10提交，释放锁。 此时，最新的记录是’李四‘那条记录。</p> 
+ <p><img src="https://images2.imgbox.com/c3/5b/WQ2AWdDW_o.png" alt="image-20230624094846901"></p> 
+</blockquote> 
+<p>现在又有一个事务11，对student表中记录进行修改(update)：将age(28)改成age(38)</p> 
+<blockquote> 
+ <p>事务11,因为也要修改，所以要先给该记录加行锁。</p> 
+ <p>修改前，现将改行记录拷贝到undo log中，所以，undo log中就又有了一行副本数据。此时，新的副本，我们采用头插方式，插入undo log。现在修改原始记录中的age，改成 38。并且修改原始记录的隐藏字段 DB_TRX_ID 为当前 事务11 的ID。而原始记录的回滚指针 DB_ROLL_PTR 列，里面写入undo log中副本数据的地址，从而指向副本记录，既表示我的上一个版本就是它。<br> 事务11提交，释放锁。</p> 
+ <p><img src="https://images2.imgbox.com/d9/03/t2aT0rO0_o.png" alt="image-20230624094705830"></p> 
+</blockquote> 
+<p><strong>这样，我们就有了一个基于链表记录的历史版本链。所谓的回滚，无非就是用历史数据，覆盖当前数据。</strong> 上面的一个一个版本，我们可以称之为一个一个的<code>快照</code>。</p> 
+<blockquote> 
+ <p>上面是更新（<code>upadte</code>）的,如果是<code>delete</code>也是一样的，删数据不是清空，而是设置flag为删除即可。也可以形成版本。</p> 
+ <p>如果是<code>insert</code>,因为<code>insert</code>是插入，也就是之前没有数据，那么<code>insert</code>也就没有历史版本。但是一般为了回滚操作，insert的数据也是要被放入undo log中，<strong>如果当前事务commit了，那么这个undo log 的历史insert记录就可以被清空了</strong>。</p> 
+ <p>也就是我们可以理解成<code>update</code>和<code>delete</code>可以形成版本链，<code>insert</code>暂时不考虑</p> 
+ <p>而<code>select</code>不会对数据做任何修改，所以，为<code>select</code>维护多版本，没有意义。 当前读：<strong>读取最新的记录，就是当前读 ，增删改，都叫做当前读，是要加锁的</strong> ； <strong>快照读：读取历史版本(一般而言)，就叫做快照读。 是不受加锁限制的</strong>。也就是可以并行执行！ 提高了效率，即MVCC的意义所在。</p> 
+ <p><strong>是什么决定了，select是当前读，还是快照读呢？隔离级别。 那为什么要有隔离级别呢？事务都是原子的。所以，无论如何，事务总有先有后 。经过上面的操作我们发现，事务从begin-&gt;CURD-&gt;commit，是有一个阶段的。也就是事务有执行前，执行中，执行后的阶段。但，不管怎么启动多个事务，总是有先有后的。那么多个事务在执行中，CURD操作是会交织在一起的。那么，为了保证事务的“有先有后”，应该让不同的事务看到它该看到的内容，这就是所谓的隔离性与隔离级别要解决的问题。</strong></p> 
+</blockquote> 
+<p>如何保证，不同的事务，看到不同的内容呢？也就是如何如何实现隔离级别？ Read View</p> 
+<h2><a id="Read_View_88"></a>Read View</h2> 
+<p>Read View就是事务进行<code>快照读</code>操作的时候生产的 读视图 (Read View)，在该事务执行的快照读的那一刻，会生成数据库系统当前的一个快照，记录并维护系统当前活跃事务的ID(当每个事务开启时，都会被分配一个ID, 这个ID是递增的，所以最新的事务，ID值越大)</p> 
+<p>Read View 在 MySQL 源码中,就是一个类，本质是用来进行可见性判断的。 即<strong>当我们某个事务执行快照读的时候，对该记录创建一个 Read View 读视图</strong>，把它比作条件,用来判断当前事务能够看到哪个版本的数据，既可能是当前最新的数据，也有可能是该行记录的 undo log 里面的某个版本的数据。</p> 
+<p>ReadView的主要成员：</p> 
+<pre><code class="prism language-c++">m_ids; //一张列表，用来维护Read View生成时刻，系统正活跃的事务ID
+up_limit_id; //记录m_ids列表中事务ID最小的ID
+low_limit_id; //ReadView生成时刻系统尚未分配的下一个事务ID，也就是目前已出现过的事务ID的最大值+1
+creator_trx_id //创建该ReadView的事务ID
+</code></pre> 
+<p>我们在实际读取数据版本链的时候，是能读取到每一个版本对应的事务ID的，即：当前记录的DB_TRX_ID</p> 
+<p>那么，我们现在手里面有的东西就有当前快照读的 ReadView 和 版本链中的某一个记录的DB_TRX_ID。</p> 
+<p>所以现在的问题就是，当前快照读，应不应该读到当前版本记录的问题。</p> 
+<p><img src="https://images2.imgbox.com/f0/4e/uRPMdFZS_o.png" alt="image-20230624195716032"></p> 
+<p>read view是事务可见性的一个类，不是事务创建出来就会有read view,而是当这个事务已经存在首次进行快照读的时候，mysql形成read view。</p> 
+<ul><li><strong>整体流程</strong></li></ul> 
+<p>假如当前有条记录：</p> 
+<p><img src="https://images2.imgbox.com/c0/e0/PdO3YaFH_o.png" alt="image-20230624210813161"></p> 
+<p>事务操作： 事务4：修改name(张三) 变成name(李四)</p> 
+<p><img src="https://images2.imgbox.com/23/24/QssFTQeT_o.png" alt="image-20230624210837766"></p> 
+<p>当 事务2 对某行数据执行了 快照读 ，数据库为该行数据生成一个 Read View 读视图</p> 
+<pre><code class="prism language-mysql">//事务2的 Read View
+m_ids; // 1,3
+up_limit_id; // 1
+low_limit_id; // 4 + 1 = 5，原因：ReadView生成时刻，系统尚未分配的下一个事务ID
+creator_trx_id // 2
+</code></pre> 
+<p>此时版本链是:</p> 
+<p><img src="https://images2.imgbox.com/61/5c/A3maHku3_o.png" alt="image-20230624210942071"></p> 
+<p>只有事务4修改过该行记录，并在事务2执行快照读前，就提交了事务</p> 
+<p><img src="https://images2.imgbox.com/d1/f8/k9k7sPmR_o.png" alt="image-20230624211000733"></p> 
+<p>我们的事务2在快照读该行记录的时候，就会拿该行记录的 DB_TRX_ID 去跟up_limit_id,low_limit_id和活跃事务ID列表(trx_list) 进行比较，判断当前事务2能看到该记录的版本。</p> 
+<pre><code class="prism language-mysql">//事务2的 Read View
+m_ids; // 1,3
+up_limit_id; // 1
+low_limit_id; // 4 + 1 = 5，原因：ReadView生成时刻，系统尚未分配的下一个事务ID
+creator_trx_id // 2
+//事务4提交的记录对应的事务ID
+DB_TRX_ID=4
+//比较步骤
+DB_TRX_ID（4）&lt; up_limit_id（1） ? 不小于，下一步
+DB_TRX_ID（4）&gt;= low_limit_id(5) ? 不大于，下一步
+m_ids.contains(DB_TRX_ID) ? 不包含，说明，事务4不在当前的活跃事务中。
+</code></pre> 
+<p>事务4的更改，应该看到。所以事务2能读到的最新数据记录是事务4所提交的版本，而事务4提交的版本也是全局角度上最新的版本</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/17e3f35f759ca6c91dea4335e56c1e17/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">如何在kaggle上下载输出文件</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a08ee7a2a2958c910b8a42946e1b9dbd/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【Twitter爬虫】Twitter网络爬虫</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

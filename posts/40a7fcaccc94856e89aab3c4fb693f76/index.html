@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Sentinel架构篇 - 流量控制 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Sentinel架构篇 - 流量控制" />
+<meta property="og:description" content="流量控制 用于调整网络包发送的数据。任意时间到来的请求往往是随机不可控的，而系统的处理能力是有限的。我们需要根据系统的处理能力对流量进行控制。Sentinel 作为一个适配器，可以根据需要将随机的请求调整成合适的形状，如下：
+流量控制有两种统计类型 - 统计线程数、统计 QPS。可以通过如下命令查看实时统计信息：
+curl http://localhost:8719/cnode?id=resourceName 输出内容的格式如下：
+idx id thread pass blocked success total Rt 1m-pass 1m-block 1m-all exeption 2 abc647 0 46 0 46 46 1 2763 0 2763 0 thread： 代表当前处理该资源的线程数；pass： 代表一秒内到来到的请求；blocked： 代表一秒内被流量控制的请求数量；success： 代表一秒内成功处理完的请求；total： 代表到一秒内到来的请求以及被阻止的请求总和；RT： 代表一秒内该资源的平均响应时间；1m-pass： 代表一分钟内到来的请求；1m-block： 代表一分钟内被阻止的请求；1m-all： 代表一分钟内到来的请求和被阻止的请求的总和；exception： 代表一秒内业务本身异常的总和。 流量规则的定义 实际代码中对应 FlowRule。
+同一个资源可以同时有多个流量规则。
+Field说明默认值resource资源名称count限流阈值grade流量控制的指标（0 - 线程数、1 - QPS）1 （即 QPS）limitApp流量控制针对的调用来源default（不区分调用来源）strategy资源的调用关系（0 - 直接、1 - 关联、2 - 链路）0（即直接）controlBehavior流量控制的效果（0 - 直接拒绝、1 - 冷启动、2 - 匀速器、3 - 冷启动 &#43; 匀速器）0（即直接拒绝） 流量控制的指标 基于并发线程数 简单统计当前请求上下文的线程个数，如果超过阈值，则新的请求会被拒绝。用于保护业务线程数不被耗尽。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/40a7fcaccc94856e89aab3c4fb693f76/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-04-09T18:01:48+08:00" />
+<meta property="article:modified_time" content="2023-04-09T18:01:48+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Sentinel架构篇 - 流量控制</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atelier-sulphurpool-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="_2"></a>流量控制</h2> 
+<p>用于调整网络包发送的数据。任意时间到来的请求往往是随机不可控的，而系统的处理能力是有限的。我们需要根据系统的处理能力对流量进行控制。Sentinel 作为一个适配器，可以根据需要将随机的请求调整成合适的形状，如下：</p> 
+<p><img src="https://images2.imgbox.com/c0/48/pQYdwVhZ_o.png" alt="在这里插入图片描述"></p> 
+<p>流量控制有两种统计类型 - 统计线程数、统计 QPS。可以通过如下命令查看实时统计信息：</p> 
+<pre><code>curl http://localhost:8719/cnode?id=resourceName
+</code></pre> 
+<p>输出内容的格式如下：</p> 
+<pre><code>idx id   thread  pass  blocked   success  total Rt   1m-pass   1m-block   1m-all   exeption
+2   abc647 0     46     0           46     46   1       2763      0         2763     0
+</code></pre> 
+<ul><li>thread： 代表当前处理该资源的线程数；</li><li>pass： 代表一秒内到来到的请求；</li><li>blocked： 代表一秒内被流量控制的请求数量；</li><li>success： 代表一秒内成功处理完的请求；</li><li>total： 代表到一秒内到来的请求以及被阻止的请求总和；</li><li>RT： 代表一秒内该资源的平均响应时间；</li><li>1m-pass： 代表一分钟内到来的请求；</li><li>1m-block： 代表一分钟内被阻止的请求；</li><li>1m-all： 代表一分钟内到来的请求和被阻止的请求的总和；</li><li>exception： 代表一秒内业务本身异常的总和。</li></ul> 
+<h3><a id="_32"></a>流量规则的定义</h3> 
+<p><font color="999aaa">实际代码中对应 FlowRule。</font></p> 
+<p>同一个资源可以同时有多个流量规则。</p> 
+<table><thead><tr><th>Field</th><th>说明</th><th>默认值</th></tr></thead><tbody><tr><td>resource</td><td>资源名称</td><td></td></tr><tr><td>count</td><td>限流阈值</td><td></td></tr><tr><td>grade</td><td>流量控制的指标（0 - 线程数、1 - QPS）</td><td>1 （即 QPS）</td></tr><tr><td>limitApp</td><td>流量控制针对的调用来源</td><td>default（不区分调用来源）</td></tr><tr><td>strategy</td><td>资源的调用关系（0 - 直接、1 - 关联、2 - 链路）</td><td>0（即直接）</td></tr><tr><td>controlBehavior</td><td>流量控制的效果（0 - 直接拒绝、1 - 冷启动、2 - 匀速器、3 - 冷启动 + 匀速器）</td><td>0（即直接拒绝）</td></tr></tbody></table> 
+<h3><a id="_47"></a>流量控制的指标</h3> 
+<h4><a id="_49"></a>基于并发线程数</h4> 
+<p>简单统计当前请求上下文的线程个数，如果超过阈值，则新的请求会被拒绝。用于保护业务线程数不被耗尽。</p> 
+<p>比如，应用依赖的下游应用由于某种原因导致服务不稳定、响应时间增加，对于调用者来说，意味着吞吐量下降和更多的线程数占用，极端情况下导致线程池耗尽。为应对高线程占用的情况，业内有使用隔离的方案，比如通过不同业务逻辑使用不同的线程池来隔离业务之间的资源争抢（线程池隔离），或者使用信号量来控制同时请求的数量（信号量隔离）。信号量隔离的策略虽然能够控制线程数量，但是无法控制请求的排队时间。当请求过多时，排队也是无益的，直接拒绝能够迅速降低系统压力。Sentinel 线程数限流不负责创建和管理线程池，而是简单统计当前请求上下文的线程个数，如果超过阈值，新的请求会被立即拒绝。</p> 
+<p>流量控制效果只有直接拒绝。</p> 
+<pre><code class="prism language-json"><span class="token punctuation">[</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token string-property property">"resource"</span><span class="token operator">:</span> <span class="token string">"sayHello"</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"limitApp"</span><span class="token operator">:</span> <span class="token string">"default"</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"grade"</span><span class="token operator">:</span> <span class="token number">0</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"count"</span><span class="token operator">:</span> <span class="token number">4</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"strategy"</span><span class="token operator">:</span> <span class="token number">0</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"controlBehavior"</span><span class="token operator">:</span> <span class="token number">0</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">]</span>
+</code></pre> 
+<h4><a id="QPS_70"></a>基于QPS</h4> 
+<p>当 QPS 超过阈值时，则采取措施进行流量控制。</p> 
+<h3><a id="_74"></a>流量控制的效果</h3> 
+<h4><a id="_76"></a>直接拒绝</h4> 
+<p>对应 <code>RuleConstant.CONTROL_BEHAVIOR_DEFAULT</code>。该方式是默认的流量控制方式，当 QPS 超过阈值时，直接拒绝新的请求（拒绝方式是抛出 FlowException）。这种方式适用于对系统处理能力确切已知的情况下，比如通过压测确定了系统的准确水位时。</p> 
+<pre><code class="prism language-json"><span class="token punctuation">[</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token string-property property">"resource"</span><span class="token operator">:</span> <span class="token string">"sayHello"</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"limitApp"</span><span class="token operator">:</span> <span class="token string">"default"</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"grade"</span><span class="token operator">:</span> <span class="token number">1</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"count"</span><span class="token operator">:</span> <span class="token number">4</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"strategy"</span><span class="token operator">:</span> <span class="token number">0</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"controlBehavior"</span><span class="token operator">:</span> <span class="token number">0</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">]</span>
+</code></pre> 
+<h4><a id="_93"></a>冷启动</h4> 
+<p>对应 <code>RuleConstant.CONTROL_BEHAVIOR_WARM_UP</code>。该方式用于系统长期处于低水位的情况下，当流量突然增加时，直接把系统拉升到高水位，这种情况可能瞬间把系统压垮。冷启动方式让通过的流量缓慢增加，在一定时间内（<code>warmUpPeriodSec</code> 参数控制预热时长，单位秒）逐渐增加到阈值上限，给冷系统一个预热的时间，避免冷系统被压垮的情况。</p> 
+<p><img src="https://images2.imgbox.com/03/c5/LH3Bu8fw_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-json"><span class="token punctuation">[</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token string-property property">"resource"</span><span class="token operator">:</span> <span class="token string">"sayHello"</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"limitApp"</span><span class="token operator">:</span> <span class="token string">"default"</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"grade"</span><span class="token operator">:</span> <span class="token number">1</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"count"</span><span class="token operator">:</span> <span class="token number">10</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"strategy"</span><span class="token operator">:</span> <span class="token number">0</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"controlBehavior"</span><span class="token operator">:</span> <span class="token number">1</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"warmUpPeriodSec"</span><span class="token operator">:</span> <span class="token number">3</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">]</span>
+</code></pre> 
+<h4><a id="_113"></a>匀速器</h4> 
+<p>对应 <code>RuleConstant.CONTROL_BEHAVIOR_RATE_LIMITER</code>。严格控制请求通过的间隔时间，也就是让请求以均匀的速度通过，对应的是漏桶算法。这种方式主要用于处理间隔性突发的流量，比如消息队列。想象一下这种的场景，在某一秒有大量的请求到来，而接下来的几秒则处于空闲状态，我们希望能够在接下来的空闲期间逐渐处理这些请求，而不是在第一秒直接拒绝多余的请求。</p> 
+<p><img src="https://images2.imgbox.com/a8/f4/wtnfMRxL_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-json"><span class="token punctuation">[</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token string-property property">"resource"</span><span class="token operator">:</span> <span class="token string">"sayHello"</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"limitApp"</span><span class="token operator">:</span> <span class="token string">"default"</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"grade"</span><span class="token operator">:</span> <span class="token number">1</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"count"</span><span class="token operator">:</span> <span class="token number">10</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"strategy"</span><span class="token operator">:</span> <span class="token number">0</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"controlBehavior"</span><span class="token operator">:</span> <span class="token number">2</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"maxQueueingTimeMs"</span><span class="token operator">:</span> <span class="token number">500</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">]</span>
+</code></pre> 
+<p>每秒请求数大于 5 时，多余的请求排队等待。如果 500 毫秒内这些请求得不到处理，则请求会被限流导致访问失败。</p> 
+<h4><a id="_135"></a>冷启动+匀速器</h4> 
+<p>对应 <code>RuleConstant.CONTROL_BEHAVIOR_WARM_UP_RATE_LIMITER</code>。冷启动加匀速器组合的方式。</p> 
+<pre><code class="prism language-json"><span class="token punctuation">[</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token string-property property">"resource"</span><span class="token operator">:</span> <span class="token string">"sayHello"</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"limitApp"</span><span class="token operator">:</span> <span class="token string">"default"</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"grade"</span><span class="token operator">:</span> <span class="token number">1</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"count"</span><span class="token operator">:</span> <span class="token number">10</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"strategy"</span><span class="token operator">:</span> <span class="token number">0</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"controlBehavior"</span><span class="token operator">:</span> <span class="token number">3</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"maxQueueingTimeMs"</span><span class="token operator">:</span> <span class="token number">500</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"warmUpPeriodSec"</span><span class="token operator">:</span> <span class="token number">5</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">]</span>
+</code></pre> 
+<h3><a id="_154"></a>资源的调用关系</h3> 
+<p>调用关系包括调用方、被调用方；方法又可能会调用其它方法，形成一个调用链路的层次关系。</p> 
+<h4><a id="_158"></a>根据调用方限流</h4> 
+<p>可以通过如下命令查看不同调用方对于同一个资源的调用数据。</p> 
+<pre><code>curl http://localhost:8719/origin?id=nodeA
+</code></pre> 
+<p>调用数据示例如下：</p> 
+<pre><code>id: nodeA
+idx origin  threadNum passedQps blockedQps totalQps aRt   1m-passed 1m-blocked 1m-total 
+1   caller1 0         0         0          0        0     0         0          0
+2   caller2 0         0         0          0        0     0         0          0
+</code></pre> 
+<p>限流规则中的 limitApp 字段用于根据调用方进行流量控制。该字段的值有如下三种选项，分别对应不同的场景：</p> 
+<ul><li>default：表示不区分调用者，来自任何调用者的请求都将进行限流统计。如果这个资源名的调用总和超过了阈值，则触发限流。</li><li>{some_origin_name}：表示针对的调用者，只有来自这个调用者的请求才会进行流量控制。例如 NodeA 配置了一条针对调用者caller1的规则，那么当且仅当来自 caller1 对 NodeA 的请求才会触发流量控制。</li><li>other：表示针对除 {some_origin_name} 以外的其余调用方的流量进行流量控制。例如，资源NodeA配置了一条针对调用者 caller1 的限流规则，同时又配置了一条调用者为 other 的规则，那么任意来自非 caller1 对 NodeA 的调用，都不能超过 other 这条规则定义的阈值。</li></ul> 
+<p>同一个资源名可以配置多条规则，规则的生效顺序为：<strong>{some_origin_name} &gt; other &gt; default</strong></p> 
+<pre><code class="prism language-json"><span class="token punctuation">[</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token string-property property">"resource"</span><span class="token operator">:</span> <span class="token string">"sayHello"</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"limitApp"</span><span class="token operator">:</span> <span class="token string">"spring-cloud-demo-consumer"</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"grade"</span><span class="token operator">:</span> <span class="token number">1</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"count"</span><span class="token operator">:</span> <span class="token number">5</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"controlBehavior"</span><span class="token operator">:</span> <span class="token number">2</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"maxQueueingTimeMs"</span><span class="token operator">:</span> <span class="token number">500</span>
+    <span class="token punctuation">}</span><span class="token punctuation">,</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token string-property property">"resource"</span><span class="token operator">:</span> <span class="token string">"sayHello"</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"limitApp"</span><span class="token operator">:</span> <span class="token string">"other"</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"grade"</span><span class="token operator">:</span> <span class="token number">1</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"count"</span><span class="token operator">:</span> <span class="token number">5</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"controlBehavior"</span><span class="token operator">:</span> <span class="token number">2</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"maxQueueingTimeMs"</span><span class="token operator">:</span> <span class="token number">500</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">]</span>
+</code></pre> 
+<p>额外需要注册一个 RequestOriginParser 类型的 Bean。</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Component</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">MyRequestOriginParser</span> <span class="token keyword">implements</span> <span class="token class-name">RequestOriginParser</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">parseOrigin</span><span class="token punctuation">(</span><span class="token class-name">HttpServletRequest</span> httpServletRequest<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">String</span> origin <span class="token operator">=</span> httpServletRequest<span class="token punctuation">.</span><span class="token function">getHeader</span><span class="token punctuation">(</span><span class="token string">"origin"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token class-name">StringUtils</span><span class="token punctuation">.</span><span class="token function">isBlank</span><span class="token punctuation">(</span>origin<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            origin <span class="token operator">=</span> <span class="token string">"default"</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">return</span> origin<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>然后请求头携带 origin 属性以及属性值。</p> 
+<h4><a id="_222"></a>链路限流</h4> 
+<p>一棵典型的调用树如下图所示：</p> 
+<pre><code>     	          machine-root
+                    /       \
+                   /         \
+             Entrance1     Entrance2
+                /             \
+               /               \
+      DefaultNode(nodeA)   DefaultNode(nodeA)
+</code></pre> 
+<p>上图中来自入口 <code>Entrance1</code> 和 <code>Entrance2</code> 的请求都调用到了资源 <code>NodeA</code>，Sentinel 允许只根据某个入口的统计信息对资源限流。比如我们可以设置 <code>FlowRule.strategy</code> 为 <code>RuleConstant.CHAIN</code>，同时设置 <code>refResource</code> 为 <code>Entrance1</code> 来表示只有从入口 <code>Entrance1</code> 的调用才会记录到 <code>NodeA</code> 的限流统计当中，而对来自 <code>Entrance2</code> 的调用漠不关心。</p> 
+<pre><code class="prism language-json"><span class="token punctuation">[</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token string-property property">"resource"</span><span class="token operator">:</span> <span class="token string">"sayHello"</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"limitApp"</span><span class="token operator">:</span> <span class="token string">"default"</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"strategy"</span><span class="token operator">:</span> <span class="token number">2</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"refResource"</span><span class="token operator">:</span> <span class="token string">"/hello/say"</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"grade"</span><span class="token operator">:</span> <span class="token number">1</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"count"</span><span class="token operator">:</span> <span class="token number">3</span><span class="token punctuation">,</span>
+      	<span class="token string-property property">"controlBehavior"</span><span class="token operator">:</span> <span class="token number">2</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"maxQueueingTimeMs"</span><span class="token operator">:</span> <span class="token number">500</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">]</span>
+</code></pre> 
+<h4><a id="_253"></a>关联限流</h4> 
+<p>当两个资源之间具有资源争抢或者依赖关系的时候，这两个资源便具有了关联。</p> 
+<p><font color="999aaa">比如对数据库同一个字段的读操作和写操作存在争抢，读的速度过高会影响写得速度，写的速度过高会影响读的速度。如果放任读写操作争抢资源，则争抢本身带来的开销会降低整体的吞吐量。可使用关联限流来避免具有关联关系的资源之间过度的争抢，举例来说，read_db 和 write_db 这两个资源分别代表数据库读写，我们可以给 read_db 设置限流规则来达到写优先的目的：设置 FlowRule.strategy 为 RuleConstant.RELATE ，同时设置 refResource 为 write_db。这样当写库操作过于频繁时，读数据的请求会被限流。<br> </font></p> 
+<pre><code class="prism language-json"><span class="token punctuation">[</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token string-property property">"resource"</span><span class="token operator">:</span> <span class="token string">"/hello/say"</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"limitApp"</span><span class="token operator">:</span> <span class="token string">"default"</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"strategy"</span><span class="token operator">:</span> <span class="token number">1</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"refResource"</span><span class="token operator">:</span> <span class="token string">"/hello/say2"</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"grade"</span><span class="token operator">:</span> <span class="token number">1</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"count"</span><span class="token operator">:</span> <span class="token number">1</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">]</span>
+</code></pre> 
+<p>/hello/say2 接口访问达到限流阈值时（不对它限流），对 /hello/say 接口根据配置的限流手段进行限流。</p> 
+<h2><a id="FlowSlot_275"></a>FlowSlot</h2> 
+<p>负责限流规则的判断。</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Override</span>
+<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">entry</span><span class="token punctuation">(</span><span class="token class-name">Context</span> context<span class="token punctuation">,</span> <span class="token class-name">ResourceWrapper</span> resourceWrapper<span class="token punctuation">,</span> <span class="token class-name">DefaultNode</span> node<span class="token punctuation">,</span> <span class="token keyword">int</span> count<span class="token punctuation">,</span>
+                  <span class="token keyword">boolean</span> prioritized<span class="token punctuation">,</span> <span class="token class-name">Object</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span> args<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Throwable</span> <span class="token punctuation">{<!-- --></span>
+  	<span class="token comment">// 校验限流规则</span>
+    <span class="token function">checkFlow</span><span class="token punctuation">(</span>resourceWrapper<span class="token punctuation">,</span> context<span class="token punctuation">,</span> node<span class="token punctuation">,</span> count<span class="token punctuation">,</span> prioritized<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">// 交给下一个ProcessorSlot处理</span>
+    <span class="token function">fireEntry</span><span class="token punctuation">(</span>context<span class="token punctuation">,</span> resourceWrapper<span class="token punctuation">,</span> node<span class="token punctuation">,</span> count<span class="token punctuation">,</span> prioritized<span class="token punctuation">,</span> args<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token function">checkFlow</span><span class="token punctuation">(</span><span class="token class-name">ResourceWrapper</span> resource<span class="token punctuation">,</span> <span class="token class-name">Context</span> context<span class="token punctuation">,</span> <span class="token class-name">DefaultNode</span> node<span class="token punctuation">,</span> <span class="token keyword">int</span> count<span class="token punctuation">,</span> <span class="token keyword">boolean</span> prioritized<span class="token punctuation">)</span>
+    <span class="token keyword">throws</span> <span class="token class-name">BlockException</span> <span class="token punctuation">{<!-- --></span>
+  	<span class="token comment">// 交给FlowRuleChecker继续处理</span>
+    checker<span class="token punctuation">.</span><span class="token function">checkFlow</span><span class="token punctuation">(</span>ruleProvider<span class="token punctuation">,</span> resource<span class="token punctuation">,</span> context<span class="token punctuation">,</span> node<span class="token punctuation">,</span> count<span class="token punctuation">,</span> prioritized<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>checkFlow</strong></p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">checkFlow</span><span class="token punctuation">(</span><span class="token class-name">Function</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Collection</span><span class="token punctuation">&lt;</span><span class="token class-name">FlowRule</span><span class="token punctuation">&gt;</span><span class="token punctuation">&gt;</span></span> ruleProvider<span class="token punctuation">,</span> <span class="token class-name">ResourceWrapper</span> resource<span class="token punctuation">,</span>
+                      <span class="token class-name">Context</span> context<span class="token punctuation">,</span> <span class="token class-name">DefaultNode</span> node<span class="token punctuation">,</span> <span class="token keyword">int</span> count<span class="token punctuation">,</span> <span class="token keyword">boolean</span> prioritized<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">BlockException</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>ruleProvider <span class="token operator">==</span> <span class="token keyword">null</span> <span class="token operator">||</span> resource <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token class-name">Collection</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">FlowRule</span><span class="token punctuation">&gt;</span></span> rules <span class="token operator">=</span> ruleProvider<span class="token punctuation">.</span><span class="token function">apply</span><span class="token punctuation">(</span>resource<span class="token punctuation">.</span><span class="token function">getName</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>rules <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      	<span class="token comment">// 只要有一个流量规则校验失败，则抛出FlowException异常</span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token class-name">FlowRule</span> rule <span class="token operator">:</span> rules<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">canPassCheck</span><span class="token punctuation">(</span>rule<span class="token punctuation">,</span> context<span class="token punctuation">,</span> node<span class="token punctuation">,</span> count<span class="token punctuation">,</span> prioritized<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">FlowException</span><span class="token punctuation">(</span>rule<span class="token punctuation">.</span><span class="token function">getLimitApp</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> rule<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>canPassCheck</strong></p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">boolean</span> <span class="token function">canPassCheck</span><span class="token punctuation">(</span><span class="token comment">/*@NonNull*/</span> <span class="token class-name">FlowRule</span> rule<span class="token punctuation">,</span> <span class="token class-name">Context</span> context<span class="token punctuation">,</span> <span class="token class-name">DefaultNode</span> node<span class="token punctuation">,</span>
+                                                <span class="token keyword">int</span> acquireCount<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> <span class="token function">canPassCheck</span><span class="token punctuation">(</span>rule<span class="token punctuation">,</span> context<span class="token punctuation">,</span> node<span class="token punctuation">,</span> acquireCount<span class="token punctuation">,</span> <span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">public</span> <span class="token keyword">boolean</span> <span class="token function">canPassCheck</span><span class="token punctuation">(</span><span class="token comment">/*@NonNull*/</span> <span class="token class-name">FlowRule</span> rule<span class="token punctuation">,</span> <span class="token class-name">Context</span> context<span class="token punctuation">,</span> <span class="token class-name">DefaultNode</span> node<span class="token punctuation">,</span> <span class="token keyword">int</span> acquireCount<span class="token punctuation">,</span>
+                                                <span class="token keyword">boolean</span> prioritized<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token class-name">String</span> limitApp <span class="token operator">=</span> rule<span class="token punctuation">.</span><span class="token function">getLimitApp</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>limitApp <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+	<span class="token comment">// 如果是集群模式</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>rule<span class="token punctuation">.</span><span class="token function">isClusterMode</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      	<span class="token comment">// 进行集群模式下的流量规则校验（该部分在集群流控文章中进行分析）</span>
+        <span class="token keyword">return</span> <span class="token function">passClusterCheck</span><span class="token punctuation">(</span>rule<span class="token punctuation">,</span> context<span class="token punctuation">,</span> node<span class="token punctuation">,</span> acquireCount<span class="token punctuation">,</span> prioritized<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+	<span class="token comment">// 进行本地模式下的流量规则校验</span>
+    <span class="token keyword">return</span> <span class="token function">passLocalCheck</span><span class="token punctuation">(</span>rule<span class="token punctuation">,</span> context<span class="token punctuation">,</span> node<span class="token punctuation">,</span> acquireCount<span class="token punctuation">,</span> prioritized<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>passLocalCheck</strong></p> 
+<pre><code class="prism language-java"><span class="token keyword">private</span> <span class="token keyword">static</span> <span class="token keyword">boolean</span> <span class="token function">passLocalCheck</span><span class="token punctuation">(</span><span class="token class-name">FlowRule</span> rule<span class="token punctuation">,</span> <span class="token class-name">Context</span> context<span class="token punctuation">,</span> <span class="token class-name">DefaultNode</span> node<span class="token punctuation">,</span> <span class="token keyword">int</span> acquireCount<span class="token punctuation">,</span>
+                                      <span class="token keyword">boolean</span> prioritized<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  	<span class="token comment">// 根据限流规则中的limitApp、strategy参数值，选择合适的节点（DefaultNode、ClusterNode）</span>
+    <span class="token class-name">Node</span> selectedNode <span class="token operator">=</span> <span class="token function">selectNodeByRequesterAndStrategy</span><span class="token punctuation">(</span>rule<span class="token punctuation">,</span> context<span class="token punctuation">,</span> node<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  	<span class="token comment">// 如果选择的节点为空，则返回true，表示校验成功</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>selectedNode <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+	<span class="token comment">// 根据具体的TrafficShapingController接口的实现类进行校验</span>
+    <span class="token keyword">return</span> rule<span class="token punctuation">.</span><span class="token function">getRater</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">canPass</span><span class="token punctuation">(</span>selectedNode<span class="token punctuation">,</span> acquireCount<span class="token punctuation">,</span> prioritized<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>selectNodeByRequesterAndStrategy</strong></p> 
+<pre><code class="prism language-java"><span class="token keyword">static</span> <span class="token class-name">Node</span> <span class="token function">selectNodeByRequesterAndStrategy</span><span class="token punctuation">(</span><span class="token comment">/*@NonNull*/</span> <span class="token class-name">FlowRule</span> rule<span class="token punctuation">,</span> <span class="token class-name">Context</span> context<span class="token punctuation">,</span> <span class="token class-name">DefaultNode</span> node<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token class-name">String</span> limitApp <span class="token operator">=</span> rule<span class="token punctuation">.</span><span class="token function">getLimitApp</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">int</span> strategy <span class="token operator">=</span> rule<span class="token punctuation">.</span><span class="token function">getStrategy</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token class-name">String</span> origin <span class="token operator">=</span> context<span class="token punctuation">.</span><span class="token function">getOrigin</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">// 如果限流规则中的limitApp参数值等于上下文记录的请求来源，并且上下文记录的请求来源不是DEFAULT、OTHER</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>limitApp<span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span>origin<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token function">filterOrigin</span><span class="token punctuation">(</span>origin<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      	<span class="token comment">// 如果调用关系是根据调用方限流</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>strategy <span class="token operator">==</span> <span class="token class-name">RuleConstant</span><span class="token punctuation">.</span>STRATEGY_DIRECT<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+          	<span class="token comment">// 返回上下文记录的起源节点</span>
+            <span class="token keyword">return</span> context<span class="token punctuation">.</span><span class="token function">getOriginNode</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token keyword">return</span> <span class="token function">selectReferenceNode</span><span class="token punctuation">(</span>rule<span class="token punctuation">,</span> context<span class="token punctuation">,</span> node<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 如果限流规则中的limitApp参数值等于DEFAULT  </span>
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token class-name">RuleConstant</span><span class="token punctuation">.</span>LIMIT_APP_DEFAULT<span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span>limitApp<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      	<span class="token comment">// 如果调用关系是根据调用方限流</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>strategy <span class="token operator">==</span> <span class="token class-name">RuleConstant</span><span class="token punctuation">.</span>STRATEGY_DIRECT<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+          	<span class="token comment">// 返回对应的集群节点</span>
+            <span class="token keyword">return</span> node<span class="token punctuation">.</span><span class="token function">getClusterNode</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token keyword">return</span> <span class="token function">selectReferenceNode</span><span class="token punctuation">(</span>rule<span class="token punctuation">,</span> context<span class="token punctuation">,</span> node<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 如果限流规则中的limitApp参数值等于OTHER</span>
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token class-name">RuleConstant</span><span class="token punctuation">.</span>LIMIT_APP_OTHER<span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span>limitApp<span class="token punctuation">)</span>
+        <span class="token operator">&amp;&amp;</span> <span class="token class-name">FlowRuleManager</span><span class="token punctuation">.</span><span class="token function">isOtherOrigin</span><span class="token punctuation">(</span>origin<span class="token punctuation">,</span> rule<span class="token punctuation">.</span><span class="token function">getResource</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      	<span class="token comment">// 如果调用关系是根据调用方限流</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>strategy <span class="token operator">==</span> <span class="token class-name">RuleConstant</span><span class="token punctuation">.</span>STRATEGY_DIRECT<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+          	<span class="token comment">// 返回上下文记录的起源节点</span>
+            <span class="token keyword">return</span> context<span class="token punctuation">.</span><span class="token function">getOriginNode</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token keyword">return</span> <span class="token function">selectReferenceNode</span><span class="token punctuation">(</span>rule<span class="token punctuation">,</span> context<span class="token punctuation">,</span> node<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+	<span class="token comment">// 其余情况返回空</span>
+    <span class="token keyword">return</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>isOtherOrigin</strong></p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">boolean</span> <span class="token function">isOtherOrigin</span><span class="token punctuation">(</span><span class="token class-name">String</span> origin<span class="token punctuation">,</span> <span class="token class-name">String</span> resourceName<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token class-name">StringUtil</span><span class="token punctuation">.</span><span class="token function">isEmpty</span><span class="token punctuation">(</span>origin<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">FlowRule</span><span class="token punctuation">&gt;</span></span> rules <span class="token operator">=</span> flowRules<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span>resourceName<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>rules <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token class-name">FlowRule</span> rule <span class="token operator">:</span> rules<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>origin<span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span>rule<span class="token punctuation">.</span><span class="token function">getLimitApp</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>selectReferenceNode</strong></p> 
+<pre><code class="prism language-java"><span class="token keyword">static</span> <span class="token class-name">Node</span> <span class="token function">selectReferenceNode</span><span class="token punctuation">(</span><span class="token class-name">FlowRule</span> rule<span class="token punctuation">,</span> <span class="token class-name">Context</span> context<span class="token punctuation">,</span> <span class="token class-name">DefaultNode</span> node<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  	<span class="token comment">// 获取流量控制规则的refResource参数值</span>
+    <span class="token class-name">String</span> refResource <span class="token operator">=</span> rule<span class="token punctuation">.</span><span class="token function">getRefResource</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  	<span class="token comment">// 获取流量控制规则的strategy参数值</span>
+    <span class="token keyword">int</span> strategy <span class="token operator">=</span> rule<span class="token punctuation">.</span><span class="token function">getStrategy</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">// 如果refResource参数值为空，则返回空</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token class-name">StringUtil</span><span class="token punctuation">.</span><span class="token function">isEmpty</span><span class="token punctuation">(</span>refResource<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+	<span class="token comment">// 如果是关联限流</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>strategy <span class="token operator">==</span> <span class="token class-name">RuleConstant</span><span class="token punctuation">.</span>STRATEGY_RELATE<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      	<span class="token comment">// 获取refResource参数值对应的集群节点</span>
+        <span class="token keyword">return</span> <span class="token class-name">ClusterBuilderSlot</span><span class="token punctuation">.</span><span class="token function">getClusterNode</span><span class="token punctuation">(</span>refResource<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+	<span class="token comment">// 如果是链路限流</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>strategy <span class="token operator">==</span> <span class="token class-name">RuleConstant</span><span class="token punctuation">.</span>STRATEGY_CHAIN<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      	<span class="token comment">// 如果refResource参数值不等于上下文名称，则返回空</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>refResource<span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span>context<span class="token punctuation">.</span><span class="token function">getName</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+      	<span class="token comment">// 返回DefaultNode</span>
+        <span class="token keyword">return</span> node<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">// 返回空</span>
+    <span class="token keyword">return</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>根据流量控制的效果，有四种与之对应的 TrafficShapingController 接口的实现类。</p> 
+<h2><a id="todo_452"></a>todo</h2> 
+<p>TrafficShapingController 接口的实现类的解析。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/e3a39c987cb3e63915fb7d410e1d1eca/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Java中终止线程的3种方法，你是否了解？</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/31db49e91c7cc5bdc11c2c283cbdb617/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">数据库作业</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

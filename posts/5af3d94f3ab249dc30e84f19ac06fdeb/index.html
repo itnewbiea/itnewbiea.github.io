@@ -1,0 +1,1002 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>CenterNet算法详解 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="CenterNet算法详解" />
+<meta property="og:description" content="Objects as Points-论文链接-代码链接
+目录 1、需求解读2、CenterNet算法简介3、CenterNet算法详解3.1 CenterNet网络结构3.2 CenterNet实现细节详解3.2.1 训练阶段Heatmap生成3.2.2 Heatmap上应用高斯核 3.3 CenterNet损失函数3.3.1 Heatmap损失函数3.3.2 中心点偏移损失函数3.3.3 目标长宽损失函数 3.4 CenterNet推理阶段 4、CenterNet网络代码实现5、CenterNet效果展示与分析5.1 CenterNet客观效果展示与分析5.2 CenterNet主观效果展示与分析 6、总结与分析参考资料注意事项 1、需求解读 随着基于Anchor的目标检测性能达到了极限，基于Anchor-free的目标检测算法成为了当前的研究热点，具有代表性的工作包括CornerNet、FOCS与CenterNet等。除此之外，基于Anchor的目标检测算法存在着一些严重的问题，具体包括：（1）Anchros的定义在一定程度上会限制检测算法的性能；（2）NMS等后处理操作会降低整个检测算法的速度。为了解决这些问题，基于Anchor-free的目标检测算法应运而生，本文对CenterNet目标检测算法进行详细的剖析。
+2、CenterNet算法简介 CenterNet是一个基于Anchor-free的目标检测算法，该算法是在CornerNet算法的基础上改进而来的。与单阶段目标检测算法yolov3相比，该算法在保证速度的前提下，精度提升了4个百分点。与其它的单阶段或者双阶段目标检测算法相比，该算法具有以下的优势：
+（1）该算法去除低效复杂的Anchors操作，进一步提升了检测算法性能；（2）该算法直接在heatmap图上面执行了过滤操作，去除了耗时的NMS后处理操作，进一步提升了整个算法的运行速度；（3）该算法不仅可以应用到2D目标检测中，经过简单的改变它还可以应用3D目标检测与人体关键点检测等其它的任务中，即具有很好的通用性。 3、CenterNet算法详解 3.1 CenterNet网络结构 上图展示了CenterNet网络的整体结构，整个网络结构比较简单。
+（1）最左边表示输入图片。输入图片需要裁减到512*512大小，即长边缩放到512，短边补0，具体的效果如下图所示，由于原图的W&gt;512，因而直接将其缩放为512；由于原图的H&lt;512，因而对其执行补0操作； （2）中间表示基准网络，论文中尝试了Hourglass、ResNet与DLA3种网络架构，各个网络架构的精度及帧率为：Resnet-18 with up-convolutional layers：28.1% coco and 142 FPS、DLA-34：37.4% COCOAP and 52 FPS、Hourglass-104：45.1% COCOAP and 1.4 FPS。
+上图展示了3中不同的网络架构，图(a)表示Hourglass网络，该网络是在ECCV2016中的Stacked hourglass networks for human pose estimation论文中提出的一种网络，用来解决人体位姿估计问题，其思路主要通过将多个漏斗形状的网络堆叠起来，从而获得多尺度信息，具体的细节请参考该博客。图(b)表示带有反卷积的ResNet网络，作者在每一个上采样层之前增加了一个3*3的膨胀卷积，即先使用反卷积来改变膨胀卷积的通道个数，然后使用反卷积来对特征映射执行上采样操作。图©表示用于语义分割的DLA34网络；图d表示改变的DLA34网络，该网络在原始的DLA34网络的基础上增加了更多的残差连接，该网络将Dense_Connection与FPN的思路融合起来，前者源于DenseNet，可以用来聚合语义信息，能够提升模型推断是“what”的能力；后者源于聚合空间信息，能够提升模型推断在“where”的能力，具体的细节如下图所示。
+（3）最右边表示预测模块，该模块包含3个分支，具体包括中心点heatmap图分支、中心点offset分支、目标大小分支。heatmap图分支包含C个通道，每一个通道包含一个类别，heatmap中白色的亮区域表示目标的中心 点位置；中心点offset分支用来弥补将池化后的低heatmap上的点映射到原图中所带来的像素误差；目标大小分支用来预测目标矩形框的w与h偏差值。 3.2 CenterNet实现细节详解 3.2.1 训练阶段Heatmap生成 CenterNet将目标检测问题转换成中心点预测问题，即用目标的中心点来表示该目标，并通过预测目标中心点的偏移量与宽高来获取目标的矩形框。Heatmap表示分类信息，每一个类别将会产生一个单独的Heatmap图。对于每张Heatmap图而言，当某个坐标处包含目标的中心点时，则会在该目标处产生一个关键点，我们利用高斯圆来表示整个关键点，下图展示了具体的细节。
+生成Heatmap图的具体步骤如下所示：
+步骤1-将输入的图片缩放成512*512大小，对该图像执行R=4的下采样操作之后，获得一个128*128大小的Heatmap图；
+步骤2-将输入图片中的Box缩放到128*128大小的Heatmap图上面，计算该Box的中心点坐标，并执行向下取整操作，并将其定义为point；
+步骤3-根据目标Box大小来计算高斯圆的半径R；
+关于高斯圆的半径确定，主要还是依赖于目标box的宽高， 实际情况下通常会取IOU=0.7，即下图中的overlap=0.7作为临界值，然后分别计算出三种情况的半径，取最小值作为高斯核的半径R，具体的实现细节如下图所示：
+（1）情况1-预测框pred_bbox包含gt_bbox框，对应于下图中的第1种情况，将整个IoU公式展开之后，成为一个二元一次方程的求解问题。
+（2）情况2-gt_bbox包含预测框pred_bbox框，对应于下图中的第2种情况，将整个IoU公式展开之后，成为一个二元一次方程的求解问题。
+（3）情况3-gt_bbox与预测框pred_bbox框相互重叠，对应于下图中的第3种情况，将整个IoU公式展开之后，成为一个二元一次方程的求解问题。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/5af3d94f3ab249dc30e84f19ac06fdeb/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-03-15T20:40:11+08:00" />
+<meta property="article:modified_time" content="2023-03-15T20:40:11+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">CenterNet算法详解</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p><strong>Objects as Points-<a href="https://arxiv.org/pdf/1904.07850.pdf" rel="nofollow">论文链接</a>-<a href="https://github.com/xingyizhou/CenterNet">代码链接</a></strong></p> 
+<p></p> 
+<div class="toc"> 
+ <h4>目录</h4> 
+ <ul><li><ul><li><a href="#1_3" rel="nofollow">1、需求解读</a></li><li><a href="#2CenterNet_6" rel="nofollow">2、CenterNet算法简介</a></li><li><a href="#3CenterNet_13" rel="nofollow">3、CenterNet算法详解</a></li><li><ul><li><a href="#31_CenterNet_14" rel="nofollow">3.1 CenterNet网络结构</a></li><li><a href="#32_CenterNet_26" rel="nofollow">3.2 CenterNet实现细节详解</a></li><li><ul><li><a href="#321_Heatmap_27" rel="nofollow">3.2.1 训练阶段Heatmap生成</a></li><li><a href="#322_Heatmap_44" rel="nofollow">3.2.2 Heatmap上应用高斯核</a></li></ul> 
+    </li><li><a href="#33_CenterNet_47" rel="nofollow">3.3 CenterNet损失函数</a></li><li><ul><li><a href="#331_Heatmap_50" rel="nofollow">3.3.1 Heatmap损失函数</a></li><li><a href="#332__58" rel="nofollow">3.3.2 中心点偏移损失函数</a></li><li><a href="#333__63" rel="nofollow">3.3.3 目标长宽损失函数</a></li></ul> 
+    </li><li><a href="#34_CenterNet_67" rel="nofollow">3.4 CenterNet推理阶段</a></li></ul> 
+   </li><li><a href="#4CenterNet_75" rel="nofollow">4、CenterNet网络代码实现</a></li><li><a href="#5CenterNet_365" rel="nofollow">5、CenterNet效果展示与分析</a></li><li><ul><li><a href="#51_CenterNet_366" rel="nofollow">5.1 CenterNet客观效果展示与分析</a></li><li><a href="#52_CenterNet_372" rel="nofollow">5.2 CenterNet主观效果展示与分析</a></li></ul> 
+   </li><li><a href="#6_380" rel="nofollow">6、总结与分析</a></li><li><a href="#_384" rel="nofollow">参考资料</a></li><li><a href="#_389" rel="nofollow">注意事项</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h3><a id="1_3"></a>1、需求解读</h3> 
+<p>  随着基于Anchor的目标检测性能达到了极限，基于Anchor-free的目标检测算法成为了当前的研究热点，具有代表性的工作包括CornerNet、FOCS与CenterNet等。除此之外，基于Anchor的目标检测算法存在着一些严重的问题，具体包括：（1）Anchros的定义在一定程度上会限制检测算法的性能；（2）NMS等后处理操作会降低整个检测算法的速度。为了解决这些问题，基于Anchor-free的目标检测算法应运而生，本文对CenterNet目标检测算法进行详细的剖析。</p> 
+<h3><a id="2CenterNet_6"></a>2、CenterNet算法简介</h3> 
+<p>  CenterNet是一个基于Anchor-free的目标检测算法，该算法是在CornerNet算法的基础上改进而来的。与单阶段目标检测算法yolov3相比，该算法在保证速度的前提下，精度提升了4个百分点。与其它的单阶段或者双阶段目标检测算法相比，该算法具有以下的优势：</p> 
+<ul><li>（1）<strong>该算法去除低效复杂的Anchors操作，进一步提升了检测算法性能；</strong></li><li>（2）<strong>该算法直接在heatmap图上面执行了过滤操作，去除了耗时的NMS后处理操作，进一步提升了整个算法的运行速度；</strong></li><li>（3）<strong>该算法不仅可以应用到2D目标检测中，经过简单的改变它还可以应用3D目标检测与人体关键点检测等其它的任务中，即具有很好的通用性。</strong></li></ul> 
+<h3><a id="3CenterNet_13"></a>3、CenterNet算法详解</h3> 
+<h4><a id="31_CenterNet_14"></a>3.1 CenterNet网络结构</h4> 
+<p><img src="https://images2.imgbox.com/43/7c/85bVUlnJ_o.png" alt="在这里插入图片描述"><br>   上图展示了CenterNet网络的整体结构，整个网络结构比较简单。</p> 
+<ul><li>（1）最左边表示输入图片。输入图片需要裁减到512*512大小，<strong>即长边缩放到512，短边补0</strong>，具体的效果如下图所示，由于原图的W&gt;512，因而直接将其缩放为512；由于原图的H&lt;512，因而对其执行补0操作；</li></ul> 
+<p><img src="https://images2.imgbox.com/f4/50/Bgo9SSaS_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>（2）中间表示基准网络，论文中尝试了Hourglass、ResNet与DLA3种网络架构，各个网络架构的精度及帧率为：Resnet-18 with up-convolutional layers：28.1% coco and 142 FPS、DLA-34：37.4% COCOAP and 52 FPS、Hourglass-104：45.1% COCOAP and 1.4 FPS。<br> <img src="https://images2.imgbox.com/7b/c1/vDQWbE0o_o.png" alt="在这里插入图片描述"><br>   上图展示了3中不同的网络架构，图(a)表示Hourglass网络，<strong>该网络是在ECCV2016中的Stacked hourglass networks for human pose estimation论文中提出的一种网络，用来解决人体位姿估计问题，其思路主要通过将多个漏斗形状的网络堆叠起来，从而获得多尺度信息</strong>，具体的细节请参考<a href="https://blog.csdn.net/wangzi371312/article/details/81174452">该博客</a>。图(b)表示带有反卷积的ResNet网络，作者在每一个上采样层之前增加了一个3*3的膨胀卷积，即先使用反卷积来改变膨胀卷积的通道个数，然后使用反卷积来对特征映射执行上采样操作。图©表示用于语义分割的DLA34网络；图d表示改变的DLA34网络，<strong>该网络在原始的DLA34网络的基础上增加了更多的残差连接，该网络将Dense_Connection与FPN的思路融合起来，前者源于DenseNet，可以用来聚合语义信息，能够提升模型推断是“what”的能力；后者源于聚合空间信息，能够提升模型推断在“where”的能力</strong>，具体的细节如下图所示。<br> <img src="https://images2.imgbox.com/7e/f7/JTWwzGQv_o.png" alt="在这里插入图片描述"></li><li>（3）最右边表示预测模块，该模块包含3个分支，具体包括中心点heatmap图分支、中心点offset分支、目标大小分支。<strong>heatmap图分支包含C个通道，每一个通道包含一个类别，heatmap中白色的亮区域表示目标的中心 点位置；中心点offset分支用来弥补将池化后的低heatmap上的点映射到原图中所带来的像素误差；目标大小分支用来预测目标矩形框的w与h偏差值。</strong></li></ul> 
+<h4><a id="32_CenterNet_26"></a>3.2 CenterNet实现细节详解</h4> 
+<h5><a id="321_Heatmap_27"></a>3.2.1 训练阶段Heatmap生成</h5> 
+<p>  CenterNet将目标检测问题转换成中心点预测问题，即用目标的中心点来表示该目标，并通过预测目标中心点的偏移量与宽高来获取目标的矩形框。Heatmap表示分类信息，每一个类别将会产生一个单独的Heatmap图。对于每张Heatmap图而言，当某个坐标处包含目标的中心点时，则会在该目标处产生一个关键点，我们利用高斯圆来表示整个关键点，下图展示了具体的细节。<br> <img src="https://images2.imgbox.com/b5/dd/kJVxmUJP_o.png" alt="在这里插入图片描述"><br>   生成Heatmap图的具体步骤如下所示：</p> 
+<ul><li> <p><strong>步骤1</strong>-将输入的图片缩放成512*512大小，对该图像执行R=4的下采样操作之后，获得一个128*128大小的Heatmap图；</p> </li><li> <p><strong>步骤2</strong>-将输入图片中的Box缩放到128*128大小的Heatmap图上面，计算该Box的中心点坐标，并执行向下取整操作，并将其定义为point；</p> </li><li> <p><strong>步骤3</strong>-根据目标Box大小来计算高斯圆的半径R；<br>   关于高斯圆的半径确定，主要还是依赖于目标box的宽高， 实际情况下通常会取IOU=0.7，即下图中的overlap=0.7作为临界值，然后分别计算出三种情况的半径，取最小值作为高斯核的半径R，具体的实现细节如下图所示：<br> （1）<strong>情况1-预测框pred_bbox包含gt_bbox框</strong>，对应于下图中的第1种情况，将整个IoU公式展开之后，成为一个二元一次方程的求解问题。<br> （2）<strong>情况2-gt_bbox包含预测框pred_bbox框</strong>，对应于下图中的第2种情况，将整个IoU公式展开之后，成为一个二元一次方程的求解问题。<br> （3）<strong>情况3-gt_bbox与预测框pred_bbox框相互重叠</strong>，对应于下图中的第3种情况，将整个IoU公式展开之后，成为一个二元一次方程的求解问题。<br> <img src="https://images2.imgbox.com/5d/15/ryxJwvzK_o.png" alt="在这里插入图片描述"></p> </li><li> <p><strong>步骤4</strong>-在128*128大小的Heatmap图上面，以point为中心点，半径为R计算高斯值，point点处数值最大，随着半径R的增加数值不断减小；<br> <img src="https://images2.imgbox.com/a8/b3/689DSOLd_o.png" alt="在这里插入图片描述"><br>   上图展示了一个样例，左边表示经过裁剪之后的512<em>512大小的输入图片，右边表示经过高斯操作之后生成的128</em>128大小的Heatmap图。由于图中包含两只猫，这两只猫属于一个类别，因此在同一个Heatmap图上面生成了两个高斯圆，高斯圆的大小与矩形框的大小有关。</p> </li></ul> 
+<h5><a id="322_Heatmap_44"></a>3.2.2 Heatmap上应用高斯核</h5> 
+<p>  Heatmap上的关键点之所以采用二维高斯核来表示，是由于对于在目标中心点附近的一些点，其预测出来的pre_box和gt_box的IOU可能会大于0.7，不能直接对这些预测值进行惩罚，需要温和一点，所以采用高斯核。该问题在Corner算法中就已经存在，如下图所示，<strong>我们在设置gt_bbox的heatmap时，不仅仅只在中心点的位置设置标签1，图中红色的矩形框表示gt_bbox,但是绿色的矩形框其实也可以很好的包围该目标，即我们在检测的过程中如何获得像绿色框这样的矩形框时，我们也要保存它。通俗一点来讲，只要预测的corner点在中心点的某一个半径r内，而且该矩形框与gt_bbox之间的IoU大于0.7时，我们将这些点处的值设置为一个高斯分布的数值，而不是数值0。</strong><br> <img src="https://images2.imgbox.com/39/a9/Wv1xmEwx_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="33_CenterNet_47"></a>3.3 CenterNet损失函数</h4> 
+<p>  整个CenterNet的损失函数包含3个部分，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          L 
+         
+        
+          k 
+         
+        
+       
+      
+        L_{k} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal">L</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3361em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0315em;">k</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>表示 heatmap中心点损失，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          L 
+         
+         
+         
+           o 
+          
+         
+           f 
+          
+         
+           f 
+          
+         
+        
+       
+      
+        L_{off} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.9694em; vertical-align: -0.2861em;"></span><span class="mord"><span class="mord mathnormal">L</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3361em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">o</span><span class="mord mathnormal mtight" style="margin-right: 0.1076em;">ff</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2861em;"><span class=""></span></span></span></span></span></span></span></span></span></span>表示目标中心点偏移损失，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          L 
+         
+         
+         
+           s 
+          
+         
+           i 
+          
+         
+           z 
+          
+         
+           e 
+          
+         
+        
+       
+      
+        L_{size} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal">L</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3117em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">s</span><span class="mord mathnormal mtight">i</span><span class="mord mathnormal mtight">ze</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>表示目标长宽损失函数。<br> <img src="https://images2.imgbox.com/82/02/qxsfhgje_o.png" alt="在这里插入图片描述"></p> 
+<h5><a id="331_Heatmap_50"></a>3.3.1 Heatmap损失函数</h5> 
+<p><img src="https://images2.imgbox.com/2d/5d/bOn4YkYE_o.png" alt="在这里插入图片描述"><br>   上图展示了Heatmap损失函数，该函数是在Focal Loss的基础上进行了改进，其中的<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         α 
+        
+       
+      
+        \alpha 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.4306em;"></span><span class="mord mathnormal" style="margin-right: 0.0037em;">α</span></span></span></span></span>与<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         β 
+        
+       
+      
+        \beta 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord mathnormal" style="margin-right: 0.0528em;">β</span></span></span></span></span>是两个超参数，用来均衡难易样本；<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          Y 
+         
+         
+         
+           x 
+          
+         
+           y 
+          
+         
+           c 
+          
+         
+        
+       
+      
+        Y_{xyc} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.9694em; vertical-align: -0.2861em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.2222em;">Y</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-left: -0.2222em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">x</span><span class="mord mathnormal mtight">yc</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2861em;"><span class=""></span></span></span></span></span></span></span></span></span></span>表示GT值，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+         
+         
+           Y 
+          
+         
+           ^ 
+          
+         
+         
+         
+           x 
+          
+         
+           y 
+          
+         
+           c 
+          
+         
+        
+       
+      
+        \hat{Y} _{xyc} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.2329em; vertical-align: -0.2861em;"></span><span class="mord"><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.9468em;"><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord mathnormal" style="margin-right: 0.2222em;">Y</span></span><span class="" style="top: -3.2523em;"><span class="pstrut" style="height: 3em;"></span><span class="accent-body" style="left: -0.25em;"><span class="mord">^</span></span></span></span></span></span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-left: -0.2222em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">x</span><span class="mord mathnormal mtight">yc</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2861em;"><span class=""></span></span></span></span></span></span></span></span></span></span>表示预测值；N表示关键点的个数。</p> 
+<ul><li><strong>当<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+       
+        
+         
+          
+           
+           
+             Y 
+            
+           
+             ^ 
+            
+           
+           
+           
+             x 
+            
+           
+             y 
+            
+           
+             c 
+            
+           
+          
+         
+        
+          \hat{Y} _{xyc} 
+         
+        
+      </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.2329em; vertical-align: -0.2861em;"></span><span class="mord"><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.9468em;"><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord mathnormal" style="margin-right: 0.2222em;">Y</span></span><span class="" style="top: -3.2523em;"><span class="pstrut" style="height: 3em;"></span><span class="accent-body" style="left: -0.25em;"><span class="mord">^</span></span></span></span></span></span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-left: -0.2222em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">x</span><span class="mord mathnormal mtight">yc</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2861em;"><span class=""></span></span></span></span></span></span></span></span></span></span>=1时，易分类样本的预测值接近为1，此时<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+       
+        
+         
+         
+           ( 
+          
+          
+          
+            1 
+           
+          
+            − 
+           
+           
+            
+            
+              Y 
+             
+            
+              ^ 
+             
+            
+            
+            
+              x 
+             
+            
+              y 
+             
+            
+              c 
+             
+            
+           
+          
+          
+          
+            ) 
+           
+          
+            α 
+           
+          
+         
+        
+          ({1-\hat{Y} _{xyc}})^{\alpha } 
+         
+        
+      </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.2329em; vertical-align: -0.2861em;"></span><span class="mopen">(</span><span class="mord"><span class="mord">1</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mord"><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.9468em;"><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord mathnormal" style="margin-right: 0.2222em;">Y</span></span><span class="" style="top: -3.2523em;"><span class="pstrut" style="height: 3em;"></span><span class="accent-body" style="left: -0.25em;"><span class="mord">^</span></span></span></span></span></span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-left: -0.2222em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">x</span><span class="mord mathnormal mtight">yc</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2861em;"><span class=""></span></span></span></span></span></span></span><span class="mclose"><span class="mclose">)</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.6644em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0037em;">α</span></span></span></span></span></span></span></span></span></span></span></span></span>就表示一个很小的数值，此时损失函数的数值就比较小，起到了降低该样本权重的作用</strong>。</li><li><strong>当<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+       
+        
+         
+          
+           
+           
+             Y 
+            
+           
+             ^ 
+            
+           
+           
+           
+             x 
+            
+           
+             y 
+            
+           
+             c 
+            
+           
+          
+         
+        
+          \hat{Y} _{xyc} 
+         
+        
+      </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.2329em; vertical-align: -0.2861em;"></span><span class="mord"><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.9468em;"><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord mathnormal" style="margin-right: 0.2222em;">Y</span></span><span class="" style="top: -3.2523em;"><span class="pstrut" style="height: 3em;"></span><span class="accent-body" style="left: -0.25em;"><span class="mord">^</span></span></span></span></span></span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-left: -0.2222em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">x</span><span class="mord mathnormal mtight">yc</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2861em;"><span class=""></span></span></span></span></span></span></span></span></span></span>=1时，难分类样本的预测值接近为0，此时<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+       
+        
+         
+         
+           ( 
+          
+          
+          
+            1 
+           
+          
+            − 
+           
+           
+            
+            
+              Y 
+             
+            
+              ^ 
+             
+            
+            
+            
+              x 
+             
+            
+              y 
+             
+            
+              c 
+             
+            
+           
+          
+          
+          
+            ) 
+           
+          
+            α 
+           
+          
+         
+        
+          ({1-\hat{Y} _{xyc}})^{\alpha } 
+         
+        
+      </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.2329em; vertical-align: -0.2861em;"></span><span class="mopen">(</span><span class="mord"><span class="mord">1</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mord"><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.9468em;"><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord mathnormal" style="margin-right: 0.2222em;">Y</span></span><span class="" style="top: -3.2523em;"><span class="pstrut" style="height: 3em;"></span><span class="accent-body" style="left: -0.25em;"><span class="mord">^</span></span></span></span></span></span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-left: -0.2222em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">x</span><span class="mord mathnormal mtight">yc</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2861em;"><span class=""></span></span></span></span></span></span></span><span class="mclose"><span class="mclose">)</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.6644em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0037em;">α</span></span></span></span></span></span></span></span></span></span></span></span></span>就表示一个较大的数值，此时损失函数的数值就比较大，起到了增加该样本权重的作用</strong>。</li><li><strong>当<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+       
+        
+         
+          
+           
+           
+             Y 
+            
+           
+             ^ 
+            
+           
+           
+           
+             x 
+            
+           
+             y 
+            
+           
+             c 
+            
+           
+          
+         
+        
+          \hat{Y} _{xyc} 
+         
+        
+      </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.2329em; vertical-align: -0.2861em;"></span><span class="mord"><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.9468em;"><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord mathnormal" style="margin-right: 0.2222em;">Y</span></span><span class="" style="top: -3.2523em;"><span class="pstrut" style="height: 3em;"></span><span class="accent-body" style="left: -0.25em;"><span class="mord">^</span></span></span></span></span></span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-left: -0.2222em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">x</span><span class="mord mathnormal mtight">yc</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2861em;"><span class=""></span></span></span></span></span></span></span></span></span></span>!=1时，为了防止预测值<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+       
+        
+         
+          
+           
+           
+             Y 
+            
+           
+             ^ 
+            
+           
+           
+           
+             x 
+            
+           
+             y 
+            
+           
+             c 
+            
+           
+          
+         
+        
+          \hat{Y} _{xyc} 
+         
+        
+      </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.2329em; vertical-align: -0.2861em;"></span><span class="mord"><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.9468em;"><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord mathnormal" style="margin-right: 0.2222em;">Y</span></span><span class="" style="top: -3.2523em;"><span class="pstrut" style="height: 3em;"></span><span class="accent-body" style="left: -0.25em;"><span class="mord">^</span></span></span></span></span></span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-left: -0.2222em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">x</span><span class="mord mathnormal mtight">yc</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2861em;"><span class=""></span></span></span></span></span></span></span></span></span></span>过高的接近于1，利用<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+       
+        
+         
+         
+           ( 
+          
+          
+          
+            1 
+           
+          
+            − 
+           
+           
+            
+            
+              Y 
+             
+            
+              ^ 
+             
+            
+            
+            
+              x 
+             
+            
+              y 
+             
+            
+              c 
+             
+            
+           
+          
+          
+          
+            ) 
+           
+          
+            α 
+           
+          
+         
+        
+          ({1-\hat{Y} _{xyc}})^{\alpha } 
+         
+        
+      </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.2329em; vertical-align: -0.2861em;"></span><span class="mopen">(</span><span class="mord"><span class="mord">1</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mord"><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.9468em;"><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord mathnormal" style="margin-right: 0.2222em;">Y</span></span><span class="" style="top: -3.2523em;"><span class="pstrut" style="height: 3em;"></span><span class="accent-body" style="left: -0.25em;"><span class="mord">^</span></span></span></span></span></span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-left: -0.2222em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">x</span><span class="mord mathnormal mtight">yc</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2861em;"><span class=""></span></span></span></span></span></span></span><span class="mclose"><span class="mclose">)</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.6644em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0037em;">α</span></span></span></span></span></span></span></span></span></span></span></span></span>来充当惩罚项，而<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+       
+        
+         
+         
+           ( 
+          
+          
+          
+            1 
+           
+          
+            − 
+           
+           
+           
+             Y 
+            
+            
+            
+              x 
+             
+            
+              y 
+             
+            
+              c 
+             
+            
+           
+          
+          
+          
+            ) 
+           
+          
+            β 
+           
+          
+         
+        
+          ({1-{Y} _{xyc}})^{\beta } 
+         
+        
+      </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.1352em; vertical-align: -0.2861em;"></span><span class="mopen">(</span><span class="mord"><span class="mord">1</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mord"><span class="mord"><span class="mord mathnormal" style="margin-right: 0.2222em;">Y</span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">x</span><span class="mord mathnormal mtight">yc</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2861em;"><span class=""></span></span></span></span></span></span></span><span class="mclose"><span class="mclose">)</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8491em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0528em;">β</span></span></span></span></span></span></span></span></span></span></span></span></span>这个参数距离中心点越近，其数值越小，用来进一步减轻这个惩罚力度</strong>。</li></ul> 
+<h5><a id="332__58"></a>3.3.2 中心点偏移损失函数</h5> 
+<p><img src="https://images2.imgbox.com/b7/85/Yi3jPrLy_o.png" alt="在这里插入图片描述"><br>   上图展示了<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          L 
+         
+         
+         
+           o 
+          
+         
+           f 
+          
+         
+           f 
+          
+         
+        
+       
+      
+        L_{off} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.9694em; vertical-align: -0.2861em;"></span><span class="mord"><span class="mord mathnormal">L</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3361em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">o</span><span class="mord mathnormal mtight" style="margin-right: 0.1076em;">ff</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2861em;"><span class=""></span></span></span></span></span></span></span></span></span></span>损失函数，其中<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          O 
+         
+        
+          ^ 
+         
+        
+        
+        
+          p 
+         
+        
+          ~ 
+         
+        
+       
+      
+        { \hat{O} \tilde{p} } 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.1412em; vertical-align: -0.1944em;"></span><span class="mord"><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.9468em;"><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord mathnormal" style="margin-right: 0.0278em;">O</span></span><span class="" style="top: -3.2523em;"><span class="pstrut" style="height: 3em;"></span><span class="accent-body" style="left: -0.1667em;"><span class="mord">^</span></span></span></span></span></span></span><span class="mord accent"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.6679em;"><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord mathnormal">p</span></span><span class="" style="top: -3.35em;"><span class="pstrut" style="height: 3em;"></span><span class="accent-body" style="left: -0.1667em;"><span class="mord">~</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.1944em;"><span class=""></span></span></span></span></span></span></span></span></span></span>表示网络预测的偏移量数值，p表示图像中心点坐标，R表示Heatmap的缩放因子，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          p 
+         
+        
+          ~ 
+         
+        
+       
+      
+        \tilde{p} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8623em; vertical-align: -0.1944em;"></span><span class="mord accent"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.6679em;"><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord mathnormal">p</span></span><span class="" style="top: -3.35em;"><span class="pstrut" style="height: 3em;"></span><span class="accent-body" style="left: -0.1667em;"><span class="mord">~</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.1944em;"><span class=""></span></span></span></span></span></span></span></span></span>表示缩放后中心点的近似整数坐标，整个过程利用L1 Loss计算正样本块的偏移损失。<strong>由于骨干网络输出的 feature map 的空间分辨率是原始输入图像的四分之一。即输出 feature map 上的每一个像素点对应到原始图像的一个4x4 区域，这会带来较大的误差，因此引入了偏置的损失值。</strong><br>   假设目标中心点p为(125, 63)，由于输入图片大小为512*512，缩放尺度R=4，因此缩放后的128x128尺寸下中心点坐标为(31.25, 15.75), 相对于整数坐标(31, 15)的偏移值即为(0.25, 0.75)。</p> 
+<h5><a id="333__63"></a>3.3.3 目标长宽损失函数</h5> 
+<p><img src="https://images2.imgbox.com/d6/74/bDdLWcRT_o.png" alt="在这里插入图片描述"><br>   上图展示了目标长宽损失函数，其中N表示关键点的个数，Sk表示目标的真实尺寸，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          S 
+         
+        
+          ^ 
+         
+        
+       
+         p 
+        
+       
+         k 
+        
+       
+      
+        {\hat{S} pk} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.1412em; vertical-align: -0.1944em;"></span><span class="mord"><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.9468em;"><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord mathnormal" style="margin-right: 0.0576em;">S</span></span><span class="" style="top: -3.2523em;"><span class="pstrut" style="height: 3em;"></span><span class="accent-body" style="left: -0.1667em;"><span class="mord">^</span></span></span></span></span></span></span><span class="mord mathnormal">p</span><span class="mord mathnormal" style="margin-right: 0.0315em;">k</span></span></span></span></span></span>表示预测的尺寸，整个过程利用L1 Loss来计算正样本块的长宽损失。</p> 
+<h4><a id="34_CenterNet_67"></a>3.4 CenterNet推理阶段</h4> 
+<p>  CenterNet网络的推理阶段的实现步骤如下所述：</p> 
+<ul><li><strong>步骤1</strong>-首先将输入图片缩到512*512大小；</li><li><strong>步骤2</strong>-然后对输入图片执行下采样，并对下采样后的图像执行预测，即在128*128大小的Heatmap上执行预测；</li><li><strong>步骤3</strong>-然后在128*128大小的Heatmap图上面采用一个3*3大小的最大池化操作来获取Heatmap中满足条件的关键点（类似于anchor-based检测中nms的效果），并选取100个关键点；</li><li><strong>步骤4</strong>-最后根据confidence阈值来过滤出最终的检测结果。</li></ul> 
+<h3><a id="4CenterNet_75"></a>4、CenterNet网络代码实现</h3> 
+<p>1、Hourglass网络部分代码</p> 
+<pre><code class="prism language-python"><span class="token keyword">class</span> <span class="token class-name">convolution</span><span class="token punctuation">(</span>nn<span class="token punctuation">.</span>Module<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token keyword">def</span> <span class="token function">__init__</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> k<span class="token punctuation">,</span> inp_dim<span class="token punctuation">,</span> out_dim<span class="token punctuation">,</span> stride<span class="token operator">=</span><span class="token number">1</span><span class="token punctuation">,</span> with_bn<span class="token operator">=</span><span class="token boolean">True</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+        <span class="token builtin">super</span><span class="token punctuation">(</span>convolution<span class="token punctuation">,</span> self<span class="token punctuation">)</span><span class="token punctuation">.</span>__init__<span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+        pad <span class="token operator">=</span> <span class="token punctuation">(</span>k <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token operator">//</span> <span class="token number">2</span>
+        self<span class="token punctuation">.</span>conv <span class="token operator">=</span> nn<span class="token punctuation">.</span>Conv2d<span class="token punctuation">(</span>inp_dim<span class="token punctuation">,</span> out_dim<span class="token punctuation">,</span> <span class="token punctuation">(</span>k<span class="token punctuation">,</span> k<span class="token punctuation">)</span><span class="token punctuation">,</span> padding<span class="token operator">=</span><span class="token punctuation">(</span>pad<span class="token punctuation">,</span> pad<span class="token punctuation">)</span><span class="token punctuation">,</span> stride<span class="token operator">=</span><span class="token punctuation">(</span>stride<span class="token punctuation">,</span> stride<span class="token punctuation">)</span><span class="token punctuation">,</span> bias<span class="token operator">=</span><span class="token keyword">not</span> with_bn<span class="token punctuation">)</span>
+        self<span class="token punctuation">.</span>bn   <span class="token operator">=</span> nn<span class="token punctuation">.</span>BatchNorm2d<span class="token punctuation">(</span>out_dim<span class="token punctuation">)</span> <span class="token keyword">if</span> with_bn <span class="token keyword">else</span> nn<span class="token punctuation">.</span>Sequential<span class="token punctuation">(</span><span class="token punctuation">)</span>
+        self<span class="token punctuation">.</span>relu <span class="token operator">=</span> nn<span class="token punctuation">.</span>ReLU<span class="token punctuation">(</span>inplace<span class="token operator">=</span><span class="token boolean">True</span><span class="token punctuation">)</span>
+
+    <span class="token keyword">def</span> <span class="token function">forward</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> x<span class="token punctuation">)</span><span class="token punctuation">:</span>
+        conv <span class="token operator">=</span> self<span class="token punctuation">.</span>conv<span class="token punctuation">(</span>x<span class="token punctuation">)</span>
+        bn   <span class="token operator">=</span> self<span class="token punctuation">.</span>bn<span class="token punctuation">(</span>conv<span class="token punctuation">)</span>
+        relu <span class="token operator">=</span> self<span class="token punctuation">.</span>relu<span class="token punctuation">(</span>bn<span class="token punctuation">)</span>
+        <span class="token keyword">return</span> relu
+
+<span class="token keyword">class</span> <span class="token class-name">fully_connected</span><span class="token punctuation">(</span>nn<span class="token punctuation">.</span>Module<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token keyword">def</span> <span class="token function">__init__</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> inp_dim<span class="token punctuation">,</span> out_dim<span class="token punctuation">,</span> with_bn<span class="token operator">=</span><span class="token boolean">True</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+        <span class="token builtin">super</span><span class="token punctuation">(</span>fully_connected<span class="token punctuation">,</span> self<span class="token punctuation">)</span><span class="token punctuation">.</span>__init__<span class="token punctuation">(</span><span class="token punctuation">)</span>
+        self<span class="token punctuation">.</span>with_bn <span class="token operator">=</span> with_bn
+
+        self<span class="token punctuation">.</span>linear <span class="token operator">=</span> nn<span class="token punctuation">.</span>Linear<span class="token punctuation">(</span>inp_dim<span class="token punctuation">,</span> out_dim<span class="token punctuation">)</span>
+        <span class="token keyword">if</span> self<span class="token punctuation">.</span>with_bn<span class="token punctuation">:</span>
+            self<span class="token punctuation">.</span>bn <span class="token operator">=</span> nn<span class="token punctuation">.</span>BatchNorm1d<span class="token punctuation">(</span>out_dim<span class="token punctuation">)</span>
+        self<span class="token punctuation">.</span>relu   <span class="token operator">=</span> nn<span class="token punctuation">.</span>ReLU<span class="token punctuation">(</span>inplace<span class="token operator">=</span><span class="token boolean">True</span><span class="token punctuation">)</span>
+
+    <span class="token keyword">def</span> <span class="token function">forward</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> x<span class="token punctuation">)</span><span class="token punctuation">:</span>
+        linear <span class="token operator">=</span> self<span class="token punctuation">.</span>linear<span class="token punctuation">(</span>x<span class="token punctuation">)</span>
+        bn     <span class="token operator">=</span> self<span class="token punctuation">.</span>bn<span class="token punctuation">(</span>linear<span class="token punctuation">)</span> <span class="token keyword">if</span> self<span class="token punctuation">.</span>with_bn <span class="token keyword">else</span> linear
+        relu   <span class="token operator">=</span> self<span class="token punctuation">.</span>relu<span class="token punctuation">(</span>bn<span class="token punctuation">)</span>
+        <span class="token keyword">return</span> relu
+
+<span class="token keyword">class</span> <span class="token class-name">residual</span><span class="token punctuation">(</span>nn<span class="token punctuation">.</span>Module<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token keyword">def</span> <span class="token function">__init__</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> k<span class="token punctuation">,</span> inp_dim<span class="token punctuation">,</span> out_dim<span class="token punctuation">,</span> stride<span class="token operator">=</span><span class="token number">1</span><span class="token punctuation">,</span> with_bn<span class="token operator">=</span><span class="token boolean">True</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+        <span class="token builtin">super</span><span class="token punctuation">(</span>residual<span class="token punctuation">,</span> self<span class="token punctuation">)</span><span class="token punctuation">.</span>__init__<span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+        self<span class="token punctuation">.</span>conv1 <span class="token operator">=</span> nn<span class="token punctuation">.</span>Conv2d<span class="token punctuation">(</span>inp_dim<span class="token punctuation">,</span> out_dim<span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">)</span><span class="token punctuation">,</span> padding<span class="token operator">=</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">,</span> stride<span class="token operator">=</span><span class="token punctuation">(</span>stride<span class="token punctuation">,</span> stride<span class="token punctuation">)</span><span class="token punctuation">,</span> bias<span class="token operator">=</span><span class="token boolean">False</span><span class="token punctuation">)</span>
+        self<span class="token punctuation">.</span>bn1   <span class="token operator">=</span> nn<span class="token punctuation">.</span>BatchNorm2d<span class="token punctuation">(</span>out_dim<span class="token punctuation">)</span>
+        self<span class="token punctuation">.</span>relu1 <span class="token operator">=</span> nn<span class="token punctuation">.</span>ReLU<span class="token punctuation">(</span>inplace<span class="token operator">=</span><span class="token boolean">True</span><span class="token punctuation">)</span>
+
+        self<span class="token punctuation">.</span>conv2 <span class="token operator">=</span> nn<span class="token punctuation">.</span>Conv2d<span class="token punctuation">(</span>out_dim<span class="token punctuation">,</span> out_dim<span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">)</span><span class="token punctuation">,</span> padding<span class="token operator">=</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">,</span> bias<span class="token operator">=</span><span class="token boolean">False</span><span class="token punctuation">)</span>
+        self<span class="token punctuation">.</span>bn2   <span class="token operator">=</span> nn<span class="token punctuation">.</span>BatchNorm2d<span class="token punctuation">(</span>out_dim<span class="token punctuation">)</span>
+        
+        self<span class="token punctuation">.</span>skip  <span class="token operator">=</span> nn<span class="token punctuation">.</span>Sequential<span class="token punctuation">(</span>
+            nn<span class="token punctuation">.</span>Conv2d<span class="token punctuation">(</span>inp_dim<span class="token punctuation">,</span> out_dim<span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">,</span> stride<span class="token operator">=</span><span class="token punctuation">(</span>stride<span class="token punctuation">,</span> stride<span class="token punctuation">)</span><span class="token punctuation">,</span> bias<span class="token operator">=</span><span class="token boolean">False</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+            nn<span class="token punctuation">.</span>BatchNorm2d<span class="token punctuation">(</span>out_dim<span class="token punctuation">)</span>
+        <span class="token punctuation">)</span> <span class="token keyword">if</span> stride <span class="token operator">!=</span> <span class="token number">1</span> <span class="token keyword">or</span> inp_dim <span class="token operator">!=</span> out_dim <span class="token keyword">else</span> nn<span class="token punctuation">.</span>Sequential<span class="token punctuation">(</span><span class="token punctuation">)</span>
+        self<span class="token punctuation">.</span>relu  <span class="token operator">=</span> nn<span class="token punctuation">.</span>ReLU<span class="token punctuation">(</span>inplace<span class="token operator">=</span><span class="token boolean">True</span><span class="token punctuation">)</span>
+
+    <span class="token keyword">def</span> <span class="token function">forward</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> x<span class="token punctuation">)</span><span class="token punctuation">:</span>
+        conv1 <span class="token operator">=</span> self<span class="token punctuation">.</span>conv1<span class="token punctuation">(</span>x<span class="token punctuation">)</span>
+        bn1   <span class="token operator">=</span> self<span class="token punctuation">.</span>bn1<span class="token punctuation">(</span>conv1<span class="token punctuation">)</span>
+        relu1 <span class="token operator">=</span> self<span class="token punctuation">.</span>relu1<span class="token punctuation">(</span>bn1<span class="token punctuation">)</span>
+
+        conv2 <span class="token operator">=</span> self<span class="token punctuation">.</span>conv2<span class="token punctuation">(</span>relu1<span class="token punctuation">)</span>
+        bn2   <span class="token operator">=</span> self<span class="token punctuation">.</span>bn2<span class="token punctuation">(</span>conv2<span class="token punctuation">)</span>
+
+        skip  <span class="token operator">=</span> self<span class="token punctuation">.</span>skip<span class="token punctuation">(</span>x<span class="token punctuation">)</span>
+        <span class="token keyword">return</span> self<span class="token punctuation">.</span>relu<span class="token punctuation">(</span>bn2 <span class="token operator">+</span> skip<span class="token punctuation">)</span>
+
+<span class="token keyword">def</span> <span class="token function">make_layer</span><span class="token punctuation">(</span>k<span class="token punctuation">,</span> inp_dim<span class="token punctuation">,</span> out_dim<span class="token punctuation">,</span> modules<span class="token punctuation">,</span> layer<span class="token operator">=</span>convolution<span class="token punctuation">,</span> <span class="token operator">**</span>kwargs<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    layers <span class="token operator">=</span> <span class="token punctuation">[</span>layer<span class="token punctuation">(</span>k<span class="token punctuation">,</span> inp_dim<span class="token punctuation">,</span> out_dim<span class="token punctuation">,</span> <span class="token operator">**</span>kwargs<span class="token punctuation">)</span><span class="token punctuation">]</span>
+    <span class="token keyword">for</span> _ <span class="token keyword">in</span> <span class="token builtin">range</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> modules<span class="token punctuation">)</span><span class="token punctuation">:</span>
+        layers<span class="token punctuation">.</span>append<span class="token punctuation">(</span>layer<span class="token punctuation">(</span>k<span class="token punctuation">,</span> out_dim<span class="token punctuation">,</span> out_dim<span class="token punctuation">,</span> <span class="token operator">**</span>kwargs<span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token keyword">return</span> nn<span class="token punctuation">.</span>Sequential<span class="token punctuation">(</span><span class="token operator">*</span>layers<span class="token punctuation">)</span>
+
+<span class="token keyword">def</span> <span class="token function">make_layer_revr</span><span class="token punctuation">(</span>k<span class="token punctuation">,</span> inp_dim<span class="token punctuation">,</span> out_dim<span class="token punctuation">,</span> modules<span class="token punctuation">,</span> layer<span class="token operator">=</span>convolution<span class="token punctuation">,</span> <span class="token operator">**</span>kwargs<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    layers <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token punctuation">]</span>
+    <span class="token keyword">for</span> _ <span class="token keyword">in</span> <span class="token builtin">range</span><span class="token punctuation">(</span>modules <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+        layers<span class="token punctuation">.</span>append<span class="token punctuation">(</span>layer<span class="token punctuation">(</span>k<span class="token punctuation">,</span> inp_dim<span class="token punctuation">,</span> inp_dim<span class="token punctuation">,</span> <span class="token operator">**</span>kwargs<span class="token punctuation">)</span><span class="token punctuation">)</span>
+    layers<span class="token punctuation">.</span>append<span class="token punctuation">(</span>layer<span class="token punctuation">(</span>k<span class="token punctuation">,</span> inp_dim<span class="token punctuation">,</span> out_dim<span class="token punctuation">,</span> <span class="token operator">**</span>kwargs<span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token keyword">return</span> nn<span class="token punctuation">.</span>Sequential<span class="token punctuation">(</span><span class="token operator">*</span>layers<span class="token punctuation">)</span>
+
+<span class="token keyword">class</span> <span class="token class-name">MergeUp</span><span class="token punctuation">(</span>nn<span class="token punctuation">.</span>Module<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token keyword">def</span> <span class="token function">forward</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> up1<span class="token punctuation">,</span> up2<span class="token punctuation">)</span><span class="token punctuation">:</span>
+        <span class="token keyword">return</span> up1 <span class="token operator">+</span> up2
+
+<span class="token keyword">def</span> <span class="token function">make_merge_layer</span><span class="token punctuation">(</span>dim<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token keyword">return</span> MergeUp<span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+<span class="token comment"># def make_pool_layer(dim):</span>
+<span class="token comment">#     return nn.MaxPool2d(kernel_size=2, stride=2)</span>
+
+<span class="token keyword">def</span> <span class="token function">make_pool_layer</span><span class="token punctuation">(</span>dim<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token keyword">return</span> nn<span class="token punctuation">.</span>Sequential<span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+<span class="token keyword">def</span> <span class="token function">make_unpool_layer</span><span class="token punctuation">(</span>dim<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token keyword">return</span> nn<span class="token punctuation">.</span>Upsample<span class="token punctuation">(</span>scale_factor<span class="token operator">=</span><span class="token number">2</span><span class="token punctuation">)</span>
+
+<span class="token keyword">def</span> <span class="token function">make_kp_layer</span><span class="token punctuation">(</span>cnv_dim<span class="token punctuation">,</span> curr_dim<span class="token punctuation">,</span> out_dim<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token keyword">return</span> nn<span class="token punctuation">.</span>Sequential<span class="token punctuation">(</span>
+        convolution<span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">,</span> cnv_dim<span class="token punctuation">,</span> curr_dim<span class="token punctuation">,</span> with_bn<span class="token operator">=</span><span class="token boolean">False</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+        nn<span class="token punctuation">.</span>Conv2d<span class="token punctuation">(</span>curr_dim<span class="token punctuation">,</span> out_dim<span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token punctuation">)</span>
+
+<span class="token keyword">def</span> <span class="token function">make_inter_layer</span><span class="token punctuation">(</span>dim<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token keyword">return</span> residual<span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">,</span> dim<span class="token punctuation">,</span> dim<span class="token punctuation">)</span>
+
+<span class="token keyword">def</span> <span class="token function">make_cnv_layer</span><span class="token punctuation">(</span>inp_dim<span class="token punctuation">,</span> out_dim<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token keyword">return</span> convolution<span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">,</span> inp_dim<span class="token punctuation">,</span> out_dim<span class="token punctuation">)</span>
+
+<span class="token keyword">class</span> <span class="token class-name">kp_module</span><span class="token punctuation">(</span>nn<span class="token punctuation">.</span>Module<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token keyword">def</span> <span class="token function">__init__</span><span class="token punctuation">(</span>
+        self<span class="token punctuation">,</span> n<span class="token punctuation">,</span> dims<span class="token punctuation">,</span> modules<span class="token punctuation">,</span> layer<span class="token operator">=</span>residual<span class="token punctuation">,</span>
+        make_up_layer<span class="token operator">=</span>make_layer<span class="token punctuation">,</span> make_low_layer<span class="token operator">=</span>make_layer<span class="token punctuation">,</span>
+        make_hg_layer<span class="token operator">=</span>make_layer<span class="token punctuation">,</span> make_hg_layer_revr<span class="token operator">=</span>make_layer_revr<span class="token punctuation">,</span>
+        make_pool_layer<span class="token operator">=</span>make_pool_layer<span class="token punctuation">,</span> make_unpool_layer<span class="token operator">=</span>make_unpool_layer<span class="token punctuation">,</span>
+        make_merge_layer<span class="token operator">=</span>make_merge_layer<span class="token punctuation">,</span> <span class="token operator">**</span>kwargs
+    <span class="token punctuation">)</span><span class="token punctuation">:</span>
+        <span class="token builtin">super</span><span class="token punctuation">(</span>kp_module<span class="token punctuation">,</span> self<span class="token punctuation">)</span><span class="token punctuation">.</span>__init__<span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+        self<span class="token punctuation">.</span>n   <span class="token operator">=</span> n
+
+        curr_mod <span class="token operator">=</span> modules<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span>
+        next_mod <span class="token operator">=</span> modules<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span>
+
+        curr_dim <span class="token operator">=</span> dims<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span>
+        next_dim <span class="token operator">=</span> dims<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span>
+
+        self<span class="token punctuation">.</span>up1  <span class="token operator">=</span> make_up_layer<span class="token punctuation">(</span>
+            <span class="token number">3</span><span class="token punctuation">,</span> curr_dim<span class="token punctuation">,</span> curr_dim<span class="token punctuation">,</span> curr_mod<span class="token punctuation">,</span> 
+            layer<span class="token operator">=</span>layer<span class="token punctuation">,</span> <span class="token operator">**</span>kwargs
+        <span class="token punctuation">)</span>  
+        self<span class="token punctuation">.</span>max1 <span class="token operator">=</span> make_pool_layer<span class="token punctuation">(</span>curr_dim<span class="token punctuation">)</span>
+        self<span class="token punctuation">.</span>low1 <span class="token operator">=</span> make_hg_layer<span class="token punctuation">(</span>
+            <span class="token number">3</span><span class="token punctuation">,</span> curr_dim<span class="token punctuation">,</span> next_dim<span class="token punctuation">,</span> curr_mod<span class="token punctuation">,</span>
+            layer<span class="token operator">=</span>layer<span class="token punctuation">,</span> <span class="token operator">**</span>kwargs
+        <span class="token punctuation">)</span>
+        self<span class="token punctuation">.</span>low2 <span class="token operator">=</span> kp_module<span class="token punctuation">(</span>
+            n <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">,</span> dims<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">:</span><span class="token punctuation">]</span><span class="token punctuation">,</span> modules<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">:</span><span class="token punctuation">]</span><span class="token punctuation">,</span> layer<span class="token operator">=</span>layer<span class="token punctuation">,</span> 
+            make_up_layer<span class="token operator">=</span>make_up_layer<span class="token punctuation">,</span> 
+            make_low_layer<span class="token operator">=</span>make_low_layer<span class="token punctuation">,</span>
+            make_hg_layer<span class="token operator">=</span>make_hg_layer<span class="token punctuation">,</span>
+            make_hg_layer_revr<span class="token operator">=</span>make_hg_layer_revr<span class="token punctuation">,</span>
+            make_pool_layer<span class="token operator">=</span>make_pool_layer<span class="token punctuation">,</span>
+            make_unpool_layer<span class="token operator">=</span>make_unpool_layer<span class="token punctuation">,</span>
+            make_merge_layer<span class="token operator">=</span>make_merge_layer<span class="token punctuation">,</span>
+            <span class="token operator">**</span>kwargs
+        <span class="token punctuation">)</span> <span class="token keyword">if</span> self<span class="token punctuation">.</span>n <span class="token operator">&gt;</span> <span class="token number">1</span> <span class="token keyword">else</span> \
+        make_low_layer<span class="token punctuation">(</span>
+            <span class="token number">3</span><span class="token punctuation">,</span> next_dim<span class="token punctuation">,</span> next_dim<span class="token punctuation">,</span> next_mod<span class="token punctuation">,</span>
+            layer<span class="token operator">=</span>layer<span class="token punctuation">,</span> <span class="token operator">**</span>kwargs
+        <span class="token punctuation">)</span>
+        self<span class="token punctuation">.</span>low3 <span class="token operator">=</span> make_hg_layer_revr<span class="token punctuation">(</span>
+            <span class="token number">3</span><span class="token punctuation">,</span> next_dim<span class="token punctuation">,</span> curr_dim<span class="token punctuation">,</span> curr_mod<span class="token punctuation">,</span>
+            layer<span class="token operator">=</span>layer<span class="token punctuation">,</span> <span class="token operator">**</span>kwargs
+        <span class="token punctuation">)</span>
+        self<span class="token punctuation">.</span>up2  <span class="token operator">=</span> make_unpool_layer<span class="token punctuation">(</span>curr_dim<span class="token punctuation">)</span>
+
+        self<span class="token punctuation">.</span>merge <span class="token operator">=</span> make_merge_layer<span class="token punctuation">(</span>curr_dim<span class="token punctuation">)</span>
+
+    <span class="token keyword">def</span> <span class="token function">forward</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> x<span class="token punctuation">)</span><span class="token punctuation">:</span>
+        up1  <span class="token operator">=</span> self<span class="token punctuation">.</span>up1<span class="token punctuation">(</span>x<span class="token punctuation">)</span>
+        max1 <span class="token operator">=</span> self<span class="token punctuation">.</span>max1<span class="token punctuation">(</span>x<span class="token punctuation">)</span>
+        low1 <span class="token operator">=</span> self<span class="token punctuation">.</span>low1<span class="token punctuation">(</span>max1<span class="token punctuation">)</span>
+        low2 <span class="token operator">=</span> self<span class="token punctuation">.</span>low2<span class="token punctuation">(</span>low1<span class="token punctuation">)</span>
+        low3 <span class="token operator">=</span> self<span class="token punctuation">.</span>low3<span class="token punctuation">(</span>low2<span class="token punctuation">)</span>
+        up2  <span class="token operator">=</span> self<span class="token punctuation">.</span>up2<span class="token punctuation">(</span>low3<span class="token punctuation">)</span>
+        <span class="token keyword">return</span> self<span class="token punctuation">.</span>merge<span class="token punctuation">(</span>up1<span class="token punctuation">,</span> up2<span class="token punctuation">)</span>
+
+<span class="token keyword">class</span> <span class="token class-name">exkp</span><span class="token punctuation">(</span>nn<span class="token punctuation">.</span>Module<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token keyword">def</span> <span class="token function">__init__</span><span class="token punctuation">(</span>
+        self<span class="token punctuation">,</span> n<span class="token punctuation">,</span> nstack<span class="token punctuation">,</span> dims<span class="token punctuation">,</span> modules<span class="token punctuation">,</span> heads<span class="token punctuation">,</span> pre<span class="token operator">=</span><span class="token boolean">None</span><span class="token punctuation">,</span> cnv_dim<span class="token operator">=</span><span class="token number">256</span><span class="token punctuation">,</span> 
+        make_tl_layer<span class="token operator">=</span><span class="token boolean">None</span><span class="token punctuation">,</span> make_br_layer<span class="token operator">=</span><span class="token boolean">None</span><span class="token punctuation">,</span>
+        make_cnv_layer<span class="token operator">=</span>make_cnv_layer<span class="token punctuation">,</span> make_heat_layer<span class="token operator">=</span>make_kp_layer<span class="token punctuation">,</span>
+        make_tag_layer<span class="token operator">=</span>make_kp_layer<span class="token punctuation">,</span> make_regr_layer<span class="token operator">=</span>make_kp_layer<span class="token punctuation">,</span>
+        make_up_layer<span class="token operator">=</span>make_layer<span class="token punctuation">,</span> make_low_layer<span class="token operator">=</span>make_layer<span class="token punctuation">,</span> 
+        make_hg_layer<span class="token operator">=</span>make_layer<span class="token punctuation">,</span> make_hg_layer_revr<span class="token operator">=</span>make_layer_revr<span class="token punctuation">,</span>
+        make_pool_layer<span class="token operator">=</span>make_pool_layer<span class="token punctuation">,</span> make_unpool_layer<span class="token operator">=</span>make_unpool_layer<span class="token punctuation">,</span>
+        make_merge_layer<span class="token operator">=</span>make_merge_layer<span class="token punctuation">,</span> make_inter_layer<span class="token operator">=</span>make_inter_layer<span class="token punctuation">,</span> 
+        kp_layer<span class="token operator">=</span>residual
+    <span class="token punctuation">)</span><span class="token punctuation">:</span>
+        <span class="token builtin">super</span><span class="token punctuation">(</span>exkp<span class="token punctuation">,</span> self<span class="token punctuation">)</span><span class="token punctuation">.</span>__init__<span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+        self<span class="token punctuation">.</span>nstack    <span class="token operator">=</span> nstack
+        self<span class="token punctuation">.</span>heads     <span class="token operator">=</span> heads
+
+        curr_dim <span class="token operator">=</span> dims<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span>
+
+        self<span class="token punctuation">.</span>pre <span class="token operator">=</span> nn<span class="token punctuation">.</span>Sequential<span class="token punctuation">(</span>
+            convolution<span class="token punctuation">(</span><span class="token number">7</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">,</span> <span class="token number">128</span><span class="token punctuation">,</span> stride<span class="token operator">=</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+            residual<span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">,</span> <span class="token number">128</span><span class="token punctuation">,</span> <span class="token number">256</span><span class="token punctuation">,</span> stride<span class="token operator">=</span><span class="token number">2</span><span class="token punctuation">)</span>
+        <span class="token punctuation">)</span> <span class="token keyword">if</span> pre <span class="token keyword">is</span> <span class="token boolean">None</span> <span class="token keyword">else</span> pre
+
+        self<span class="token punctuation">.</span>kps  <span class="token operator">=</span> nn<span class="token punctuation">.</span>ModuleList<span class="token punctuation">(</span><span class="token punctuation">[</span>
+            kp_module<span class="token punctuation">(</span>
+                n<span class="token punctuation">,</span> dims<span class="token punctuation">,</span> modules<span class="token punctuation">,</span> layer<span class="token operator">=</span>kp_layer<span class="token punctuation">,</span>
+                make_up_layer<span class="token operator">=</span>make_up_layer<span class="token punctuation">,</span>
+                make_low_layer<span class="token operator">=</span>make_low_layer<span class="token punctuation">,</span>
+                make_hg_layer<span class="token operator">=</span>make_hg_layer<span class="token punctuation">,</span>
+                make_hg_layer_revr<span class="token operator">=</span>make_hg_layer_revr<span class="token punctuation">,</span>
+                make_pool_layer<span class="token operator">=</span>make_pool_layer<span class="token punctuation">,</span>
+                make_unpool_layer<span class="token operator">=</span>make_unpool_layer<span class="token punctuation">,</span>
+                make_merge_layer<span class="token operator">=</span>make_merge_layer
+            <span class="token punctuation">)</span> <span class="token keyword">for</span> _ <span class="token keyword">in</span> <span class="token builtin">range</span><span class="token punctuation">(</span>nstack<span class="token punctuation">)</span>
+        <span class="token punctuation">]</span><span class="token punctuation">)</span>
+        self<span class="token punctuation">.</span>cnvs <span class="token operator">=</span> nn<span class="token punctuation">.</span>ModuleList<span class="token punctuation">(</span><span class="token punctuation">[</span>
+            make_cnv_layer<span class="token punctuation">(</span>curr_dim<span class="token punctuation">,</span> cnv_dim<span class="token punctuation">)</span> <span class="token keyword">for</span> _ <span class="token keyword">in</span> <span class="token builtin">range</span><span class="token punctuation">(</span>nstack<span class="token punctuation">)</span>
+        <span class="token punctuation">]</span><span class="token punctuation">)</span>
+
+        self<span class="token punctuation">.</span>inters <span class="token operator">=</span> nn<span class="token punctuation">.</span>ModuleList<span class="token punctuation">(</span><span class="token punctuation">[</span>
+            make_inter_layer<span class="token punctuation">(</span>curr_dim<span class="token punctuation">)</span> <span class="token keyword">for</span> _ <span class="token keyword">in</span> <span class="token builtin">range</span><span class="token punctuation">(</span>nstack <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">)</span>
+        <span class="token punctuation">]</span><span class="token punctuation">)</span>
+
+        self<span class="token punctuation">.</span>inters_ <span class="token operator">=</span> nn<span class="token punctuation">.</span>ModuleList<span class="token punctuation">(</span><span class="token punctuation">[</span>
+            nn<span class="token punctuation">.</span>Sequential<span class="token punctuation">(</span>
+                nn<span class="token punctuation">.</span>Conv2d<span class="token punctuation">(</span>curr_dim<span class="token punctuation">,</span> curr_dim<span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">,</span> bias<span class="token operator">=</span><span class="token boolean">False</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                nn<span class="token punctuation">.</span>BatchNorm2d<span class="token punctuation">(</span>curr_dim<span class="token punctuation">)</span>
+            <span class="token punctuation">)</span> <span class="token keyword">for</span> _ <span class="token keyword">in</span> <span class="token builtin">range</span><span class="token punctuation">(</span>nstack <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">)</span>
+        <span class="token punctuation">]</span><span class="token punctuation">)</span>
+        self<span class="token punctuation">.</span>cnvs_   <span class="token operator">=</span> nn<span class="token punctuation">.</span>ModuleList<span class="token punctuation">(</span><span class="token punctuation">[</span>
+            nn<span class="token punctuation">.</span>Sequential<span class="token punctuation">(</span>
+                nn<span class="token punctuation">.</span>Conv2d<span class="token punctuation">(</span>cnv_dim<span class="token punctuation">,</span> curr_dim<span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">,</span> bias<span class="token operator">=</span><span class="token boolean">False</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                nn<span class="token punctuation">.</span>BatchNorm2d<span class="token punctuation">(</span>curr_dim<span class="token punctuation">)</span>
+            <span class="token punctuation">)</span> <span class="token keyword">for</span> _ <span class="token keyword">in</span> <span class="token builtin">range</span><span class="token punctuation">(</span>nstack <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">)</span>
+        <span class="token punctuation">]</span><span class="token punctuation">)</span>
+
+        <span class="token comment">## keypoint heatmaps</span>
+        <span class="token keyword">for</span> head <span class="token keyword">in</span> heads<span class="token punctuation">.</span>keys<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+            <span class="token keyword">if</span> <span class="token string">'hm'</span> <span class="token keyword">in</span> head<span class="token punctuation">:</span>
+                module <span class="token operator">=</span>  nn<span class="token punctuation">.</span>ModuleList<span class="token punctuation">(</span><span class="token punctuation">[</span>
+                    make_heat_layer<span class="token punctuation">(</span>
+                        cnv_dim<span class="token punctuation">,</span> curr_dim<span class="token punctuation">,</span> heads<span class="token punctuation">[</span>head<span class="token punctuation">]</span><span class="token punctuation">)</span> <span class="token keyword">for</span> _ <span class="token keyword">in</span> <span class="token builtin">range</span><span class="token punctuation">(</span>nstack<span class="token punctuation">)</span>
+                <span class="token punctuation">]</span><span class="token punctuation">)</span>
+                self<span class="token punctuation">.</span>__setattr__<span class="token punctuation">(</span>head<span class="token punctuation">,</span> module<span class="token punctuation">)</span>
+                <span class="token keyword">for</span> heat <span class="token keyword">in</span> self<span class="token punctuation">.</span>__getattr__<span class="token punctuation">(</span>head<span class="token punctuation">)</span><span class="token punctuation">:</span>
+                    heat<span class="token punctuation">[</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">.</span>bias<span class="token punctuation">.</span>data<span class="token punctuation">.</span>fill_<span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">2.19</span><span class="token punctuation">)</span>
+            <span class="token keyword">else</span><span class="token punctuation">:</span>
+                module <span class="token operator">=</span> nn<span class="token punctuation">.</span>ModuleList<span class="token punctuation">(</span><span class="token punctuation">[</span>
+                    make_regr_layer<span class="token punctuation">(</span>
+                        cnv_dim<span class="token punctuation">,</span> curr_dim<span class="token punctuation">,</span> heads<span class="token punctuation">[</span>head<span class="token punctuation">]</span><span class="token punctuation">)</span> <span class="token keyword">for</span> _ <span class="token keyword">in</span> <span class="token builtin">range</span><span class="token punctuation">(</span>nstack<span class="token punctuation">)</span>
+                <span class="token punctuation">]</span><span class="token punctuation">)</span>
+                self<span class="token punctuation">.</span>__setattr__<span class="token punctuation">(</span>head<span class="token punctuation">,</span> module<span class="token punctuation">)</span>
+
+
+        self<span class="token punctuation">.</span>relu <span class="token operator">=</span> nn<span class="token punctuation">.</span>ReLU<span class="token punctuation">(</span>inplace<span class="token operator">=</span><span class="token boolean">True</span><span class="token punctuation">)</span>
+
+    <span class="token keyword">def</span> <span class="token function">forward</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> image<span class="token punctuation">)</span><span class="token punctuation">:</span>
+        <span class="token comment"># print('image shape', image.shape)</span>
+        inter <span class="token operator">=</span> self<span class="token punctuation">.</span>pre<span class="token punctuation">(</span>image<span class="token punctuation">)</span>
+        outs  <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token punctuation">]</span>
+
+        <span class="token keyword">for</span> ind <span class="token keyword">in</span> <span class="token builtin">range</span><span class="token punctuation">(</span>self<span class="token punctuation">.</span>nstack<span class="token punctuation">)</span><span class="token punctuation">:</span>
+            kp_<span class="token punctuation">,</span> cnv_  <span class="token operator">=</span> self<span class="token punctuation">.</span>kps<span class="token punctuation">[</span>ind<span class="token punctuation">]</span><span class="token punctuation">,</span> self<span class="token punctuation">.</span>cnvs<span class="token punctuation">[</span>ind<span class="token punctuation">]</span>
+            kp  <span class="token operator">=</span> kp_<span class="token punctuation">(</span>inter<span class="token punctuation">)</span>
+            cnv <span class="token operator">=</span> cnv_<span class="token punctuation">(</span>kp<span class="token punctuation">)</span>
+
+            out <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+            <span class="token keyword">for</span> head <span class="token keyword">in</span> self<span class="token punctuation">.</span>heads<span class="token punctuation">:</span>
+                layer <span class="token operator">=</span> self<span class="token punctuation">.</span>__getattr__<span class="token punctuation">(</span>head<span class="token punctuation">)</span><span class="token punctuation">[</span>ind<span class="token punctuation">]</span>
+                y <span class="token operator">=</span> layer<span class="token punctuation">(</span>cnv<span class="token punctuation">)</span>
+                out<span class="token punctuation">[</span>head<span class="token punctuation">]</span> <span class="token operator">=</span> y
+            
+            outs<span class="token punctuation">.</span>append<span class="token punctuation">(</span>out<span class="token punctuation">)</span>
+            <span class="token keyword">if</span> ind <span class="token operator">&lt;</span> self<span class="token punctuation">.</span>nstack <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">:</span>
+                inter <span class="token operator">=</span> self<span class="token punctuation">.</span>inters_<span class="token punctuation">[</span>ind<span class="token punctuation">]</span><span class="token punctuation">(</span>inter<span class="token punctuation">)</span> <span class="token operator">+</span> self<span class="token punctuation">.</span>cnvs_<span class="token punctuation">[</span>ind<span class="token punctuation">]</span><span class="token punctuation">(</span>cnv<span class="token punctuation">)</span>
+                inter <span class="token operator">=</span> self<span class="token punctuation">.</span>relu<span class="token punctuation">(</span>inter<span class="token punctuation">)</span>
+                inter <span class="token operator">=</span> self<span class="token punctuation">.</span>inters<span class="token punctuation">[</span>ind<span class="token punctuation">]</span><span class="token punctuation">(</span>inter<span class="token punctuation">)</span>
+        <span class="token keyword">return</span> outs
+
+
+<span class="token keyword">def</span> <span class="token function">make_hg_layer</span><span class="token punctuation">(</span>kernel<span class="token punctuation">,</span> dim0<span class="token punctuation">,</span> dim1<span class="token punctuation">,</span> mod<span class="token punctuation">,</span> layer<span class="token operator">=</span>convolution<span class="token punctuation">,</span> <span class="token operator">**</span>kwargs<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    layers  <span class="token operator">=</span> <span class="token punctuation">[</span>layer<span class="token punctuation">(</span>kernel<span class="token punctuation">,</span> dim0<span class="token punctuation">,</span> dim1<span class="token punctuation">,</span> stride<span class="token operator">=</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">]</span>
+    layers <span class="token operator">+=</span> <span class="token punctuation">[</span>layer<span class="token punctuation">(</span>kernel<span class="token punctuation">,</span> dim1<span class="token punctuation">,</span> dim1<span class="token punctuation">)</span> <span class="token keyword">for</span> _ <span class="token keyword">in</span> <span class="token builtin">range</span><span class="token punctuation">(</span>mod <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">]</span>
+    <span class="token keyword">return</span> nn<span class="token punctuation">.</span>Sequential<span class="token punctuation">(</span><span class="token operator">*</span>layers<span class="token punctuation">)</span>
+
+
+<span class="token keyword">class</span> <span class="token class-name">HourglassNet</span><span class="token punctuation">(</span>exkp<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token keyword">def</span> <span class="token function">__init__</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> heads<span class="token punctuation">,</span> num_stacks<span class="token operator">=</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+        n       <span class="token operator">=</span> <span class="token number">5</span>
+        dims    <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token number">256</span><span class="token punctuation">,</span> <span class="token number">256</span><span class="token punctuation">,</span> <span class="token number">384</span><span class="token punctuation">,</span> <span class="token number">384</span><span class="token punctuation">,</span> <span class="token number">384</span><span class="token punctuation">,</span> <span class="token number">512</span><span class="token punctuation">]</span>
+        modules <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">4</span><span class="token punctuation">]</span>
+
+        <span class="token builtin">super</span><span class="token punctuation">(</span>HourglassNet<span class="token punctuation">,</span> self<span class="token punctuation">)</span><span class="token punctuation">.</span>__init__<span class="token punctuation">(</span>
+            n<span class="token punctuation">,</span> num_stacks<span class="token punctuation">,</span> dims<span class="token punctuation">,</span> modules<span class="token punctuation">,</span> heads<span class="token punctuation">,</span>
+            make_tl_layer<span class="token operator">=</span><span class="token boolean">None</span><span class="token punctuation">,</span>
+            make_br_layer<span class="token operator">=</span><span class="token boolean">None</span><span class="token punctuation">,</span>
+            make_pool_layer<span class="token operator">=</span>make_pool_layer<span class="token punctuation">,</span>
+            make_hg_layer<span class="token operator">=</span>make_hg_layer<span class="token punctuation">,</span>
+            kp_layer<span class="token operator">=</span>residual<span class="token punctuation">,</span> cnv_dim<span class="token operator">=</span><span class="token number">256</span>
+        <span class="token punctuation">)</span>
+
+<span class="token keyword">def</span> <span class="token function">get_large_hourglass_net</span><span class="token punctuation">(</span>num_layers<span class="token punctuation">,</span> heads<span class="token punctuation">,</span> head_conv<span class="token punctuation">)</span><span class="token punctuation">:</span>
+  model <span class="token operator">=</span> HourglassNet<span class="token punctuation">(</span>heads<span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span>
+  <span class="token keyword">return</span> model
+</code></pre> 
+<h3><a id="5CenterNet_365"></a>5、CenterNet效果展示与分析</h3> 
+<h4><a id="51_CenterNet_366"></a>5.1 CenterNet客观效果展示与分析</h4> 
+<p><img src="https://images2.imgbox.com/7e/01/IjLQgZhU_o.png" alt="在这里插入图片描述"><br>   上表展示了CenterNet目标检测在COCO验证集上面的精度与速度。第1行展示了利用Hourglass-104作为基准网络后不仅能够获得40.4AP，而且可以获得14FPS的速度；第2行展示了利用DLA-34作为基准网络后获得的AP与FPS；第3行与第4行分别展示了ResNet-101与ResNet-18基准网络在COCO验证集上面的效果。<strong>通过观察我们可以发现，基于DLA-34的基准网络能够在精度与速度之间达到一个折中。</strong><br> <img src="https://images2.imgbox.com/77/ee/nHf92ACT_o.png" alt="在这里插入图片描述"><br>   上表展示了CenterNet算法在COCO关键点验证集上面的测试效果。通过观察我们可以得出以下的初步结论：（1）基于Hourglass的基准网络可以获得更高的精度，但是速度却很难满足实时场景的需求；（2）基于DLA-34的基准网络不仅可以获得更高的精度，而且可以获得较好的精度。（3）该算法的精度接近于很多state-of-art的行人位姿估计算法。</p> 
+<h4><a id="52_CenterNet_372"></a>5.2 CenterNet主观效果展示与分析</h4> 
+<p><img src="https://images2.imgbox.com/57/be/SrGYWAMf_o.png" alt="在这里插入图片描述"><br>   上图展示了CenterNet检测算法在一张测试图片上面的测试结果。左边展示的是对应的Heatmap图，图中的褐色点表示该算法输出的中心点坐标，右边表示该算法的检测结果。<br> <img src="https://images2.imgbox.com/23/16/fSPsXixQ_o.png" alt="在这里插入图片描述"><br>   上图展示了CenterNet人体位姿估计算法在一张测试图片上面的测试结果。最左边展示的是目标中心点的Heatmap图，中间图表示的是输出的人体关键点Heatmap图，最右边表示的是CenterNet人体位姿估计算法的输出结果，该算法在这种复杂的场景下仍然获得了较高的精度。<br> <img src="https://images2.imgbox.com/87/71/vM2HPQLq_o.png" alt="在这里插入图片描述"><br>   上图展示了CenterNet目标检测算法、CenterNet人体位姿估计算法、CenterNet 3D目标检测算法在一些复杂的测试场景上面的测试效果。通过观察我们可以发现该算法在不同的复杂场景下仍然得到较高的精度。</p> 
+<h3><a id="6_380"></a>6、总结与分析</h3> 
+<p><img src="https://images2.imgbox.com/a2/75/YKdUakTq_o.png" alt="在这里插入图片描述"><br>   <strong>CenterNet是一个基于Anchor-free的目标检测算法。通过观察上图，我们可以发现该算法的精度几乎超过了当时所有的单阶段与双阶段目标检测算法，包括Faster-RCNN、RetinaNet和Yolov3。由于该算法去除了耗时的Anchors与NMS后处理操作，因而该算法具有较快的运行速度，适合部署在一些低性能的嵌入式设备中。除此之外，经过实际的测试我们会发现该算法在多个实际场景中都能取得较高的检测精度。</strong></p> 
+<h3><a id="_384"></a>参考资料</h3> 
+<p>[1] <a href="https://arxiv.org/pdf/1904.07850.pdf" rel="nofollow">原始论文</a><br> [2] <a href="https://www.cnblogs.com/silence-cho/p/13955766.html" rel="nofollow">博客1</a><br> [3] <a href="https://oldpan.me/archives/anchor-free-ture-centernet" rel="nofollow">博客2</a></p> 
+<h3><a id="_389"></a>注意事项</h3> 
+<p>[1] 如果您对AI、自动驾驶、AR、ChatGPT等技术感兴趣，欢迎关注我的微信公众号“<strong>AI产品汇</strong>”，有问题可以在公众号中私聊我！<br> [2] 该博客是本人原创博客，如果您对该博客感兴趣，想要转载该博客，请与我联系（qq邮箱：1575262785@qq.com）,我会在第一时间回复大家，谢谢大家的关注。<br> [3] 由于个人能力有限，该博客可能存在很多的问题，希望大家能够提出改进意见。<br> [4] 如果您在阅读本博客时遇到不理解的地方，希望您可以联系我，我会及时的回复您，和您交流想法和意见，谢谢。<br> <strong>[5] 本人业余时间承接各种本科毕设设计和各种项目，包括图像处理（数据挖掘、机器学习、深度学习等）、matlab仿真、python算法及仿真等，有需要的请加QQ：1575262785详聊，备注“项目”！！！</strong></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/402a4003d5a07b582cbf2f3bf5845aef/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">YOLOv4算法详解</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/fecccda74c423b65f4d194102d4d5f2f/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Python&#43;Opencv测量物体之间的距离</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

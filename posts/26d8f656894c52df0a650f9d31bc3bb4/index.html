@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>MQTT QoS 0,1,2 的介绍 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="MQTT QoS 0,1,2 的介绍" />
+<meta property="og:description" content="原文地址：https://dev.to/emqx/introduction-to-mqtt-qos-0-1-2-oba
+什么是QoS？ 在不稳定的网络环境中，建立MQTT协议连接的设备仅靠TCP传输协议来保证通信的可靠性是很困难的事情。为了解决这个问题，MQTT协议引入了服务质量（Quality of Service，QoS）的机制来提供多种消息交互方式以提供不同级别的服务，满足用户在不同场景下对消息送达可靠性的特殊要求。
+在MQTT中有3种QoS级别：
+QoS 0，最多一次QoS 1，至少一次QoS 2，仅且只有一次 以上QoS数值和消息发送的可靠性相匹配，值越大通信可靠性越强。QoS 0可能会丢失消息，QoS 1能保证消息送达但有机率重复收到消息，QoS 2能保证消息正确送达且不会重复。随着QoS级别的提高，消息送达的可靠性也在增强，但与此同时传输过程也变的越来越复杂。
+在发布者向订阅者发送消息的过程中，发布者可以在PUBLISH包中指定消息的QoS级别。一般情况下Broker向订阅者转发消息的时候会使用发布者指定的QoS级别，不过某些情况下订阅者也会把收到的消息降级。
+例如，如果订阅者指定了只接收QoS等级为1或0的消息那么Broker会把所有QoS2的消息降级为QoS1然后再转发给订阅者。QoS 1或QoS 0的消息会使用原有指定的等级转发给订阅者，不做改变。
+我们来看一下QoS是如何工作的？
+QoS 0 - 最多一次 QoS 0 是服务质量中的最低级，也被称为“发出即忘记”。该级别下发布者不会等待消息确认接收或发送失败的时候进行重传，所以订阅者无需担心收到重复的消息。
+为什么QoS 0会丢消息？ QoS 0 级别的消息的可靠性取决于TCP连接的稳定性，如果连接稳定，TCP可以保证消息的成功发送，而如果连接被关闭或重置了，那么消息在传输过程中或在操作系统缓存中就会有丢失的风险，从而导致消息发送失败。
+QoS 1 - 至少一次 为了保证消息的成功发送，QoS 1 引入了消息接收确认和重传的机制。当发布者准备向订阅者发送消息的时候，发布者首先会把PUBLISH包保存下来，发布者发送后若从订阅者接收到一个PUBACK包则视为消息已经接收成功，若未收到PUBACK包则会用已经保存的PUBLISH包进行重传。发布者利用PacketID唯一标识PUBLISH包和PUBACK包，确认发布成功后会从缓存中删除之前保存的记录。
+为什么QoS 1会导致收到重复的消息？ 有两种情况发布者无法收到PUBACK包：
+PUBLISH包未到达接收者。PUBLISH包已经送达接收者但接收者发出的PUBACK包未送达发送者。 在第一种情况下发布者会进行消息重传，订阅者只收到一条消息。
+在第二种情况下发布者也会进行消息重传，而且订阅者会再次收到消息，从而导致重复接收同一条消息。
+即使在重传的PUBLISH包中DUP标记被置为1以标识它是一条重传的消息，订阅者也不能把该消息视为重复消息来处理，而是必须视为一条新的消息。
+这是因为订阅者在接收到PUBLISH包DUP标记为1的消息时有两种情况：
+在第一种情况中发布者由于没有收到PUBLISH包因此会进行重传，订阅者会收到两个有同样PacketID的消息，其中第二个消息中DUP标记为1，该情况下第二次接收到的消息确实是重复的消息。
+在第二种情况下，发布者先成功的向订阅者发送了一条消息，成功发送后该消息的PacketID会释放，用于一条新的、不相关的消息，此时新消息又再次使用1024这个PacketID，很不巧发送失败了，需要再次重传。最终重传的消息PUBLISH包中有同样的PacketID而且DUP被标识为了1，但它确实是一条新消息。
+因此订阅者无法区分以上两种情况，必须把所有的消息都视为新消息，不能靠DUP标记进行区分。这也就意味着使用QoS 1的时候必定存在收到重复消息的可能性。
+甚至在某些极端情况下，Broker在向订阅者转发消息的期间也会重复收到来自发布者的消息，而且会再次进行重传，这会导致订阅者额外收到一条重复的消息。
+例如，发布者只发出了一条消息，但订阅者最终收到三条相同的消息。
+以上就是使用QoS 1的缺点。
+QoS 2 - 仅且只有一次 和QoS 0和QoS 2不同，QoS 2 能保证发出的消息既不丢失又不重复，然而它的通信交互最复杂、额外消耗也最高，因为发布者到订阅者的每条消息至少需要两对请求和响应流。
+准备发送QoS 2消息的时候，发布者先保存消息再发送，然后等待接收来自于订阅者的PUBREC响应。这个过程和QoS 1很像，只是QoS 2等待的是PUBREC响应而不是PUBACK响应。当收到PUBREC响应的时候发布者可以确认订阅者已经接收到消息，可以删除本地的缓存，后续也将不会再重传该消息了。接着发布者会发一个PUBREL包通知订阅者准备释放刚才发送成功消息的PackID。和PUBLISH包一样，PUBREL包也需要可靠的发送给订阅者，所以PUBREL包也需要先储存用于失败时重传，另外PUBREL包发出后需要等待响应包。当订阅者收到PUBREL后它可以确认已经收到的PUBLISH包在该当前事务中不会再重传，订阅者会响应一个PUBCOMP包告诉发布者它已经准备好在新的消息中再次使用当前消息同样的PackID。 当发布者接收到PUBCOMP包后QoS 2的消息发送流程也就结束了。发布者可以将当前的PackID用于新的消息上，订阅者也同样会把它视为新消息处理。 为什么QoS 2消息不会重复接收？ QoS 2用于保证消息不会丢失的机制和QoS 1一样，因此我们不再重复叙述。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/26d8f656894c52df0a650f9d31bc3bb4/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-07-11T17:02:57+08:00" />
+<meta property="article:modified_time" content="2023-07-11T17:02:57+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">MQTT QoS 0,1,2 的介绍</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>原文地址：<a href="https://dev.to/emqx/introduction-to-mqtt-qos-0-1-2-oba" rel="nofollow" title="https://dev.to/emqx/introduction-to-mqtt-qos-0-1-2-oba">https://dev.to/emqx/introduction-to-mqtt-qos-0-1-2-oba</a></p> 
+<h4><strong>什么是QoS？</strong></h4> 
+<p>在不稳定的网络环境中，建立MQTT协议连接的设备仅靠TCP传输协议来保证通信的可靠性是很困难的事情。为了解决这个问题，MQTT协议引入了服务质量（Quality of Service，QoS）的机制来提供多种消息交互方式以提供不同级别的服务，满足用户在不同场景下对消息送达可靠性的特殊要求。</p> 
+<p>在MQTT中有3种QoS级别：</p> 
+<ul><li>QoS 0，最多一次</li><li>QoS 1，至少一次</li><li>QoS 2，仅且只有一次</li></ul> 
+<p>以上QoS数值和消息发送的可靠性相匹配，值越大通信可靠性越强。QoS 0可能会丢失消息，QoS 1能保证消息送达但有机率重复收到消息，QoS 2能保证消息正确送达且不会重复。随着QoS级别的提高，消息送达的可靠性也在增强，但与此同时传输过程也变的越来越复杂。</p> 
+<p>在发布者向订阅者发送消息的过程中，发布者可以在PUBLISH包中指定消息的QoS级别。一般情况下Broker向订阅者转发消息的时候会使用发布者指定的QoS级别，不过某些情况下订阅者也会把收到的消息降级。</p> 
+<p>例如，如果订阅者指定了只接收QoS等级为1或0的消息那么Broker会把所有QoS2的消息降级为QoS1然后再转发给订阅者。QoS 1或QoS 0的消息会使用原有指定的等级转发给订阅者，不做改变。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/ac/af/U8e5mn4d_o.png"></p> 
+<p> 我们来看一下QoS是如何工作的？</p> 
+<h4><strong>QoS 0 - 最多一次</strong></h4> 
+<p>QoS 0 是服务质量中的最低级，也被称为“发出即忘记”。该级别下发布者不会等待消息确认接收或发送失败的时候进行重传，所以订阅者无需担心收到重复的消息。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/23/a9/773lggpI_o.png"></p> 
+<h4>为什么QoS 0会丢消息？</h4> 
+<p>QoS 0 级别的消息的可靠性取决于TCP连接的稳定性，如果连接稳定，TCP可以保证消息的成功发送，而如果连接被关闭或重置了，那么消息在传输过程中或在操作系统缓存中就会有丢失的风险，从而导致消息发送失败。</p> 
+<h4><strong>QoS 1 - </strong>至少<strong>一次</strong></h4> 
+<p>为了保证消息的成功发送，QoS 1 引入了消息接收确认和重传的机制。当发布者准备向订阅者发送消息的时候，发布者首先会把PUBLISH包保存下来，发布者发送后若从订阅者接收到一个PUBACK包则视为消息已经接收成功，若未收到PUBACK包则会用已经保存的PUBLISH包进行重传。发布者利用PacketID唯一标识PUBLISH包和PUBACK包，确认发布成功后会从缓存中删除之前保存的记录。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/19/a1/2ItzmJo7_o.png"></p> 
+<h4>为什么QoS 1会导致收到重复的消息？</h4> 
+<p>有两种情况发布者无法收到PUBACK包：</p> 
+<ol><li>PUBLISH包未到达接收者。</li><li>PUBLISH包已经送达接收者但接收者发出的PUBACK包未送达发送者。</li></ol> 
+<p>在第一种情况下发布者会进行消息重传，订阅者只收到一条消息。</p> 
+<p>在第二种情况下发布者也会进行消息重传，而且订阅者会再次收到消息，从而导致重复接收同一条消息。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/a7/2a/zBQBT514_o.png"></p> 
+<p> 即使在重传的PUBLISH包中DUP标记被置为1以标识它是一条重传的消息，订阅者也不能把该消息视为重复消息来处理，而是必须视为一条新的消息。</p> 
+<p>这是因为订阅者在接收到PUBLISH包DUP标记为1的消息时有两种情况：</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/0b/1a/9weAeqTw_o.png"></p> 
+<p>在第一种情况中发布者由于没有收到PUBLISH包因此会进行重传，订阅者会收到两个有同样PacketID的消息，其中第二个消息中DUP标记为1，该情况下第二次接收到的消息确实是重复的消息。</p> 
+<p>在第二种情况下，发布者先成功的向订阅者发送了一条消息，成功发送后该消息的PacketID会释放，用于一条新的、不相关的消息，此时新消息又再次使用1024这个PacketID，很不巧发送失败了，需要再次重传。最终重传的消息PUBLISH包中有同样的PacketID而且DUP被标识为了1，但它确实是一条新消息。</p> 
+<p>因此订阅者无法区分以上两种情况，必须把所有的消息都视为新消息，不能靠DUP标记进行区分。这也就意味着使用QoS 1的时候必定存在收到重复消息的可能性。</p> 
+<p>甚至在某些极端情况下，Broker在向订阅者转发消息的期间也会重复收到来自发布者的消息，而且会再次进行重传，这会导致订阅者额外收到一条重复的消息。</p> 
+<p>例如，发布者只发出了一条消息，但订阅者最终收到三条相同的消息。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/ba/6e/BslSM3gA_o.png"></p> 
+<p>以上就是使用QoS 1的缺点。</p> 
+<h4>QoS 2 - 仅且只有一次</h4> 
+<p>和QoS 0和QoS 2不同，QoS 2 能保证发出的消息既不丢失又不重复，然而它的通信交互最复杂、额外消耗也最高，因为发布者到订阅者的每条消息至少需要两对请求和响应流。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/7c/c1/xxofxo1Z_o.png"></p> 
+<ol><li>准备发送QoS 2消息的时候，发布者先保存消息再发送，然后等待接收来自于订阅者的PUBREC响应。这个过程和QoS 1很像，只是QoS 2等待的是PUBREC响应而不是PUBACK响应。</li><li>当收到PUBREC响应的时候发布者可以确认订阅者已经接收到消息，可以删除本地的缓存，后续也将不会再重传该消息了。接着发布者会发一个PUBREL包通知订阅者准备释放刚才发送成功消息的PackID。和PUBLISH包一样，PUBREL包也需要可靠的发送给订阅者，所以PUBREL包也需要先储存用于失败时重传，另外PUBREL包发出后需要等待响应包。</li><li>当订阅者收到PUBREL后它可以确认已经收到的PUBLISH包在该当前事务中不会再重传，订阅者会响应一个PUBCOMP包告诉发布者它已经准备好在新的消息中再次使用当前消息同样的PackID。</li><li> 当发布者接收到PUBCOMP包后QoS 2的消息发送流程也就结束了。发布者可以将当前的PackID用于新的消息上，订阅者也同样会把它视为新消息处理。</li></ol> 
+<h4>为什么QoS 2消息不会重复接收？</h4> 
+<p>QoS 2用于保证消息不会丢失的机制和QoS 1一样，因此我们不再重复叙述。</p> 
+<p>和QoS 1相比，QoS 2增加了发送PUBREL包和接收PUBCOMP包这一流程来保证接收到的消息不会重复。</p> 
+<p>在继续解释之前，我们先快速回忆一下为什么QoS 1无法避免接收到重复消息。</p> 
+<p>当我们使用QoS 1的时候，在PUBACK包发送之后无论确认收到的信息是否到达发布者，PacketID都会被复用，也就说订阅者无法判断收到具有相同PacketID的消息是由于发布者未收到PUBACK包进行的重传消息还是复用之前的PacketID发送的新消息，这就是QoS 1无法避免收到重复消息的原因。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/cb/11/osCJLXon_o.png"></p> 
+<p> 在QoS 2级别下，发布者和订阅者利用PUBREL包和PUBCOMP包同步释放PacketID，订阅者能准确的知道接收到的消息是失败重传的消息还是一条新消息，这就是避免收到重复消息的关键。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/89/a5/uTCwrHZK_o.png"></p> 
+<p>在 QoS 2级别下发布者允许在接收到来自于订阅者的PUBREC包之前重传PUBLISH包，一旦发布者接收到PUBREC包并发出PUBREL包后就进入了PacketID释放阶段，发布者不能再重传PUBLISH包，在收到来自于订阅者的PUBCOMP包前也不能将当前的PacketID用于新消息。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/46/7f/NrAdfWEc_o.png"></p> 
+<p>因此订阅者可以将接收到PUBREL包的时机作为分界线，之前收到的消息做为重复消息，之后收到的消息做为新消息，这样我们就可以利用QoS 2在协议层避免消息的重复接收。</p> 
+<h4>使用场景和考虑</h4> 
+<p><strong>QoS 0</strong></p> 
+<p>主要的缺点是消息可能会丢失，概率取决于网络情况，当网络条件差的时候会丢失消息严重，不过它的优点是消息发送非常高效。因此它非常适合发送频次高而且不重要的数据，比如传感器数据周期性的上传，丢失一些消息是可以接受的。</p> 
+<p><strong>QoS 1</strong></p> 
+<p>QoS 1能保证消息最少成功发送一次，但是也会导致重复接收。它适合传输重要数据，比如重要指令或实时更新重要的状态，然而需要考虑如何处理接收到的重复消息或重复消息是否对业务产生影响。</p> 
+<p>例如，发布者按序发送的消息是1，2，但是订阅者收到的消息是1、2、1、2，假定1代表开灯命令，2代表关灯命令，由于重复收到消息会导致灯在重复开和关。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/b3/0b/w8HX4RrL_o.png"></p> 
+<p><strong> QoS 2</strong></p> 
+<p> QoS 2能保证消息既不丢失也不重复，不过会有额外的消耗。如果用户不想自己处理重复消息的问题同时又接受QoS 2带来的额外消耗，那么它就是一个合适的选择。QoS 2多用于金融、航空行业，对于这些行业而言保证消息送达的可靠性和不重复性非常重要。</p> 
+<h4></h4>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/c5450d3cd17f77dd32afafff104eaa5f/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Electron&#43;Vue3开发桌面文件加密工具应用</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/1a2edb41cce1089aeda68f3870bcd657/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【前端笔记】HTML 纯文件 整理 使用 Vue3 &#43; element-plus &#43; 字节cdn</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

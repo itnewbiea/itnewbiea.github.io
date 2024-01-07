@@ -1,0 +1,2827 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>一文速览扩散模型优化过程：从DDPM到条件生成模型Stable Diffusion - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="一文速览扩散模型优化过程：从DDPM到条件生成模型Stable Diffusion" />
+<meta property="og:description" content="文章目录 1、扩散模型简介 - Diffusion Model2、最简单的扩散模型 - DDPM前向加噪过程逆向去噪过程训练与推理流程模型优缺点 3、减少扩散模型的采样步骤 - DiffusionGAN分析高斯分布、采样步长Diffusion GAN 4、潜在扩散模型与条件生成模型 - Stable Diffusion感知图像压缩条件信息建模 参考资料 目前AIGC可以说是整个人工智能领域的当红炸子鸡，而Diffusion Model（扩散模型）正是目前各项图像生成式应用的主要架构。本人并不主要研究图像生成领域，不过由于项目需要也对其进行过一些调研，故写下这篇文章进行分享与记录。本文会从最简单的扩散模型开始讲起，然后根据原始模型存在的缺点介绍当前的一些改进方法，最后介绍一个经典的可用于条件生成的扩散模型Stable Diffusion。 1、扩散模型简介 - Diffusion Model 如下图所示，目前的图像生成式模型主要可以分为四类：① 首先是生成对抗网络GAN通过一种生成对抗式的方式进行学习，其生成器 G G G根据潜在空间的采样 z z z生成图像 x ′ x&#39; x′，判别器 D D D则判断输入图像是真实图像 x x x还是生成图像 x ′ x&#39; x′；② 变分自编码器VAE通过编码器学习图像分布 p ( x ) p(x) p(x)到先验分布 p ( z ) p(z) p(z)之间的转换，解码器学习 p ( z ) p(z) p(z)到 p ( x ) p(x) p(x)的转换关系，其在数学上可以被视为通过最大化ELBO进行优化；③ 标准化流模型则是通过构造一个可逆的变换，建立图像分布 p ( x ) p(x) p(x)与某个已知分布 p ( z ) p(z) p(z)的变换；④ 最后是扩散模型Diffusion Model，其通过逐步增加高斯噪声将其变为纯高斯噪声 z z z，再通过对 z z z逐步去噪生成新的图像。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/a12b6754be18b68923f8fbfa889699ca/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-05-30T11:36:53+08:00" />
+<meta property="article:modified_time" content="2023-05-30T11:36:53+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">一文速览扩散模型优化过程：从DDPM到条件生成模型Stable Diffusion</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atelier-sulphurpool-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><ul><li><a href="#1__Diffusion_Model_2" rel="nofollow">1、扩散模型简介 - Diffusion Model</a></li><li><a href="#2__DDPM_16" rel="nofollow">2、最简单的扩散模型 - DDPM</a></li><li><ul><li><a href="#_19" rel="nofollow">前向加噪过程</a></li><li><a href="#_32" rel="nofollow">逆向去噪过程</a></li><li><a href="#_46" rel="nofollow">训练与推理流程</a></li><li><a href="#_53" rel="nofollow">模型优缺点</a></li></ul> 
+   </li><li><a href="#3__DiffusionGAN_61" rel="nofollow">3、减少扩散模型的采样步骤 - DiffusionGAN</a></li><li><ul><li><a href="#_70" rel="nofollow">分析高斯分布、采样步长</a></li><li><a href="#Diffusion_GAN_80" rel="nofollow">Diffusion GAN</a></li></ul> 
+   </li><li><a href="#4__Stable_Diffusion_107" rel="nofollow">4、潜在扩散模型与条件生成模型 - Stable Diffusion</a></li><li><ul><li><a href="#_114" rel="nofollow">感知图像压缩</a></li><li><a href="#_127" rel="nofollow">条件信息建模</a></li></ul> 
+   </li><li><a href="#_136" rel="nofollow">参考资料</a></li></ul> 
+ </li></ul> 
+</div> 
+<br> 目前AIGC可以说是整个人工智能领域的当红炸子鸡，而Diffusion Model（扩散模型）正是目前各项图像生成式应用的主要架构。本人并不主要研究图像生成领域，不过由于项目需要也对其进行过一些调研，故写下这篇文章进行分享与记录。本文会从最简单的扩散模型开始讲起，然后根据原始模型存在的缺点介绍当前的一些改进方法，最后介绍一个经典的可用于条件生成的扩散模型Stable Diffusion。 
+<p></p> 
+<h3><a id="1__Diffusion_Model_2"></a>1、扩散模型简介 - Diffusion Model</h3> 
+<p>如下图所示，目前的图像生成式模型主要可以分为四类：① 首先是<strong>生成对抗网络GAN</strong>通过一种生成对抗式的方式进行学习，其生成器<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         G 
+        
+       
+      
+        G 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal">G</span></span></span></span></span>根据潜在空间的采样<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         z 
+        
+       
+      
+        z 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.4306em;"></span><span class="mord mathnormal" style="margin-right: 0.044em;">z</span></span></span></span></span>生成图像<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+        
+          ′ 
+         
+        
+       
+      
+        x' 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.7519em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.7519em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">′</span></span></span></span></span></span></span></span></span></span></span></span></span>，判别器<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         D 
+        
+       
+      
+        D 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.0278em;">D</span></span></span></span></span>则判断输入图像是真实图像<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         x 
+        
+       
+      
+        x 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.4306em;"></span><span class="mord mathnormal">x</span></span></span></span></span>还是生成图像<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+        
+          ′ 
+         
+        
+       
+      
+        x' 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.7519em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.7519em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">′</span></span></span></span></span></span></span></span></span></span></span></span></span>；② <strong>变分自编码器VAE</strong>通过编码器学习图像分布<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         p 
+        
+       
+         ( 
+        
+       
+         x 
+        
+       
+         ) 
+        
+       
+      
+        p(x) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal">p</span><span class="mopen">(</span><span class="mord mathnormal">x</span><span class="mclose">)</span></span></span></span></span>到先验分布<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         p 
+        
+       
+         ( 
+        
+       
+         z 
+        
+       
+         ) 
+        
+       
+      
+        p(z) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal">p</span><span class="mopen">(</span><span class="mord mathnormal" style="margin-right: 0.044em;">z</span><span class="mclose">)</span></span></span></span></span>之间的转换，解码器学习<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         p 
+        
+       
+         ( 
+        
+       
+         z 
+        
+       
+         ) 
+        
+       
+      
+        p(z) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal">p</span><span class="mopen">(</span><span class="mord mathnormal" style="margin-right: 0.044em;">z</span><span class="mclose">)</span></span></span></span></span>到<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         p 
+        
+       
+         ( 
+        
+       
+         x 
+        
+       
+         ) 
+        
+       
+      
+        p(x) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal">p</span><span class="mopen">(</span><span class="mord mathnormal">x</span><span class="mclose">)</span></span></span></span></span>的转换关系，其在数学上可以被视为通过最大化ELBO进行优化；③ <strong>标准化流模型</strong>则是通过构造一个可逆的变换，建立图像分布<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         p 
+        
+       
+         ( 
+        
+       
+         x 
+        
+       
+         ) 
+        
+       
+      
+        p(x) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal">p</span><span class="mopen">(</span><span class="mord mathnormal">x</span><span class="mclose">)</span></span></span></span></span>与某个已知分布<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         p 
+        
+       
+         ( 
+        
+       
+         z 
+        
+       
+         ) 
+        
+       
+      
+        p(z) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal">p</span><span class="mopen">(</span><span class="mord mathnormal" style="margin-right: 0.044em;">z</span><span class="mclose">)</span></span></span></span></span>的变换；④ 最后是<strong>扩散模型Diffusion Model</strong>，其通过逐步增加高斯噪声将其变为纯高斯噪声<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         z 
+        
+       
+      
+        z 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.4306em;"></span><span class="mord mathnormal" style="margin-right: 0.044em;">z</span></span></span></span></span>，再通过对<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         z 
+        
+       
+      
+        z 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.4306em;"></span><span class="mord mathnormal" style="margin-right: 0.044em;">z</span></span></span></span></span>逐步去噪生成新的图像。</p> 
+<p><img src="https://images2.imgbox.com/e5/47/QmfBD5Bj_o.png" alt="在这里插入图片描述"><br> 简单地说，扩散模型就分为两个过程：“加噪”和“去噪”（也称为前向过程和逆向过程）。</p> 
+<p><img src="https://images2.imgbox.com/d4/8c/TXrlT2iZ_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>加噪过程：不断地往输入数据中加入噪声，直到其就变成纯高斯噪声，每个时刻都要给图像叠加一部分高斯噪声。其中后一时刻是前一时刻增加噪声得到的。<br> <img src="https://images2.imgbox.com/62/94/MD3yoXWk_o.png" alt="在这里插入图片描述"></li><li>去噪过程：由一个纯高斯噪声出发，逐步地去除噪声，得到一个满足训练数据分布的图片。</li></ul> 
+<blockquote> 
+ <p>在数学上可以将扩散模型的前向和逆向过程理解为马尔科夫链，其特点是"无记忆性"，即下一状态的概率分布只能由当前状态决定，与之前的事件均与之无关。</p> 
+</blockquote> 
+<p>在下一节本文将详细介绍具体的加噪过程与去噪过程，以及整体的学习流程。</p> 
+<h3><a id="2__DDPM_16"></a>2、最简单的扩散模型 - DDPM</h3> 
+<blockquote> 
+ <p>我们从Denoising Diffusion Probabilistic Models（DDPM）这个工作出发来分析扩散模型的前向与逆向过程</p> 
+</blockquote> 
+<h4><a id="_19"></a>前向加噪过程</h4> 
+<p>首先对于前向加噪过程涉及两个公式：</p> 
+<ul><li><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           α 
+          
+         
+           t 
+          
+         
+        
+          = 
+         
+        
+          1 
+         
+        
+          − 
+         
+         
+         
+           β 
+          
+         
+           t 
+          
+         
+        
+       
+         \alpha_t = 1 - \beta_t 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0037em;">α</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: -0.0037em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7278em; vertical-align: -0.0833em;"></span><span class="mord">1</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0528em;">β</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: -0.0528em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>，其中<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          β 
+         
+        
+       
+         \beta 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord mathnormal" style="margin-right: 0.0528em;">β</span></span></span></span></span>会随着时间步长<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          t 
+         
+        
+       
+         t 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6151em;"></span><span class="mord mathnormal">t</span></span></span></span></span>线性增大(0.0001-&gt;0.02)，从而<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          α 
+         
+        
+       
+         \alpha 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.4306em;"></span><span class="mord mathnormal" style="margin-right: 0.0037em;">α</span></span></span></span></span>越来越小；</li><li><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           x 
+          
+         
+           t 
+          
+         
+        
+          = 
+         
+         
+          
+          
+            α 
+           
+          
+            t 
+           
+          
+         
+         
+         
+           x 
+          
+          
+          
+            t 
+           
+          
+            − 
+           
+          
+            1 
+           
+          
+         
+        
+          + 
+         
+         
+          
+          
+            1 
+           
+          
+            − 
+           
+           
+           
+             α 
+            
+           
+             t 
+            
+           
+          
+         
+         
+         
+           z 
+          
+         
+           t 
+          
+         
+        
+       
+         x_t= \sqrt{\alpha_t}x_{t-1}+\sqrt{1-\alpha_t}z_t 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1.04em; vertical-align: -0.3147em;"></span><span class="mord sqrt"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.7253em;"><span class="svg-align" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord" style="padding-left: 0.833em;"><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0037em;">α</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: -0.0037em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span><span class="" style="top: -2.6853em;"><span class="pstrut" style="height: 3em;"></span><span class="hide-tail" style="min-width: 0.853em; height: 1.08em;"> 
+            <svg width="400em" height="1.08em" viewbox="0 0 400000 1080" preserveaspectratio="xMinYMin slice"> 
+             <path d="M95,702
+c-2.7,0,-7.17,-2.7,-13.5,-8c-5.8,-5.3,-9.5,-10,-9.5,-14
+c0,-2,0.3,-3.3,1,-4c1.3,-2.7,23.83,-20.7,67.5,-54
+c44.2,-33.3,65.8,-50.3,66.5,-51c1.3,-1.3,3,-2,5,-2c4.7,0,8.7,3.3,12,10
+s173,378,173,378c0.7,0,35.3,-71,104,-213c68.7,-142,137.5,-285,206.5,-429
+c69,-144,104.5,-217.7,106.5,-221
+l0 -0
+c5.3,-9.3,12,-14,20,-14
+H400000v40H845.2724
+s-225.272,467,-225.272,467s-235,486,-235,486c-2.7,4.7,-9,7,-19,7
+c-6,0,-10,-1,-12,-3s-194,-422,-194,-422s-65,47,-65,47z
+M834 80h400000v40h-400000z"></path> 
+            </svg></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.3147em;"><span class=""></span></span></span></span></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2083em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 1.04em; vertical-align: -0.2078em;"></span><span class="mord sqrt"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.8322em;"><span class="svg-align" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord" style="padding-left: 0.833em;"><span class="mord">1</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0037em;">α</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: -0.0037em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span><span class="" style="top: -2.7922em;"><span class="pstrut" style="height: 3em;"></span><span class="hide-tail" style="min-width: 0.853em; height: 1.08em;"> 
+            <svg width="400em" height="1.08em" viewbox="0 0 400000 1080" preserveaspectratio="xMinYMin slice"> 
+             <path d="M95,702
+c-2.7,0,-7.17,-2.7,-13.5,-8c-5.8,-5.3,-9.5,-10,-9.5,-14
+c0,-2,0.3,-3.3,1,-4c1.3,-2.7,23.83,-20.7,67.5,-54
+c44.2,-33.3,65.8,-50.3,66.5,-51c1.3,-1.3,3,-2,5,-2c4.7,0,8.7,3.3,12,10
+s173,378,173,378c0.7,0,35.3,-71,104,-213c68.7,-142,137.5,-285,206.5,-429
+c69,-144,104.5,-217.7,106.5,-221
+l0 -0
+c5.3,-9.3,12,-14,20,-14
+H400000v40H845.2724
+s-225.272,467,-225.272,467s-235,486,-235,486c-2.7,4.7,-9,7,-19,7
+c-6,0,-10,-1,-12,-3s-194,-422,-194,-422s-65,47,-65,47z
+M834 80h400000v40h-400000z"></path> 
+            </svg></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2078em;"><span class=""></span></span></span></span></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.044em;">z</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: -0.044em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span> ，其中<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           x 
+          
+          
+          
+            t 
+           
+          
+            − 
+           
+          
+            1 
+           
+          
+         
+        
+       
+         x_{t-1} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6389em; vertical-align: -0.2083em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2083em;"><span class=""></span></span></span></span></span></span></span></span></span></span>是前一阶段的图像，z是一个满足标准高斯分布的噪音。</li></ul> 
+<p>可以看到，模型的加噪其实就是将上一阶段输入的图像与一个高斯分布采样进行加权融合，权重随着时间步长而繁盛变化，可以看到一开始所加噪声幅度比较少，越往后噪声幅度逐渐增加。并且根据上面两个式子，我们可以推算得到任意时刻下<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+        
+          t 
+         
+        
+       
+      
+        x_t 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>与<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+        
+          0 
+         
+        
+       
+      
+        x_0 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">0</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>的关系（根据<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         t 
+        
+       
+      
+        t 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6151em;"></span><span class="mord mathnormal">t</span></span></span></span></span>和<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         x 
+        
+       
+         0 
+        
+       
+      
+        x0 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord mathnormal">x</span><span class="mord">0</span></span></span></span></span>直接得到<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+        
+          t 
+         
+        
+       
+      
+        x_t 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>）：<br> <img src="https://images2.imgbox.com/38/de/d6skC6JL_o.png" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p>其中的<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+          
+          
+            a 
+           
+          
+            t 
+           
+          
+         
+           ^ 
+          
+         
+        
+       
+         \hat{a_t} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8444em; vertical-align: -0.15em;"></span><span class="mord accent"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.6944em;"><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord mathnormal">a</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="accent-body" style="left: -0.25em;"><span class="mord">^</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span>是<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          t 
+         
+        
+       
+         t 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6151em;"></span><span class="mord mathnormal">t</span></span></span></span></span>个时间内的<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           a 
+          
+         
+           t 
+          
+         
+        
+       
+         a_t 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal">a</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>的连乘项</p> 
+</blockquote> 
+<p>根据上式可以得到，当时间步长<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         t 
+        
+       
+      
+        t 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6151em;"></span><span class="mord mathnormal">t</span></span></span></span></span>足够大时，最终输出<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+        
+          t 
+         
+        
+       
+      
+        x_t 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>就会变成一个标准高斯分布（因为α小于1，并且其随着时间一直衰减）。</p> 
+<h4><a id="_32"></a>逆向去噪过程</h4> 
+<p>去噪过程仍然是逐步进行的，其需要根据<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+        
+          t 
+         
+        
+       
+      
+        x_t 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>得到<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+         
+         
+           t 
+          
+         
+           − 
+          
+         
+           1 
+          
+         
+        
+       
+      
+        x_{t-1} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6389em; vertical-align: -0.2083em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2083em;"><span class=""></span></span></span></span></span></span></span></span></span></span>，我们利用贝叶斯公式进行推导。如果我们已知<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+        
+          t 
+         
+        
+       
+      
+        x_t 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>和<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+        
+          0 
+         
+        
+       
+      
+        x_0 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">0</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>去求<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+        
+          t 
+         
+        
+       
+      
+        x_t 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>，其贝叶斯公式如下所示：<br> <img src="https://images2.imgbox.com/d7/5d/xrE4YRhu_o.png" alt="在这里插入图片描述"><br> 其中等式右边都可以通过前向加噪过程中的推理公式求得每一项的分布，如下所示：<br> <img src="https://images2.imgbox.com/d4/04/3cnIXGm5_o.png" alt="在这里插入图片描述"><br> 将这些正态分布代入到贝叶斯公式中（利用正态分布的乘除规则），得到下式：<br> <img src="https://images2.imgbox.com/50/1a/hiWPUIso_o.png" alt="在这里插入图片描述"><br> 然后进行<strong>化简</strong>+<strong>合并同类项</strong>+<strong>配方</strong>， 如下所示。其中<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         σ 
+        
+       
+      
+        \sigma 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.4306em;"></span><span class="mord mathnormal" style="margin-right: 0.0359em;">σ</span></span></span></span></span>方差已知的 → 常数（绿色框）。然后可以进一步计算得到<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         μ 
+        
+       
+      
+        \mu 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.625em; vertical-align: -0.1944em;"></span><span class="mord mathnormal">μ</span></span></span></span></span>的表达式。<br> <img src="https://images2.imgbox.com/fc/ab/myCYV3AE_o.png" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p>需要注意这个过程要对X0进行换算，使得最后的结果只与Xt相关（此外还有一个待求参数<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           z 
+          
+         
+           t 
+          
+         
+        
+       
+         z_t 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.044em;">z</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: -0.044em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>）</p> 
+</blockquote> 
+<p>经过上式的推导我们就能得到分布<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         p 
+        
+       
+         ( 
+        
+        
+        
+          x 
+         
+         
+         
+           t 
+          
+         
+           − 
+          
+         
+           1 
+          
+         
+        
+       
+         ∣ 
+        
+        
+        
+          x 
+         
+        
+          t 
+         
+        
+       
+         ) 
+        
+       
+      
+        p(x_{t-1}|x_t) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal">p</span><span class="mopen">(</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2083em;"><span class=""></span></span></span></span></span></span><span class="mord">∣</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span></span></span></span></span>，其满足某个高斯分布。在这个分布中，方差是已知的（由α和β组成），而均值与<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+        
+          t 
+         
+        
+       
+      
+        x_t 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>还有一个高斯噪声<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          z 
+         
+        
+          t 
+         
+        
+       
+      
+        z_t 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.044em;">z</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: -0.044em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>相关，其中<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+        
+          t 
+         
+        
+       
+      
+        x_t 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>是已知的。因此，我们只要求得这个<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          z 
+         
+        
+          t 
+         
+        
+       
+      
+        z_t 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.044em;">z</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: -0.044em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>，就可以得到从<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+        
+          t 
+         
+        
+       
+      
+        x_t 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>得到<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+         
+         
+           t 
+          
+         
+           − 
+          
+         
+           1 
+          
+         
+        
+       
+      
+        x_{t-1} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6389em; vertical-align: -0.2083em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2083em;"><span class=""></span></span></span></span></span></span></span></span></span></span>的分布（知道了高斯分布的均值和方差）。而Diffusion Model采用一个深度模型<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         m 
+        
+       
+         o 
+        
+       
+         d 
+        
+       
+         e 
+        
+       
+         l 
+        
+       
+         ( 
+        
+        
+        
+          X 
+         
+        
+          t 
+         
+        
+       
+         , 
+        
+       
+         t 
+        
+       
+         ) 
+        
+       
+      
+        model(X_t,t) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal">m</span><span class="mord mathnormal">o</span><span class="mord mathnormal">d</span><span class="mord mathnormal">e</span><span class="mord mathnormal" style="margin-right: 0.0197em;">l</span><span class="mopen">(</span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0785em;">X</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: -0.0785em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord mathnormal">t</span><span class="mclose">)</span></span></span></span></span>去预测轮次<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         t 
+        
+       
+      
+        t 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6151em;"></span><span class="mord mathnormal">t</span></span></span></span></span>的噪声<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          z 
+         
+        
+          t 
+         
+        
+       
+      
+        z_t 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.044em;">z</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: -0.044em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>，根据<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+        
+          t 
+         
+        
+       
+      
+        x_t 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>和<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          z 
+         
+        
+          t 
+         
+        
+       
+      
+        z_t 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.044em;">z</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: -0.044em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>，我们就可以得到去噪后的<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+         
+         
+           t 
+          
+         
+           − 
+          
+         
+           1 
+          
+         
+        
+       
+      
+        x_{t-1} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6389em; vertical-align: -0.2083em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2083em;"><span class=""></span></span></span></span></span></span></span></span></span></span>。这个模型采用U-Net结构（共享权重-所有时间轮次都只用这一个模型）。</p> 
+<h4><a id="_46"></a>训练与推理流程</h4> 
+<p><img src="https://images2.imgbox.com/8c/93/kStSpxXD_o.png" alt="在这里插入图片描述"><br> <strong>左边是训练过程</strong>：随机选择一张图片，均匀采样得到时间轮次t，并从标准正态分布采样得到噪声ε【这也会当做U-Net训练时的label】，通过公式得到第<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         t 
+        
+       
+      
+        t 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6151em;"></span><span class="mord mathnormal">t</span></span></span></span></span>轮加噪后的图像。将噪声图像和时间步长一起输入网络预测噪声值<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          z 
+         
+        
+          t 
+         
+        
+       
+      
+        z_t 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.044em;">z</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: -0.044em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>，计算其与采样噪声ε之间的loss来更新模型参数（即U-Net网络）；</p> 
+<blockquote> 
+ <p>训练主要关注的是逆向去噪过程，训练的目标也是让U-Net能够根据<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           x 
+          
+         
+           t 
+          
+         
+        
+       
+         x_t 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>和<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          t 
+         
+        
+       
+         t 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6151em;"></span><span class="mord mathnormal">t</span></span></span></span></span>得到噪声<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           z 
+          
+         
+           t 
+          
+         
+        
+       
+         z_t 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.044em;">z</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: -0.044em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>.</p> 
+</blockquote> 
+<p><strong>右边是生成过程</strong>：先从标准高斯分布中随机采样得到<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          X 
+         
+        
+          T 
+         
+        
+       
+      
+        X_T 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0785em;">X</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-left: -0.0785em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right: 0.1389em;">T</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>，然后利用噪声预测模型预测每一轮次的噪声<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          z 
+         
+        
+          t 
+         
+        
+       
+      
+        z_t 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.044em;">z</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: -0.044em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>，并根据上面推导的从<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+        
+          t 
+         
+        
+       
+      
+        x_t 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>到<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+         
+         
+           t 
+          
+         
+           − 
+          
+         
+           1 
+          
+         
+        
+       
+      
+        x_{t-1} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6389em; vertical-align: -0.2083em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2083em;"><span class=""></span></span></span></span></span></span></span></span></span></span>的公式进行逐步去噪。</p> 
+<h4><a id="_53"></a>模型优缺点</h4> 
+<p>对于一个图像生成模型，存在三个方面的考虑：1. 高质量样本；2. 生成多样性；3. 高效快速的采样。但这三者之间往往难以权衡：<br> <img src="https://images2.imgbox.com/45/c7/vJlNpoyf_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>GAN可以生成高质量的结果，同时可以快速采样，但是生成结果缺乏多样性，而且GAN网络训练过程中会出现不稳定和模式坍塌的问题；</li><li>VAE和Normalizing Flows可以快速采样，而且生成的结果也有良好的多样性, 但是生成的质量却比较差；</li><li>Diffusion生成的<strong>结果质量比较高</strong>，甚至可以超过GAN, 而且结果也有<strong>良好的多样性</strong>，但是<strong>Diffusion需要几百甚至几千步的采样</strong>，这导致训练与推理十分缓慢。此外，Diffusion Model的训练也比较容易（相比于GAN）。</li></ul> 
+<p>在下一节中，本文将会介绍一个用于减少Diffusion Model采用次数的工作。</p> 
+<h3><a id="3__DiffusionGAN_61"></a>3、减少扩散模型的采样步骤 - DiffusionGAN</h3> 
+<blockquote> 
+ <p>Tackling the Generative Learning Trilemma with Denoising Diffusion GANs</p> 
+</blockquote> 
+<p>目前已有很多工作提出用于减少扩散模型的采样次数，这里介绍其中一项工作 - DiffusionGAN，其核心在于通过使用生成对抗模型来进行large step的快速采样。</p> 
+<blockquote> 
+ <p>不过目前主要流行的方法主要是DDIM()</p> 
+</blockquote> 
+<p>首先回顾Diffusion Model，其有两个重要假设：1. 去噪过程的分布<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          p 
+         
+        
+          θ 
+         
+        
+       
+         ( 
+        
+        
+        
+          x 
+         
+         
+         
+           t 
+          
+         
+           − 
+          
+         
+           1 
+          
+         
+        
+       
+         ∣ 
+        
+        
+        
+          x 
+         
+        
+          t 
+         
+        
+       
+         ) 
+        
+       
+      
+        p_\theta(x_{t-1}|x_t) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord"><span class="mord mathnormal">p</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3361em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0278em;">θ</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mopen">(</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2083em;"><span class=""></span></span></span></span></span></span><span class="mord">∣</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span></span></span></span></span>是高斯分布；2. 去噪过程的步数需要数百/数千的数量级。这里也引申出两个问题：</p> 
+<ul><li><strong>去噪过程真实分布是高斯分布吗？或者在什么条件下是高斯分布？</strong></li><li><strong>去噪过程的步数多少与高斯分布的假设是否相关？</strong></li></ul> 
+<h4><a id="_70"></a>分析高斯分布、采样步长</h4> 
+<p>我们先回顾上一节用到的贝叶斯公式：<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         q 
+        
+       
+         ( 
+        
+        
+        
+          x 
+         
+         
+         
+           t 
+          
+         
+           − 
+          
+         
+           1 
+          
+         
+        
+       
+         ∣ 
+        
+        
+        
+          x 
+         
+        
+          t 
+         
+        
+       
+         ) 
+        
+       
+         ∝ 
+        
+       
+         q 
+        
+       
+         ( 
+        
+        
+        
+          x 
+         
+        
+          t 
+         
+        
+       
+         ∣ 
+        
+        
+        
+          x 
+         
+         
+         
+           t 
+          
+         
+           − 
+          
+         
+           1 
+          
+         
+        
+       
+         ) 
+        
+       
+         q 
+        
+       
+         ( 
+        
+        
+        
+          x 
+         
+         
+         
+           t 
+          
+         
+           − 
+          
+         
+           1 
+          
+         
+        
+       
+         ) 
+        
+       
+      
+        q(x_{t-1}|x_t)\propto q(x_{t}|x_{t-1})q(x_{t-1}) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal" style="margin-right: 0.0359em;">q</span><span class="mopen">(</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2083em;"><span class=""></span></span></span></span></span></span><span class="mord">∣</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">∝</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal" style="margin-right: 0.0359em;">q</span><span class="mopen">(</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mord">∣</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2083em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span><span class="mord mathnormal" style="margin-right: 0.0359em;">q</span><span class="mopen">(</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2083em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span></span></span></span></span>，其中前向加噪过程的分布<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         q 
+        
+       
+         ( 
+        
+        
+        
+          x 
+         
+        
+          t 
+         
+        
+       
+         ∣ 
+        
+        
+        
+          x 
+         
+         
+         
+           t 
+          
+         
+           − 
+          
+         
+           1 
+          
+         
+        
+       
+         ) 
+        
+       
+      
+        q(x_{t}|x_{t-1}) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal" style="margin-right: 0.0359em;">q</span><span class="mopen">(</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mord">∣</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2083em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span></span></span></span></span>服从高斯分布。那么在如下两种情况下，去噪过程满足高斯分布：</p> 
+<ul><li>当步长<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           β 
+          
+         
+           t 
+          
+         
+        
+       
+         \beta_t 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0528em;">β</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: -0.0528em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>无限小的时候，这时候贝叶斯项中的<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          q 
+         
+        
+          ( 
+         
+         
+         
+           x 
+          
+         
+           t 
+          
+         
+        
+          ∣ 
+         
+         
+         
+           x 
+          
+          
+          
+            t 
+           
+          
+            − 
+           
+          
+            1 
+           
+          
+         
+        
+          ) 
+         
+        
+       
+         q(x_{t}|x_{t-1}) 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal" style="margin-right: 0.0359em;">q</span><span class="mopen">(</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mord">∣</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2083em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span></span></span></span></span>占主导，无论<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          q 
+         
+        
+          ( 
+         
+         
+         
+           x 
+          
+         
+           t 
+          
+         
+        
+          ) 
+         
+        
+       
+         q(x_{t}) 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal" style="margin-right: 0.0359em;">q</span><span class="mopen">(</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span></span></span></span></span>是什么形式，真实的去噪过程的分布与前向过程相同，都是高斯分布，这也是Diffusion Models需要大量采样步骤的原因；</li></ul> 
+<blockquote> 
+ <p>因为<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          q 
+         
+        
+          ( 
+         
+         
+         
+           x 
+          
+         
+           t 
+          
+         
+        
+          ) 
+         
+        
+       
+         q(x_{t}) 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal" style="margin-right: 0.0359em;">q</span><span class="mopen">(</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span></span></span></span></span>和<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          q 
+         
+        
+          ( 
+         
+         
+         
+           x 
+          
+          
+          
+            t 
+           
+          
+            − 
+           
+          
+            1 
+           
+          
+         
+        
+          ) 
+         
+        
+       
+         q(x_{t-1}) 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal" style="margin-right: 0.0359em;">q</span><span class="mopen">(</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2083em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span></span></span></span></span>的分布基本一致</p> 
+</blockquote> 
+<ul><li>当数据边缘分布<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          q 
+         
+        
+          ( 
+         
+         
+         
+           x 
+          
+         
+           t 
+          
+         
+        
+          ) 
+         
+        
+       
+         q(x_{t}) 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal" style="margin-right: 0.0359em;">q</span><span class="mopen">(</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span></span></span></span></span>是高斯分布时，那么真实的去噪分布也是高斯分布的形式，因此有一种做法就是通过VAE将其编码到高斯分布，再利用Diffusion模型（但这个VAE很难学）。</li></ul> 
+<blockquote> 
+ <p>高斯分布相乘仍然还是高斯分布</p> 
+</blockquote> 
+<p>所以当两个条件都不满足时，真实的去噪过程分布会变得很复杂：<br> <img src="https://images2.imgbox.com/cf/f1/SUzNh7go_o.png" alt="在这里插入图片描述"><br> 上图是在一维数据集上模拟前向加噪过程的各数据分布，可以看到：采用较小的采样步长时，真实去噪过程分布满足高斯分布，如果步长过大，真实去噪分布将变得非常复杂（几种高斯混合在一起）。这说明在DDPM中，需要具有较多的采样step的必要性，但这也影响着模型在推理时的采样速率。</p> 
+<h4><a id="Diffusion_GAN_80"></a>Diffusion GAN</h4> 
+<p>DiffusionGAN的目标是<strong>当数据分布不为高斯分布时减少采样的步数</strong>。在这种情况下，<strong>真实去噪分布也不再服从高斯分布形式</strong>，那么建模的反向过程的分布<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          p 
+         
+        
+          θ 
+         
+        
+       
+         ( 
+        
+        
+        
+          x 
+         
+         
+         
+           t 
+          
+         
+           − 
+          
+         
+           1 
+          
+         
+        
+       
+         ∣ 
+        
+        
+        
+          x 
+         
+        
+          t 
+         
+        
+       
+         ) 
+        
+       
+      
+        p_\theta(x_{t-1}|x_t) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord"><span class="mord mathnormal">p</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3361em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0278em;">θ</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mopen">(</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2083em;"><span class=""></span></span></span></span></span></span><span class="mord">∣</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span></span></span></span></span>也不再是高斯分布。因此diffusionGAN直接采用Conditional GAN去直接学习去噪分布（即<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         q 
+        
+       
+         ( 
+        
+        
+        
+          x 
+         
+        
+          t 
+         
+        
+       
+         ∣ 
+        
+        
+        
+          x 
+         
+         
+         
+           t 
+          
+         
+           − 
+          
+         
+           1 
+          
+         
+        
+       
+      
+        q(x_t|x_{t-1} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal" style="margin-right: 0.0359em;">q</span><span class="mopen">(</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mord">∣</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2083em;"><span class=""></span></span></span></span></span></span></span></span></span></span>），而不是显式地去学习高斯分布的均值和方差。它训练目标是拟合真实的去噪过程分布，如下所示：<br> <img src="https://images2.imgbox.com/93/95/3mWNJhxq_o.png" alt="在这里插入图片描述"><br> 其中GAN的判别器优化目标是去区分真实去噪过程分布与模式输出的去噪分布：<br> <img src="https://images2.imgbox.com/93/c4/pSTDsEB0_o.png" alt="在这里插入图片描述"><br> 但是我们也无法知道真实的去噪过程分布<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         q 
+        
+       
+         ( 
+        
+        
+        
+          x 
+         
+         
+         
+           t 
+          
+         
+           − 
+          
+         
+           1 
+          
+         
+        
+       
+         ∣ 
+        
+        
+        
+          x 
+         
+        
+          t 
+         
+        
+       
+         ) 
+        
+       
+      
+        q(x_{t-1}|x_{t}) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal" style="margin-right: 0.0359em;">q</span><span class="mopen">(</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2083em;"><span class=""></span></span></span></span></span></span><span class="mord">∣</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span></span></span></span></span>到底是什么，因此使用如下定义去重写第一项：<br> <img src="https://images2.imgbox.com/79/a1/p4lcjOGB_o.png" alt="在这里插入图片描述"><br> 最终使得第一项变为下式：<br> <img src="https://images2.imgbox.com/4a/96/TJz4T7lm_o.png" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p>利用条件概率的特性，将真实去噪分布<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          q 
+         
+        
+          ( 
+         
+         
+         
+           x 
+          
+         
+           t 
+          
+         
+        
+          ) 
+         
+        
+          q 
+         
+        
+          ( 
+         
+         
+         
+           x 
+          
+          
+          
+            t 
+           
+          
+            − 
+           
+          
+            1 
+           
+          
+         
+        
+          ∣ 
+         
+         
+         
+           x 
+          
+         
+           t 
+          
+         
+        
+          ) 
+         
+        
+       
+         q(x_{t})q(x_{t-1}|x_{t}) 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal" style="margin-right: 0.0359em;">q</span><span class="mopen">(</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span><span class="mord mathnormal" style="margin-right: 0.0359em;">q</span><span class="mopen">(</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2083em;"><span class=""></span></span></span></span></span></span><span class="mord">∣</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span></span></span></span></span>一起进行转换成<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          q 
+         
+        
+          ( 
+         
+         
+         
+           x 
+          
+         
+           0 
+          
+         
+        
+          ) 
+         
+        
+          q 
+         
+        
+          ( 
+         
+         
+         
+           x 
+          
+          
+          
+            t 
+           
+          
+            − 
+           
+          
+            1 
+           
+          
+         
+        
+          ∣ 
+         
+         
+         
+           x 
+          
+         
+           0 
+          
+         
+        
+          ) 
+         
+        
+          q 
+         
+        
+          ( 
+         
+         
+         
+           x 
+          
+         
+           t 
+          
+         
+        
+          ∣ 
+         
+         
+         
+           x 
+          
+          
+          
+            t 
+           
+          
+            − 
+           
+          
+            1 
+           
+          
+         
+        
+          ) 
+         
+        
+       
+         q(x_{0})q(x_{t-1}|x_{0})q(x_t|x_{t-1}) 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal" style="margin-right: 0.0359em;">q</span><span class="mopen">(</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">0</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span><span class="mord mathnormal" style="margin-right: 0.0359em;">q</span><span class="mopen">(</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2083em;"><span class=""></span></span></span></span></span></span><span class="mord">∣</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">0</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span><span class="mord mathnormal" style="margin-right: 0.0359em;">q</span><span class="mopen">(</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mord">∣</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2083em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span></span></span></span></span>，而这三项我们是比较公式直接可定义的</p> 
+</blockquote> 
+<p>而GAN的生成器优化目标就是反着来，即让判别器无法分辨模型输出分布和真实分布：<br> <img src="https://images2.imgbox.com/27/b9/V476ccJi_o.png" alt="在这里插入图片描述"><br> Diffusion GAN模型的整体架构如下所示：判别器需要输入<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+         
+         
+           t 
+          
+         
+           − 
+          
+         
+           1 
+          
+         
+        
+       
+         , 
+        
+        
+        
+          x 
+         
+        
+          t 
+         
+        
+       
+         , 
+        
+       
+         t 
+        
+       
+      
+        x_{t-1},x_t,t 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8234em; vertical-align: -0.2083em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2083em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord mathnormal">t</span></span></span></span></span>三项，判断输入的<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+         
+         
+           t 
+          
+         
+           − 
+          
+         
+           1 
+          
+         
+        
+       
+      
+        x_{t-1} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6389em; vertical-align: -0.2083em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2083em;"><span class=""></span></span></span></span></span></span></span></span></span></span>是真实的还是模型模拟得到的。根据输入的<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+        
+          0 
+         
+        
+       
+      
+        x_0 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">0</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>就可以在前向过程中直接得到真实的<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+         
+         
+           t 
+          
+         
+           − 
+          
+         
+           1 
+          
+         
+        
+       
+      
+        x_{t-1} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6389em; vertical-align: -0.2083em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2083em;"><span class=""></span></span></span></span></span></span></span></span></span></span>和<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+        
+          t 
+         
+        
+       
+      
+        x_t 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>，这样就解决了真实分布下的数据。而生成器则是<strong>根据输入的<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           x 
+          
+         
+           t 
+          
+         
+        
+       
+         x_t 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>直接得到完全去噪后的<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           x 
+          
+         
+           0 
+          
+         
+           ′ 
+          
+         
+        
+       
+         x'_0 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.2481em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.7519em;"><span class="" style="top: -2.4519em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">0</span></span></span><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">′</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2481em;"><span class=""></span></span></span></span></span></span></span></span></span></span></strong>，然后再对<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+        
+          0 
+         
+        
+          ′ 
+         
+        
+       
+      
+        x'_0 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.2481em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.7519em;"><span class="" style="top: -2.4519em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">0</span></span></span><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">′</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2481em;"><span class=""></span></span></span></span></span></span></span></span></span></span>进行一次posterior sampling去得到<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+         
+         
+           t 
+          
+         
+           − 
+          
+         
+           1 
+          
+         
+        
+          ′ 
+         
+        
+       
+      
+        x'_{t-1} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.0583em; vertical-align: -0.3064em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.7519em;"><span class="" style="top: -2.4519em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">′</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.3064em;"><span class=""></span></span></span></span></span></span></span></span></span></span>，得到模型预测的结果：<br> <img src="https://images2.imgbox.com/cb/90/EkUNxAsE_o.png" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p>这个过程就类似于DDPM的采样过程，只不过我们直接得到了<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           x 
+          
+         
+           0 
+          
+         
+        
+       
+         x_0 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">0</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>和<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           x 
+          
+         
+           t 
+          
+         
+        
+       
+         x_t 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>，直接算出<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           x 
+          
+          
+          
+            t 
+           
+          
+            − 
+           
+          
+            1 
+           
+          
+         
+        
+       
+         x_{t-1} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6389em; vertical-align: -0.2083em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2083em;"><span class=""></span></span></span></span></span></span></span></span></span></span>就可以了（在DDPM预测噪声<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           z 
+          
+         
+           t 
+          
+         
+        
+       
+         z_t 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.044em;">z</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: -0.044em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>也是为了得到<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           x 
+          
+         
+           0 
+          
+         
+        
+       
+         x_0 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">0</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>）</p> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/65/2b/8OROhNMg_o.png" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p>总结：生成器的目标是根据<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           x 
+          
+         
+           t 
+          
+         
+        
+       
+         x_t 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>得到<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           x 
+          
+         
+           0 
+          
+         
+           ′ 
+          
+         
+        
+       
+         x'_0 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.2481em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.7519em;"><span class="" style="top: -2.4519em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">0</span></span></span><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">′</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2481em;"><span class=""></span></span></span></span></span></span></span></span></span></span>，然后通过后验采样得到<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           x 
+          
+          
+          
+            t 
+           
+          
+            − 
+           
+          
+            1 
+           
+          
+         
+           ′ 
+          
+         
+        
+       
+         x'_{t-1} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.0583em; vertical-align: -0.3064em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.7519em;"><span class="" style="top: -2.4519em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">′</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.3064em;"><span class=""></span></span></span></span></span></span></span></span></span></span>；而判别器的目标是根据输入的<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           x 
+          
+          
+          
+            t 
+           
+          
+            − 
+           
+          
+            1 
+           
+          
+         
+        
+          , 
+         
+         
+         
+           x 
+          
+         
+           t 
+          
+         
+        
+          , 
+         
+        
+          t 
+         
+        
+       
+         x_{t-1},x_t,t 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8234em; vertical-align: -0.2083em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2083em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord mathnormal">t</span></span></span></span></span>来判断<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           x 
+          
+          
+          
+            t 
+           
+          
+            − 
+           
+          
+            1 
+           
+          
+         
+        
+       
+         x_{t-1} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6389em; vertical-align: -0.2083em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2083em;"><span class=""></span></span></span></span></span></span></span></span></span></span>是从真实加噪过程中得到的还是模型模拟出来的结果。</p> 
+</blockquote> 
+<p>可以看到，生成器需要输入 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+        
+          t 
+         
+        
+       
+         , 
+        
+       
+         z 
+        
+       
+         , 
+        
+       
+         t 
+        
+       
+      
+        x_t,z,t 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8095em; vertical-align: -0.1944em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord mathnormal" style="margin-right: 0.044em;">z</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord mathnormal">t</span></span></span></span></span>，相比于DDPM多引入了一个随机latent code变量z，并且直接输出<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+        
+          0 
+         
+         
+          
+         
+           ′ 
+          
+         
+        
+       
+      
+        x_0^{'} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.1906em; vertical-align: -0.2481em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.9425em;"><span class="" style="top: -2.4519em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">0</span></span></span><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight"><span class=""></span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8278em;"><span class="" style="top: -2.931em; margin-right: 0.0714em;"><span class="pstrut" style="height: 2.5em;"></span><span class="sizing reset-size3 size1 mtight"><span class="mord mtight"><span class="mord mtight">′</span></span></span></span></span></span></span></span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2481em;"><span class=""></span></span></span></span></span></span></span></span></span></span>。作者认为引入<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         z 
+        
+       
+      
+        z 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.4306em;"></span><span class="mord mathnormal" style="margin-right: 0.044em;">z</span></span></span></span></span>可以使得建模出来的去噪分布能够更复杂以及multimodal。</p> 
+<ul><li>为什么不直接输出<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           x 
+          
+          
+          
+            t 
+           
+          
+            − 
+           
+          
+            1 
+           
+          
+          
+           
+          
+            ′ 
+           
+          
+         
+        
+       
+         x_{t-1}^{'} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.2489em; vertical-align: -0.3064em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.9425em;"><span class="" style="top: -2.4519em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight"><span class=""></span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8278em;"><span class="" style="top: -2.931em; margin-right: 0.0714em;"><span class="pstrut" style="height: 2.5em;"></span><span class="sizing reset-size3 size1 mtight"><span class="mord mtight"><span class="mord mtight">′</span></span></span></span></span></span></span></span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.3064em;"><span class=""></span></span></span></span></span></span></span></span></span></span>？ 因为<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           x 
+          
+         
+           t 
+          
+         
+        
+       
+         x_t 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>在不同时刻扰动程度不同，直接用单个网络预测<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           x 
+          
+          
+          
+            t 
+           
+          
+            − 
+           
+          
+            1 
+           
+          
+          
+           
+          
+            ′ 
+           
+          
+         
+        
+       
+         x_{t-1}^{'} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.2489em; vertical-align: -0.3064em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.9425em;"><span class="" style="top: -2.4519em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight"><span class=""></span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8278em;"><span class="" style="top: -2.931em; margin-right: 0.0714em;"><span class="pstrut" style="height: 2.5em;"></span><span class="sizing reset-size3 size1 mtight"><span class="mord mtight"><span class="mord mtight">′</span></span></span></span></span></span></span></span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.3064em;"><span class=""></span></span></span></span></span></span></span></span></span></span>很难，不如直接预测无噪声的<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           x 
+          
+         
+           0 
+          
+         
+        
+       
+         x_0 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">0</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>;</li><li>什么不直接训练一个直接去生成样本的GAN，而是采用这种逐步去噪的模式？主要是因为GAN存在"训练不稳定"+“模型崩塌”+ “判别器容易过拟合” + 一些其他原因。相比之下，DiffusionGAN将生成的过程拆分多步，每一步都比较简单。此外diffusion过程能够平滑数据分布，判别器也不容易过拟合. 【多样性更好 + 更稳定】</li></ul> 
+<p><strong>总结</strong>：DDPM之所以要这么多的采样步长，是为了使得去噪过程<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         q 
+        
+       
+         ( 
+        
+        
+        
+          x 
+         
+         
+         
+           t 
+          
+         
+           − 
+          
+         
+           1 
+          
+         
+        
+       
+         ∣ 
+        
+        
+        
+          x 
+         
+        
+          t 
+         
+        
+       
+         ) 
+        
+       
+      
+        q(x_{t-1}|x_t) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal" style="margin-right: 0.0359em;">q</span><span class="mopen">(</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2083em;"><span class=""></span></span></span></span></span></span><span class="mord">∣</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span></span></span></span></span>为高斯分布。如果采样步长较大，那么<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         q 
+        
+       
+         ( 
+        
+        
+        
+          x 
+         
+         
+         
+           t 
+          
+         
+           − 
+          
+         
+           1 
+          
+         
+        
+       
+         ∣ 
+        
+        
+        
+          x 
+         
+        
+          t 
+         
+        
+       
+         ) 
+        
+       
+      
+        q(x_{t-1}|x_t) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal" style="margin-right: 0.0359em;">q</span><span class="mopen">(</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mbin mtight">−</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2083em;"><span class=""></span></span></span></span></span></span><span class="mord">∣</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span></span></span></span></span>的分布就复杂了，而DiffusionGAN就用一个GAN去直接学习这个分布，从而减少采样步长，提升推理速度。</p> 
+<p>此外还有从其他角度分析的工作，比如DDIM不限制扩散过程是一个马尔科夫链，使得其在采样时可以采用更小的采样步数来加速生成过程（采样一个子序列），详情请见<a href="https://zhuanlan.zhihu.com/p/565698027" rel="nofollow">扩散模型之DDIM</a>。</p> 
+<h3><a id="4__Stable_Diffusion_107"></a>4、潜在扩散模型与条件生成模型 - Stable Diffusion</h3> 
+<blockquote> 
+ <p>High-Resolution Image Synthesis with Latent Diffusion Models</p> 
+</blockquote> 
+<p>虽然目前已经存在一些方法来减少扩散模型的采样步骤数，比如上文提到的DiffusionGAN和DDIM，但要训练一个不错的扩散模型还是需要大量的<strong>GPU资源</strong>，这主要是因为模型的训练与推理过程都基于<strong>像素空间</strong>进行。除此之外，作为一类生成式模型，扩散模型应该拥有<strong>条件建模</strong>能力（即根据输入的条件信息生成对应的图像，例如文本、语义掩码等）。</p> 
+<p>为了解决这两个问题，Stable Diffusion分别提出了两种解决措施：首先将模型从像素空间迁移到<strong>特征空间</strong>中，去除掉不必要的高频和细节信息，在主要的语义层面进行扩散过程；其次引入<strong>条件建模</strong>，采用Cross-Attention操作将条件信息嵌入到生成去噪过程中。<br> <img src="https://images2.imgbox.com/d0/49/NkmxK9EI_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="_114"></a>感知图像压缩</h4> 
+<p>为了使扩散模型不在高分辨率的图像空间中进行训练与推理，Stable Diffusion额外引入一个感知图像压缩模型，其实也就是自编码器。自编码器包括一个编码器和一个解码器，其中编码器负责将图像x压缩到一个潜在表征<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         z 
+        
+       
+      
+        z 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.4306em;"></span><span class="mord mathnormal" style="margin-right: 0.044em;">z</span></span></span></span></span>(latent representation)，解码器则是将这个潜在表征重构到图像空间（上图中的 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         ε 
+        
+       
+      
+        \varepsilon 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.4306em;"></span><span class="mord mathnormal">ε</span></span></span></span></span>和<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         D 
+        
+       
+      
+        D 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.0278em;">D</span></span></span></span></span>）。</p> 
+<blockquote> 
+ <p>自编码器在训练时引入了KL约束和VQ约束，并保留图像的空间维度</p> 
+</blockquote> 
+<p>在引入自编码器后，扩散模型就只需要在表征空间<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         z 
+        
+       
+      
+        z 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.4306em;"></span><span class="mord mathnormal" style="margin-right: 0.044em;">z</span></span></span></span></span>中进行训练和推理，其空间维度是将原像素空间下采样了<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         f 
+        
+       
+         = 
+        
+        
+        
+          2 
+         
+        
+          m 
+         
+        
+       
+      
+        f=2^m 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord mathnormal" style="margin-right: 0.1076em;">f</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6644em;"></span><span class="mord"><span class="mord">2</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.6644em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">m</span></span></span></span></span></span></span></span></span></span></span></span>倍。</p> 
+<blockquote> 
+ <p>这类将扩散模型在特征空间中训练与推理的方法也称为LDM（Latent Diffusion Model）</p> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/9c/99/NhACFQGt_o.png" alt="在这里插入图片描述"><br> 上面的实验展示了不同采样倍率的LDM在训练时的收敛情况，可以看到当下采样倍率过大和过小时效果都不太好，在4-16之间的效果较好。这意味着，下采样倍率过大时，图像会损失较多信息，倍率过小时包含了太多无效信息，导致收敛时间较长。<br> <img src="https://images2.imgbox.com/e9/36/ibNTntCA_o.png" alt="在这里插入图片描述"><br> 上面实验展示了不同采样倍率的LDM的推理速度（其中不同的点代表不同的采样步骤数 - 这里参考DDIM，使用了{10,20,50,100,200}），可以看到在潜在空间中推理会显著提升模型效率。</p> 
+<h4><a id="_127"></a>条件信息建模</h4> 
+<p>为了引入条件信息，Stable Diffusion在扩散模型中（即U-Net）引入了cross-attention机制，如上面的模型结构图所示，先通过一个条件编码器将条件信息进行编码（比如文本信息就可以采用BERT这类transformer模型进行编码）。在得到条件编码信息后，每一层采用下式计算注意力：<br> <img src="https://images2.imgbox.com/29/10/t6eetQ7U_o.png" alt="在这里插入图片描述"><br> 其中Q来自特征编码<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          z 
+         
+        
+          t 
+         
+        
+       
+      
+        z_t 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5806em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.044em;">z</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: -0.044em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>，而K，V来自条件信息<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         y 
+        
+       
+      
+        y 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.625em; vertical-align: -0.1944em;"></span><span class="mord mathnormal" style="margin-right: 0.0359em;">y</span></span></span></span></span>。通过这种方式，模型就能够在训练过程中学习到条件信息，从而在推理时根据不同的条件生成出不同的图像。<br> <img src="https://images2.imgbox.com/34/b4/99YnHppO_o.png" alt="在这里插入图片描述"><br> 上图就是展示了Stable Diffusion对于不同的条件建模任务生成的图像（上两行是布局式图像生成, layout-to-image，下两行是文本-图像生成）。</p> 
+<p>关于Stable Diffusion更多的量化实验结果就不放在文中了，其不仅可以进行条件图像生成，还可以进行图像超分、图像重建等任务，并且表现都非常好，详情参照原文。</p> 
+<h3><a id="_136"></a>参考资料</h3> 
+<p>[1] <a href="https://www.bilibili.com/video/BV1i24y1d7mC/?spm_id_from=333.880.my_history.page.click&amp;vd_source=58b3433eb54ebdac94f8b710a66d0857" rel="nofollow">强推！不愧是公认的讲的最好的【Diffusion模型全套教程】</a><br> [2] <a href="https://zhuanlan.zhihu.com/p/565698027" rel="nofollow">扩散模型之DDIM</a>。<br> [3] <a href="https://zhuanlan.zhihu.com/p/600251419" rel="nofollow">十分钟读懂stable diffusion model</a><br> [4] <a href="https://zhuanlan.zhihu.com/p/583124756" rel="nofollow">Stable Diffusion原理解读</a></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/0ee6ee369e6a5297ab1e50bf401b88ce/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">解决多项目中的报错：BindingException:Invalid bound statement (not found)</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/64d02492e0ecf17e6ad963fe4f15a8d8/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">electron24整合vite4&#43;vue3创建跨端桌面程序</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

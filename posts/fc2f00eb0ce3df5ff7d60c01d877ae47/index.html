@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>kubernetes实践之十四：Service Account与Secret - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="kubernetes实践之十四：Service Account与Secret" />
+<meta property="og:description" content="一：Service Account与Secret数据结构 二：Service Account与Secret运行机制 1.kubernetes的master节点由三部分组成kube-apiserver,kube-scheduler和kube-controller-manager。其中controller manager会根据apiserver的配置信息(--admission-control和--service-account-private-key-file)，生成ServiceAccount controller 和token controller. 2.ServiceAccount controller一直监听Service Account和Namespace事件。如果一个Namespace中没有default Service Account，那么Service Account Controller就会为该Namespace创建一个默认的（default）的Service Account。 3.Token Controller也监听Service Account的事件，如果发现新建的Service Account里没有对应的Service Account Secret，则会用API Server私钥（--service-account-private-key-file指定的文件）创建一个Token（JWT Token），并用该Token、CA证书(这个是API Server的CA公钥证书，来源于controller-manager配置文件中的root-ca-file),Namespace名称等三个信息产生一个新的Secret对象，然后放入刚才的Service Account中；如果监听到的事件是删除Service Account事件，则自动删除与该Service Account相关的所有Secret。此外，Token Controller对象同时监听Secret的创建、修改和删除事件，并根据事件的不同做不同的处理。
+4.API Server收到Token以后，采用自己的私钥（实际是使用apiserver配置文件中的参数service-account-key-file指定的私钥，如果此参数没有设置，则默认采用tls-private-key-file指定的参数，即自己的私钥）对Token进行合法验证。 三：Service Account相关概念 1. Service Account概念的引入是基于这样的使用场景：运行在pod里的进程需要调用Kubernetes API以及非Kubernetes API的其它服务。Service Account它并不是给kubernetes集群的用户使用的，而是给pod里面的进程使用的，它为pod提供必要的身份认证。 2. 如果kubernetes开启了ServiceAccount(apiserver配置文件)那么会在每个namespace下面都会创建一个默认的default的service account。
+3.ServiceAccount详情
+4.当创建pod的时候，如果没有指定一个service account,系统会自动在该pod所在的namespace下为其指派一个default service account. a. 如果spec.serviceAccount域没有被设置，则Kubernetes默认为其制定名字为default的Serviceaccount； b. 如果Pod的spec.serviceAccount域指定了default以外的ServiceAccount，而该ServiceAccount没有事先被创建，则该Pod操作失败； c. 如果在Pod中没有指定“ImagePullSecrets”，那么该sec.serviceAccount域指定的ServiceAccount的“ImagePullSecrets”会被加入该Pod； d. 给Pod添加一个新的Volume，在该Volume中包含ServiceAccountSecret中的Token，并将Volume挂载到Pod中所有容器的指定目录下（/var/run/secrets/kubernetes.io/serviceaccount）;
+四：Secret相关概念
+1. Secret解决了密码、token、密钥等敏感数据的配置问题，而不需要把这些敏感数据暴露到镜像或者Pod Spec中。Secret可以以Volume或者环境变量的方式使用。
+2. Secret有三种类型：
+·Service Account：用来访问Kubernetes API，由Kubernetes自动创建，并且会自动挂载到Pod的/run/secrets/kubernetes.io/serviceaccount目录中；
+·Opaque：base64编码格式的Secret，用来存储密码、密钥等；
+·kubernetes.io/dockerconfigjson：用来存储私有docker registry的认证信息。
+我们可以通过Secret保管其它系统的敏感信息，并以Mount的方式将Secret挂载到Container中，然后通过访问目录中文件的方式获取该敏感信息。当Pod被API Server创建时，API Server不会校验该Pod引用的Secret是否存在。一旦这个Pod被调用，则kubelet将试着获取Secret的值，如果Secret不存在或者暂时无法连接到API Server,则kubelet将按一定的时间间隔定期重试获取Secret." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/fc2f00eb0ce3df5ff7d60c01d877ae47/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2018-04-11T17:44:31+08:00" />
+<meta property="article:modified_time" content="2018-04-11T17:44:31+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">kubernetes实践之十四：Service Account与Secret</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div class="preview-main"> 
+ <span style="font-size:16px;"><strong>一：Service Account与Secret数据结构</strong></span> 
+ <br> 
+ <img src="https://images2.imgbox.com/59/f6/cywIT3LP_o.png" width="700" height="293" alt=""> 
+ <br> 
+ <br> 
+ <span style="font-size:16px;"><strong>二：Service Account与Secret运行机制</strong></span> 
+ <br> 
+ <img src="https://images2.imgbox.com/24/55/aTzCyrUJ_o.png" width="700" height="337" alt=""> 
+ <br> 
+ <span style="font-size:16px;">1.kubernetes的master节点由三部分组成kube-apiserver,kube-scheduler和kube-controller-manager。其中controller manager会根据apiserver的配置信息(--admission-control和--service-account-private-key-file)，生成ServiceAccount controller 和token controller.</span> 
+ <br> 
+ <br> 
+ <span style="font-size:16px;">2.ServiceAccount controller一直监听Service Account和Namespace事件。如果一个Namespace中没有default Service Account，那么Service Account Controller就会为该Namespace创建一个默认的（default）的Service Account。</span> 
+ <br> 
+ <br> 
+ <span style="font-size:16px;">3.Token Controller也监听Service Account的事件，如果发现新建的Service Account里没有对应的Service Account Secret，则会用API Server私钥（<span style="font-size:16px;">--service-account-private-key-file指定的文件</span><span style="font-size:16px;"></span>）创建一个Token（JWT Token），并用该Token、CA证书(<span style="color:#444444;font-family:TIBch;">这个是API Server的</span><a href="http://tonybai.com/2015/04/30/go-and-https/" rel="nofollow" style="background:#F8F8F8;color:#6E7173;border-bottom:1px solid #DDDDDD;font-family:TIBch;">CA公钥证书</a><span style="color:#444444;font-family:TIBch;">，来源于controller-manager配置文件中的root-ca-file</span>),Namespace名称等三个信息产生一个新的Secret对象，然后放入刚才的Service Account中；如果监听到的事件是删除Service Account事件，则自动删除与该Service Account相关的所有Secret。此外，Token Controller对象同时监听Secret的创建、修改和删除事件，并根据事件的不同做不同的处理。<br><br> 4.API Server收到Token以后，采用自己的私钥（实际是使用apiserver配置文件中的参数service-account-key-file指定的私钥，如果此参数没有设置，则默认采用tls-private-key-file指定的参数，即自己的私钥）对Token进行合法验证。</span> 
+ <br> 
+ <br> 
+ <span style="font-size:16px;"><strong>三：Service Account相关概念</strong></span> 
+ <br> 
+ <br> 
+ <span style="text-indent:-18pt;font-size:16px;">1.    Service Account概念的引入是基于这样的使用场景：运行在pod里的进程需要调用Kubernetes API以及非Kubernetes API的其它服务。Service Account它并不是给kubernetes集群的用户使用的，而是给pod里面的进程使用的，它为pod提供必要的身份认证。</span> 
+ <br> 
+ <br> 
+ <p class="MsoNormal"> <span lang="en-us" style="font-size:16px;">2.</span><span style="font-size:16px;"> 如果kubernetes开启了ServiceAccount(apiserver配置文件)那么会在每个namespace下面都会创建一个默认的default的service account。</span><br><span lang="en-us"><br><span style="font-size:16px;">3.ServiceAccount详情</span><br><img src="https://images2.imgbox.com/4b/ab/LQ5NOjGq_o.png" width="700" height="180" alt=""></span> </p> 
+ <span style="font-size:16px;">4.当创建pod的时候，如果没有指定一个service account,系统会自动在该pod所在的namespace下为其指派一个default service account.</span> 
+ <br> 
+ <img src="https://images2.imgbox.com/21/e6/yZBmBvZ4_o.png" width="678" height="585" alt=""> 
+ <br> 
+ <p align="left" style="margin-left:30pt;text-align:left;text-indent:-18pt;background:#FFFFFF;"> <span style="font-size:16px;">a.    如果spec.serviceAccount域没有被设置，则Kubernetes默认为其制定名字为default的Serviceaccount；</span> </p> 
+ <p align="left" style="margin-left:30pt;text-align:left;text-indent:-18pt;background:#FFFFFF;"> <span style="font-size:16px;">b.    如果Pod的spec.serviceAccount域指定了default以外的ServiceAccount，而该ServiceAccount没有事先被创建，则该Pod操作失败；</span> </p> 
+ <p align="left" style="margin-left:30pt;text-align:left;text-indent:-18pt;background:#FFFFFF;"> <span style="font-size:16px;">c.    如果在Pod中没有指定“ImagePullSecrets”，那么该sec.serviceAccount域指定的ServiceAccount的“ImagePullSecrets”会被加入该Pod；</span> </p> 
+ <p align="left" style="margin-left:30pt;text-align:left;text-indent:-18pt;background:#FFFFFF;"> <span style="font-size:16px;">d.    给Pod添加一个新的Volume，在该Volume中包含ServiceAccountSecret中的Token，并将Volume挂载到Pod中所有容器的指定目录下（/var/run/secrets/kubernetes.io/serviceaccount）;</span><br><img src="https://images2.imgbox.com/78/8b/xFWJ9keJ_o.png" width="700" height="67" alt=""></p> 
+ <br> 
+ <span style="font-size:16px;"><strong>四：Secret相关概念<br></strong></span> 
+ <br> 
+ <br> 
+ <span style="font-size:16px;">1.</span> 
+ <span style="font-size:16px;">Secret解决了密码、token、密钥等敏感数据的配置问题，而不需要把这些敏感数据暴露到镜像或者Pod Spec中。Secret可以以Volume或者环境变量的方式使用。</span><br><br><span style="font-size:16px;">2.</span> 
+ <span style="font-size:16px;">Secret有三种类型：</span><br><span style="font-size:16px;">·Service Account：用来访问Kubernetes API，由Kubernetes自动创建，并且会自动挂载到Pod的/run/secrets/kubernetes.io/serviceaccount目录中；</span><br><span style="font-size:16px;">·Opaque：base64编码格式的Secret，用来存储密码、密钥等；</span><br><span style="font-size:16px;">·kubernetes.io/dockerconfigjson：用来存储私有docker registry的认证信息。</span><br><span style="font-size:16px;"></span><br><img src="https://images2.imgbox.com/87/d4/hUFlHD43_o.png" width="700" height="250" alt=""><br><br><span style="font-size:16px;">我们可以通过Secret保管其它系统的敏感信息，并以Mount的方式将Secret挂载到Container中，然后通过访问目录中文件的方式获取该敏感信息。当Pod被API Server创建时，API Server不会校验该Pod引用的Secret是否存在。一旦这个Pod被调用，则kubelet将试着获取Secret的值，如果Secret不存在或者暂时无法连接到API Server,则kubelet将按一定的时间间隔定期重试获取Secret. 为了使用更新后的secret,必须删除旧的Pod,并重新创建一个新的Pod.</span><br><span style="font-size:16px;"></span> 
+ <p style="clear:both;"></p> 
+ <p class="translate"> 来自 “ ITPUB博客 ” ，链接：http://blog.itpub.net/28624388/viewspace-2152817/，如需转载，请注明出处，否则将追究法律责任。 </p> 
+</div> 
+<p>转载于:http://blog.itpub.net/28624388/viewspace-2152817/</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/ae3edca204ca2eba69dc00cd2c377da9/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">VirtualBox虚拟机几种网络连接方式介绍</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/52b8137cf0b7dd7d94245d08f603e15c/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">时间加减快速get</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

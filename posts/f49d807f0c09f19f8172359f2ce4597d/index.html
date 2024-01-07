@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>分布式事物-- MySQL XA 协议 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="分布式事物-- MySQL XA 协议" />
+<meta property="og:description" content="MySQL 从5.0.3开始支持XA分布式事务，且只有InnoDB存储引擎支持。MySQL Connector/J 从5.0.0版本之后开始直接提供对XA的支持。
+分布式事物XA协议规范：
+AP：应用程序，AP定义事务边界（定义事务开始和结束）并访问事务边界内的资源
+RM：资源管理器，管理计算机共享的资源，许多软件都可以去访问这些资源，资源包含比如数据库、文件系统、打印机服务器等。
+TM：事物管理器，负责管理全局事务，分配事务唯一标识，监控事务的执行进度，并负责事务的提交、回滚、失败恢复等。
+Xa主要规定了RM与TM之间的交互，下面来看下XA规范中定义的RM 和 TM交互的接口：
+xa_start负责开启或者恢复一个事务分支，并且管理XID到调用线程
+xa_end 负责取消当前线程与事务分支的关联
+xa_prepare负责询问RM 是否准备好了提交事务分支
+xa_commit通知RM提交事务分支
+xa_rollback 通知RM回滚事务分支
+XA协议是使用了二阶段协议的，其中：
+第一阶段TM要求所有的RM准备提交对应的事务分支，询问RM是否有能力保证成功的提交事务分支，RM根据自己的情况，如果判断自己进行的工作可以被提交，那就就对工作内容进行持久化，并给TM回执OK；否者给TM的回执NO。RM在发送了否定答复并回滚了已经的工作后，就可以丢弃这个事务分支信息了。
+第二阶段TM根据阶段1各个RM prepare的结果，决定是提交还是回滚事务。如果所有的RM都prepare成功，那么TM通知所有的RM进行提交；如果有RM prepare回执NO的话，则TM通知所有RM回滚自己的事务分支。
+XA协议二阶段提交的一个流程示意图：
+也就是TM与RM之间是通过两阶段提交协议进行交互的。
+内部XA事务 MySQL本身的插件式架构导致在其内部需要使用XA事务，此时MySQL即是协调者，也是参与者。例如，不同的存储引擎之间是完全独立的，因此当一个事务涉及两个不同的存储引擎时，就必须使用内部XA事务。需要特别注意的是，如果将二进制日志看做一个独立的“存储引擎”,就不难理解为什么即使是一个存储引擎参与的事务也需要使用XA事务了。在向存储引擎提交数据时，同时需要将提交的信息写入二进制日志，这就是一个分布式事务。
+外部XA事务
+1、分析：
+MySQL数据库外部XA可以用在分布式数据库代理层，实现对MySQL数据库的分布式事务支持，例如开源的代理工具：ameoba[4]，网易的DDB，淘宝的TDDL，B2B的Cobar等等。
+通过MySQL数据库外部XA，这些工具可以提供跨库的分布式事务。当然，这些工具也就成了外部XA事务的协调者角色。在crash recover时控制悬挂事务是全局commit，或者rollback。
+在crash recover之后，外部应用程序可能会遇到以下几种情况：
+情况一：分布式事务对应的MySQL数据库实例，部分完成prepare，部分未完成prepare。此时直接回滚完成prepare的实例即可。n_prepared &lt; Total Nodes (处于prepare状态的节点数量要小于参与分布式事务的所有节点总数)。
+情况二：分布式事务对应的MySQL实例，全部完成prepare，未开始进行commit。此时即可提交此事务，也可回滚此事务(根据分布式事务原理，所有节点都完成prepare，应该提交)。n_prepared = Total Nodes。
+情况三：分布式事务对应的MySQL实例，全部完成prepare，并且部分节点已经完成commit。此时应该提交该事务处于prepare状态的节点。n_prepared &lt; Total Nodes。对比情况三与情况一，仅仅通过prepare节点的数量无法区分，因此应用程序需要在prepare完成之后记录日志(此时，应用程序起着事务协调者(Transcaction Coordinator)的角色，而根据MariaDB WorkLog#132[5]的说法，TC角色是可以进行”middle engine”优化的，不需要prepare过程，所有MySQL节点xa prepare返回之后，应用程序直接写commit标识即可，然后再对每个MySQL节点进行xa commit操作。)，从而用于区分情况一与情况三。
+情况四：分布式事务对应的MySQL实例，全部完成commit。此时事务已经提交成功，xid不会出现在执行xa recover的任一个节点。不需要特殊处理。
+情况五：未记录任何prepare日志。那么所有的事务，在各个存储引擎的crash recover时，都会被回滚，不需要外部特殊处理。
+2、不足
+通过前面的分析，可知应用程序配合MySQL的XA事务功能，能够较好的支持分布式环境下的事务。但是，这个支持并不完美，根据我的分析，有可能会出现以下几个问题：
+问题一：主备数据库的数据不一致。
+MySQL数据库的主备数据库的同步，通过Binlog的复制完成。而Binlog是MySQL数据库内部XA事务的协调者，并且MySQL数据库为binlog做了优化——binlog不写prepare日志，只写commit日志。
+考虑前面提到的情况二，所有的参与节点prepare完成，在进行xa commit前crash。crash recover如果选择commit此事务。由于binlog在prepare阶段未写，因此主库中看来，此分布式事务最终提交了，但是此事务的操作并未写到binlog中，因此也就未能成功复制到备库，从而导致主备库数据不一致的情况出现。
+在MySQL 5.5.16版本中做过测试，这个问题实际存在。crash recover之后，对xa recover返回的事务运行xa commit，对应事务提交，但是操作并未写入binlog，因此无法复制到备库。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/f49d807f0c09f19f8172359f2ce4597d/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-11-15T09:24:35+08:00" />
+<meta property="article:modified_time" content="2022-11-15T09:24:35+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">分布式事物-- MySQL XA 协议</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>MySQL 从5.0.3开始支持XA分布式事务，且只有InnoDB存储引擎支持。MySQL Connector/J 从5.0.0版本之后开始直接提供对XA的支持。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/46/87/GD8G85Ly_o.png"></p> 
+<p> 分布式事物XA协议规范：</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/94/2d/EeeLT630_o.png"></p> 
+<p>AP：应用程序，AP定义事务边界（定义事务开始和结束）并访问事务边界内的资源</p> 
+<p>RM：资源管理器，管理计算机共享的资源，许多软件都可以去访问这些资源，资源包含比如数据库、文件系统、打印机服务器等。</p> 
+<p>TM：事物管理器，负责管理全局事务，分配事务唯一标识，监控事务的执行进度，并负责事务的提交、回滚、失败恢复等。</p> 
+<p>Xa主要规定了RM与TM之间的交互，下面来看下XA规范中定义的RM 和 TM交互的接口：</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/99/6e/52iT8KDc_o.png"></p> 
+<p>xa_start负责开启或者恢复一个事务分支，并且管理XID到调用线程<br> xa_end 负责取消当前线程与事务分支的关联<br> xa_prepare负责询问RM 是否准备好了提交事务分支<br> xa_commit通知RM提交事务分支<br> xa_rollback 通知RM回滚事务分支<br> XA协议是使用了二阶段协议的，其中：</p> 
+<p>第一阶段TM要求所有的RM准备提交对应的事务分支，询问RM是否有能力保证成功的提交事务分支，RM根据自己的情况，如果判断自己进行的工作可以被提交，那就就对工作内容进行持久化，并给TM回执OK；否者给TM的回执NO。RM在发送了否定答复并回滚了已经的工作后，就可以丢弃这个事务分支信息了。<br> 第二阶段TM根据阶段1各个RM prepare的结果，决定是提交还是回滚事务。如果所有的RM都prepare成功，那么TM通知所有的RM进行提交；如果有RM prepare回执NO的话，则TM通知所有RM回滚自己的事务分支。<br> XA协议二阶段提交的一个流程示意图：</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/8d/e0/j78QWWSt_o.png"></p> 
+<p>也就是TM与RM之间是通过两阶段提交协议进行交互的。</p> 
+<p>内部XA事务 <br>         MySQL本身的插件式架构导致在其内部需要使用XA事务，此时MySQL即是协调者，也是参与者。例如，不同的存储引擎之间是完全独立的，因此当一个事务涉及两个不同的存储引擎时，就必须使用内部XA事务。需要特别注意的是，如果将二进制日志看做一个独立的“存储引擎”,就不难理解为什么即使是一个存储引擎参与的事务也需要使用XA事务了。在向存储引擎提交数据时，同时需要将提交的信息写入二进制日志，这就是一个分布式事务。</p> 
+<p>外部XA事务<br> 1、分析：</p> 
+<p>MySQL数据库外部XA可以用在分布式数据库代理层，实现对MySQL数据库的分布式事务支持，例如开源的代理工具：ameoba[4]，网易的DDB，淘宝的TDDL，B2B的Cobar等等。</p> 
+<p>　　通过MySQL数据库外部XA，这些工具可以提供跨库的分布式事务。当然，这些工具也就成了外部XA事务的协调者角色。在crash recover时控制悬挂事务是全局commit，或者rollback。</p> 
+<p>　　在crash recover之后，外部应用程序可能会遇到以下几种情况：</p> 
+<p>　　情况一：分布式事务对应的MySQL数据库实例，部分完成prepare，部分未完成prepare。此时直接回滚完成prepare的实例即可。n_prepared &lt; Total Nodes (处于prepare状态的节点数量要小于参与分布式事务的所有节点总数)。</p> 
+<p>　　情况二：分布式事务对应的MySQL实例，全部完成prepare，未开始进行commit。此时即可提交此事务，也可回滚此事务(根据分布式事务原理，所有节点都完成prepare，应该提交)。n_prepared = Total Nodes。</p> 
+<p>　　情况三：分布式事务对应的MySQL实例，全部完成prepare，并且部分节点已经完成commit。此时应该提交该事务处于prepare状态的节点。n_prepared &lt; Total Nodes。对比情况三与情况一，仅仅通过prepare节点的数量无法区分，因此应用程序需要在prepare完成之后记录日志(此时，应用程序起着事务协调者(Transcaction Coordinator)的角色，而根据MariaDB WorkLog#132[5]的说法，TC角色是可以进行”middle engine”优化的，不需要prepare过程，所有MySQL节点xa prepare返回之后，应用程序直接写commit标识即可，然后再对每个MySQL节点进行xa commit操作。)，从而用于区分情况一与情况三。</p> 
+<p>　　情况四：分布式事务对应的MySQL实例，全部完成commit。此时事务已经提交成功，xid不会出现在执行xa recover的任一个节点。不需要特殊处理。</p> 
+<p>　　情况五：未记录任何prepare日志。那么所有的事务，在各个存储引擎的crash recover时，都会被回滚，不需要外部特殊处理。</p> 
+<p>2、不足</p> 
+<p>通过前面的分析，可知应用程序配合MySQL的XA事务功能，能够较好的支持分布式环境下的事务。但是，这个支持并不完美，根据我的分析，有可能会出现以下几个问题：</p> 
+<p>问题一：主备数据库的数据不一致。</p> 
+<p>　　MySQL数据库的主备数据库的同步，通过Binlog的复制完成。而Binlog是MySQL数据库内部XA事务的协调者，并且MySQL数据库为binlog做了优化——binlog不写prepare日志，只写commit日志。</p> 
+<p>　　考虑前面提到的情况二，所有的参与节点prepare完成，在进行xa commit前crash。crash recover如果选择commit此事务。由于binlog在prepare阶段未写，因此主库中看来，此分布式事务最终提交了，但是此事务的操作并未写到binlog中，因此也就未能成功复制到备库，从而导致主备库数据不一致的情况出现。</p> 
+<p>　　在MySQL 5.5.16版本中做过测试，这个问题实际存在。crash recover之后，对xa recover返回的事务运行xa commit，对应事务提交，但是操作并未写入binlog，因此无法复制到备库。</p> 
+<p>　　那么是否回滚所有prepare的事务，就可以避免此问题呢?结论是仍旧不行，不仅不能解决问题一，甚至可能引起问题二。</p> 
+<p>问题二：同一事务，在各参与节点，最终状态不一致(部分提交，部分回滚)。</p> 
+<p>　　若回滚所有prepare状态的分布式事务，会产生问题二。考虑情况三(所有节点完成prepare，部分节点完成commit)，该分布式事务对应的节点，部分已经提交，无法回滚，而部分节点回滚。最终导致同一分布式事务，在各参与节点，最终状态不一致。</p> 
+<p>问题三：源码级别问题。MySQL 5.1.49源码对于外部XA事务处理存在bug，在MySQL 5.5.16版本中，此bug已经被fix。经过验证发现，在我已下载的MySQL 5.1.61与之后的所有版本，此bug均已经被fix。</p> 
+<p>示例：</p> 
+<p>public class XaDemo {<!-- --></p> 
+<p>    public static MysqlXADataSource getDataSource(String connStr, String user, String pwd) {<!-- --></p> 
+<p>        try {<!-- --></p> 
+<p>            MysqlXADataSource ds = new MysqlXADataSource();<br>             ds.setUrl(connStr);<br>             ds.setUser(user);<br>             ds.setPassword(pwd);</p> 
+<p>            return ds;<br>         } catch (Exception e) {<!-- --><br>             e.printStackTrace();<br>         }</p> 
+<p>        return null;<br>     }</p> 
+<p>    public static void main(String[] arg) {<!-- --><br>         String connStr1 = "jdbc:mysql://192.168.0.1:3306/test";<br>         String connStr2 = "jdbc:mysql://192.168.0.2:3306/test";</p> 
+<p>        try {<!-- --><br>             //从不同数据库获取数据库数据源<br>             MysqlXADataSource ds1 = getDataSource(connStr1, "root", "123456");<br>             MysqlXADataSource ds2 = getDataSource(connStr2, "root", "123456");</p> 
+<p>            //数据库1获取连接<br>             XAConnection xaConnection1 = ds1.getXAConnection();<br>             XAResource xaResource1 = xaConnection1.getXAResource();<br>             Connection connection1 = xaConnection1.getConnection();<br>             Statement statement1 = connection1.createStatement();<br>             <br>             //数据库2获取连接<br>             XAConnection xaConnection2 = ds2.getXAConnection();<br>             XAResource xaResource2 = xaConnection2.getXAResource();<br>             Connection connection2 = xaConnection2.getConnection();<br>             Statement statement2 = connection2.createStatement();</p> 
+<p>            //创建事务分支的xid<br>             Xid xid1 = new MysqlXid(new byte[] { 0x01 }, new byte[] { 0x02 }, 100);<br>             Xid xid2 = new MysqlXid(new byte[] { 0x011 }, new byte[] { 0x012 }, 100);</p> 
+<p>            try {<!-- --><br>                 //事务分支1关联分支事务sql语句<br>                 xaResource1.start(xid1, XAResource.TMNOFLAGS);<br>                 int update1Result = statement1.executeUpdate("update account_from set money=money - 50 where id=1");<br>                 xaResource1.end(xid1, XAResource.TMSUCCESS);</p> 
+<p>                //事务分支2关联分支事务sql语句<br>                 xaResource2.start(xid2, XAResource.TMNOFLAGS);<br>                 int update2Result = statement2.executeUpdate("update account_to set money= money + 50 where id=1");<br>                 xaResource2.end(xid2, XAResource.TMSUCCESS);<br>                 <br>                 // 两阶段提交协议第一阶段<br>                 int ret1 = xaResource1.prepare(xid1);<br>                 int ret2 = xaResource2.prepare(xid2);</p> 
+<p>                // 两阶段提交协议第二阶段<br>                 if (XAResource.XA_OK == ret1 &amp;&amp; XAResource.XA_OK == ret2) {<!-- --><br>                     xaResource1.commit(xid1, false);<br>                     xaResource2.commit(xid2, false);</p> 
+<p>                    System.out.println("reslut1:" + update1Result + ", result2:" + update2Result);<br>                 }<br>             } catch (Exception e) {<!-- --><br>                 e.printStackTrace();<br>             }<br>         } catch (Exception e) {<!-- --><br>             e.printStackTrace();<br>         }<br>     }</p> 
+<p>}<br><br> 脑图： </p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/0c/9e/gVp6UhyG_o.png"></p> 
+<p>引用：</p> 
+<p>​ ​http://ifeve.com/mysql-xa/​​</p> 
+<p>​ ​https://www.jianshu.com/p/6c1fd2420274​</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/7b68efb48badf961b69bba2198492277/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【UE5】虚幻项目浏览器，固定加载上次打开的项目</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/6f0b3a07fa55cb74f093e00f7f740083/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">xrandr命令用法</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

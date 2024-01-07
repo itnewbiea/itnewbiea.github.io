@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Android屏幕刷新——源码分析 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Android屏幕刷新——源码分析" />
+<meta property="og:description" content="Android屏幕刷新原理——源码分析 文章目录 Android屏幕刷新原理——源码分析概述VSync信号三级缓冲源码分析消息队列的同步屏障参考资料 概述 Android系统每16ms（一般的安卓手机的FPS（每秒的帧数）是60）会请求一次VSync（垂直同步）信号，进行一次屏幕刷新。在请求到VSync信号后系统会向主线程发送一个异步消息，为了保证UI的流畅，系统使用了消息队列的同步屏障来优先处理这个屏幕重绘的异步消息。
+VSync信号 VSync是Vertical Synchronization的缩写，译作垂直同步，是一种在PC上已经很早就广泛使用的技术。垂直同步信号简单来说就是周期性的中断。
+使用VSync信号的作用
+强制帧率和显示器刷新频率同步。也就是让CPU和GPU在Choreographer（编舞者，名字起地还挺文艺）的协调下在VSync信号到来后进行一次屏幕刷新，即view的重绘。
+没有使用VSync信号的情况：
+可能因为CPU和GPU处理不协调、CPU或GPU处理任务过多等因素而导致丢帧现象发生。
+使用VSync信号的情况
+CPU或GPU处理任务过多还是会导致丢帧现象发生。
+三级缓冲 Android4.0之后基本都是默认硬件加速，CPU跟GPU都是并发处理任务的，CPU处理完之后就完工，等下一个VSYNC到来就可以进行下一轮操作。也就是CPU、GPU、显示都会用到Buffer，VSYNC&#43;双缓冲在理想情况下是没有问题的，但如果某个环节出现问题，那就不一样了如下（帧耗时超过16ms）：
+可以看到在第二个阶段，存在CPU资源浪费，为什么呢？双缓冲Surface只会提供两个Buffer，一个Buffer被DisPlay占用（SurfaceFlinger用完后不会释放当前的Buffer，只会释放旧的Buffer,直观的想一下，如果新Buffer生成受阻，那么肯定要保留一个备份给SF用，才能不阻碍合成显示，就必定要一直占用一个Buffer，新的Buffer来了才释放老的），另一个被GPU处理占用，所以，CPU就无法获取到Buffer处理当前UI，在Jank的阶段空空等待。一般出现这种场景都是连续的：比如复杂视觉效果每一帧可能需要20ms（CPU 8ms &#43;GPU 12ms），GPU可能会一直超负荷，CPU跟GPU一直抢Buffer，这样带来的问题就是滚雪球似的掉帧，一直浪费，完全没有利用CPU与GPU并行处理的效率，成了串行处理。
+解决的办法就是再增加一个Buffer给CPU用，让它提前忙起来，这样就能做到三方都有Buffer可用，CPU跟GPU不用争一个Buffer，真正实现并行处理。如下：
+Android屏幕刷新本质上来说就是view周期性地重新绘制到屏幕上的过程，而与这个过程有着密切关系的就是View的invalidate方法，下面就深入源码分析这个方法背后的原理。
+源码分析 View.invalidate()
+public void invalidate() { invalidate(true); } public void invalidate(boolean invalidateCache) { invalidateInternal(0, 0, mRight - mLeft, mBottom - mTop, invalidateCache, true); } void invalidateInternal(int l, int t, int r, int b, boolean invalidateCache, boolean fullInvalidate) { if (mGhostView != null) { mGhostView.invalidate(true); return; } if (skipInvalidate()) {	//跳过不可见和不再执行动画的view return; } // Reset content capture caches mCachedContentCaptureSession = null; //下面会对是否缓存做一些判断 if ((mPrivateFlags &amp; (PFLAG_DRAWN | PFLAG_HAS_BOUNDS)) == (PFLAG_DRAWN | PFLAG_HAS_BOUNDS) || (invalidateCache &amp;&amp; (mPrivateFlags &amp; PFLAG_DRAWING_CACHE_VALID) == PFLAG_DRAWING_CACHE_VALID) || (mPrivateFlags &amp; PFLAG_INVALIDATED) !" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/7fa079f2feb219dfee867f07e3a52599/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-07-11T17:45:18+08:00" />
+<meta property="article:modified_time" content="2020-07-11T17:45:18+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Android屏幕刷新——源码分析</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="Android_0"></a>Android屏幕刷新原理——源码分析</h2> 
+<p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#Android_0" rel="nofollow">Android屏幕刷新原理——源码分析</a></li><li><ul><li><a href="#_6" rel="nofollow">概述</a></li><li><a href="#VSync_12" rel="nofollow">VSync信号</a></li><li><a href="#_37" rel="nofollow">三级缓冲</a></li><li><a href="#_54" rel="nofollow">源码分析</a></li><li><a href="#_404" rel="nofollow">消息队列的同步屏障</a></li><li><a href="#_516" rel="nofollow">参考资料</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h3><a id="_6"></a>概述</h3> 
+<p>Android系统每<code>16ms</code>（一般的安卓手机的FPS（每秒的帧数）是60）会请求一次VSync（垂直同步）信号，进行一次屏幕刷新。在请求到VSync信号后系统会向主线程发送一个异步消息，为了保证UI的流畅，系统使用了消息队列的<code>同步屏障</code>来优先处理这个屏幕重绘的异步消息。</p> 
+<h3><a id="VSync_12"></a>VSync信号</h3> 
+<p>VSync是Vertical Synchronization的缩写，译作垂直同步，是一种在PC上已经很早就广泛使用的技术。垂直同步信号简单来说就是周期性的中断。</p> 
+<p><strong>使用VSync信号的作用</strong></p> 
+<p>强制帧率和显示器刷新频率同步。也就是让CPU和GPU在Choreographer（编舞者，名字起地还挺文艺）的协调下在VSync信号到来后进行一次屏幕刷新，即view的重绘。</p> 
+<p><strong>没有使用VSync信号的情况</strong>：</p> 
+<p>可能因为CPU和GPU处理不协调、CPU或GPU处理任务过多等因素而导致丢帧现象发生。</p> 
+<p><img src="https://images2.imgbox.com/2f/26/3pHtVJGJ_o.png" alt="img"></p> 
+<p><strong>使用VSync信号的情况</strong></p> 
+<p>CPU或GPU处理任务过多还是会导致丢帧现象发生。</p> 
+<p><img src="https://images2.imgbox.com/4f/c9/UdZrM2tJ_o.jpg" alt="img"></p> 
+<h3><a id="_37"></a>三级缓冲</h3> 
+<p>Android4.0之后基本都是默认硬件加速，CPU跟GPU都是并发处理任务的，CPU处理完之后就完工，等下一个VSYNC到来就可以进行下一轮操作。也就是CPU、GPU、显示都会用到Buffer，VSYNC+双缓冲在理想情况下是没有问题的，但如果某个环节出现问题，那就不一样了如下（帧耗时超过16ms）：</p> 
+<p><img src="https://images2.imgbox.com/e2/71/rM7XACHt_o.png" alt="img"></p> 
+<p>可以看到在第二个阶段，存在CPU资源浪费，为什么呢？双缓冲Surface只会提供两个Buffer，一个Buffer被DisPlay占用（SurfaceFlinger用完后不会释放当前的Buffer，只会释放旧的Buffer,<strong>直观的想一下，如果新Buffer生成受阻，那么肯定要保留一个备份给SF用，才能不阻碍合成显示，就必定要一直占用一个Buffer，新的Buffer来了才释放老的</strong>），另一个被GPU处理占用，所以，CPU就无法获取到Buffer处理当前UI，在Jank的阶段空空等待。一般出现这种场景都是连续的：比如复杂视觉效果每一帧可能需要20ms（CPU 8ms +GPU 12ms），GPU可能会一直超负荷，CPU跟GPU一直抢Buffer，这样带来的问题就是滚雪球似的掉帧，一直浪费，<strong>完全没有利用CPU与GPU并行处理的效率，成了串行处理</strong>。</p> 
+<p>解决的办法就是再增加一个Buffer给CPU用，让它提前忙起来，这样就能做到三方都有Buffer可用，CPU跟GPU不用争一个Buffer，真正实现并行处理。如下：</p> 
+<p><img src="https://images2.imgbox.com/3f/ad/66FD8uzQ_o.png" alt="img"></p> 
+<p>Android屏幕刷新本质上来说就是view周期性地重新绘制到屏幕上的过程，而与这个过程有着密切关系的就是View的invalidate方法，下面就深入源码分析这个方法背后的原理。</p> 
+<h3><a id="_54"></a>源码分析</h3> 
+<p><strong>View.invalidate()</strong></p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">invalidate</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">invalidate</span><span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">invalidate</span><span class="token punctuation">(</span><span class="token keyword">boolean</span> invalidateCache<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">invalidateInternal</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> mRight <span class="token operator">-</span> mLeft<span class="token punctuation">,</span> mBottom <span class="token operator">-</span> mTop<span class="token punctuation">,</span> invalidateCache<span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token function">invalidateInternal</span><span class="token punctuation">(</span><span class="token keyword">int</span> l<span class="token punctuation">,</span> <span class="token keyword">int</span> t<span class="token punctuation">,</span> <span class="token keyword">int</span> r<span class="token punctuation">,</span> <span class="token keyword">int</span> b<span class="token punctuation">,</span> <span class="token keyword">boolean</span> invalidateCache<span class="token punctuation">,</span>
+                        <span class="token keyword">boolean</span> fullInvalidate<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>mGhostView <span class="token operator">!=</span> null<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        mGhostView<span class="token punctuation">.</span><span class="token function">invalidate</span><span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">skipInvalidate</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>	<span class="token comment">//跳过不可见和不再执行动画的view</span>
+        <span class="token keyword">return</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// Reset content capture caches</span>
+    mCachedContentCaptureSession <span class="token operator">=</span> null<span class="token punctuation">;</span>
+
+    <span class="token comment">//下面会对是否缓存做一些判断</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>mPrivateFlags <span class="token operator">&amp;</span> <span class="token punctuation">(</span>PFLAG_DRAWN <span class="token operator">|</span> PFLAG_HAS_BOUNDS<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token punctuation">(</span>PFLAG_DRAWN <span class="token operator">|</span> PFLAG_HAS_BOUNDS<span class="token punctuation">)</span>
+        <span class="token operator">||</span> <span class="token punctuation">(</span>invalidateCache <span class="token operator">&amp;&amp;</span> <span class="token punctuation">(</span>mPrivateFlags <span class="token operator">&amp;</span> PFLAG_DRAWING_CACHE_VALID<span class="token punctuation">)</span> <span class="token operator">==</span> PFLAG_DRAWING_CACHE_VALID<span class="token punctuation">)</span>
+        <span class="token operator">||</span> <span class="token punctuation">(</span>mPrivateFlags <span class="token operator">&amp;</span> PFLAG_INVALIDATED<span class="token punctuation">)</span> <span class="token operator">!=</span> PFLAG_INVALIDATED
+        <span class="token operator">||</span> <span class="token punctuation">(</span>fullInvalidate <span class="token operator">&amp;&amp;</span> <span class="token function">isOpaque</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">!=</span> mLastIsOpaque<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>fullInvalidate<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            mLastIsOpaque <span class="token operator">=</span> <span class="token function">isOpaque</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            mPrivateFlags <span class="token operator">&amp;=</span> <span class="token operator">~</span>PFLAG_DRAWN<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        mPrivateFlags <span class="token operator">|=</span> PFLAG_DIRTY<span class="token punctuation">;</span>
+
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>invalidateCache<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            mPrivateFlags <span class="token operator">|=</span> PFLAG_INVALIDATED<span class="token punctuation">;</span>
+            mPrivateFlags <span class="token operator">&amp;=</span> <span class="token operator">~</span>PFLAG_DRAWING_CACHE_VALID<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token comment">// Propagate the damage rectangle to the parent view.</span>
+        <span class="token keyword">final</span> AttachInfo ai <span class="token operator">=</span> mAttachInfo<span class="token punctuation">;</span>
+        <span class="token keyword">final</span> ViewParent p <span class="token operator">=</span> mParent<span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>p <span class="token operator">!=</span> null <span class="token operator">&amp;&amp;</span> ai <span class="token operator">!=</span> null <span class="token operator">&amp;&amp;</span> l <span class="token operator">&lt;</span> r <span class="token operator">&amp;&amp;</span> t <span class="token operator">&lt;</span> b<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">final</span> Rect damage <span class="token operator">=</span> ai<span class="token punctuation">.</span>mTmpInvalRect<span class="token punctuation">;</span>
+            damage<span class="token punctuation">.</span><span class="token function">set</span><span class="token punctuation">(</span>l<span class="token punctuation">,</span> t<span class="token punctuation">,</span> r<span class="token punctuation">,</span> b<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            p<span class="token punctuation">.</span><span class="token function">invalidateChild</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">,</span> damage<span class="token punctuation">)</span><span class="token punctuation">;</span>	<span class="token comment">//会调用到ViewGroup的invalidateChild方法</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token comment">// Damage the entire projection receiver, if necessary.</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>mBackground <span class="token operator">!=</span> null <span class="token operator">&amp;&amp;</span> mBackground<span class="token punctuation">.</span><span class="token function">isProjected</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">final</span> View receiver <span class="token operator">=</span> <span class="token function">getProjectionReceiver</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>receiver <span class="token operator">!=</span> null<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                receiver<span class="token punctuation">.</span><span class="token function">damageInParent</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>ViewGroup.onDescendantInvalidated(@NonNull View child, @NonNull View target)</strong></p> 
+<pre><code class="prism language-java">    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">onDescendantInvalidated</span><span class="token punctuation">(</span><span class="token annotation punctuation">@NonNull</span> View child<span class="token punctuation">,</span> <span class="token annotation punctuation">@NonNull</span> View target<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>mParent <span class="token operator">!=</span> null<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            mParent<span class="token punctuation">.</span><span class="token function">onDescendantInvalidated</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">,</span> target<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p>可以看到，它会一直向上调用父View的onDescendantInvalidated方法，直到调用到<strong>ViewRootImpl</strong>的onDescendantInvalidated方法：</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Override</span>
+<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">onDescendantInvalidated</span><span class="token punctuation">(</span><span class="token annotation punctuation">@NonNull</span> View child<span class="token punctuation">,</span> <span class="token annotation punctuation">@NonNull</span> View descendant<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// TODO: Re-enable after camera is fixed or consider targetSdk checking this</span>
+    <span class="token comment">// checkThread();</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>descendant<span class="token punctuation">.</span>mPrivateFlags <span class="token operator">&amp;</span> PFLAG_DRAW_ANIMATION<span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        mIsAnimating <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token function">invalidate</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token function">invalidate</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    mDirty<span class="token punctuation">.</span><span class="token function">set</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> mWidth<span class="token punctuation">,</span> mHeight<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>mWillDrawSoon<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">scheduleTraversals</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>ViewRootImpl.scheduleTraversals()</strong></p> 
+<pre><code class="prism language-java"><span class="token keyword">void</span> <span class="token function">scheduleTraversals</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>mTraversalScheduled<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        mTraversalScheduled <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>		<span class="token comment">//这个变量保证下面的代码在一个垂直同步信号周期内只执行一次</span>
+        mTraversalBarrier <span class="token operator">=</span> mHandler<span class="token punctuation">.</span><span class="token function">getLooper</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getQueue</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">postSyncBarrier</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>	<span class="token comment">//向主线程的消息队列中post一个同步屏障</span>
+        <span class="token comment">//postCallback方法在队列中添加了一个mTraversalRunnable</span>
+        mChoreographer<span class="token punctuation">.</span><span class="token function">postCallback</span><span class="token punctuation">(</span>
+            Choreographer<span class="token punctuation">.</span>CALLBACK_TRAVERSAL<span class="token punctuation">,</span> mTraversalRunnable<span class="token punctuation">,</span> null<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//添加一个处理触摸事件的回调，防止中间有Touch事件过来</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>mUnbufferedInputDispatch<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token function">scheduleConsumeBatchedInput</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token function">notifyRendererOfFramePending</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">pokeDrawLockIfNeeded</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>上面通过mChoreographer这个Choreographer对象（上面提到的编舞者）在队列中添加了一个mTraversalRunnable（这是一个Runnable对象，下面还会说道说道），同时请求并等待VSync信号。</p> 
+<p><strong>Choreographer的postCallback方法</strong></p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">postCallback</span><span class="token punctuation">(</span><span class="token keyword">int</span> callbackType<span class="token punctuation">,</span> Runnable action<span class="token punctuation">,</span> Object token<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">postCallbackDelayed</span><span class="token punctuation">(</span>callbackType<span class="token punctuation">,</span> action<span class="token punctuation">,</span> token<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">postCallbackDelayed</span><span class="token punctuation">(</span><span class="token keyword">int</span> callbackType<span class="token punctuation">,</span>
+                                Runnable action<span class="token punctuation">,</span> Object token<span class="token punctuation">,</span> <span class="token keyword">long</span> delayMillis<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token function">postCallbackDelayedInternal</span><span class="token punctuation">(</span>callbackType<span class="token punctuation">,</span> action<span class="token punctuation">,</span> token<span class="token punctuation">,</span> delayMillis<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+
+<span class="token keyword">private</span> <span class="token keyword">void</span> <span class="token function">postCallbackDelayedInternal</span><span class="token punctuation">(</span><span class="token keyword">int</span> callbackType<span class="token punctuation">,</span>
+                                         Object action<span class="token punctuation">,</span> Object token<span class="token punctuation">,</span> <span class="token keyword">long</span> delayMillis<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token keyword">synchronized</span> <span class="token punctuation">(</span>mLock<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">final</span> <span class="token keyword">long</span> now <span class="token operator">=</span> SystemClock<span class="token punctuation">.</span><span class="token function">uptimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">final</span> <span class="token keyword">long</span> dueTime <span class="token operator">=</span> now <span class="token operator">+</span> delayMillis<span class="token punctuation">;</span>
+        <span class="token comment">//将传入的action这个Runnable封装后加入mCallbackQueues回调队列</span>
+        mCallbackQueues<span class="token punctuation">[</span>callbackType<span class="token punctuation">]</span><span class="token punctuation">.</span><span class="token function">addCallbackLocked</span><span class="token punctuation">(</span>dueTime<span class="token punctuation">,</span> action<span class="token punctuation">,</span> token<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>dueTime <span class="token operator">&lt;=</span> now<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//请求vsync信号，请求到vsync垂直同步信号后，会向主线程的消息队列发送一个异步消息，让主线程更新UI</span>
+            <span class="token function">scheduleFrameLocked</span><span class="token punctuation">(</span>now<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//这是Choreographer中的回调队列</span>
+<span class="token keyword">private</span> <span class="token keyword">final</span> CallbackQueue<span class="token punctuation">[</span><span class="token punctuation">]</span> mCallbackQueues<span class="token punctuation">;</span>
+</code></pre> 
+<p><strong>Choreographer.scheduleFrameLocked(long now)</strong></p> 
+<pre><code class="prism language-java"><span class="token keyword">private</span> <span class="token keyword">void</span> <span class="token function">scheduleFrameLocked</span><span class="token punctuation">(</span><span class="token keyword">long</span> now<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>mFrameScheduled<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        mFrameScheduled <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>		<span class="token comment">//这里也是保证下面代码在一个垂直同步周期内仅执行一次</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>USE_VSYNC<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+            <span class="token comment">//这里其实就是判断是否在主线程中</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">isRunningOnLooperThreadLocked</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token function">scheduleVsyncLocked</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                Message msg <span class="token operator">=</span> mHandler<span class="token punctuation">.</span><span class="token function">obtainMessage</span><span class="token punctuation">(</span>MSG_DO_SCHEDULE_VSYNC<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                msg<span class="token punctuation">.</span><span class="token function">setAsynchronous</span><span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                mHandler<span class="token punctuation">.</span><span class="token function">sendMessageAtFrontOfQueue</span><span class="token punctuation">(</span>msg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+        <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+
+<span class="token keyword">private</span> <span class="token keyword">void</span> <span class="token function">scheduleVsyncLocked</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    mDisplayEventReceiver<span class="token punctuation">.</span><span class="token function">scheduleVsync</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>	<span class="token comment">//其中通过一个native方法请求vsync信号</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>上面mDisplayEventReceiver是一个FrameDisplayEventReceiver对象，它的声明如下，可以看到，这是一个Runnable对象，当请求到vsync信号后，就会回调下面的<strong>onVsync方法</strong>。</p> 
+<pre><code class="prism language-java"><span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token keyword">class</span> <span class="token class-name">FrameDisplayEventReceiver</span> <span class="token keyword">extends</span> <span class="token class-name">DisplayEventReceiver</span>
+            <span class="token keyword">implements</span> <span class="token class-name">Runnable</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">private</span> <span class="token keyword">boolean</span> mHavePendingVsync<span class="token punctuation">;</span>
+        <span class="token keyword">private</span> <span class="token keyword">long</span> mTimestampNanos<span class="token punctuation">;</span>
+        <span class="token keyword">private</span> <span class="token keyword">int</span> mFrame<span class="token punctuation">;</span>
+
+        <span class="token keyword">public</span> <span class="token function">FrameDisplayEventReceiver</span><span class="token punctuation">(</span>Looper looper<span class="token punctuation">,</span> <span class="token keyword">int</span> vsyncSource<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">super</span><span class="token punctuation">(</span>looper<span class="token punctuation">,</span> vsyncSource<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token annotation punctuation">@Override</span>
+        <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">onVsync</span><span class="token punctuation">(</span><span class="token keyword">long</span> timestampNanos<span class="token punctuation">,</span> <span class="token keyword">long</span> physicalDisplayId<span class="token punctuation">,</span> <span class="token keyword">int</span> frame<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">long</span> now <span class="token operator">=</span> System<span class="token punctuation">.</span><span class="token function">nanoTime</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>timestampNanos <span class="token operator">&gt;</span> now<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                Log<span class="token punctuation">.</span><span class="token function">w</span><span class="token punctuation">(</span>TAG<span class="token punctuation">,</span> <span class="token string">"Frame time is "</span> <span class="token operator">+</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>timestampNanos <span class="token operator">-</span> now<span class="token punctuation">)</span> <span class="token operator">*</span> <span class="token number">0.000001f</span><span class="token punctuation">)</span>
+                        <span class="token operator">+</span> <span class="token string">" ms in the future!  Check that graphics HAL is generating vsync "</span>
+                        <span class="token operator">+</span> <span class="token string">"timestamps using the correct timebase."</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                timestampNanos <span class="token operator">=</span> now<span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>mHavePendingVsync<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                Log<span class="token punctuation">.</span><span class="token function">w</span><span class="token punctuation">(</span>TAG<span class="token punctuation">,</span> <span class="token string">"Already have a pending vsync event.  There should only be "</span>
+                        <span class="token operator">+</span> <span class="token string">"one at a time."</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                mHavePendingVsync <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+
+            mTimestampNanos <span class="token operator">=</span> timestampNanos<span class="token punctuation">;</span>
+            mFrame <span class="token operator">=</span> frame<span class="token punctuation">;</span>
+            Message msg <span class="token operator">=</span> Message<span class="token punctuation">.</span><span class="token function">obtain</span><span class="token punctuation">(</span>mHandler<span class="token punctuation">,</span> <span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>	<span class="token comment">//将这个Runnable封装到异步Message中，并发送到主线程的消息队列中</span>
+            msg<span class="token punctuation">.</span><span class="token function">setAsynchronous</span><span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            mHandler<span class="token punctuation">.</span><span class="token function">sendMessageAtTime</span><span class="token punctuation">(</span>msg<span class="token punctuation">,</span> timestampNanos <span class="token operator">/</span> TimeUtils<span class="token punctuation">.</span>NANOS_PER_MS<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token annotation punctuation">@Override</span>
+        <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">run</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            mHavePendingVsync <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+            <span class="token function">doFrame</span><span class="token punctuation">(</span>mTimestampNanos<span class="token punctuation">,</span> mFrame<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p>上面run方法中的<strong>doFrame</strong>方法，异步消息在主线程的消息队列中被优先取出后会被执行。</p> 
+<pre><code class="prism language-java"><span class="token keyword">void</span> <span class="token function">doFrame</span><span class="token punctuation">(</span><span class="token keyword">long</span> frameTimeNanos<span class="token punctuation">,</span> <span class="token keyword">int</span> frame<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">final</span> <span class="token keyword">long</span> startNanos<span class="token punctuation">;</span>
+    <span class="token keyword">synchronized</span> <span class="token punctuation">(</span>mLock<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>mFrameScheduled<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span><span class="token punctuation">;</span> <span class="token comment">// no work to do</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token keyword">long</span> intendedFrameTimeNanos <span class="token operator">=</span> frameTimeNanos<span class="token punctuation">;</span>	<span class="token comment">//下一帧的预期时间</span>
+        startNanos <span class="token operator">=</span> System<span class="token punctuation">.</span><span class="token function">nanoTime</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>		<span class="token comment">//系统当前时间</span>
+        <span class="token keyword">final</span> <span class="token keyword">long</span> jitterNanos <span class="token operator">=</span> startNanos <span class="token operator">-</span> frameTimeNanos<span class="token punctuation">;</span>	<span class="token comment">//抖动时间，也就是vsync信号到来的时刻到即将进行UI重绘的时间</span>
+        <span class="token comment">//如果这个抖动时间 &gt;= 16ms就会导致丢帧</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>jitterNanos <span class="token operator">&gt;=</span> mFrameIntervalNanos<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">final</span> <span class="token keyword">long</span> skippedFrames <span class="token operator">=</span> jitterNanos <span class="token operator">/</span> mFrameIntervalNanos<span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>skippedFrames <span class="token operator">&gt;=</span> SKIPPED_FRAME_WARNING_LIMIT<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                Log<span class="token punctuation">.</span><span class="token function">i</span><span class="token punctuation">(</span>TAG<span class="token punctuation">,</span> <span class="token string">"Skipped "</span> <span class="token operator">+</span> skippedFrames <span class="token operator">+</span> <span class="token string">" frames!  "</span>
+                      <span class="token operator">+</span> <span class="token string">"The application may be doing too much work on its main thread."</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token keyword">final</span> <span class="token keyword">long</span> lastFrameOffset <span class="token operator">=</span> jitterNanos <span class="token operator">%</span> mFrameIntervalNanos<span class="token punctuation">;</span>
+            frameTimeNanos <span class="token operator">=</span> startNanos <span class="token operator">-</span> lastFrameOffset<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token comment">//出现了某种错误，会重新请求VSync信号</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>frameTimeNanos <span class="token operator">&lt;</span> mLastFrameTimeNanos<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>DEBUG_JANK<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                Log<span class="token punctuation">.</span><span class="token function">d</span><span class="token punctuation">(</span>TAG<span class="token punctuation">,</span> <span class="token string">"Frame time appears to be going backwards.  May be due to a "</span>
+                      <span class="token operator">+</span> <span class="token string">"previously skipped frame.  Waiting for next vsync."</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token function">scheduleVsyncLocked</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">return</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>mFPSDivisor <span class="token operator">&gt;</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">long</span> timeSinceVsync <span class="token operator">=</span> frameTimeNanos <span class="token operator">-</span> mLastFrameTimeNanos<span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>timeSinceVsync <span class="token operator">&lt;</span> <span class="token punctuation">(</span>mFrameIntervalNanos <span class="token operator">*</span> mFPSDivisor<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> timeSinceVsync <span class="token operator">&gt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token function">scheduleVsyncLocked</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">return</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+
+        mFrameInfo<span class="token punctuation">.</span><span class="token function">setVsync</span><span class="token punctuation">(</span>intendedFrameTimeNanos<span class="token punctuation">,</span> frameTimeNanos<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        mFrameScheduled <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+        mLastFrameTimeNanos <span class="token operator">=</span> frameTimeNanos<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+        Trace<span class="token punctuation">.</span><span class="token function">traceBegin</span><span class="token punctuation">(</span>Trace<span class="token punctuation">.</span>TRACE_TAG_VIEW<span class="token punctuation">,</span> <span class="token string">"Choreographer#doFrame"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        AnimationUtils<span class="token punctuation">.</span><span class="token function">lockAnimationClock</span><span class="token punctuation">(</span>frameTimeNanos <span class="token operator">/</span> TimeUtils<span class="token punctuation">.</span>NANOS_PER_MS<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        mFrameInfo<span class="token punctuation">.</span><span class="token function">markInputHandlingStart</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//处理屏幕输入时间的回调</span>
+        <span class="token function">doCallbacks</span><span class="token punctuation">(</span>Choreographer<span class="token punctuation">.</span>CALLBACK_INPUT<span class="token punctuation">,</span> frameTimeNanos<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        mFrameInfo<span class="token punctuation">.</span><span class="token function">markAnimationsStart</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//处理动画的回调</span>
+        <span class="token function">doCallbacks</span><span class="token punctuation">(</span>Choreographer<span class="token punctuation">.</span>CALLBACK_ANIMATION<span class="token punctuation">,</span> frameTimeNanos<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">doCallbacks</span><span class="token punctuation">(</span>Choreographer<span class="token punctuation">.</span>CALLBACK_INSETS_ANIMATION<span class="token punctuation">,</span> frameTimeNanos<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        mFrameInfo<span class="token punctuation">.</span><span class="token function">markPerformTraversalsStart</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//处理UI重绘的回调，会对ViewRootImpl.scheduleTraversals()方法中加入的mTraversalRunnable进行回调</span>
+        <span class="token function">doCallbacks</span><span class="token punctuation">(</span>Choreographer<span class="token punctuation">.</span>CALLBACK_TRAVERSAL<span class="token punctuation">,</span> frameTimeNanos<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token function">doCallbacks</span><span class="token punctuation">(</span>Choreographer<span class="token punctuation">.</span>CALLBACK_COMMIT<span class="token punctuation">,</span> frameTimeNanos<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span> <span class="token keyword">finally</span> <span class="token punctuation">{<!-- --></span>
+        AnimationUtils<span class="token punctuation">.</span><span class="token function">unlockAnimationClock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        Trace<span class="token punctuation">.</span><span class="token function">traceEnd</span><span class="token punctuation">(</span>Trace<span class="token punctuation">.</span>TRACE_TAG_VIEW<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>TraversalRunnable</strong></p> 
+<p>它是ViewRootImpl中的内部类，这就是上面ViewRootImpl.scheduleTraversals()方法中在回调队列中加入的mTraversalRunnable，直到上面的doCallbacks(Choreographer.CALLBACK_TRAVERSAL, frameTimeNanos)才会执行。</p> 
+<pre><code class="prism language-java"><span class="token comment">//上面队列中加入的mTraversalRunnable对象的声明如下：</span>
+<span class="token keyword">final</span> <span class="token keyword">class</span> <span class="token class-name">TraversalRunnable</span> <span class="token keyword">implements</span> <span class="token class-name">Runnable</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">run</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">doTraversal</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+<span class="token keyword">final</span> TraversalRunnable mTraversalRunnable <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">TraversalRunnable</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token keyword">void</span> <span class="token function">doTraversal</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>mTraversalScheduled<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        mTraversalScheduled <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+        <span class="token comment">//先将消息队列的同步屏障移除</span>
+        mHandler<span class="token punctuation">.</span><span class="token function">getLooper</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getQueue</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">removeSyncBarrier</span><span class="token punctuation">(</span>mTraversalBarrier<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>mProfile<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            Debug<span class="token punctuation">.</span><span class="token function">startMethodTracing</span><span class="token punctuation">(</span><span class="token string">"ViewAncestor"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token function">performTraversals</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>	<span class="token comment">//这就是ViewRootImpl的绘制方法，它会通知所有子view进行measure、layout和draw等方法进行重绘</span>
+
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>mProfile<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            Debug<span class="token punctuation">.</span><span class="token function">stopMethodTracing</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            mProfile <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="_404"></a>消息队列的同步屏障</h3> 
+<p><strong>作用</strong></p> 
+<p>其实就是提高异步消息的优先级，让消息队列优先取出异步消息交给相应线程的Handler执行。</p> 
+<p><strong>实现原理</strong></p> 
+<p>同步屏障的实现首先要向消息队列中加入<code>一个没有设置target的Message对象</code>，也就是说这个Message持有的Handler对象为null，在下面的代码中可以看到：</p> 
+<pre><code class="prism language-java"><span class="token comment">//MessageQueue.postSyncBarrier()</span>
+<span class="token keyword">public</span> <span class="token keyword">int</span> <span class="token function">postSyncBarrier</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> <span class="token function">postSyncBarrier</span><span class="token punctuation">(</span>SystemClock<span class="token punctuation">.</span><span class="token function">uptimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">private</span> <span class="token keyword">int</span> <span class="token function">postSyncBarrier</span><span class="token punctuation">(</span><span class="token keyword">long</span> when<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// Enqueue a new sync barrier token.</span>
+    <span class="token comment">// We don't need to wake the queue because the purpose of a barrier is to stall it.</span>
+    <span class="token keyword">synchronized</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">final</span> <span class="token keyword">int</span> token <span class="token operator">=</span> mNextBarrierToken<span class="token operator">++</span><span class="token punctuation">;</span>
+        <span class="token keyword">final</span> Message msg <span class="token operator">=</span> Message<span class="token punctuation">.</span><span class="token function">obtain</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        msg<span class="token punctuation">.</span><span class="token function">markInUse</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        msg<span class="token punctuation">.</span>when <span class="token operator">=</span> when<span class="token punctuation">;</span>
+        msg<span class="token punctuation">.</span>arg1 <span class="token operator">=</span> token<span class="token punctuation">;</span>
+
+        Message prev <span class="token operator">=</span> null<span class="token punctuation">;</span>
+        Message p <span class="token operator">=</span> mMessages<span class="token punctuation">;</span>
+        <span class="token comment">//下面会按照when，也就是消息的时序，将这个Message对象插入链表相应位置</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>when <span class="token operator">!=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">while</span> <span class="token punctuation">(</span>p <span class="token operator">!=</span> null <span class="token operator">&amp;&amp;</span> p<span class="token punctuation">.</span>when <span class="token operator">&lt;=</span> when<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                prev <span class="token operator">=</span> p<span class="token punctuation">;</span>
+                p <span class="token operator">=</span> p<span class="token punctuation">.</span>next<span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>prev <span class="token operator">!=</span> null<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> <span class="token comment">// invariant: p == prev.next</span>
+            msg<span class="token punctuation">.</span>next <span class="token operator">=</span> p<span class="token punctuation">;</span>
+            prev<span class="token punctuation">.</span>next <span class="token operator">=</span> msg<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            msg<span class="token punctuation">.</span>next <span class="token operator">=</span> p<span class="token punctuation">;</span>
+            mMessages <span class="token operator">=</span> msg<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">return</span> token<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>然后我们看看**MessageQueue.next()**这个方法</p> 
+<p>如果Message对象在发送到消息队列前调用了 <code>Message.setAsynchronous(true)</code> 这个方法，就表明这个消息是一个异步消息，下面MessageQueue的next方法就会优先取出队列中的异步消息。</p> 
+<pre><code class="prism language-java">Message <span class="token function">next</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token keyword">int</span> pendingIdleHandlerCount <span class="token operator">=</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token keyword">int</span> nextPollTimeoutMillis <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token punctuation">;</span><span class="token punctuation">;</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>nextPollTimeoutMillis <span class="token operator">!=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            Binder<span class="token punctuation">.</span><span class="token function">flushPendingCommands</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token function">nativePollOnce</span><span class="token punctuation">(</span>ptr<span class="token punctuation">,</span> nextPollTimeoutMillis<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">synchronized</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">final</span> <span class="token keyword">long</span> now <span class="token operator">=</span> SystemClock<span class="token punctuation">.</span><span class="token function">uptimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            Message prevMsg <span class="token operator">=</span> null<span class="token punctuation">;</span>
+            Message msg <span class="token operator">=</span> mMessages<span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>msg <span class="token operator">!=</span> null <span class="token operator">&amp;&amp;</span> msg<span class="token punctuation">.</span>target <span class="token operator">==</span> null<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>	<span class="token comment">//如果消息头结点的target为null，即上面设置的同步屏障</span>
+            <span class="token comment">/*
+                前方高能！！！下面就是内存屏障真正起作用的地方了。
+                当发现这个内存屏障后，下面的循环就会遍历Message链表，忽略所有的同步消息，直到找到第一个异步消息。后面会将这个异步消息出队并返回。
+            */</span>
+                <span class="token keyword">do</span> <span class="token punctuation">{<!-- --></span>
+                    prevMsg <span class="token operator">=</span> msg<span class="token punctuation">;</span>
+                    msg <span class="token operator">=</span> msg<span class="token punctuation">.</span>next<span class="token punctuation">;</span>
+                <span class="token punctuation">}</span> <span class="token keyword">while</span> <span class="token punctuation">(</span>msg <span class="token operator">!=</span> null <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span>msg<span class="token punctuation">.</span><span class="token function">isAsynchronous</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>msg <span class="token operator">!=</span> null<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>now <span class="token operator">&lt;</span> msg<span class="token punctuation">.</span>when<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    nextPollTimeoutMillis <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token keyword">int</span><span class="token punctuation">)</span> Math<span class="token punctuation">.</span><span class="token function">min</span><span class="token punctuation">(</span>msg<span class="token punctuation">.</span>when <span class="token operator">-</span> now<span class="token punctuation">,</span> Integer<span class="token punctuation">.</span>MAX_VALUE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token comment">// Got a message.</span>
+                    mBlocked <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span>prevMsg <span class="token operator">!=</span> null<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        prevMsg<span class="token punctuation">.</span>next <span class="token operator">=</span> msg<span class="token punctuation">.</span>next<span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                        mMessages <span class="token operator">=</span> msg<span class="token punctuation">.</span>next<span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                    msg<span class="token punctuation">.</span>next <span class="token operator">=</span> null<span class="token punctuation">;</span>
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span>DEBUG<span class="token punctuation">)</span> Log<span class="token punctuation">.</span><span class="token function">v</span><span class="token punctuation">(</span>TAG<span class="token punctuation">,</span> <span class="token string">"Returning message: "</span> <span class="token operator">+</span> msg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    msg<span class="token punctuation">.</span><span class="token function">markInUse</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token keyword">return</span> msg<span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token comment">// No more messages.</span>
+                nextPollTimeoutMillis <span class="token operator">=</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+        <span class="token punctuation">}</span>
+        <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>同步屏障的应用</strong></p> 
+<p>就是上面屏幕刷新时会开启主线程消息队列的同步屏障，让它优先取出异步的屏幕刷新消息并在主线程执行。这样做的主要目的应该就是提高UI流畅度。</p> 
+<h3><a id="_516"></a>参考资料</h3> 
+<p><a href="https://www.jianshu.com/p/7cc6995165f5" rel="nofollow">Android VSYNC与图形系统中的撕裂、双缓冲、三缓冲浅析</a></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/16fdf7b44037af5e9937f57303f9413b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">服务提供者无法注册到nacos服务器</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/56f19ce992bccab9b20013ddeeabae14/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【STM32F103】GPIO_Remap1_CAN1与GPIO_Remap2_CAN1区别</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

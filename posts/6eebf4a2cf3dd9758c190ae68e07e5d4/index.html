@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>apisdk-starter自动装配的思路与应用 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="apisdk-starter自动装配的思路与应用" />
+<meta property="og:description" content="apisdk-starter整体思路 首先定义开发者定义的开放接口声明为原始类，javassist生成的类是增强类。
+使用springboot的EnableAutoConfiguration和Import触发Spring扫描组件扫描原始类，得到所有BeanDefinition拓展FactoryBean，构造函数的参数为原始类的Class遍历BeanDefinition，设置beanClass为拓展的FactoryBean的Class，构造参数是原始类的Class，这样FactoryBean会把原始类对象的生命周期交给spring管理，开发者可以通过@Resource完成依赖注入在FactoryBean#getObject实例化原始类的代理对象时，使用javassist复制原始类，在内存中生成增强类，然后在方法参数上追加SdkContext参数声明，这样增强类就满足了apisdk的要求，通过apisdk生成增强类的代理对象，和原始类的代理对象形成映射关系。 有了原始类和增强类的映射关系后，接下来要解决运行时，如何查找增强类的代理对象，如何构建SdkContext请求上下文的问题。要解决这个问题，就要在原始类的代理对象着手。
+抽取spring aop的源码，用aop的JdkDynamicAopProxy创建原始类的代理对象，即FactoryBean#getObject方法返回的对象，这样可以做到执行原始类的方法时，查找增强类的代理对象，发起Http请求，同时在这里做了失败重试的机制拓展参数可变的前置通知，用于SdkContext参数的构建，本质是调用了RegionMock、SecretMock和TokenMock服务，然后把SdkContext参数追加到请求参数中 以上就是apisdk-starter的整体思路，其中抽取spring aop源码是为了脱离spring容器，apisdk-starter仍然可以运行。
+apisdk-starter思路分解 我把整体思路中的前3点归结为Spriing拓展点，第4点是javassist字节码技术，后面两点是aop拓展。
+首先我们先看下成品的apisdk-starter是如何使用的，接下来会按照思路分解进行技术分享。
+apisdk-starter的应用 开放接口声明 可以看到，接口声明已经不再需要SdkContext参数声明。
+接口调用 调用时不需要再关心如何调用RegionMock、SecretMock、TokenMock等服务，甚至开发者不需要知道有这些服务。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/6eebf4a2cf3dd9758c190ae68e07e5d4/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-05-12T21:12:43+08:00" />
+<meta property="article:modified_time" content="2023-05-12T21:12:43+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">apisdk-starter自动装配的思路与应用</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-tomorrow-night">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="apisdkstarter_0"></a>apisdk-starter整体思路</h2> 
+<p>首先定义开发者定义的开放接口声明为原始类，javassist生成的类是增强类。</p> 
+<ol><li>使用springboot的EnableAutoConfiguration和Import触发Spring扫描组件扫描原始类，得到所有BeanDefinition</li><li>拓展FactoryBean，构造函数的参数为原始类的Class</li><li>遍历BeanDefinition，设置beanClass为拓展的FactoryBean的Class，构造参数是原始类的Class，这样FactoryBean会把原始类对象的生命周期交给spring管理，开发者可以通过@Resource完成依赖注入</li><li>在FactoryBean#getObject实例化原始类的代理对象时，使用javassist复制原始类，在内存中生成增强类，然后在方法参数上追加SdkContext参数声明，这样增强类就满足了apisdk的要求，通过apisdk生成增强类的代理对象，和原始类的代理对象形成映射关系。</li></ol> 
+<p>有了原始类和增强类的映射关系后，接下来要解决运行时，如何查找增强类的代理对象，如何构建SdkContext请求上下文的问题。要解决这个问题，就要在原始类的代理对象着手。</p> 
+<ol><li>抽取spring aop的源码，用aop的JdkDynamicAopProxy创建原始类的代理对象，即FactoryBean#getObject方法返回的对象，这样可以做到执行原始类的方法时，查找增强类的代理对象，发起Http请求，同时在这里做了失败重试的机制</li><li>拓展参数可变的前置通知，用于SdkContext参数的构建，本质是调用了RegionMock、SecretMock和TokenMock服务，然后把SdkContext参数追加到请求参数中</li></ol> 
+<p>以上就是apisdk-starter的整体思路，其中抽取spring aop源码是为了脱离spring容器，apisdk-starter仍然可以运行。</p> 
+<h2><a id="apisdkstarter_15"></a>apisdk-starter思路分解</h2> 
+<p>我把整体思路中的前3点归结为Spriing拓展点，第4点是javassist字节码技术，后面两点是aop拓展。</p> 
+<p>首先我们先看下成品的apisdk-starter是如何使用的，接下来会按照思路分解进行技术分享。</p> 
+<h2><a id="apisdkstarter_19"></a>apisdk-starter的应用</h2> 
+<h3><a id="_20"></a>开放接口声明</h3> 
+<p><img src="https://images2.imgbox.com/f5/60/17BGD3L5_o.png" alt="在这里插入图片描述"><br> 可以看到，接口声明已经不再需要SdkContext参数声明。</p> 
+<h3><a id="_23"></a>接口调用</h3> 
+<p><img src="https://images2.imgbox.com/8a/06/mFBOQdGS_o.png" alt="在这里插入图片描述"><br> 调用时不需要再关心如何调用RegionMock、SecretMock、TokenMock等服务，甚至开发者不需要知道有这些服务。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/58d686f56d8040d7b3e73f7b687c0576/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">web集群--lvs负载均衡</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/df7e3b47b2ee77ae4cfffcc3e4ae9641/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">C#控件编程之显示信息控件（Label、LinkLabel）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

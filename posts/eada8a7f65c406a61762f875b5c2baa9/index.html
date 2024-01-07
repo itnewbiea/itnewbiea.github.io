@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>一文详解NDT算法实现 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="一文详解NDT算法实现" />
+<meta property="og:description" content="点击上方“3D视觉工坊”，选择“星标”
+干货第一时间送达
+作者丨paopaoslam
+来源丨 泡泡机器人SLAM 、PCL源码
+编辑丨玉玺、lionheart
+摘要
+NDT(Normal-Distributions Transform)算法与ICP算法一样是点云配准中常用的经典算法之一，本文对PCL中NDT代码的实现做一个简单的解析，希望对用到NDT的同学有所帮助。
+NDT算法的基本原理在之前的文章中已经介绍过，在这里不再赘述，篇幅有限，本文没有贴出大量源码，仅对源码中重要的函数做相应解析。
+图1 NDT 地图示意图
+官网示例教程
+PCL官网给出了NDT算法的示例教程（https://pointclouds.org/documentation/tutorials/normal_distributions_transform.html#），例程中算法输入几个参数的含义：
+1、ndt.setTransformationEpsilon (0.01);//设置NDT迭代收敛阈值，即迭代增量的大小，相当于牛顿法中的delata_x，阈值越小，迭代次数越多；
+2、ndt.setStepSize (0.1);//Ndt使用了More-Thuente线性搜索[2]求解位姿增量，这里设置搜索的步长；
+3、ndt.setResolution (1.0);//设置NDT网格的分辨率；
+4、ndt.setMaximumIterations (35)；//设置最大迭代次数；
+跑PCL例程时可能有的同学遇到过跑出来的结果匹配不好的情况，如图2所示，
+图2 官网数据NDT匹配不佳效果示意图
+后面会从代码实现上对这个现象做相应分析。
+主要实现代码(PCL 1.12.0)
+1、创建NDT地图。
+NDT的原理是把Target点云按照固定的分辨率划分成3d网格，并计算出每个3d网格点云的分布情况，计算Source点云在Target分布的概率来计算点云的匹配关系的，因此首先需要创建NDT地图。
+在setInputTarget时便会先进入初始化函数init();
+初始化的主要工作就是把Target点云按照输入的分辨率划分到3d网格中，并计算每个网格的均值与协方差，该过程实现在：
+pcl/filters/impl/voxel_grid_covariance.hpp
+的applyFilter函数中，整个计算过程比较容易懂，在看源码的过程中可能有问题的在于协方差的计算上，这里pcl协方差的计算在1.12.0版本之前有错误，最后协方差应该是乘以n/(n-1),但是实现写反了如图3所示。
+图3 1.7版本NDT协方差计算实现代码截图
+图4 1.12.0版本NDT协方差计算代码实现截图
+这个问题在pcl1.12.0版本给出了修复，如图4所示。这里为了减小计算量，把协方差计算的公式展开了，简单推导如下（以二维协方差矩阵计算为例）：
+2、计算变换矩阵
+计算Source点云与Target点云间的变换矩阵，主要在
+pcl/registration/include/pcl/registration/impl/ndt.hpp
+的computeTransformation的函数中。实现中有几个重要的部分：
+（1）Source点与Target网格的关联。虽然可以根据匹配初值以及Target网格生成的相关信息（坐标原点，分辨率）直接计算出Source里的每个点落在哪个网格里，但是算法实现时仍然采用了kdtree索引的方式搜索每个Source点与Target网格（即网格中心）的关系。主要在computeDerivatives与computeHessian函数中radiusSearch来实现。
+图5 ndt近邻搜索代码截图
+之所以不直接计算索引而要使用kdtree查找近邻，猜测一个主要的原因是为了一定程度上避免初始误差较大时过多的source点落入空网格或错误网格而无法建立有效的约束，导致算法无法收敛到最优解附近的问题。
+但是，图5中有一个细节，radiusSearch输入的搜索半径为resolution_，该变量为setResolution（）函数传入的ndt网格分辨率的变量，即搜索半径设定为一个网格分辨率的搜索半径，所以当初始误差大于网格分辨率时，同样可能会导致算法无法收敛到最优解附近，这也是导致官网例程没有收敛的原因（如图2）之一。
+可以试下把初值的平移误差减小，设置为：（1.79387, 0, 0），如图6所示，
+图6 修改官网例程初值示意图
+修复初值后的收敛效果如图7所示，可见明显优于图2。
+图7 修复初值后NDT官网例程配准效果
+（2）代价值的计算。PCL中NDT实现的原理，参考的是《The Three-Dimensional Normal-Distributions Transform 》这篇论文。代价函数的计算在代码updateDerivatives（）函数中，如图8所示。
+图8 PCL NDT代价值计算代码实现截图
+可以看到，完全是论文中公式6.9的实现。
+该公式即为单个激光点NDT匹配的代价函数计算公式。熟悉概率论的同学可以看出这个公式就是一个多维正态分布的极大似然函数，其实NDT匹配计算的本质就是一个多维正态分布的极大似然估计。
+3、迭代优化。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/eada8a7f65c406a61762f875b5c2baa9/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-02-09T07:00:00+08:00" />
+<meta property="article:modified_time" content="2022-02-09T07:00:00+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">一文详解NDT算法实现</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div id="js_content"> 
+ <p style="text-align:center;">点击上方“3D视觉工坊”，选择“星标”</p> 
+ <p style="text-align:center;">干货第一时间送达</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/39/84/wwQ8Q5cP_o.png" alt="0ec7581f481ec23d3ca1fe2b87a74277.png"></p> 
+ <p style="text-align:left;">作者丨paopaoslam</p> 
+ <p style="text-align:left;">来源丨 泡泡机器人SLAM 、PCL源码</p> 
+ <p style="text-align:left;">编辑丨玉玺、lionheart</p> 
+ <p><img src="https://images2.imgbox.com/04/7d/azIS18IH_o.png" alt="7f822e9cb80d8291117e52afd868843f.png"></p> 
+ <p><strong>摘要</strong></p> 
+ <p><img src="https://images2.imgbox.com/52/83/fyTNtBPY_o.png" alt="bc21d6a094e1df35409198c2a2ff18e0.png"></p> 
+ <p>    NDT(Normal-Distributions Transform)算法与ICP算法一样是点云配准中常用的经典算法之一，本文对PCL中NDT代码的实现做一个简单的解析，希望对用到NDT的同学有所帮助。</p> 
+ <p>    NDT算法的基本原理在之前的文章中已经介绍过，在这里不再赘述，篇幅有限，本文没有贴出大量源码，仅对源码中重要的函数做相应解析。</p> 
+ <p><img src="https://images2.imgbox.com/ae/73/oPlzJnYC_o.png" alt="8e82509d89c4c68edc01c23ee06145fb.png"></p> 
+ <p>图1 NDT 地图示意图</p> 
+ <p><img src="https://images2.imgbox.com/5f/f6/hwvDMMDs_o.png" alt="81fcba39a1c2be1f6ca66a2a4cd27e58.png"></p> 
+ <p><strong>官网示例教程</strong></p> 
+ <p><img src="https://images2.imgbox.com/72/3b/1THr0JrO_o.png" alt="0f64eb6d41a3d4373bc0b0a56e518eea.png"></p> 
+ <p style="text-align:left;">    PCL官网给出了NDT算法的示例教程（https://pointclouds.org/documentation/tutorials/normal_distributions_transform.html#），例程中算法输入几个参数的含义：</p> 
+ <p style="text-align:left;">1、ndt.setTransformationEpsilon (0.01);//设置NDT迭代收敛阈值，即迭代增量的大小，相当于牛顿法中的delata_x，阈值越小，迭代次数越多；</p> 
+ <p style="text-align:left;">2、ndt.setStepSize (0.1);//Ndt使用了More-Thuente线性搜索[2]求解位姿增量，这里设置搜索的步长；</p> 
+ <p>3、ndt.setResolution (1.0);//设置NDT网格的分辨率；</p> 
+ <p>4、ndt.setMaximumIterations (35)；//设置最大迭代次数；</p> 
+ <p>    跑PCL例程时可能有的同学遇到过跑出来的结果匹配不好的情况，如图2所示，</p> 
+ <p><img src="https://images2.imgbox.com/a6/f8/KjoCJ4ZI_o.png" alt="b5208d5c898518a5dd0a5e72f8ecc8d4.png"></p> 
+ <p>图2 官网数据NDT匹配不佳效果示意图</p> 
+ <p>    后面会从代码实现上对这个现象做相应分析。</p> 
+ <p><img src="https://images2.imgbox.com/42/f6/bdrAVIGE_o.png" alt="f1e2d12e1a92ac96e4a537fa3d8fdae7.png"></p> 
+ <p><strong>主要实现代码(PCL 1.12.0)</strong></p> 
+ <p><img src="https://images2.imgbox.com/e0/d1/02Ji3SwB_o.png" alt="2068e0a6d6093eab99d50f4c42e9687a.png"></p> 
+ <p><strong>    1、创建NDT地图。</strong></p> 
+ <p>    NDT的原理是把Target点云按照固定的分辨率划分成3d网格，并计算出每个3d网格点云的分布情况，计算Source点云在Target分布的概率来计算点云的匹配关系的，因此首先需要创建NDT地图。</p> 
+ <p>在setInputTarget时便会先进入初始化函数init();</p> 
+ <p><img src="https://images2.imgbox.com/50/51/Lm0kMv7d_o.png" alt="463a3e3214944c13d35c80926699b4b4.png"></p> 
+ <p>    初始化的主要工作就是把Target点云按照输入的分辨率划分到3d网格中，并计算每个网格的均值与协方差，该过程实现在：</p> 
+ <p>pcl/filters/impl/voxel_grid_covariance.hpp</p> 
+ <p>的applyFilter函数中，整个计算过程比较容易懂，在看源码的过程中可能有问题的在于协方差的计算上，这里pcl协方差的计算在1.12.0版本之前有错误，最后协方差应该是乘以n/(n-1),但是实现写反了如图3所示。</p> 
+ <p><img src="https://images2.imgbox.com/ae/6c/92Oj8K34_o.png" alt="5448e05b775f48088e639aa15335abc5.png"></p> 
+ <p style="text-align:center;">图3 1.7版本NDT协方差计算实现代码截图</p> 
+ <p><img src="https://images2.imgbox.com/3c/87/ycB1m65u_o.png" alt="c70ccdb40d92c7381c66effade7cb2c5.png"></p> 
+ <p style="text-align:center;">图4  1.12.0版本NDT协方差计算代码实现截图</p> 
+ <p>    这个问题在pcl1.12.0版本给出了修复，如图4所示。这里为了减小计算量，把协方差计算的公式展开了，简单推导如下（以二维协方差矩阵计算为例）：</p> 
+ <p><img src="https://images2.imgbox.com/31/a3/xhfyoIAb_o.png" alt="a187293d96000bc3f7a2c9f6255b9be8.png"></p> 
+ <p><strong>    2、计算变换矩阵</strong></p> 
+ <p>    计算Source点云与Target点云间的变换矩阵，主要在</p> 
+ <p>pcl/registration/include/pcl/registration/impl/ndt.hpp</p> 
+ <p>的computeTransformation的函数中。实现中有几个重要的部分：</p> 
+ <p>    （1）Source点与Target网格的关联。虽然可以根据匹配初值以及Target网格生成的相关信息（坐标原点，分辨率）直接计算出Source里的每个点落在哪个网格里，但是算法实现时仍然采用了kdtree索引的方式搜索每个Source点与Target网格（即网格中心）的关系。主要在computeDerivatives与computeHessian函数中radiusSearch来实现。</p> 
+ <p><img src="https://images2.imgbox.com/d8/e3/Rgh3ef4C_o.png" alt="37ba9eabf71b6ac8ff2ccba25906d129.png"></p> 
+ <p style="text-align:center;">图5 ndt近邻搜索代码截图</p> 
+ <p>    之所以不直接计算索引而要使用kdtree查找近邻，猜测一个主要的原因是为了一定程度上避免初始误差较大时过多的source点落入空网格或错误网格而无法建立有效的约束，导致算法无法收敛到最优解附近的问题。</p> 
+ <p>    但是，图5中有一个细节，radiusSearch输入的搜索半径为resolution_，该变量为setResolution（）函数传入的ndt网格分辨率的变量，即搜索半径设定为一个网格分辨率的搜索半径，所以当初始误差大于网格分辨率时，同样可能会导致算法无法收敛到最优解附近，这也是导致官网例程没有收敛的原因（如图2）之一。</p> 
+ <p>    可以试下把初值的平移误差减小，设置为：（1.79387, 0, 0），如图6所示，</p> 
+ <p><img src="https://images2.imgbox.com/22/31/6NP709Ry_o.png" alt="9d2cb919f354ddceaf364f2070ae4f03.png"></p> 
+ <p>图6 修改官网例程初值示意图</p> 
+ <p>    修复初值后的收敛效果如图7所示，可见明显优于图2。</p> 
+ <p><img src="https://images2.imgbox.com/a5/59/wUWrEFVI_o.png" alt="200f9b36dad4edf64d28e2be7e31e7b7.png"></p> 
+ <p style="text-align:center;">图7 修复初值后NDT官网例程配准效果</p> 
+ <p>    （2）代价值的计算。PCL中NDT实现的原理，参考的是《The Three-Dimensional Normal-Distributions Transform 》这篇论文。代价函数的计算在代码updateDerivatives（）函数中，如图8所示。</p> 
+ <p><img src="https://images2.imgbox.com/a5/5e/2odmVsrg_o.png" alt="fcbf50cd805d97c61d7727b67df77acd.png"></p> 
+ <p style="text-align:center;">图8 PCL NDT代价值计算代码实现截图</p> 
+ <p>    可以看到，完全是论文中公式6.9的实现。</p> 
+ <p><img src="https://images2.imgbox.com/20/4e/5abyNzKR_o.png" alt="3d94f8cf625d7a1daa32c9091bb84a76.png"></p> 
+ <p>    该公式即为单个激光点NDT匹配的代价函数计算公式。熟悉概率论的同学可以看出这个公式就是一个多维正态分布的极大似然函数，<strong>其实NDT匹配计算的本质就是一个多维正态分布的极大似然估计</strong>。</p> 
+ <p><strong>    3、迭代优化。</strong></p> 
+ <p>    优化方法在实现上采用了牛顿法，但是为了增加鲁棒性，只采用了牛顿法计算出来的迭代方向作为步长搜索的初始方向，结合了线性搜索方法[2]计算得到最终的优化方向与迭代步长。该部分实现在computeStepLengthMT函数中，如图9所示。</p> 
+ <p><img src="https://images2.imgbox.com/f3/50/wI8Qcd7T_o.png" alt="12365cd332c5cf54aa49e171fc40665e.png"></p> 
+ <p style="text-align:center;">图9 优化步长搜索算法代码截图</p> 
+ <p>    雅可比矩阵以及海森矩阵的计算分别在computeDerivatives以及computeHessian函数中实现，求导过程相对简单，在论文[1]中有详细的推导这里就不再赘述，感兴趣的同学可以去看。</p> 
+ <p><img src="https://images2.imgbox.com/74/04/Rf8swSHD_o.png" alt="8b1c1a38785d0363f7e7b6a51e3c8c5b.png"></p> 
+ <p><img src="https://images2.imgbox.com/ed/4b/3vS1xy10_o.png" alt="0c032cc7c08e009830114948592f29f5.png"></p> 
+ <p><img src="https://images2.imgbox.com/d4/d5/vTry2Q8S_o.png" alt="3cb67d2c69415c9af0a2958f7149e922.png"></p> 
+ <p><strong>总结</strong></p> 
+ <p><img src="https://images2.imgbox.com/12/72/0eUYQViM_o.png" alt="bb6e1063a3747bae376854853a87d011.png"></p> 
+ <p>    本文主要讲解了PCL中NDT匹配源码的主要实现部分，主要介绍了一些实现的细节：</p> 
+ <p>    1、NDT匹配关系的建立也是通过建立kdtree实现的，而没有使用创建体素网格的索引直接计算得到，因此实际使用中，如果要使用NDT做实时的定位匹配，需要控制kdtree搜索的次数以减小计算量。</p> 
+ <p>    2、在计算协方差矩阵时，1.12.0以前的版本有笔误，该笔误实际只是对协方差做了一个整体的缩放，因此在实际使用中影响并不大。</p> 
+ <p>    3、分析了官方例程数据匹配效果不佳的原因，主要是NDT的实现中搜索半径强制设为了NDT网格分辨率，最多只能搜索一个网格范围的地图网格形成约束，因此初始误差如果大于NDT分辨率，则容易导致NDT匹配不收敛。另外，Autoware的开源代码[3]中也对NDT做了实现，测试PCL官网数据也是可以匹配收敛的，感兴趣的也可以下载试用一下。</p> 
+ <p>    4、PCL 代码中关键的实现比如代价函数设计，一阶导二阶导的计算，优化步长的计算，代码都是参考论文[1][2]实现的，论文中有详细的推导，可以帮助读者更好的理解代码。</p> 
+ <p><img src="https://images2.imgbox.com/33/b2/moONINjC_o.png" alt="9937e525ea582dc2a082f24186dece44.png"></p> 
+ <p>参考论文与链接</p> 
+ <p><img src="https://images2.imgbox.com/78/38/Urpe8GpC_o.png" alt="18b01a0765c4c0fbb12979b2fb5b242d.png"></p> 
+ <p style="text-align:left;">1.The Three-Dimensional Normal-Distributions Transform:https://www.divaportal.org/smash/get/diva2:276162/FULLTEXT02.pdf</p> 
+ <p style="text-align:left;">2.Line Search Algorithms with Guaranteed Sufficient Decrease:http://www.ii.uib.no/~lennart/drgrad/More1994.pdf</p> 
+ <p style="text-align:left;">3.https://gitlab.com/autowarefoundation/autoware.auto/AutowareAuto/-/tree/master/src/localization/ndt</p> 
+ <p style="text-align:left;">本文仅做学术分享，如有侵权，请联系删文。<br></p> 
+ <p style="text-align:left;"><strong>3D视觉精品课程推荐：</strong></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">1.面向自动驾驶领域的多传感器数据融合技术</a></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">2.面向自动驾驶领域的3D点云目标检测全栈学习路线！(单模态+多模态/数据+代码)</a><br><a href="" rel="nofollow">3.彻底搞透视觉三维重建：原理剖析、代码讲解、及优化改进</a><br><a href="" rel="nofollow">4.国内首个面向工业级实战的点云处理课程</a><br><a href="" rel="nofollow">5.激光-视觉-IMU-GPS融合SLAM算法梳理和代码讲解</a><br><a href="" rel="nofollow">6.彻底搞懂视觉-惯性SLAM：基于VINS-Fusion正式开课啦</a><br><a href="" rel="nofollow">7.彻底搞懂基于LOAM框架的3D激光SLAM: 源码剖析到算法优化</a><br><a href="" rel="nofollow">8.彻底剖析室内、室外激光SLAM关键算法原理、代码和实战(cartographer+LOAM +LIO-SAM)</a></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">9.从零搭建一套结构光3D重建系统[理论+源码+实践]</a></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">10.单目深度估计方法：算法梳理与代码实现</a></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">11.自动驾驶中的深度学习模型部署实战</a></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">12.相机模型与标定(单目+双目+鱼眼）</a></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">13.重磅！四旋翼飞行器：算法与实战</a></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">14.ROS2从入门到精通：理论与实战</a></p> 
+ <h3></h3> 
+ <p style="text-align:center;"><strong>重磅！</strong><strong>3DCVer-</strong><strong>学术论文写作投稿 </strong><strong>交流群</strong><strong>已成立</strong></p> 
+ <p style="text-align:left;">扫码添加小助手微信，可<strong>申请加入3D视觉工坊-学术论文写作与投稿 微信交流群，旨在交流顶会、顶刊、SCI、EI等写作与投稿事宜。</strong></p> 
+ <p style="text-align:left;"><strong>同时</strong>也可申请加入我们的细分方向交流群，目前主要有<strong>3D视觉</strong>、<strong>CV&amp;深度学习</strong>、<strong>SLAM</strong>、<strong>三维重建</strong>、<strong>点云后处理</strong>、<strong>自动驾驶、多传感器融合、CV入门、三维测量、VR/AR、3D人脸识别、医疗影像、缺陷检测、行人重识别、目标跟踪、视觉产品落地、视觉竞赛、车牌识别、硬件选型、<strong>学术交流、</strong>求职交流、ORB-SLAM系列源码交流、深度估计</strong>等微信群。</p> 
+ <p style="text-align:left;">一定要备注：<strong>研究方向+学校/公司+昵称</strong>，例如：”3D视觉 + 上海交大 + 静静“。请按照格式备注，可快速被通过且邀请进群。<strong>原创投稿</strong>也请联系。</p> 
+ <p><img src="https://images2.imgbox.com/c8/a5/DQUrqald_o.png" alt="695d5841a70e006497bb9bdc9f3d06d9.png"></p> 
+ <p>▲长按加微信群或投稿<br></p> 
+ <p><img src="https://images2.imgbox.com/ba/8f/exQZ0v1B_o.png" alt="8884f5dd1de692dc1389752a58fa966f.png"></p> 
+ <p>▲长按关注公众号</p> 
+ <h3></h3> 
+ <p style="text-align:left;"><strong>3D视觉从入门到精通知识星球</strong>：针对3D视觉领域的<strong>视频课</strong><strong>程（<a href="" rel="nofollow">三维重建系列</a>、<a href="" rel="nofollow">三维点云系列</a>、<a href="" rel="nofollow">结构光系列</a>、<a href="" rel="nofollow">手眼标定</a>、<a href="" rel="nofollow">相机标定</a>、</strong><strong>激光/视觉SLAM</strong><strong>、</strong><strong>自动</strong><strong>驾驶等</strong><strong>）、</strong><strong>知识点汇总、入门进阶学习路线、最新paper分享、疑问解答</strong>五个方面进行深耕，更有各类大厂的算法工程人员进行技术指导。与此同时，星球将联合知名企业发布3D视觉相关算法开发岗位以及项目对接信息，打造成集技术与就业为一体的铁杆粉丝聚集区，近4000星球成员为创造更好的AI世界共同进步，知识星球入口：</p> 
+ <h3></h3> 
+ <p style="text-align:center;">学习3D视觉核心技术，扫描查看介绍，3天内无条件退款</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/4e/da/JbheN0UU_o.png" alt="340d9db7887bf9d1f73c5d08c86798e1.png"></p> 
+ <p style="text-align:center;"> 圈里有高质量教程资料、答疑解惑、助你高效解决问题</p> 
+ <p style="text-align:right;"><strong>觉得有用，麻烦给个赞和在看~</strong><strong> </strong></p> 
+</div>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/d731bdd239273aaeac91f72aedd56ba1/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">小程序获取用户信息的两种方法</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/6feff6358869d1d9c887e83e3557085a/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">如何在CentOS7上禁用或关闭SELinux</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

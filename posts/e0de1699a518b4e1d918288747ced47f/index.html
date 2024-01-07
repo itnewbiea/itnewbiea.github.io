@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>源码分析 Flutter 的 setState 过程 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="源码分析 Flutter 的 setState 过程" />
+<meta property="og:description" content="前言 上一篇我们对比了 setState 和 ModelBinding这两种状态管理的区别，从结果来看，setState 的方式的性能明显低于 ModelBinding 这种使用 InheritedWidget 的方式。这是因为 setState的时候，不管子组件有没有依赖状态数据，都会蒋全部子组件移除后重建。那么 setState 这个过程做了什么事情，会导致这样的结果呢？本篇我们通过 Flutter 的源码来分析一下 setState 的过程。
+setState 的定义 我们先来看 setState 的定义，setState 定义在State&lt;T extends StatefulWidget&gt; with Diagnosticable这个类中，也就是 StatefulWidget或其子类的状态类。方法体代码不多，在执行业务代码做了一些异常处理，具体的代码我们不贴了，主要是做了如下处理：
+传给setState 的回调方法不能为空。生命周期校验：组件已经从组件树移除的时候会被 dispose 掉，因此不能在 dispose 后调用 setState。通常这会发生在定时器、动画或异步回调的过程中。这样的调用可能会导致内存泄露。在 created 阶段和没有装载阶段（mounted）不可以调用 setState，也就是不能在构造函数里调用 setState。通常应该在 initState 之后调用 setState。setState 的回调方法不能返回 Future 对象，也就是不能在 setState中执行异步操作，只能是同步操作。如果要执行异步操作应该咋 setState 之外进行调用。 @protected void setState(VoidCallback fn) { // 省略异常处理代码 _element!.markNeedsBuild(); } 最为关键的就一行代码：_element!.markNeedsBuild()，从函数名称来看就是标记元素需要构建。那么这个_element 又是从哪来的？继续挖！
+Element 是什么？ 我们来看_element 的定义，_element 是一个 StatefulElement 对象，实际上，我们还发现，在获取BuildContext的时候，返回的也是_element。在获取 BuildContext 的时候注释是这么说的：
+The location in the tree where this widget builds ——widget构建的渲染树的具体位置。 BuildContext 是一个抽象类，因此可以推断出 StatefulElement 实际上是其接口实现类或子类。往上溯源，发现整个的类层级是下面这样的，其中 Element、ComponentElement 都是抽象类，而 markNeedsBuild 方法是在 Element 抽象类定义的。而对于 Element，官方的定义为：" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/e0de1699a518b4e1d918288747ced47f/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-11-03T11:18:12+08:00" />
+<meta property="article:modified_time" content="2023-11-03T11:18:12+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">源码分析 Flutter 的 setState 过程</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h3><strong>前言</strong></h3> 
+<p>上一篇我们对比了 <code>setState</code> 和 <code>ModelBinding</code>这两种状态管理的区别，从结果来看，<code>setState</code> 的方式的性能明显低于 <code>ModelBinding</code> 这种使用 <code>InheritedWidget</code> 的方式。这是因为 <code>setState</code>的时候，不管子组件有没有依赖状态数据，都会蒋全部子组件移除后重建。那么 <code>setState</code> 这个过程做了什么事情，会导致这样的结果呢？本篇我们通过 Flutter 的源码来分析一下 <code>setState</code> 的过程。</p> 
+<h3><strong>setState 的定义</strong></h3> 
+<p>我们先来看 setState 的定义，setState 定义在<code>State&lt;T extends StatefulWidget&gt; with Diagnosticable</code>这个类中，也就是 <code>StatefulWidget</code>或其子类的状态类。方法体代码不多，在执行业务代码做了一些异常处理，具体的代码我们不贴了，主要是做了如下处理：</p> 
+<ul><li>传给<code>setState</code> 的回调方法不能为空。</li><li>生命周期校验：组件已经从组件树移除的时候会被 <code>dispose</code> 掉，因此不能在 <code>dispose</code> 后调用 <code>setState</code>。通常这会发生在定时器、动画或异步回调的过程中。这样的调用可能会导致内存泄露。</li><li>在 <code>created</code> 阶段和没有装载阶段（<code>mounted</code>）不可以调用 <code>setState</code>，也就是不能在构造函数里调用 <code>setState</code>。通常应该在 <code>initState</code> 之后调用 <code>setState</code>。</li><li>setState 的回调方法不能返回 Future 对象，也就是不能在 <code>setState</code>中执行异步操作，只能是同步操作。如果要执行异步操作应该咋 <code>setState</code> 之外进行调用。</li></ul> 
+<pre><code class="language-Dart">@protected
+void setState(VoidCallback fn) {
+  // 省略异常处理代码
+  _element!.markNeedsBuild();
+}
+</code></pre> 
+<p>最为关键的就一行代码：<code>_element!.markNeedsBuild()</code>，从函数名称来看就是标记元素需要构建。那么这个<code>_element</code> 又是从哪来的？继续挖！</p> 
+<h3><strong>Element 是什么？</strong></h3> 
+<p>我们来看<code>_element</code> 的定义，<code>_element</code> 是一个 <code>StatefulElement</code> 对象，实际上，我们还发现，在获取<code>BuildContext</code>的时候，返回的也是<code>_element</code>。在获取 BuildContext 的时候注释是这么说的：</p> 
+<blockquote>
+  The location in the tree where this widget builds ——widget构建的渲染树的具体位置。 
+</blockquote> 
+<p><code>BuildContext</code> 是一个抽象类，因此可以推断出 <code>StatefulElement</code> 实际上是其接口实现类或子类。往上溯源，发现整个的类层级是下面这样的，其中 <code>Element</code>、<code>ComponentElement</code> 都是抽象类，而 <code>markNeedsBuild</code> 方法是在 <code>Element</code> 抽象类定义的。而对于 Element，官方的定义为：</p> 
+<blockquote>
+  An instantiation of a Widget at a particular location in the tree. —— 在渲染树中的 Widget 实例化对象。 
+</blockquote> 
+<p>可以理解为<code>Element</code> 是将 <code>Widget</code> 配置和渲染树做桥接的对象，也就是实际的渲染过程更多的是由 <code>Element</code> 来控制的。</p> 
+<pre><code class="language-Dart">classDiagram
+    BuildContext &lt;|.. Element
+    DiagnosticableTree &lt;|-- Element
+    Element &lt;|-- ComponentElement
+    ComponentElement &lt;|-- StatefulElement
+    class Element {
+        Element(Widget widget)
+        +_sort(Element a, Element b)
+
+        -reassemble()
+        -markNeedsBuild()
+        -get renderObject
+        -updateChild(Element? child, Widget? newWidget, dynamic newSlot)
+        -mount(Element? parent, dynamic newSlot)
+        -unmount()
+        -update(covariant Widget newWidget)
+        -detachRenderObject()
+        -attachRenderObject(dynamic newSlot)
+        -deactivateChild(Element child)
+        -activate()
+        -didChangeDependencies()
+        -markNeedsBuild()
+        -rebuild()
+        -performRebuild()
+
+        -Element? _parent
+        -int _depth
+        -Widget _widget
+        -BuildOwner? _owner
+        _ElementLifecycle _lifecycleState
+    }</code></pre> 
+<p>上面的图我们Element的关键属性和方法列出来的。</p> 
+<ul><li><code>_depth</code>属性：元素在组件树中的层级，根节点的该值必须大于0。</li><li><code>_sort</code>方法：比较两个<code>Element</code>元素a和 b的层级，层级值（<code>_depth</code>）越大，层级越深，显示的层也就越靠前。</li><li><code>_parent</code>：父节点元素，可能为空。</li><li><code>_widget</code>：配置元素的组件配置（其实是 <code>Widget</code>对象，<code>Widget</code> 本身是渲染元素的配置参数，并不是真正渲染的元素）。</li><li><code>_owner</code>：管理元素声明周期的对象。</li><li><code>_lifecycleState</code>：生命周期状态属性，默认是 <code>initial</code> 状态。</li><li>获取<code>renderObject</code>的 <code>get</code> 方法：会递归调用返回元素及其子元素中需要渲染的对象（子元素是 <code>RenderObjectElement</code>对象）。</li><li><code>reassemble</code> 方法：重新装配方法，只在 <code>debug</code> 阶段会用到，例如热重载的时候就会调用该方法。该方法处理将元素自身标记为需要<code>build</code>外（调用 <code>markNeedsBuild</code> 方法），还会递归遍历全部子节点，调用子节点的 <code>reassemble</code> 方法。</li><li><code>updateChild</code>：这是渲染过程的核心方法，通过新的组件配置来更新指定的子元素。这里存在四种组合：- 如果 <code>child</code> 为空的话而 <code>newWidget</code> 不为空，那么就会创建一个新的元素来渲染: 
+  <ul><li>如果 <code>child</code> 不为空，但是 <code>newWidget</code> 为空，那就表明组件配置中已经没有 <code>child</code> 这个元素了，因此需要移除它。</li><li>如果二者都不为空，则需要根据 <code>child</code> 的当前是否可以更新（<code>Widget.canUpdate</code>）来处理，如果可以更新，那么使用新的组件配置更新元素；否则我们需要移除旧的元素，并使用新的组件配置创建一个新的元素。</li><li>如果二者都为空，那么什么都不做。</li></ul></li></ul> 
+<p>返回的结果也分三种情况：</p> 
+<pre><code class="language-Dart">1. 如果创建了一个新的元素，则返回新构建的子元素。
+   2. 如果旧的元素被更新，返回更新后的子元素。
+   3. 如果子元素被移除，而没有新的替换的话，返回null。</code></pre> 
+<ul><li><code>mount</code>方法：在新元素首次被创建的时候调用该方法，按照给定的插入位置（slot）将元素插入给定的父节点。调用该方法后，元素的状态会从 <code>initial</code> 改为 <code>active</code>。这里还会将子元素的层级(_depth)设置为父元素的层级+1。</li><li><code>update</code> 方法：当父节点使用新的配置组件(<code>newWidget</code>)更改元素时，会调用该方法。要求新的配置类型和旧的保持一致。</li><li><code>detachRenderObject</code>和 <code>attachRenderObject</code>：分别对应从组件树移除renderObject 和添加 RenderObject。</li><li><code>deactivateChild</code>方法：将子元素加入到不活跃的元素列表，之后再从渲染树中移除。</li><li><code>activate</code>方法：状态从inactive 切换到 active 时会调用，属于生命周期函数。注意组件第一次挂载的时候不会调用这个方法，而是 mount 方法。</li><li><code>deactivate</code> 方法：状态从 active 切换到 inactive 时会被调用，也就是元素被移入到不活跃列表的时候会被调用。。</li><li><code>unmount</code> 方法：状态从 inactive 切换到defunct(不再存在)状态时调用，此时元素将脱离渲染树，并且再也不会在渲染树存在。</li><li><code>didChangeDependencies</code>：当元素的依赖发生改变的时候调用，该方法也会调用 <code>markNeedBuild</code> 方法。</li><li><code>markNeedsBuild</code>方法：将元素标记为 <code>dirty</code> 状态，以便在渲染下一帧时重建元素。这个方法的核心是做了下面的事情：</li></ul> 
+<pre><code class="language-Dart">_dirty = true;
+owner!.scheduleBuildFor(this)
+</code></pre> 
+<ul><li><code>rebuild</code> 方法：当元素的 <code>BuildOwner</code> 对象调用 <code>scheduleBuildFor</code> 方法的时候，会调用 <code>rebuild</code> 方法来重建元素。首次装载的时候是在 <code>mount</code> 方法中触发，配置组件更改时会在 <code>build</code> 方法触发。这个方法调用了 <code>performRebuild</code>方法来重建元素。<code>performRebuild</code>是一个有 Element 的字类实现的方法，也就是每个元素具体怎么重建由子类来决定。</li></ul> 
+<p>内容看着很多，我们来理一下渲染的状态流转，这是一个元素的生命周期的状态图。组件会被移除出现在 <code>deactivate</code> 方法中，而触发 <code>deactivate</code>方法的是一个元素被移入到不活跃元素列表中。将元素移入到不活跃列表的方法是<code>deactivateChild</code>，也就是父节点上的操作——当一个子元素不再属于父元素构建的渲染树时，就会加入到不活跃的元素列表中。</p> 
+<pre><code class="language-Dart">graph LR
+    createElement --&gt;  初始化((initial)) 
+    初始化((initial))  --mount--&gt;  已装载((mounted))
+    已装载((mounted)) --activate--&gt; 活跃((active)) 
+    活跃((active)) --deactivate--&gt; 不活跃((inactive))
+    不活跃((inactive))--unmount--&gt; 不再存在((defunct))
+    不再存在((defunct))--&gt; dispose</code></pre> 
+<h3><strong><code>performRebuild</code>方法</strong></h3> 
+<p>现在我们知道在 setState 的时候，实际会调用 <code>performRebuild</code> 方法来重新构建组件树，那么 <code>performRebuild</code> 方法做了什么事情？在 Element 中，performRebuild 方法是个空方法，需要子类去实现。因此我们去 StatefulElement 找找看，代码如下：</p> 
+<pre><code class="language-Dart">@override
+void performRebuild() {
+  if (_didChangeDependencies) {
+    state.didChangeDependencies();
+    _didChangeDependencies = false;
+  }
+  super.performRebuild();
+}
+</code></pre> 
+<p>还得往上找，那就是 <code>ComponentElement</code> 了，终于找着了！</p> 
+<pre><code class="language-Dart">@override
+void performRebuild() {
+  // 省略调试的代码
+  Widget? built;
+  try {
+    // ...
+    built = build();
+    // ...
+  } catch (e, stack) {
+    // ...
+  } finally {
+    // We delay marking the element as clean until after calling build() so
+    // that attempts to markNeedsBuild() during build() will be ignored.
+    _dirty = false;
+    // ...
+  }
+  try {
+    _child = updateChild(_child, built, slot);
+    assert(_child != null);
+  } catch (e, stack) {
+    // 省略异常处理
+  }
+  // 省略调试代码
+}
+</code></pre> 
+<p>这里的关键在于调用了 <code>build</code> 方法和<code>updateChild</code> 方法。其中 通过 <code>built = build()</code>获取了最新的<code>Widget</code>，由于 build 方法重新构建了组件配置，因此会调用对应的 Widget 的构造函数和 build 方法。然后再调用 <code>updateChild</code> 方法更新子元素。如前所述，<code>updateChild</code> 更新子组件有三种组合。而我们这里<code>_child</code> 和 <code>built</code>肯定不为空，那么关键就在于 <code>built</code> （<code>Widget</code> 对象）的 <code>canUpdate</code> 是否为 <code>true</code>。这个方法在 Widget 类定义：</p> 
+<pre><code class="language-Dart">static bool canUpdate(Widget oldWidget, Widget newWidget) {
+  return oldWidget.runtimeType == newWidget.runtimeType &amp;&amp;
+      oldWidget.key == newWidget.key;
+}
+</code></pre> 
+<p>注释说明是如果 <code>Widget</code> 的 <code>key</code> 没有设置（一般不推荐给组件设置 key），那么两个组件的 <code>runtimeType</code> 一致就可以更新。因此，实际上大部分情况下返回的都是 <code>true</code>。我们调试更新代码结果也是一样，最终走到的是<code>Element</code> 的 <code>updateChild</code> 的这个分支：</p> 
+<pre><code class="language-Dart">// ...
+else if (hasSameSuperclass &amp;&amp;
+          Widget.canUpdate(child.widget, newWidget)) {
+  if (child.slot != newSlot) updateSlotForChild(child, newSlot);
+  child.update(newWidget);
+  assert(child.widget == newWidget);
+  assert(() {
+    child.owner!._debugElementWasRebuilt(child);
+    return true;
+  }());
+  newChild = child;
+}
+</code></pre> 
+<p>由此我们可以推断，<code>setState</code> 方法调用后确实会重新构建整个 <code>Widget</code>，但是并不一定会将 <code>Widget</code> 配置的 <code>Element</code>元素树的每一个元素都移除，然后用新的元素替换来重新渲染一遍。实际上我们调试的时候打开 <code>Flutter</code> 的调试工具也可以看到，实际上的<code>Widget</code> 对应的 <code>Element</code> 在点击按钮后并没有发生改变。</p> 
+<h3><strong>总结</strong></h3> 
+<p>虽然<code>setState</code>的调用并没有像 <code>Widget</code> 层那样，在渲染控制层的 <code>Element</code> 那一层重新构建全部<code>element</code>。但是，这并不代表 <code>setState</code> 的使用没问题，首先，像之前篇章说的那样，它会重新构建整个 <code>Widget</code> 树，这会带来性能损耗；其次，由于整个 <code>Widget</code> 树改变了，意味着整棵树对应的渲染层<code>Element</code>对象都会执行 <code>update</code>方法，虽然不一定会重新渲染，但是这整棵树的遍历的性能开销也很高。因此，从性能上考虑，还是尽量不要使用 <code>setState</code>——除非，这个组件真的很简单，而且下级组件没有或者很少。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/ddd6e9f9c5d6f932a944f5fa34f91cbb/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">cdn方式引入element-plus icon</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/c6f3f62c081259def1a10030f445d340/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">python计算地址相似度以及抽取省市区信息的库</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

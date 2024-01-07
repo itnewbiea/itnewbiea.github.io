@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Redis-Redis Mass Insertion - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Redis-Redis Mass Insertion" />
+<meta property="og:description" content="Redis Mass Insertion Sometimes Redis instances need to be loaded with a big amount of preexisting or user generated data in a short amount of time, so that millions of keys will be created as fast as possible.
+This is called a mass insertion, and the goal of this document is to provide information about how to feed Redis with data as fast as possible.
+Use the protocol, Luke Using a normal Redis client to perform mass insertion is not a good idea for a few reasons: the naive approach of sending one command after the other is slow because you have to pay for the round trip time for every command." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/ebb6aca17817ef025aaf07f59d78a99e/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-04-03T08:46:03+08:00" />
+<meta property="article:modified_time" content="2020-04-03T08:46:03+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Redis-Redis Mass Insertion</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2>Redis Mass Insertion</h2> 
+<p>Sometimes Redis instances need to be loaded with a big amount of preexisting or user generated data in a short amount of time, so that millions of keys will be created as fast as possible.</p> 
+<p>This is called a <em>mass insertion</em>, and the goal of this document is to provide information about how to feed Redis with data as fast as possible.</p> 
+<h3>Use the protocol, Luke</h3> 
+<p>Using a normal Redis client to perform mass insertion is not a good idea for a few reasons: the naive approach of sending one command after the other is slow because you have to pay for the round trip time for every command. It is possible to use pipelining, but for mass insertion of many records you need to write new commands while you read replies at the same time to make sure you are inserting as fast as possible.</p> 
+<p>Only a small percentage of clients support non-blocking I/O, and not all the clients are able to parse the replies in an efficient way in order to maximize throughput. For all of these reasons the preferred way to mass import data into Redis is to generate a text file containing the Redis protocol, in raw format, in order to call the commands needed to insert the required data.</p> 
+<p>For instance if I need to generate a large data set where there are billions of keys in the form: `keyN -&gt; ValueN' I will create a file containing the following commands in the Redis protocol format:</p> 
+<pre><code>SET Key0 Value0
+SET Key1 Value1
+...
+SET KeyN ValueN
+</code></pre> 
+<p>Once this file is created, the remaining action is to feed it to Redis as fast as possible. In the past the way to do this was to use the <code>netcat</code> with the following command:</p> 
+<pre><code>(cat data.txt; sleep 10) | nc localhost 6379 &gt; /dev/null
+</code></pre> 
+<p>However this is not a very reliable way to perform mass import because netcat does not really know when all the data was transferred and can't check for errors. In 2.6 or later versions of Redis the <code>redis-cli</code> utility supports a new mode called <strong>pipe mode</strong> that was designed in order to perform mass insertion.</p> 
+<p>Using the pipe mode the command to run looks like the following:</p> 
+<pre><code>cat data.txt | redis-cli --pipe
+</code></pre> 
+<p>That will produce an output similar to this:</p> 
+<pre><code>All data transferred. Waiting for the last reply...
+Last reply received from server.
+errors: 0, replies: 1000000
+</code></pre> 
+<p>The redis-cli utility will also make sure to only redirect errors received from the Redis instance to the standard output.</p> 
+<h3>Generating Redis Protocol</h3> 
+<p>The Redis protocol is extremely simple to generate and parse, and is <a href="https://redis.io/topics/protocol" rel="nofollow">Documented here</a>. However in order to generate protocol for the goal of mass insertion you don't need to understand every detail of the protocol, but just that every command is represented in the following way:</p> 
+<pre><code>*&lt;args&gt;&lt;cr&gt;&lt;lf&gt;
+$&lt;len&gt;&lt;cr&gt;&lt;lf&gt;
+&lt;arg0&gt;&lt;cr&gt;&lt;lf&gt;
+&lt;arg1&gt;&lt;cr&gt;&lt;lf&gt;
+...
+&lt;argN&gt;&lt;cr&gt;&lt;lf&gt;
+</code></pre> 
+<p>Where <code>&lt;cr&gt;</code> means "\r" (or ASCII character 13) and <code>&lt;lf&gt;</code> means "\n" (or ASCII character 10).</p> 
+<p>For instance the command <strong>SET key value</strong> is represented by the following protocol:</p> 
+<pre><code>*3&lt;cr&gt;&lt;lf&gt;
+$3&lt;cr&gt;&lt;lf&gt;
+SET&lt;cr&gt;&lt;lf&gt;
+$3&lt;cr&gt;&lt;lf&gt;
+key&lt;cr&gt;&lt;lf&gt;
+$5&lt;cr&gt;&lt;lf&gt;
+value&lt;cr&gt;&lt;lf&gt;
+</code></pre> 
+<p>Or represented as a quoted string:</p> 
+<pre><code>"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n"
+</code></pre> 
+<p>The file you need to generate for mass insertion is just composed of commands represented in the above way, one after the other.</p> 
+<p>The following Ruby function generates valid protocol:</p> 
+<pre><code>def gen_redis_proto(*cmd)
+    proto = ""
+    proto &lt;&lt; "*"+cmd.length.to_s+"\r\n"
+    cmd.each{|arg|
+        proto &lt;&lt; "$"+arg.to_s.bytesize.to_s+"\r\n"
+        proto &lt;&lt; arg.to_s+"\r\n"
+    }
+    proto
+end
+
+puts gen_redis_proto("SET","mykey","Hello World!").inspect
+</code></pre> 
+<p>Using the above function it is possible to easily generate the key value pairs in the above example, with this program:</p> 
+<pre><code>(0...1000).each{|n|
+    STDOUT.write(gen_redis_proto("SET","Key#{n}","Value#{n}"))
+}
+</code></pre> 
+<p>We can run the program directly in pipe to redis-cli in order to perform our first mass import session.</p> 
+<pre><code>$ ruby proto.rb | redis-cli --pipe
+All data transferred. Waiting for the last reply...
+Last reply received from server.
+errors: 0, replies: 1000
+</code></pre> 
+<h3>How the pipe mode works under the hood</h3> 
+<p>The magic needed inside the pipe mode of redis-cli is to be as fast as netcat and still be able to understand when the last reply was sent by the server at the same time.</p> 
+<p>This is obtained in the following way:</p> 
+<ul><li>redis-cli --pipe tries to send data as fast as possible to the server.</li><li>At the same time it reads data when available, trying to parse it.</li><li>Once there is no more data to read from stdin, it sends a special <strong>ECHO</strong> command with a random 20 bytes string: we are sure this is the latest command sent, and we are sure we can match the reply checking if we receive the same 20 bytes as a bulk reply.</li><li>Once this special final command is sent, the code receiving replies starts to match replies with these 20 bytes. When the matching reply is reached it can exit with success.</li></ul> 
+<p>Using this trick we don't need to parse the protocol we send to the server in order to understand how many commands we are sending, but just the replies.</p> 
+<p>However while parsing the replies we take a counter of all the replies parsed so that at the end we are able to tell the user the amount of commands transferred to the server by the mass insert session.</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/9f408c61b363fe5ab34bc7845c9d8352/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">unity 使用CharacterController实现人物模拟力作用的跳跃加移动方案</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/07be4e3c416cc6c22b47a40762f208ef/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">CodeForces - 915E 动态开点线段树</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

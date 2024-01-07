@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>理解Nodejs的单线程实现高并发原理 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="理解Nodejs的单线程实现高并发原理" />
+<meta property="og:description" content="组成和架构 Nodejs 的特点是事件驱动、非阻塞I/O、高效、轻量。
+我们首先看下 Nodejs 的架构。
+最上层的是 Nodejs标准库，由JavaScript实现的api库，位置在 lib 目录。
+然后是 Node bindings，JavaScript 和 C/C&#43;&#43; 之间通信和交换数据的桥梁，实现于 node.cc。
+最下层是由 C/C&#43;&#43; 实现：
+1. V8 解析引擎，为 Javascript 提供了在非浏览器端运行的环境；
+2. Libuv为 Node.js 提供了跨平台，线程池，事件池，异步 I/O 等能力。
+3. C-ares提供了异步处理 DNS 相关的能力
+4. http_parser、OpenSSL、zli 等，提供包括 http 解析、SSL、数据压缩等能力。
+比如，使用 Nodejs标准库与操作系统交互。
+编写JavaScript代码：
+import fs from &#39;fs&#39;; fs.open(&#39;./test.txt&#39;, &#34;w&#34;, function(err, fd) { //..do something }); 当我们调用 fs.open 时：
+/** lib/fs.js */ async function open(path, flags, mode) { mode = modeNum(mode, 0o666); path = getPathFromURL(path); validatePath(path); validateUint32(mode, &#39;mode&#39;); return new FileHandle( await binding." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/9bcf5034b62d74798e92afc38862ba2a/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-05-24T17:46:38+08:00" />
+<meta property="article:modified_time" content="2022-05-24T17:46:38+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">理解Nodejs的单线程实现高并发原理</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p><img alt="" height="228" src="https://images2.imgbox.com/04/a5/HnYvYMBE_o.png" width="393"></p> 
+<h2>组成和架构</h2> 
+<p>Nodejs 的特点是<strong>事件驱动、非阻塞I/O、高效、轻量。</strong></p> 
+<p>我们首先看下 Nodejs 的架构。</p> 
+<p><img alt="" height="367" src="https://images2.imgbox.com/7b/aa/et4br8HP_o.png" width="714"></p> 
+<p></p> 
+<p>最上层的是 <strong>Nodejs标准库</strong>，由JavaScript实现的api库，位置在 lib 目录。</p> 
+<p>然后是 <strong>Node bindings</strong>，JavaScript 和 C/C++ 之间通信和交换数据的桥梁，实现于 node.cc。</p> 
+<p>最下层是由 C/C++ 实现：</p> 
+<p>      <strong>  1. V8 解析引擎</strong>，为 Javascript 提供了在非浏览器端运行的环境；</p> 
+<p>        <strong>2. Libuv</strong>为 Node.js 提供了跨平台，线程池，事件池，异步 I/O 等能力。</p> 
+<p>    <strong>    3. </strong> <strong>C-ares</strong>提供了异步处理 DNS 相关的能力</p> 
+<p>      <strong>  4.</strong> <strong>http_parser、OpenSSL、zli</strong> 等，提供包括 http 解析、SSL、数据压缩等能力。</p> 
+<p><strong>比如，使用 Nodejs标准库与操作系统交互。</strong></p> 
+<p>编写JavaScript代码：</p> 
+<pre><code class="language-javascript">import fs from 'fs';
+fs.open('./test.txt', "w", function(err, fd) {
+    //..do something
+});</code></pre> 
+<p>当我们调用 fs.open 时：</p> 
+<pre><code class="language-javascript">/**  lib/fs.js */
+async function open(path, flags, mode) {
+  mode = modeNum(mode, 0o666);
+  path = getPathFromURL(path);
+  validatePath(path);
+  validateUint32(mode, 'mode');
+  return new FileHandle(
+    await binding.openFileHandle(pathModule.toNamespacedPath(path),
+             stringToFlags(flags),
+             mode, kUsePromises));
+}</code></pre> 
+<p>nodejs 通过 process.binding 调用 C/C++ 层面的 Open 函数：</p> 
+<pre><code class="language-cpp">/** src/node_file.cc */
+static void Open(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+  Environment* env = Environment::GetCurrent(args);
+  const int argc = args.Length();
+  if (req_wrap_async != nullptr) {  // open(path, flags, mode, req)
+    AsyncCall(env, req_wrap_async, args, "open", UTF8, AfterInteger,
+              uv_fs_open, *path, flags, mode);
+  } else {  // open(path, flags, mode, undefined, ctx)
+    CHECK_EQ(argc, 5);
+    FSReqWrapSync req_wrap_sync;
+    FS_SYNC_TRACE_BEGIN(open);
+    int result = SyncCall(env, args[4], &amp;req_wrap_sync, "open",
+                          uv_fs_open, *path, flags, mode);
+    FS_SYNC_TRACE_END(open);
+    args.GetReturnValue().Set(result);
+  }
+}</code></pre> 
+<p>然后通过它调用 Libuv 中的具体方法 uv_fs_open：</p> 
+<pre><code class="language-cpp">/** uv_fs */
+/* 打开目标文件 */
+ dstfd = uv_fs_open(NULL,
+                     &amp;fs_req,
+                     req-&gt;new_path,
+                     dst_flags,
+                     statsbuf.st_mode,
+                     NULL);
+ uv_fs_req_cleanup(&amp;fs_req);</code></pre> 
+<p>最后执行的结果通过回调的方式传回，完成流程。</p> 
+<p><img alt="" height="674" src="https://images2.imgbox.com/f6/4e/9KUM0gb8_o.png" width="707"></p> 
+<p>上面是调用流程图，在 Javascript 中调用的方法，最终都会通过 process.binding 传递到 C/C++ 层面，最终由它们来执行真正的操作。Node.js 就是这样与操作系统进行交互的。</p> 
+<h2>单线程并发</h2> 
+<p>Node.js 对http 服务的模型：</p> 
+<p><img alt="" height="355" src="https://images2.imgbox.com/fc/4a/WbAjO1op_o.png" width="341"></p> 
+<p>在nodejs中，单线程指的是主线程是单线程，由主线程去按顺序执行代码，可以验证，当遇到同步代码阻塞，会导致主线程占用，程序会被暂时卡住， 打开浏览器，会发现在 5 秒之后才做出反应：</p> 
+<pre><code class="language-javascript">import http from 'http';
+
+function sleep(time) {
+    const exitCondition = Date.now() + time * 1000;
+    while(Date.now() &lt; exitCondition) {}
+    return;
+}
+
+cosnt server = http.createServer(function(req, res){
+    sleep(5);
+    res.end('server 休眠 5s');
+});
+
+server.listen(8080);</code></pre> 
+<p>代码执行堆栈如下：</p> 
+<p><img alt="" height="508" src="https://images2.imgbox.com/6b/09/BInL3FKj_o.png" width="377"></p> 
+<p>当主线程接受了 request 后，程序被压进同步执行的 sleep 执行块，如果此时有第二个request进来就会被压进stack里面等待上一个执行完成后再进一步处理下一个请求，后面的请求都会被挂起等待前面的同步执行完成后再执行。</p> 
+<p>那 Nodejs是如何能做到 百万级并发的呢 ？ — —  <strong>事件驱动/事件循环（<em>Event Loop</em>）</strong>。事件循环/事件驱动是一种在程序中等待和分派事件或消息的编程结构。</p> 
+<p><img alt="" height="813" src="https://images2.imgbox.com/94/77/1pdsEXdv_o.png" width="1200"></p> 
+<p><strong>1.  </strong>一个Nodejs进程只有一个<strong>执行栈</strong>（<strong>execution context stack</strong>)的主线程（单线程）；</p> 
+<p><strong>2. </strong>主线程之外，维护了一个<strong>事件队列（Event Queue）</strong>，当存在网络请求或者其它的异步操作到时，nodejs 都会把它放到 Event Queue 之中，不立即执行因此不阻塞主线程。</p> 
+<p><strong>3. </strong>主线程代码执行完毕完成后，然后通过Event Loop，也就是<strong>事件循环机制</strong>，从线程池分配线程执行 Event Queue 的事件。主线程则负责不断的检查事件队列中是否有未执行的事件，直到事件队列中所有事件都执行完了。而且，当某个事件执行完毕后，会通知主线程，主线程执行回调，线程归还给线程池。</p> 
+<p><strong>4.</strong> 主线程不断重复上面的第3步。</p> 
+<p><strong>因此，主线程只负责不断的往返调度，由内部线程池进行异步操作，并没有进行真正的I/O操作，从而实现异步非阻塞I/O。</strong>这方面由 libuv 实现，libuv是一个基于事件驱动的跨平台抽象层，封装了不同操作系统一些底层特性，对外提供统一的API。 此外，<strong>如果操作系统提供了异步 I /O 的接口，libuv内部会优先考虑使用这些现成的API接口来完成异步I/O，而不是使用线程池中的线程 + 轮询来实现异步I/O</strong>。</p> 
+<p>在 src/node.cc 中：</p> 
+<pre><code class="language-cpp">Environment* CreateEnvironment(Isolate* isolate, uv_loop_t* loop, Handle&lt;Context&gt; context, int argc, const char* const* argv, int exec_argc, const char* const* exec_argv) {
+  HandleScope handle_scope(isolate);
+
+  Context::Scope context_scope(context);
+  Environment* env = Environment::New(context, loop);
+
+  isolate-&gt;SetAutorunMicrotasks(false);
+
+  uv_check_init(env-&gt;event_loop(), env-&gt;immediate_check_handle());
+  uv_unref(reinterpret_cast&lt;uv_handle_t*&gt;(env-&gt;immediate_check_handle()));
+  uv_idle_init(env-&gt;event_loop(), env-&gt;immediate_idle_handle());
+  uv_prepare_init(env-&gt;event_loop(), env-&gt;idle_prepare_handle());
+  uv_check_init(env-&gt;event_loop(), env-&gt;idle_check_handle());
+  uv_unref(reinterpret_cast&lt;uv_handle_t*&gt;(env-&gt;idle_prepare_handle()));
+  uv_unref(reinterpret_cast&lt;uv_handle_t*&gt;(env-&gt;idle_check_handle()));
+
+  // Register handle cleanups
+  env-&gt;RegisterHandleCleanup(reinterpret_cast&lt;uv_handle_t*&gt;(env-&gt;immediate_check_handle()), HandleCleanup, nullptr);
+  env-&gt;RegisterHandleCleanup(reinterpret_cast&lt;uv_handle_t*&gt;(env-&gt;immediate_idle_handle()), HandleCleanup, nullptr);
+  env-&gt;RegisterHandleCleanup(reinterpret_cast&lt;uv_handle_t*&gt;(env-&gt;idle_prepare_handle()), HandleCleanup, nullptr);
+  env-&gt;RegisterHandleCleanup(reinterpret_cast&lt;uv_handle_t*&gt;(env-&gt;idle_check_handle()), HandleCleanup, nullptr);
+
+  if (v8_is_profiling) {
+    StartProfilerIdleNotifier(env);
+  }
+
+  Local&lt;FunctionTemplate&gt; process_template = FunctionTemplate::New(isolate);
+  process_template-&gt;SetClassName(FIXED_ONE_BYTE_STRING(isolate, "process"));
+
+  Local&lt;Object&gt; process_object = process_template-&gt;GetFunction()-&gt;NewInstance();
+  env-&gt;set_process_object(process_object);
+
+  SetupProcessObject(env, argc, argv, exec_argc, exec_argv);
+  LoadAsyncWrapperInfo(env);
+
+  return env;
+}</code></pre> 
+<p>建立了一个 nodejs 执行 V8 环境，会把 libuv 默认 default_loop_struct，即uv _default_loop() 返回的作为参数传递进去的，之后，Node会载入执行环境并完成一些设置操作，然后启动 event loop：</p> 
+<pre><code class="language-cpp">{
+    SealHandleScope seal(isolate);
+    bool more;
+    env.performance_state()-&gt;Mark(
+        node::performance::NODE_PERFORMANCE_MILESTONE_LOOP_START);
+    do {
+      uv_run(env.event_loop(), UV_RUN_DEFAULT);
+
+      v8_platform.DrainVMTasks(isolate);
+
+      more = uv_loop_alive(env.event_loop());
+      if (more)
+        continue;
+
+      RunBeforeExit(&amp;env);
+
+      // Emit `beforeExit` if the loop became alive either after emitting
+      // event, or after running some callbacks.
+      more = uv_loop_alive(env.event_loop());
+    } while (more == true);
+    env.performance_state()-&gt;Mark(
+        node::performance::NODE_PERFORMANCE_MILESTONE_LOOP_EXIT);
+  }
+
+  env.set_trace_sync_io(false);
+
+  const int exit_code = EmitExit(&amp;env);
+  RunAtExit(&amp;env);</code></pre> 
+<p>more 用来标识是否进行下一轮循环。 env -&gt; event_loop()会返回之前保存在env中的default_loop_ptr，uv_run 函数将以指定的 UV_RUN_DEFAULT 模式启动 libuv 的event loop。如果当前没有 I/O 事件也没有定时器事件，则 uv_loop_alive 返回 false。</p> 
+<p>Event Loop 是被 V8 所使用一个功能模块。因此，可以说，V8 包含了 Event Loop。每次事件循环都包含了6个阶段，对应到 libuv 源码中的实现，如下图所示：</p> 
+<p><img alt="" height="427" src="https://images2.imgbox.com/67/b6/1LJIOpF1_o.png" width="884"></p> 
+<p>Event Loop会依次进入上述的每个阶段。每个阶段都会有一个 callback queue 与之相对应。Event Loop会遍历这个 callback queue，执行里面的每一个callback。直到 callback queue 为空或者当前callback的执行数量超过了某个阈值为止，Event Loop才会移步到下一个阶段。</p> 
+<ul><li><strong>timers</strong>：这个阶段执行 timer（<code>setTimeout</code>、<code>setInterval</code>）的回调，调用 setTimeout 或者 setInterval 方法时传入的 callback 会在指定的延迟时间后入队到 timers callback queue。跟浏览器环境中的 setTimeout 和 setInterval 方法一样，调用时候传入的延迟时间并不是回调确切执行的时间，会受到操作系统调度层面和其他callback函数调用耗时的影响，<strong>timer callback函数的执行只会比预定的时间晚</strong>。</li><li><strong>pending callbacks</strong>：执行一些系统调用错误，比如网络通信的错误回调。</li><li><strong>idle, prepare</strong>：仅 node 内部使用，开发者可忽略。</li><li><strong>poll</strong>：检索新的 I/O 事件； 执行与 I/O 相关的回调（几乎所有回调，除了 close callback 、定时器调度的 callback 和 setImmediate）；nodejs 会在这里适当的阻塞。</li><li><strong>check</strong>：执行 <code>setImmediate()</code>的回调，当 poll 处于空闲状态的时候（也就是 I/O callback queue 为空的时候），一旦 Event Loop发现 immediate callback queue 有 callback入队了，Event Loop 就会退出轮询阶段，马上进入check 阶段。</li><li><strong>close callbacks</strong>：执行 <code>socket </code>的 <code>close </code>事件回调。</li></ul> 
+<p><img alt="" height="883" src="https://images2.imgbox.com/21/de/EbrAHOlu_o.png" width="724"></p> 
+<p> <code>uv_run</code> 内部就是一个 <code>while</code> 循环，在 <code>UV_RUN_ONCE</code> 和 <code>UV_RUN_NOWAIT</code> 两种模式下，循环在执行一次后就会 <code>break</code>。另外 在 <code>uv__loop_alive(loop) == 0</code> 或者 <code>loop-&gt;stop_flag != 0</code> 时 无法进入循环，同样循环结束，<code>uv_run</code> 函数返回：</p> 
+<pre><code class="language-cpp">int uv_run(uv_loop_t* loop, uv_run_mode mode) {
+  int timeout;
+  int r;
+  int ran_pending;
+
+  // 首先检查我们的loop还是否活着, 即 loop 中是否有异步任务，若没有直接就结束
+  r = uv__loop_alive(loop);
+  if (!r) uv__update_time(loop);
+  // 事件循环，外部大循环
+  while (r != 0 &amp;&amp; loop-&gt;stop_flag == 0) {
+    // 更新事件阶段
+    uv__update_time(loop);
+
+    // 处理timer回调
+    uv__run_timers(loop);
+
+    // 处理异步任务回调 
+    ran_pending = uv__run_pending(loop);
+
+    // node 内部调用的，不用关注
+    uv__run_idle(loop);
+    uv__run_prepare(loop);
+
+    // poll 阶段， timeout 用于控制 uv__io_poll(loop, timeout) 的挂起时长，
+    timeout = 0;
+    // uv_backend_timeout 计算完毕后，传递给uv__io_poll
+    if ((mode == UV_RUN_ONCE &amp;&amp; !ran_pending) || mode == UV_RUN_DEFAULT) timeout = uv_backend_timeout(loop);
+
+    // 如果timeout = 0, 则 uv__io_poll会直接跳过
+    uv__io_poll(loop, timeout);
+
+    // check 阶段，执行 setImmediate
+    uv__run_check(loop);
+
+    // close callback 阶段，关闭文件描述符等操作
+    uv__run_closing_handles(loop);
+
+    if (mode == UV_RUN_ONCE) {
+      /* UV_RUN_ONCE 意味着向前进展：当它返回时必须至少调用一个回调。 
+       * uv__io_poll() 可以在它的超时到期时不做 I/O 就返回（意思是：没有回调）
+       * 这意味着我们有满足“前向进度约束”的挂起计时器。
+       *
+       * UV_RUN_NOWAIT 不保证进度，因此不在if 的检查中
+       */
+      uv__update_time(loop);
+      uv__run_timers(loop);
+    }
+
+    r = uv__loop_alive(loop);
+
+    if (mode == UV_RUN_ONCE || mode == UV_RUN_NOWAIT) break;
+  }
+
+  /** if 语句让 gcc 将其编译为条件存储。 避免弄脏高速缓存行。*/
+  if (loop-&gt;stop_flag != 0)
+    loop-&gt;stop_flag = 0;
+
+  return r;
+}</code></pre> 
+<p>uv_backend_timeout 实现如下：</p> 
+<pre><code class="language-cpp">int uv_backend_timeout(const uv_loop_t* loop) {
+  if (loop-&gt;stop_flag != 0)
+    return 0;
+
+  if (!uv__has_active_handles(loop) &amp;&amp; !uv__has_active_reqs(loop))
+    return 0;
+
+  if (!QUEUE_EMPTY(&amp;loop-&gt;idle_handles))
+    return 0;
+
+  if (!QUEUE_EMPTY(&amp;loop-&gt;pending_queue))
+    return 0;
+
+  if (loop-&gt;closing_handles)
+    return 0;
+
+  return uv__next_timeout(loop);
+}</code></pre> 
+<p>1. <strong>stop_flag: </strong>如果该标记非0，说明要退出轮询，返回的时间是0。</p> 
+<p>2. !<strong>uv__has_active_handles</strong>和<strong>!uv__has_active_reqs: </strong>如果没有任何的异步任务（包括timer和异步I/O)，返回 0，退出轮询</p> 
+<p>3. <strong>QUEUE_EMPTY(idle_handles)</strong>和<strong>QUEUE_EMPTY(pending_queue): </strong>异步任务是通过注册的方式放进了pending_queue中，无论是否成功，都已经被注册，如果这两个队列空，返回 0，退出轮询。</p> 
+<p>4. <strong>closing_handles</strong>: 循环进入了关闭阶段，返回 0，也要退出轮询。</p> 
+<p>5. uv__next_timeout(loop) 实现如下。</p> 
+<pre><code class="language-cpp">int uv__next_timeout(const uv_loop_t* loop) {
+  const struct heap_node* heap_node;
+  const uv_timer_t* handle;
+  uint64_t diff;
+
+  heap_node = heap_min((const struct heap*) &amp;loop-&gt;timer_heap);
+  if (heap_node == NULL) return -1; /* 无限期封锁 */
+
+  handle = container_of(heap_node, uv_timer_t, heap_node);
+  if (handle-&gt;timeout &lt;= loop-&gt;time) return 0;
+
+  diff = handle-&gt;timeout - loop-&gt;time;
+
+  if (diff &gt; INT_MAX) diff = INT_MAX;
+
+  return diff;
+}</code></pre> 
+<p>Event Loop本身有着以下的几个队列：</p> 
+<ul><li>timer callback queue</li><li>I/O callback queue</li><li>immediate callback queue</li><li>close callback queue</li></ul> 
+<p>还有两个队列值得我们注意：</p> 
+<ul><li>nextTick callback queue。调用 process.nextTick() 时传入的 callback 会被入队到这里。</li><li>microtask callback queue。一个 promise 对象 reslove 或者 reject 时传入的 callback 会被入队到这里。</li></ul> 
+<p><strong>Event Loop 示意图：</strong></p> 
+<p><img alt="" height="1128" src="https://images2.imgbox.com/11/c0/4ojrXo0I_o.png" width="1122"></p> 
+<p>当以上所有阶段被顺序执行一次后，Event Loop 完成了一个 Tick。 <strong>一旦进入事件循环之后，每执行完当前阶段的队列</strong><strong>一个 callback 之后，就必须检查微任务队列。如果微任务有callback要执行，则需要执行完所有的 微任务 calback 之后才会回归到事件循环里面。</strong></p> 
+<blockquote> 
+ <p>注意：在 node v11.15.0 之前（不包括本身）表现是：event loop执行完当前阶段 callback queue 里面的所有 callback 才会进入微任务队列。</p> 
+</blockquote> 
+<h2>DNS</h2> 
+<p>DNS 模块使用了 异步DNS解析库 cares 和 Libuv 的线程池实现。cares 实现了 DNS 协议的封包和解析，由于通过 IP 查询域名或者域名查询 IP 是直接调用操作系统提供的是阻塞式的API，借助 Libuv 事件驱动机制和线程池，最终实现异步的 DNS 解析。除此之外，基于cares，Node.js 还提供了设置 DNS 服务器、新建一个 DNS 解析实例（Resolver）等功能。</p> 
+<p>发起一个查找操作的时候，Node.js 会往线程池提及一个任务，然后就继续处理其他事情，同时，线程池的子线程会调用底层函数做 DNS 查询，查询结束后，子线程会把结果交给主线程。</p> 
+<p><img alt="" src="https://images2.imgbox.com/cb/29/EcfdJbLN_o.png"></p> 
+<h2>UDP</h2> 
+<p>UDP 是传输层非面向连接的不可靠协议，使用 UDP 时，不需要建立连接就可以往对端直接发送数据，减少了三次握手带来的时延，但是 UDP 的不可靠可能会导致数据丢失，所以比较适合要求时延低，少量丢包不影响整体功能的场景，另外 UDP 支持多播、端口复用，可以实现一次给多个主机的多个进程发送数据。</p> 
+<p>发送一个 UDP 数据包的时候，Libuv 会把数据先插入等待发送队列，接着在 epoll 中注册等待可写事件，当可写事件触发的时候，Libuv 会遍历等待发送队列，逐个节点发送，成功发送后，Libuv 会把节点移到发送成功队列，并往 pending 阶段插入一个节点，在 pending 阶段，Libuv 就会执行发送完成队列里每个节点的会调通知调用方发送结束：</p> 
+<p><img alt="" height="1037" src="https://images2.imgbox.com/ff/13/JrUgrbQC_o.png" width="1200"></p> 
+<h2>TCP</h2> 
+<p>TCP 首先是启动服务器，等待连接建立：</p> 
+<ol><li>首先获取一个 socket。</li><li>然后绑定地址到该 socket 中。</li><li>接着调用 listen 函数把该 socket 改成监听状态。</li><li>最后把该 socket 注册到 epoll 中，等待连接的到来。</li></ol> 
+<p>建立连接后：</p> 
+<ul><li>Node.js 会调用 accept 接下一个 TCP 连接。</li><li>接着会调 C++ 层新建一个对象表示和客户端通信的实例。</li><li>接着回调 JS 层，JS 也会新建一个对象表示通信的实例，主要是给用户使用。</li><li>最后注册等待可读事件，等待客户端发送数据过来。</li></ul> 
+<p>处理完一个连接后，Node.js 会判断是否设置了 single_accept 标记，如果有则睡眠一段时间，给其他进程处理剩下的连接，一定程度上避免负责不均衡，如果没有设置该标记，Node.js 会继续尝试处理下一个连接。</p> 
+<p><img alt="" height="1150" src="https://images2.imgbox.com/83/ac/N9jMqg0w_o.png" width="1016"></p> 
+<h2>文件操作和监听</h2> 
+<h3>文件操作</h3> 
+<p>Node.js 中文件操作分为同步和异步模式，同步模式就是在主进程中直接调用文件系统的 API，这种方式可能会引起进程的阻塞，异步方式是借助了 Libuv 线程池，把阻塞操作放到子线程中去处理，主线程可以继续处理其他操作。</p> 
+<p><strong>同步模式流程：</strong></p> 
+<p><img alt="" height="728" src="https://images2.imgbox.com/8d/fc/ECv5OzkT_o.png" width="487"></p> 
+<p><strong> 异步模式流程：</strong></p> 
+<p><img alt="" height="881" src="https://images2.imgbox.com/e1/89/0Q2ogXMp_o.png" width="485"></p> 
+<p>Node.js 中 文件复制基于 Copy-on-write（写时复制）技术实现的：</p> 
+<ul><li>复制只是添加一个引用到之前的内容，如果不修改并不会真正复制，只有到第一次修改内容的时候才去真正复制对应的数据块，这样就避免了大量硬盘空间的浪费。</li><li>写文件时会先在另一个空闲磁盘块做修改，等修改完之后才会复制到目标位置，这样就不会有断电无法回滚的问题</li></ul> 
+<p>copyFile 方法的第三个参数指定复制的策略（支持按位或把它们合并之后传入）：</p> 
+<ul><li>COPYFILE_EXCL: 如果目标文件已存在，会报错（默认是覆盖）；</li><li>COPYFILE_FICLONE: 以 copy-on-write 模式复制，如果操作系统不支持就转为真正的复制（默认是直接复制）；</li><li>COPYFILE_FICLONE_FORCE：以 copy-on-write 模式复制，如果操作系统不支持就报错。</li></ul> 
+<h3>文件监听</h3> 
+<p>文件监听，比如我们修改了文件后 webpack 重新打包代码或者 Node.js 服务重启，都用到了文件监听的功能，Node.js 提供了两套文件监听的机制：基于轮询的文件监听机制和基于inotify的文件监听机制，后者 inotify 是基于订阅发布模式的，避免了无效的轮询。</p> 
+<p><strong>基于轮询的文件监听机制流程：</strong></p> 
+<p><img alt="" height="896" src="https://images2.imgbox.com/28/22/J60i0vtd_o.png" width="560"></p> 
+<p><strong>基于inotify的文件监听机制流程：</strong></p> 
+<p><img alt="" height="544" src="https://images2.imgbox.com/04/20/zKoUXa32_o.png" width="1200"></p> 
+<h2>Cluster</h2> 
+<p>Cluster 模块使得单进程架构的 Node.js 支持多进程的服务器架构，更好的利用多核。Node.js 支持两种通常的多进程服务器架构：轮询（主进程 accept ）和共享（子进程 accept ）。前者是主进程处理连接，然后分发给子进程处理；后者是子进程共享 socket，通过竞争的方式获取连接进行处理。可以通过环境变量在Node.js中进行设置。</p> 
+<p><strong>轮询模式：</strong></p> 
+<p><img alt="" height="644" src="https://images2.imgbox.com/43/2b/NxhAmlq4_o.png" width="1200"></p> 
+<p><strong>共享模式： </strong></p> 
+<p><img alt="" height="603" src="https://images2.imgbox.com/f5/e1/qIeNZ0BV_o.png" width="1029"></p> 
+<h2>线、进程间通信</h2> 
+<h3>进程间通信</h3> 
+<p>Node.js 中的进程是使用 fork+exec 模式创建的，fork 就是复制主进程的数据，exec 是加载新的程序执行。Node.js 提供了异步和同步创建进程两种模式。</p> 
+<p>进程在内存中分为代码段、数据段、堆栈段这 3 部分：</p> 
+<ul><li>代码段：存放要执行的代码</li><li>数据段：存放一些全局数据</li><li>堆栈段：存放执行的状态</li></ul> 
+<p>fork 的实现就是一种 copy-on-write （写时复制）技术，fork 并不会真正的复制内存，而是创建一个新的进程，引用父进程的内存，当做数据的修改的时候，才会真正复制该部分的内存。而执行的新代码是使用 exec。</p> 
+<p>异步方式：</p> 
+<p><img alt="" height="446" src="https://images2.imgbox.com/b6/05/vbV1E38f_o.png" width="630"></p> 
+<p>同步方式：</p> 
+<p><img alt="" height="186" src="https://images2.imgbox.com/14/50/z990cXjz_o.png" width="918"></p> 
+<p><strong>Node.js 选取的进程间通信方式是 Unix 域，因为只有 Unix 域支持文件描述符传递。</strong></p> 
+<ol><li>Node.js 底层通过 socketpair 创建两个文件描述符，主进程拿到其中一个文件描述符，并且封装 send和 on meesage 方法进行进程间通信。</li><li>接着主进程通过环境变量把另一个文件描述符传给子进程。</li><li>子进程同样基于文件描述符封装发送和接收数据的接口。</li></ol> 
+<h3>线程间通信</h3> 
+<p>Node.js 中多线程的架构：</p> 
+<p><img alt="" height="279" src="https://images2.imgbox.com/13/23/Zxofd5LY_o.png" width="1033"></p> 
+<p>Node.js 中创建线程的流程：</p> 
+<ul><li>主线程会首先创建创建两个通信的数据结构，接着往对端发送一个加载 JS 文件的消息。</li><li>然后调用底层接口创建一个线程。</li><li>这时候子线程就被创建出来了，子线程被创建后首先初始化自己的执行环境和上下文。</li><li>接着从通信的数据结构中读取消息，然后加载对应的js文件执行，最后进入事件循环。</li></ul> 
+<p>线程和进程不一样，进程的地址空间是独立的，不能直接通信，但是线程的地址是共享的，所以可以基于进程的内存直接进行通信。线程通信的具体流程：</p> 
+<ol><li>线程 A 调用 postMessage 发送消息。</li><li>postMessage 会先对消息进行序列化。</li><li>然后由线程 B 拿到对端消息队列的锁，并把消息插入对端消息队列中。</li><li>线程 A 成功发送插入消息后，还需要通知消息接收者所在的线程 B。</li><li>消息接收者（线程B）会在事件循环的 Poll IO 阶段处理这个消息。</li></ol> 
+<h2>AsyncHooks</h2> 
+<p>async_hooks 模块是 Node.js 中提供了用于跟踪异步资源的 API。</p> 
+<blockquote> 
+ <p><strong>异步资源</strong>表示有关联回调的对象。该回调可以被调用一次（ fs.open()中）或多次调用（ net.createServer 中的 'connection' 事件），也可以在调用回调之前关闭资源。AsyncHook 对这些不同情况进行抽象成异步资源。如果使用 Workers，每个线程都有一个独立的 async_hooks 接口，每个线程都会使用一组新的独立 asyncId。</p> 
+</blockquote> 
+<p>追踪异步资源能清晰的确认任务之间的调用链和完整正确的异步回调调用栈。</p> 
+<p>当开启 asyncHook 的时候，每个异步资源都会触发这些生命周期钩子。</p> 
+<pre><code class="language-javascript">import async_hooks from 'node:async_hooks';
+
+/** 返回当前执行上下文的 asyncId */
+const eid = async_hooks.executionAsyncId();
+
+/** 返回负责触发当前执行作用域的回调的 asyncID */
+const tid = async_hooks.triggerAsyncId();
+
+/** 创建一个新的 AsyncHook 实例。 所有这些回调都是可选的 */
+const asyncHook =
+    async_hooks.createHook({ init, before, after, destroy, promiseResolve });
+
+/** 允许调用此 AsyncHook 实例的回调。这不是运行构造函数后的隐式操作，必须显式运行才能开始执行回调. */
+asyncHook.enable();
+
+/** 禁用监听新的异步事件 */
+asyncHook.disable();
+
+/** 以下是可以传递给 createHook() 的回调 */
+/** init() 在对象构造期间被调用。 此回调运行时，资源可能尚未完成构造。 因此，“asyncId”引用的资源的所有字段可能都没有被填充。*/
+/**
+ * @params asyncId 异步资源的唯一 id，从 1 开始的自增
+ * @param  type 标识异步资源的字符串
+ * @param  triggerAsyncId 在其执行上下文中创建此异步资源的异步资源的 asyncId
+ * @param  resource 对表示异步操作的资源的引用，有异步资源相关的数据，需要在destroy期间释放
+ */
+function init(asyncId, type, triggerAsyncId, resource) { }
+
+/** 在调用资源的回调之前调用 before()。对于处理函数（例如 TCPWrap），它可以被调用 0-N 次，而对于请求（例如 FSReqCallback），它将被准确地调用 1 次。 */
+function before(asyncId) { }
+
+/** after() 在资源的回调完成后被调用。 */
+function after(asyncId) { }
+
+/** destroy() 在资源的消耗后被调用。 */
+function destroy(asyncId) { }
+
+/** 当调用传递给 Promise 构造函数的 resolve() 函数时（直接或通过其他解决 Promise 的方法），promise Resolve() 仅对 Promise 资源调用。*/
+function promiseResolve(asyncId) { }</code></pre> 
+<p>比如，用 AsyncHooks 确认任务之间的调用链，callback归属关系： </p> 
+<pre><code class="language-TypeScript">const fs = require('fs')
+const async_hooks = require('async_hooks');
+const { fd } = process.stdout;
+
+let indent = 0;
+async_hooks.createHook({
+  init(asyncId, type, triggerAsyncId) {
+    const eid = async_hooks.executionAsyncId();
+    const indentStr = ' '.repeat(indent);
+    fs.writeSync(
+      fd,
+      `${indentStr}${type}(${asyncId}):` +
+      ` trigger: ${triggerAsyncId} execution: ${eid} \n`);
+  },
+  before(asyncId) {
+    const indentStr = ' '.repeat(indent);
+    fs.writeSync(fd, `${indentStr}before:  ${asyncId}\n`);
+    indent += 2;
+  },
+  after(asyncId) {
+    indent -= 2;
+    const indentStr = ' '.repeat(indent);
+    fs.writeSync(fd, `${indentStr}after:  ${asyncId}\n`);
+  },
+  destroy(asyncId) {
+    const indentStr = ' '.repeat(indent);
+    fs.writeSync(fd, `${indentStr}destroy:  ${asyncId}\n`);
+  },
+}).enable();
+
+function callback(err, data) {
+    console.log('callback', data)
+}
+
+fs.readFile("a.txt", callback)
+console.log('after a')
+fs.readFile("b.txt", callback)
+console.log('after b')
+
+/**
+FSREQCALLBACK(4): trigger: 1 execution: 1      # a
+after a
+TickObject(5): trigger: 1 execution: 1
+FSREQCALLBACK(6): trigger: 1 execution: 1      # b
+after b
+before:  5
+after:  5
+
+before:  4
+callback undefined
+  TickObject(7): trigger: 4 execution: 4        // trigger by a
+after:  4
+
+before:  7
+after:  7
+
+before:  6
+callback undefined
+  TickObject(8): trigger: 6 execution: 6       // trigger by b
+after:  6
+
+before:  8
+after:  8
+destroy:  5
+destroy:  7
+destroy:  4
+destroy:  8
+destroy:  6
+*/
+</code></pre> 
+<p>可以看到，a 的调用链路：1 -&gt; 4 -&gt; 7，b 的调用链路：1 -&gt; 6 -&gt; 8，所以第一个 callback 是 a，第二个 callback 是 b。</p> 
+<p>使用 AsyncHook 会带来一定的额外性能开销：</p> 
+<p><img alt="" height="760" src="https://images2.imgbox.com/7d/87/uGLBlg43_o.png" width="1042"></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/fbdc16850aee3020da43406539e6c79f/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Java Socket聊天室</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/70e6f537f8c997d5a2a229dab22dbd99/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Electron.NET开发入门（Linux &amp;&amp; Windows）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

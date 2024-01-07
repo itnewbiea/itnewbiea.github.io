@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>K8S中的网络 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="K8S中的网络" />
+<meta property="og:description" content="文章目录 一、K8S的网络模型与集群通信1 K8S网络模型与实现方案2 pod 内容器通信3 pod与pod通信3.1 pod在同一主机3.2 pod 在不同主机下 4 pod 与service通信5 service 是如何做到服务发现的？6 外网与service通信 二、k8s与各网络插件集成(flannel calico canal kube-router romana cni-genie)1 flannel2 calico 本次实验使用与k8s一个etcd集群生境环境建议使用单独的一套集群3 canal4 kube-router5 romana6 CNI-Genie7 组件小结总结： 引言： 再来亿点点知识 一、K8S的网络模型与集群通信 1 K8S网络模型与实现方案 k8s集群中的每一个Pod（最小调度单位）都有自己的IP地址，即ip-per-pod模型。
+在ip-per-pod模型中每一个pod在集群中保持唯一性，我们不需要显式地在每个 Pod 之间创建链接， 不需要处理容器端口到主机端口之间的映射。从端口分配、命名、服务发现、 负载均衡、应用配置和迁移的角度来看，Pod 可以被视作独立虚拟机或者物理主机。
+如下图，从表面上来看两个容器在docker网络与k8s网络中与client通信形式。
+k8s是一套庞大的分布式系统，为了保持核心功能的精简（模块化）以及适应不同业务用户的网络环境，k8s通过CNI(Container Network Interface)即容器网络接口集成各种网络方案。这些网络方案必须符合k8s网络模型要求：
+节点上的 Pod 可以不通过 NAT 和其他任何节点上的 Pod 通信
+节点上的代理（比如：系统守护进程、kubelet）可以和节点上的所有Pod通信
+备注：仅针对那些支持 Pods 在主机网络中运行的平台（比如：Linux）：
+那些运行在节点的主机网络里的 Pod可以不通过 NAT 和所有节点上的 Pod 通信
+如此操作，是不是有点像美团？将配送业务外包（CNI）给三方公司（实现方案），骑手是通过哪种飞机大炮（网络）送餐的我不管，只要符合准时、不撒漏（模型要求）等相关规矩这就是一次合格的配送。
+CNI 做两件事，容器创建时的网络分配，和当容器被删除时释放网络资源。 常用的 CNI 实现方案有 Flannel、Calico、Weave以及各种云厂商根据自身网络推出的CNI插件如华为的 CNI-Genie、阿里云Terway。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/844ffc8fe4116995f810219a9bbe5f9b/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-10-31T17:04:18+08:00" />
+<meta property="article:modified_time" content="2022-10-31T17:04:18+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">K8S中的网络</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-tomorrow-night">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#K8S_3" rel="nofollow">一、K8S的网络模型与集群通信</a></li><li><ul><li><a href="#1_K8S_4" rel="nofollow">1 K8S网络模型与实现方案</a></li><li><a href="#2_pod__23" rel="nofollow">2 pod 内容器通信</a></li><li><a href="#3_podpod_48" rel="nofollow">3 pod与pod通信</a></li><li><ul><li><a href="#31_pod_49" rel="nofollow">3.1 pod在同一主机</a></li><li><a href="#32_pod__73" rel="nofollow">3.2 pod 在不同主机下</a></li></ul> 
+   </li><li><a href="#4_pod_service_95" rel="nofollow">4 pod 与service通信</a></li><li><a href="#5_service__121" rel="nofollow">5 service 是如何做到服务发现的？</a></li><li><a href="#6_service_124" rel="nofollow">6 外网与service通信</a></li></ul> 
+  </li><li><a href="#k8sflannel_calico_canal_kuberouter_romana_cnigenie_154" rel="nofollow">二、k8s与各网络插件集成(flannel calico canal kube-router romana cni-genie)</a></li><li><ul><li><a href="#1_flannel_161" rel="nofollow">1 flannel</a></li><li><a href="#2_calico_204" rel="nofollow">2 calico</a></li></ul> 
+  </li><li><a href="#k8setcd_207" rel="nofollow">本次实验使用与k8s一个etcd集群</a></li><li><a href="#_208" rel="nofollow">生境环境建议使用单独的一套集群</a></li><li><ul><li><a href="#3_canal_238" rel="nofollow">3 canal</a></li><li><a href="#4_kuberouter_281" rel="nofollow">4 kube-router</a></li><li><a href="#5_romana_309" rel="nofollow">5 romana</a></li><li><a href="#6_CNIGenie_326" rel="nofollow">6 CNI-Genie</a></li><li><a href="#7__398" rel="nofollow">7 组件小结</a></li><li><ul><li><ul><li><a href="#_403" rel="nofollow">总结：</a></li></ul> 
+   </li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<br> 引言： 再来亿点点知识 
+<p></p> 
+<h2><a id="K8S_3"></a>一、K8S的网络模型与集群通信</h2> 
+<h3><a id="1_K8S_4"></a>1 K8S网络模型与实现方案</h3> 
+<p>k8s集群中的每一个Pod（最小调度单位）都有自己的IP地址，即ip-per-pod模型。<br> 在ip-per-pod模型中每一个pod在集群中保持唯一性，我们不需要显式地在每个 Pod 之间创建链接， 不需要处理容器端口到主机端口之间的映射。从端口分配、命名、服务发现、 负载均衡、应用配置和迁移的角度来看，Pod 可以被视作独立虚拟机或者物理主机。<br> 如下图，从表面上来看两个容器在docker网络与k8s网络中与client通信形式。</p> 
+<p><img src="https://images2.imgbox.com/ca/53/aHHNtveN_o.png" alt="在这里插入图片描述"><br> k8s是一套庞大的分布式系统，为了保持核心功能的精简（模块化）以及适应不同业务用户的网络环境，k8s通过CNI(Container Network Interface)即容器网络接口集成各种网络方案。这些网络方案必须符合k8s网络模型要求：</p> 
+<p><strong>节点上的 Pod 可以不通过 NAT 和其他任何节点上的 Pod 通信</strong><br> <strong>节点上的代理（比如：系统守护进程、kubelet）可以和节点上的所有Pod通信</strong></p> 
+<p>备注：仅针对那些支持 <code>Pods </code>在主机网络中运行的平台（比如：Linux）：</p> 
+<p><strong>那些运行在节点的主机网络里的 Pod可以不通过 NAT 和所有节点上的 Pod 通信</strong></p> 
+<p>如此操作，是不是有点像美团？将配送业务外包（CNI）给三方公司（实现方案），骑手是通过哪种飞机大炮（网络）送餐的我不管，只要符合准时、不撒漏（模型要求）等相关规矩这就是一次合格的配送。</p> 
+<p>CNI 做两件事，容器创建时的网络分配，和当容器被删除时释放网络资源。 常用的 CNI 实现方案有 Flannel、Calico、Weave以及各种云厂商根据自身网络推出的CNI插件如华为的 CNI-Genie、阿里云Terway。</p> 
+<h3><a id="2_pod__23"></a>2 pod 内容器通信</h3> 
+<p>Pod内容器非常简单，在同一个 Pod 内，所有容器共享存储、网络即使用同一个 IP 地址和端口空间，并且可以通过<code>localhost</code>发现对方。Pod 使用了一个中间容器 Infra，Infra 在 Pod 中首先被创建，而其他容器则通过 Join Network Namespace 的方式与 Infra 容器关联在一起。</p> 
+<p><img src="https://images2.imgbox.com/75/c2/L2kv34x0_o.png" alt="在这里插入图片描述"></p> 
+<p>我们有一个pod包含busybox、nginx这两个容器</p> 
+<pre><code>kubectl get pod -n training
+NAME                             					READY   	STATUS    	RESTARTS   	AGE
+pod-localhost-765b965cfc-8sh76   2/2     		Running   	0          			2m56s
+</code></pre> 
+<p>在busybox中使用telnet连接nginx容器的 80端口看看。</p> 
+<pre><code>kubectl exec -it  pod-localhost-765b965cfc-8sh76 -c container-si1nrb -n training -- /bin/sh
+​
+# telnet localhost 80
+Connected to localhost
+</code></pre> 
+<p>一个pod有多个容器时可以通过-c指定进入的容器名（通过describe查看容器名称），显然通过localhost就可以轻松访问到同一个pod中的nginx容器80端口。这也是在许多关系密切的应用中通常会部署在同一个pod中。</p> 
+<h3><a id="3_podpod_48"></a>3 pod与pod通信</h3> 
+<h4><a id="31_pod_49"></a>3.1 pod在同一主机</h4> 
+<p>我们通过node选择器将两个pod调度到同一个node中</p> 
+<pre><code> ...
+ nodeSelector:
+        kubernetes.io/hostname: node2
+ ...
+</code></pre> 
+<p>两个容器分别获得一个IP地址，同样通过IP地址双方网络正常互通。</p> 
+<pre><code># kubectl get pod -o wide -n training 
+NAME                                  READY   STATUS    RESTARTS   AGE     IP              NODE                    NOMINATED NODE   READINESS GATES
+​
+pod-to-pod-64444686ff-w7c4g           1/1     Running   0          6m53s   100.82.98.206   node2        &lt;none&gt;           &lt;none&gt;
+pod-to-pod-busybox-7b9db67bc6-tl27c   1/1     Running   0          5m3s    100.82.98.250   node2        &lt;none&gt;           &lt;none&gt;
+# kubectl exec -it  pod-to-pod-busybox-7b9db67bc6-tl27c  -n training -- /bin/sh
+/# telnet 100.82.98.206 80
+Connected to 100.82.98.206
+</code></pre> 
+<p>同一主机网络的pod互通和我们之前学习的docker bridge相似，通过linux网桥添加虚拟设备对 <strong>veth pair</strong> 连接容器和主机主机命名空间。<br> 我们把之前的图拿过来，在k8s中只不过把灰色部分替换成CNI方案实现。</p> 
+<p><img src="https://images2.imgbox.com/49/73/tS4ZkmK6_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="32_pod__73"></a>3.2 pod 在不同主机下</h4> 
+<p>此时pod分布如下</p> 
+<pre><code>kubectl get pod -o wide -n training 
+NAME                                        							`	READY   		STATUS    	RESTARTS   AGE    IP              			NODE                    NOMINATED NODE   READINESS GATES
+​
+pod-to-pod-64444686ff-w7c4g                 				1/1     			Running   	0          		104m   100.82.98.206   	node2        			&lt;none&gt;           
+​
+pod-to-pod-busybox-node2-6476f7b7f9-mqcw9   	1/1     			Running  	 	0          		42s    100.91.48.208   	node3        			&lt;none&gt;    
+​
+# kubectl exec -it  pod-to-pod-busybox-node2-6476f7b7f9-mqcw9  -n training -- /bin/sh
+/ # telnet 100.82.98.206 80
+Connected to 100.82.98.206
+</code></pre> 
+<p>pod在不同主机的通信依赖于<strong>CNI</strong>插件，这里我们以Calico为例的做简单了解，从Calico架构图中可以看到每个node节点的自身依然采用容器网络模式，Calico在每个节点都利用Linux 内核实现了一个高效的虚拟路由器vRouter来负责数据转发。每个虚拟路由器将路由信息广播到网络中，并添加路由转发规则。同时基于iptables还提供了丰富的网络策略，实现k8s的Network Policy策略，提供容器间网络可达性限制的功能。</p> 
+<p><strong>简单理解就是通过在主机上启动虚拟路由器(calico node)，将每个主机作为路由器使用实现互联互通的网络拓扑。</strong></p> 
+<p>Calico节点组网时可以直接利用数据中心的网络结构(L2或者L3)，不需要额外的NAT、隧道或者Overlay Network，没有额外的封包解包，能够节约CPU运算，提高网络效率。</p> 
+<p><img src="https://images2.imgbox.com/87/7a/bw8HT0II_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="4_pod_service_95"></a>4 pod 与service通信</h3> 
+<p>我们知道在k8s中容器随时可能被摧毁，pod的IP显然不是持久的，会随着扩展或缩小应用规模、或者应用程序崩溃以及节点重启等而消失和出现。service 设计就是来处理这个问题。service可以管理一组 Pod 的状态，允许我们跟踪一组随时间动态变化的 Pod IP 地址。而客户端只需要知道service这个不变的虚拟IP就可以了。</p> 
+<p>我们先来看看典型的service与pod使用，我们创建了一个service，标签选择器为app:nginx，将会路由到app=nginx标签的Pod上。</p> 
+<p><img src="https://images2.imgbox.com/ba/4a/bpm0MrSi_o.png" alt="在这里插入图片描述"></p> 
+<pre><code># kubectl get service -n training
+NAME               		TYPE        	CLUSTER-IP      EXTERNAL-IP   	PORT(S)    	AGE
+training-service   		ClusterIP   	10.96.229.238   	&lt;none&gt;        		8881/TCP   10m
+</code></pre> 
+<p>Service对外暴露的端口8881,这样在集群的中的pod即可通过8881访问到与service 绑定的label为app=nginx的pod</p> 
+<pre><code>kubectl run -it --image nginx:alpine curl --rm /bin/sh
+/ # curl 10.96.229.238:8881
+&lt;!DOCTYPE html&gt;
+&lt;html&gt;
+&lt;head&gt;
+&lt;title&gt;Welcome to nginx!&lt;/title&gt;
+&lt;style&gt;
+...
+</code></pre> 
+<p>其实大多数时候在自动化部署服务时并不知道service ip，所以另一种常见方式通过DNS进行域名解析后，可以使用 <strong>“ServiceName:Port”</strong> 访问Service，可以自己尝试一下。</p> 
+<h3><a id="5_service__121"></a>5 service 是如何做到服务发现的？</h3> 
+<p>Endpoints是k8s中的一种资源对象，k8s通过Endpoints监控到Pod的IP，service又关联Endpoints从而实现Pod的发现。大致如下图所示，service的发现机制我们会在后面文章中做深入了解。<br> <img src="https://images2.imgbox.com/2b/04/H5Vw3TAq_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="6_service_124"></a>6 外网与service通信</h3> 
+<p>其实所谓外网通信也是service的表现形式。<br> service几种类型和不同用途。</p> 
+<p><strong>ClusterIP：</strong> 用于在集群内部互相访问的场景，通过ClusterIP访问Service，即我们上面所说的pod与service。<br> <strong>NodePort：</strong> 用于从集群外部访问的场景，通过节点上的端口访问Service。<br> <strong>LoadBalancer：</strong> 用于从集群外部访问的场景，其实是NodePort的扩展，通过一个特定的LoadBalancer访问Service，这个LoadBalancer将请求转发到节点的NodePort，而外部只需要访问LoadBalancer。<br> <strong>None：</strong> 用于Pod间的互相发现，这种类型的Service又叫Headless Service。</p> 
+<p>我们先来看NodePort：</p> 
+<p><img src="https://images2.imgbox.com/19/c5/TkXHeKYy_o.png" alt="在这里插入图片描述"><br> 我们在service中指定type: NodePort创建出的service将会包含一个在所有node 开放的端口30678，这样我们访问任意节点IP:30678即可访问到我们的pod</p> 
+<pre><code># kubectl get service -n training
+NAME               TYPE       CLUSTER-IP      EXTERNAL-IP   PORT(S)          AGE
+training-service   NodePort   10.96.229.238   &lt;none&gt;        8881:30678/TCP   55m
+​
+# curl 192.168.1.86:30678
+&lt;!DOCTYPE html&gt;
+&lt;html&gt;
+&lt;head&gt;
+&lt;title&gt;Welcome to nginx!&lt;/title&gt;
+&lt;style&gt;
+....
+</code></pre> 
+<p>LoadBalancer类型和它名字一样，为负载均衡而生。它的结构如下图所示，<br> <img src="https://images2.imgbox.com/ab/0c/I5v1tcpz_o.png" alt="在这里插入图片描述"><br> LoadBalancer本身不是属于Kubernetes的组件，如果使用云厂商的容器服务。通常会提供一套他们的负载均衡服务比如阿里云ACK的SLB、华为云的ELB等等。Service是基于四层TCP和UDP协议转发的，而k8s 另外一种资源对象Ingress可以基于七层的HTTP和HTTPS协议转发，可通过域名和路径做到更细粒度的划分，这是后话。</p> 
+<h2><a id="k8sflannel_calico_canal_kuberouter_romana_cnigenie_154"></a>二、k8s与各网络插件集成(flannel calico canal kube-router romana cni-genie)</h2> 
+<p><mark>通用说明</mark><br> 如果多次换不同网络插件实验，每次实验前先把 <strong>/etc/cni/net.d/</strong> 目录下文件清空</p> 
+<blockquote> 
+ <p>rm -rf /etc/cni/net.d/*</p> 
+</blockquote> 
+<h3><a id="1_flannel_161"></a>1 flannel</h3> 
+<pre><code># 创建flannel目录下载相关文件
+mkdir flannel &amp;&amp; cd flannel
+wget https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
+
+# 修改配置
+# 此处的ip配置要与kubeadm的pod-network参数配置的一致
+  net-conf.json: |
+    {
+      "Network": "192.168.0.0/16",
+      "Backend": {
+        "Type": "vxlan"
+      }
+    }
+
+# 修改镜像
+image: registry.cn-shanghai.aliyuncs.com/gcr-k8s/flannel:v0.10.0-amd64
+
+# 如果Node有多个网卡的话，参考flannel issues 39701，
+# https://github.com/kubernetes/kubernetes/issues/39701
+# 目前需要在kube-flannel.yml中使用--iface参数指定集群主机内网网卡的名称，
+# 否则可能会出现dns无法解析。容器无法通信的情况，需要将kube-flannel.yml下载到本地，
+# flanneld启动参数加上--iface=&lt;iface-name&gt;
+    containers:
+      - name: kube-flannel
+        image: registry.cn-shanghai.aliyuncs.com/gcr-k8s/flannel:v0.10.0-amd64
+        command:
+        - /opt/bin/flanneld
+        args:
+        - --ip-masq
+        - --kube-subnet-mgr
+        - --iface=eth1
+
+# 启动
+kubectl apply -f kube-flannel.yml
+
+# 查看
+kubectl get pods --namespace kube-system
+kubectl get svc --namespace kube-system
+
+</code></pre> 
+<h3><a id="2_calico_204"></a>2 calico</h3> 
+<p><mark>配置启动etcd集群</mark></p> 
+<blockquote> 
+ <h2><a id="k8setcd_207"></a>本次实验使用与k8s一个etcd集群</h2> 
+ <h2><a id="_208"></a>生境环境建议使用单独的一套集群</h2> 
+</blockquote> 
+<p><mark>配置启动calico</mark></p> 
+<pre><code># 创建calico目录下载相关文件
+mkdir calico &amp;&amp; cd calico
+wget https://docs.projectcalico.org/v3.1/getting-started/kubernetes/installation/rbac.yaml
+wget https://docs.projectcalico.org/v3.1/getting-started/kubernetes/installation/hosted/calico.yaml
+
+# 如果启用了RBAC（默认k8s集群启用），配置RBAC
+kubectl apply -f rbac.yaml
+
+# 修改calico.yaml文件中名为calico-config的ConfigMap中的etcd_endpoints参数为自己的etcd集群
+etcd_endpoints: "http://11.11.11.111:2379,http://11.11.11.112:2379,http://11.11.11.113:2379"
+
+# 修改镜像为国内镜像
+sed -i 's@image: quay.io/calico/@image: registry.cn-shanghai.aliyuncs.com/gcr-k8s/calico-@g' calico.yaml
+
+# 启动
+kubectl apply -f calico.yaml
+
+# 查看
+kubectl get pods --namespace kube-system
+kubectl get svc --namespace kube-system
+</code></pre> 
+<p><mark>参考文档</mark></p> 
+<blockquote> 
+ <p>https://docs.projectcalico.org/v3.1/getting-started/kubernetes/installation/calico#installing-with-the-etcd-datastore</p> 
+</blockquote> 
+<h3><a id="3_canal_238"></a>3 canal</h3> 
+<pre><code># 创建flannel目录下载相关文件
+mkdir canal &amp;&amp; cd canal
+wget https://docs.projectcalico.org/v3.1/getting-started/kubernetes/installation/hosted/canal/rbac.yaml
+wget https://docs.projectcalico.org/v3.1/getting-started/kubernetes/installation/hosted/canal/canal.yaml
+
+# 修改配置
+# 此处的ip配置要与kubeadm的pod-network参数配置的一致
+  net-conf.json: |
+    {
+      "Network": "192.168.0.0/16",
+      "Backend": {
+        "Type": "vxlan"
+      }
+    }
+
+# 修改calico镜像
+sed -i 's@image: quay.io/calico/@image: registry.cn-shanghai.aliyuncs.com/gcr-k8s/calico-@g' canal.yaml
+
+# 修改flannel镜像
+image: registry.cn-shanghai.aliyuncs.com/gcr-k8s/flannel:v0.10.0-amd64
+
+# 如果Node有多个网卡的话，参考flannel issues 39701，
+# https://github.com/kubernetes/kubernetes/issues/39701
+# 目前需要在kube-flannel.yml中使用--iface参数指定集群主机内网网卡的名称，
+# 否则可能会出现dns无法解析。容器无法通信的情况，需要将kube-flannel.yml下载到本地，
+# flanneld启动参数加上--iface=&lt;iface-name&gt;
+    containers:
+      - name: kube-flannel
+        image: registry.cn-shanghai.aliyuncs.com/gcr-k8s/flannel:v0.10.0-amd64
+   	    command: [ "/opt/bin/flanneld", "--ip-masq", "--kube-subnet-mgr", "--iface=eth1" ]
+
+
+# 启动
+kubectl apply -f rbac.yaml
+kubectl apply -f canal.yaml
+
+# 查看
+kubectl get pods --namespace kube-system
+kubectl get svc --namespace kube-system
+</code></pre> 
+<h3><a id="4_kuberouter_281"></a>4 kube-router</h3> 
+<pre><code># 本次实验重新创建了集群，使用之前测试其他网络插件的集群环境没有成功
+# 可能是由于环境干扰，实验时需要注意
+
+# 创建kube-router目录下载相关文件
+mkdir kube-router &amp;&amp; cd kube-router
+wget https://raw.githubusercontent.com/cloudnativelabs/kube-router/master/daemonset/kubeadm-kuberouter.yaml
+wget https://raw.githubusercontent.com/cloudnativelabs/kube-router/master/daemonset/kubeadm-kuberouter-all-features.yaml
+
+# 以下两种部署方式任选其一
+
+# 1. 只启用 pod网络通信，网络隔离策略 功能
+kubectl apply -f kubeadm-kuberouter.yaml
+
+# 2. 启用 pod网络通信，网络隔离策略，服务代理 所有功能
+# 删除kube-proxy和其之前配置的服务代理
+kubectl apply -f kubeadm-kuberouter-all-features.yaml
+kubectl -n kube-system delete ds kube-proxy
+
+# 在每个节点上执行
+docker run --privileged --net=host registry.cn-hangzhou.aliyuncs.com/google_containers/kube-proxy-amd64:v1.10.2 kube-proxy --cleanup
+
+# 查看
+kubectl get pods --namespace kube-system
+kubectl get svc --namespace kube-system
+</code></pre> 
+<h3><a id="5_romana_309"></a>5 romana</h3> 
+<pre><code># 创建flannel目录下载相关文件
+mkdir romana &amp;&amp; cd romana
+wget https://raw.githubusercontent.com/romana/romana/master/containerize/specs/romana-kubeadm.yml
+
+# 修改镜像
+sed -i 's@gcr.io/@registry.cn-hangzhou.aliyuncs.com/@g' romana-kubeadm.yml
+sed -i 's@quay.io/romana/@registry.cn-shanghai.aliyuncs.com/gcr-k8s/romana-@g' romana-kubeadm.yml
+
+# 启动
+kubectl apply -f romana-kubeadm.yml
+
+# 查看
+kubectl get pods --namespace kube-system
+kubectl get svc --namespace kube-system
+</code></pre> 
+<h3><a id="6_CNIGenie_326"></a>6 CNI-Genie</h3> 
+<pre><code># CNI-Genie是华为开源的网络组件，可以使k8s同时部署多个网络插件
+
+# 在k8s集群中安装calico组件
+
+# 在k8s集群中安装flannel组件
+
+# 在k8s集群中安装Genie组件
+mkdir CNI-Genie &amp;&amp; cd CNI-Genie
+wget  https://raw.githubusercontent.com/Huawei-PaaS/CNI-Genie/master/conf/1.8/genie.yaml
+sed -i 's@image: quay.io/cnigenie/v1.5:latest@image: registry.cn-shanghai.aliyuncs.com/gcr-k8s/cnigenie-v1.5:latest@g' genie.yaml
+kubectl apply -f genie.yaml
+
+# 查看
+kubectl get pods --namespace kube-system
+kubectl get svc --namespace kube-system
+
+# 测试
+cat &gt;nginx-calico.yml&lt;&lt;EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx-calico
+  labels:
+    app: web
+  annotations:
+    cni: "calico"
+spec:
+  containers:
+    - name: nginx
+      image: nginx:alpine
+      imagePullPolicy: IfNotPresent
+      ports:
+        - containerPort: 80
+EOF
+cat &gt;nginx-flannel.yml&lt;&lt;EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx-flannel
+  labels:
+    app: web
+  annotations:
+    cni: "flannel"
+spec:
+  containers:
+    - name: nginx
+      image: nginx:alpine
+      imagePullPolicy: IfNotPresent
+      ports:
+        - containerPort: 80
+EOF
+kubectl apply -f nginx-calico.yml
+kubectl apply -f nginx-flannel.yml
+
+# 查看
+kubectl get pods -o wide
+
+# 测试网络通信
+kubectl exec nginx-calico -i -t -- ping -c4 1.1.1.1
+kubectl exec nginx-flannel -i -t -- ping -c4 1.1.1.1
+
+# 由于先启动的flannel，然后k8s创建了coredns，所以使用flannel cni的能正常使用dns
+# 使用calico cni无法使用正常dns
+
+# 测试dns
+kubectl exec nginx-calico -i -t -- ping -c4 www.baidu.com
+kubectl exec nginx-flannel -i -t -- ping -c4 www.baidu.com
+
+</code></pre> 
+<h3><a id="7__398"></a>7 组件小结</h3> 
+<p>kube-router性能损失最小，时延最小，其他网络插件性能差距不大。除了flannel没有网络隔离策略，其他均支持网络隔离策略。CNI-Genie是一个可以让k8s使用多个cni网络插件的组件，暂时不支持隔离策略。<br> <mark>理论结果： kube-router &gt; calico &gt; canal = flannel = romana</mark></p> 
+<h5><a id="_403"></a>总结：</h5> 
+<p>不写了，睡觉，狗命要紧，未完 待续</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/df18f24619cccb122c71bde025b034b7/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Could not set property ‘ sname‘ of ‘class com.cxy.mybatis.pojo.Student‘ with value ‘赵六‘这种报错原因及解决办法</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/dc6d58ad6d28c98206f8bc8cae7edeb9/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">K8S服务搭建过程中出现的憨批错误</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>IDEA国际化资源Key无法全局重命名的解决方案 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="IDEA国际化资源Key无法全局重命名的解决方案" />
+<meta property="og:description" content="一、前言 最近在开发中使用到了HibernateValidator进行入参校验以及错误消息的国际化支持。大家应该都知道在使用HibernateValidator进行校验的时候，我们只需在需要在校验的变量上添加相应的注解，同时在message中指定对应的错误信息的国际化资源Key即可（如下图）。这里的message对应的国际化资源key必须要使用大括号。
+上述使用方法是HibernateValidator的标准使用方法，功能实现上并没有什么毛病。但是这种方法却带来了一个弊端，它可能增加咱们得开发工作量，甚至会影响业务。为什么会这个问题呢？接下来咱们一起看看下面这个问题。
+如果咱们需要对消息key进行全局重命名，比如将图中的validation.dataSourceVO.name.notBlank修改为validation.dataSourceVO.name.notEmpty，大家想想咱们一般会怎么操作。
+很明显我们都会使用IDEA的重命名功能，直接对这个变量进行重命名。修改完成后，注解中的key和message.properties文件中对应的key、以及所有代码中对应的该变量都会同步修改。对么？！
+对，也不对！首先这种思路完全没问题，因为使用IDEA的重命名能够将所有关联的地方的内容全部都进行修改。但是这种方式在这里却不行！为什么呢？因为我们使用了大括号对消息key进行包围。使用了大括号后，IDEA根本不会提供重命名功能。
+如下图，当有大括号后在refactor中没有rename功能。但当没有大括号后refactor中则出现嘞rename功能。
+上面这种现象就导致了当我们要重命名消息key的时候，我们不得不一处一处将所有涉及的地方手动修改。这就带来如下两个问题：
+a、增加了工作量。
+b、可能因为自己没有修改全面导致业务出错。
+为了避免上述问题，咱们就需要在注解中直接使用没有大括号的消息Key。所以我们需要让HibernateValidator支持没有大括号的消息Key。这具体怎么实现呢？经过不断地折腾深入源码，我终于找到了解决办法。下面给大家分享下解决思路和办法。
+1、HibernateValidator的流程
+首先我们简单整理下HibernateValidator校验失败后提示错误消息的整个流程。如上图：
+a、用户提交请求，然后HibernateValidator基于注解内容进行校验。
+b、如果未通过校验，则获取注解中的错误消息Key，如：{validation.name.empty}
+c、然后进行一些处理，最后去掉错误消息Key的大括号得到真正的错误消息Key，如：validation.name.empty
+d、最后根据真实的消息Key(validation.name.empty)去messages.properteis文件中查找对应的错误消息，并返回给调用方。
+2、方案1：让Hibernate不判断大括号
+基于上述流程，我们可以看到HibernateValidator认为使用了大括号的资源Key才是国际化资源Key。所以咱们可以想到的最简单的办法就是去掉图中2的逻辑，即让HibernateValidator不对大括号进行处理（即没有大括号的资源Key也是国际化资源Key）。于是通过深入源码进行追踪，砸门能够发现大括号的处理在如下的一个私有方法(AbstractMessageInterpolator.removeCurlyBraces)中进行。如下图，其处理还有点暴力，直接去掉消息Key第一个和最后一个字符（前面有地方判断是否有大括号）。
+所以如果想从这个地方入手就必须重写其调用位置的逻辑，由于其调用逻辑非常复杂（有兴趣大家可以自己跟踪下代码），所以需要重写很多HibernateValidator的原始逻辑。最终肯定能够实现功能，但是这种方式却不可取。因为咱们在修改源码实现业务的时候有一个基本的原则：尽量减少对原始代码的重写和修改。因为过多的修改会带来很多问题，比如：
+a、后续底层框架升级后咱们修改的大量代码逻辑很可能得不到及时升级。从而导致底层BUG得不到及时解决，新功能得不到及时升级。
+b、由于修改了大量的底层代码，因此维护成本也会增加。
+所以，这种方法咱们暂时放弃，接下来我们另谋出路。
+3、方案2：给资源自动添加大括号
+让HibernateValidator不判断大括号的方案不可行后，咱们则可以换一种思路。即让注解中配置的时候使用不含大括号的消息Key，但在HibernateValidator处理之前（图中标记1的位置）给他加上去。
+于是咱们进一步分析底层源码逻辑，发现所有消息Key从注解中解析出来后，就会调用AbstractMessageInterpolator.interpolate方法进行后续的解析操作（处理消息Key、去除大括号、从messages.properties中获取错误消息等）。该方法本身是一个public方法，子类可以继承和处理。
+基于该思路，咱们重写实现了HibernateValidator使用的ResourceBundleMessageInterpolator（AbstractMessageInterpolator的实现类），并修改了interpolate的处理逻辑。即在调用真实的处理逻辑前面，咱们根据条件给消息Key添加上大括号。
+已经准备好会后，最后就是将自定义的RasMsgResourceBundleMessageInterpolator设置到HibernateValidator中，如下图在构建HibernateValidator的时候设置即可。
+4、方案总结 通过分析可知，两种方案很明显方案2要高级很多。它在解决问题的同时还符合咱们的源码修改基本原则：对源码进行最小的改动！其实通过代码可知，咱们方案2根本就没有对源码进行修改。只是利用继承的原理通过子类重写interpolate方法实现来实现了咱们需要的功能。 三、惯例 如果你喜欢本文或觉得本文对你有所帮助，欢迎一键三连支持，非常感谢。
+如果你对本文有任何疑问或者高见，欢迎添加公众号lifeofcoder共同交流探讨（添加公众号可以获得楼主最新博文推送以及”Java高级架构“上10G视频和图文资料哦）。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/ba3077dccfb2478ba1d57ee9dedc99f1/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-02-17T16:24:04+08:00" />
+<meta property="article:modified_time" content="2023-02-17T16:24:04+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">IDEA国际化资源Key无法全局重命名的解决方案</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2 id="%E4%B8%80%E3%80%81%E5%89%8D%E8%A8%80" style="margin-left:0cm;"><strong>一、前言</strong></h2> 
+<p></p> 
+<p style="margin-left:0cm;">最近在开发中使用到了HibernateValidator进行入参校验以及错误消息的国际化支持。大家应该都知道在使用HibernateValidator进行校验的时候，我们只需在需要在校验的变量上添加相应的注解，同时在message中指定对应的错误信息的国际化资源Key即可（如下图）。这里的message对应的<strong>国际化资源</strong><strong>key</strong><strong>必须要使用大括号</strong>。</p> 
+<p style="margin-left:0cm;text-align:center;"><img alt="" src="https://images2.imgbox.com/69/2d/QceKo3iV_o.png"></p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/a9/56/d4EJtpT6_o.png"></p> 
+<p>上述使用方法是HibernateValidator的标准使用方法，功能实现上并没有什么毛病。但是这种方法却带来了一个弊端，它可能增加咱们得开发工作量，甚至会影响业务。为什么会这个问题呢？接下来咱们一起看看下面这个问题。</p> 
+<p style="margin-left:0cm;"></p> 
+<p style="margin-left:0cm;"></p> 
+<p style="margin-left:0cm;">如果咱们需要对消息key进行全局重命名，比如将图中的validation.dataSourceVO.name.notBlank修改为validation.dataSourceVO.name.notEmpty，大家想想咱们一般会怎么操作。</p> 
+<p style="margin-left:0cm;">很明显我们都会使用IDEA的重命名功能，直接对这个变量进行重命名。修改完成后，注解中的key和message.properties文件中对应的key、以及所有代码中对应的该变量都会同步修改。对么？！</p> 
+<p style="margin-left:0cm;">对，也不对！首先这种思路完全没问题，因为使用IDEA的重命名能够将所有关联的地方的内容全部都进行修改。但是这种方式在这里却不行！为什么呢？因为我们使用了大括号对消息key进行包围。使用了大括号后，IDEA根本不会提供重命名功能。</p> 
+<p style="margin-left:0cm;">如下图，当有大括号后在refactor中没有rename功能。但当没有大括号后refactor中则出现嘞rename功能。</p> 
+<p style="margin-left:0cm;text-align:center;"><img alt="" src="https://images2.imgbox.com/4b/a1/HO90vuyr_o.png"></p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/aa/6d/Pfm1zKDy_o.png">  </p> 
+<p>上面这种现象就导致了当我们要重命名消息key的时候，我们不得不一处一处将所有涉及的地方手动修改。这就带来如下两个问题：</p> 
+<p style="margin-left:0cm;">a、增加了工作量。</p> 
+<p style="margin-left:0cm;">b、可能因为自己没有修改全面导致业务出错。</p> 
+<p style="margin-left:0cm;">为了避免上述问题，咱们就需要在注解中直接使用没有大括号的消息Key。所以我们需要让HibernateValidator支持没有大括号的消息Key。这具体怎么实现呢？经过不断地折腾深入源码，我终于找到了解决办法。下面给大家分享下解决思路和办法。</p> 
+<p id="id-2022.12.06IDEA国际化资源Key无法全局重命名的解决方案-1、HibernateValidator的流程" style="margin-left:0cm;"><strong>1、HibernateValidator的流程</strong></p> 
+<p style="text-align:center;"><strong><img alt="" src="https://images2.imgbox.com/46/88/bYVBSS7k_o.png"></strong> </p> 
+<p style="margin-left:0cm;"></p> 
+<p style="margin-left:0cm;">首先我们简单整理下HibernateValidator校验失败后提示错误消息的整个流程。如上图：</p> 
+<p style="margin-left:0cm;">a、用户提交请求，然后HibernateValidator基于注解内容进行校验。</p> 
+<p style="margin-left:0cm;">b、如果未通过校验，则获取注解中的错误消息Key，如：{validation.name.empty}</p> 
+<p style="margin-left:0cm;">c、然后进行一些处理，最后去掉错误消息Key的大括号得到真正的错误消息Key，如：validation.name.empty</p> 
+<p style="margin-left:0cm;">d、最后根据真实的消息Key(validation.name.empty)去messages.properteis文件中查找对应的错误消息，并返回给调用方。</p> 
+<p id="id-2022.12.06IDEA国际化资源Key无法全局重命名的解决方案-2、方案1：让Hibernate不判断大括号" style="margin-left:0cm;"><strong>2、方案1：让Hibernate不判断大括号</strong></p> 
+<p style="margin-left:0cm;">基于上述流程，我们可以看到HibernateValidator认为使用了大括号的资源Key才是国际化资源Key。所以咱们可以想到的最简单的办法就是去掉图中2的逻辑，即让HibernateValidator不对大括号进行处理（即没有大括号的资源Key也是国际化资源Key）。于是通过深入源码进行追踪，砸门能够发现大括号的处理在如下的一个<strong>私有方法</strong>(AbstractMessageInterpolator.removeCurlyBraces)中进行。如下图，其处理还有点暴力，直接去掉消息Key第一个和最后一个字符（前面有地方判断是否有大括号）。</p> 
+<p style="margin-left:0cm;text-align:center;"><img alt="" src="https://images2.imgbox.com/cd/1b/kDh1O2Na_o.png"></p> 
+<p> 所以如果想从这个地方入手就必须重写其调用位置的逻辑，由于其调用逻辑非常复杂（有兴趣大家可以自己跟踪下代码），所以需要重写很多HibernateValidator的原始逻辑。最终肯定能够实现功能，但是这种方式却不可取。因为咱们在修改源码实现业务的时候有一个基本的原则：<strong><span style="color:#ff0000;">尽量减少对原始代码的重写和修改</span></strong>。因为过多的修改会带来很多问题，比如：</p> 
+<p style="margin-left:0cm;"></p> 
+<p style="margin-left:0cm;">a、后续底层框架升级后咱们修改的大量代码逻辑很可能得不到及时升级。从而导致底层BUG得不到及时解决，新功能得不到及时升级。</p> 
+<p style="margin-left:0cm;">b、由于修改了大量的底层代码，因此维护成本也会增加。</p> 
+<p style="margin-left:0cm;">所以，这种方法咱们暂时放弃，接下来我们另谋出路。</p> 
+<p id="id-2022.12.06IDEA国际化资源Key无法全局重命名的解决方案-3、方案2：给资源自动添加大括号" style="margin-left:0cm;"><strong>3、方案2：给资源自动添加大括号</strong></p> 
+<p style="margin-left:0cm;">让HibernateValidator不判断大括号的方案不可行后，咱们则可以换一种思路。即让注解中配置的时候使用不含大括号的消息Key，但在HibernateValidator处理之前（图中标记1的位置）给他加上去。</p> 
+<p style="margin-left:0cm;">于是咱们进一步分析底层源码逻辑，发现所有消息Key从注解中解析出来后，就会调用AbstractMessageInterpolator.interpolate方法进行后续的解析操作（处理消息Key、去除大括号、从messages.properties中获取错误消息等）。该方法本身是一个public方法，子类可以继承和处理。</p> 
+<p style="margin-left:0cm;">基于该思路，咱们重写实现了HibernateValidator使用的ResourceBundleMessageInterpolator（AbstractMessageInterpolator的实现类），并修改了interpolate的处理逻辑。即在调用真实的处理逻辑前面，咱们根据条件给消息Key添加上大括号。<img alt="" src="https://images2.imgbox.com/69/29/eCFdnULs_o.png"></p> 
+<p> 已经准备好会后，最后就是将自定义的RasMsgResourceBundleMessageInterpolator设置到HibernateValidator中，如下图在构建HibernateValidator的时候设置即可。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/c8/8a/8xVTSOeH_o.png"></p> 
+<h3 id="%C2%A04%E3%80%81%E6%96%B9%E6%A1%88%E6%80%BB%E7%BB%93"> <strong>4、方案总结</strong></h3> 
+<p>通过分析可知，两种方案很明显方案2要高级很多。它在解决问题的同时还符合咱们的源码修改基本原则：对源码进行最小的改动！其实通过代码可知，咱们方案2根本就没有对源码进行修改。只是利用继承的原理通过子类重写interpolate方法实现来实现了咱们需要的功能。 </p> 
+<h2 id="%E4%B8%89%E3%80%81%E6%83%AF%E4%BE%8B">三、惯例</h2> 
+<p>如果你喜欢本文或觉得本文对你有所帮助，欢迎<strong>一键三连</strong>支持，非常感谢。</p> 
+<p>如果你对本文有任何疑问或者高见，欢迎添加公众号<strong>lifeofcoder</strong>共同交流探讨（添加公众号可以获得楼主最新博文推送以及”Java高级架构“上10G视频和图文资料哦）。</p> 
+<p></p> 
+<p style="margin-left:0cm;"></p> 
+<p style="margin-left:0cm;"></p> 
+<p style="text-align:center;"></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/443a09f45638c76bf33c0a1a7339c58a/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">hive学习笔记</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/0994838ce4bfb0a64ed9f4de1cd09196/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">js的递归基本使用</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

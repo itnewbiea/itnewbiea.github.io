@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【HBase——陌陌海量存储案例】2. HBase表结构设计（中） - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【HBase——陌陌海量存储案例】2. HBase表结构设计（中）" />
+<meta property="og:description" content="前言 本文是陌陌海量存储案例——HBase表结构设计（中），介绍ROWKEY设计原则、项目初始化。
+4.5 ROWKEY设计原则 4.5.1 HBase官方的设计原则 避免使用递增行键/时序数据
+如果ROWKEY设计的都是按照顺序递增（例如：时间戳），这样会有很多的数据写入时，负载都在一台机器上。我们尽量应当将写入大压力均衡到各个RegionServer
+避免ROWKEY和列的长度过大
+在HBase中，要访问一个Cell（单元格），需要有ROWKEY、列蔟、列名，如果ROWKEY、列名太大，就会占用较大内存空间。所以ROWKEY和列的长度应该尽量短小ROWKEY的最大长度是64KB，建议越短越好 使用long等类型比String类型更省空间
+long类型为8个字节，8个字节可以保存非常大的无符号整数，例如：18446744073709551615。如果是字符串，是按照一个字节一个字符方式保存，需要快3倍的字节数存储。
+ROWKEY唯一性
+设计ROWKEY时，必须保证RowKey的唯一性由于在HBase中数据存储是Key-Value形式，若向HBase中同一张表插入相同RowKey的数据，则原先存在的数据会被新的数据覆盖。 4.5.2 避免数据热点 热点是指大量的客户端（client）直接访问集群的一个或者几个节点（可能是读、也可能是写）大量地访问量可能会使得某个服务器节点超出承受能力，导致整个RegionServer的性能下降，其他的Region也会受影响 预分区
+默认情况，一个HBase的表只有一个Region，被托管在一个RegionServer中
+每个Region有两个重要的属性：Start Key、End Key，表示这个Region维护的ROWKEY范围如果只有一个Region，那么Start Key、End Key都是空的，没有边界。所有的数据都会放在这个Region中，但当数据越来越大时，会将Region分裂，取一个Mid Key来分裂成两个Region预分区个数 = 节点的倍数。默认Region的大小为10G，假设我们预估1年下来的大小为10T，则10000G / 10G = 1000个Region，所以，我们可以预设为1000个Region，这样，1000个Region将均衡地分布在各个节点上 ROWKEY避免热点设计
+反转策略
+如果设计出的ROWKEY在数据分布上不均匀，但ROWKEY尾部的数据却呈现出了良好的随机性，可以考虑将ROWKEY的翻转，或者直接将尾部的bytes提前到ROWKEY的开头。反转策略可以使ROWKEY随机分布，但是牺牲了ROWKEY的有序性缺点：利于Get操作，但不利于Scan操作，因为数据在原ROWKEY上的自然顺序已经被打乱 加盐策略
+Salting（加盐）的原理是在原ROWKEY的前面添加固定长度的随机数，也就是给ROWKEY分配一个随机前缀使它和之间的ROWKEY的开头不同随机数能保障数据在所有Regions间的负载均衡缺点：因为添加的是随机数，基于原ROWKEY查询时无法知道随机数是什么，那样在查询的时候就需要去各个可能的Regions中查找，加盐对比读取是无力的 哈希策略
+基于 ROWKEY的完整或部分数据进行 Hash，而后将Hashing后的值完整替换或部分替换原ROWKEY的前缀部分这里说的 hash 包含 MD5、sha1、sha256 或 sha512 等算法缺点：Hashing 也不利于 Scan，因为打乱了原RowKey的自然顺序 4.5.3 陌陌打招呼数据预分区 预分区
+在HBase中，可以通过指定start key、end key来进行分区，还可以直接指定Region的数量，指定分区的策略。
+指定 start key、end key来分区 hbase&gt; create &#39;ns1:t1&#39;, &#39;f1&#39;, SPLITS =&gt; [&#39;10&#39;, &#39;20&#39;, &#39;30&#39;, &#39;40&#39;] hbase&gt; create &#39;t1&#39;, &#39;f1&#39;, SPLITS =&gt; [&#39;10&#39;, &#39;20&#39;, &#39;30&#39;, &#39;40&#39;] hbase&gt; create &#39;t1&#39;, &#39;f1&#39;, SPLITS_FILE =&gt; &#39;splits." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/044960215bc7aeeee4655f2fb361302c/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-01-28T11:45:00+08:00" />
+<meta property="article:modified_time" content="2023-01-28T11:45:00+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【HBase——陌陌海量存储案例】2. HBase表结构设计（中）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h4><a id="_0"></a>前言</h4> 
+<p>本文是陌陌海量存储案例——HBase表结构设计（中），介绍ROWKEY设计原则、项目初始化。</p> 
+<h4><a id="45_ROWKEY_2"></a>4.5 ROWKEY设计原则</h4> 
+<h5><a id="451_HBase_3"></a>4.5.1 HBase官方的设计原则</h5> 
+<p><strong>避免使用递增行键/时序数据</strong><br> 如果ROWKEY设计的都是按照顺序递增（例如：时间戳），这样会有很多的数据写入时，负载都在一台机器上。我们尽量应当将写入大压力均衡到各个RegionServer</p> 
+<p><strong>避免ROWKEY和列的长度过大</strong></p> 
+<ul><li>在HBase中，要访问一个Cell（单元格），需要有ROWKEY、列蔟、列名，如果ROWKEY、列名太大，就会占用较大内存空间。所以ROWKEY和列的长度应该尽量短小</li><li>ROWKEY的最大长度是64KB，建议越短越好</li></ul> 
+<p><strong>使用long等类型比String类型更省空间</strong><br> long类型为8个字节，8个字节可以保存非常大的无符号整数，例如：18446744073709551615。如果是字符串，是按照一个字节一个字符方式保存，需要快3倍的字节数存储。</p> 
+<p><strong>ROWKEY唯一性</strong></p> 
+<ul><li>设计ROWKEY时，必须保证RowKey的唯一性</li><li>由于在HBase中数据存储是Key-Value形式，若向HBase中同一张表插入相同RowKey的数据，则原先存在的数据会被新的数据覆盖。</li></ul> 
+<h5><a id="452__17"></a>4.5.2 避免数据热点</h5> 
+<ul><li><strong>热点</strong>是指大量的客户端（client）直接访问集群的一个或者几个节点（可能是读、也可能是写）</li><li>大量地访问量可能会使得某个服务器节点超出承受能力，导致整个RegionServer的性能下降，其他的Region也会受影响</li></ul> 
+<p><strong>预分区</strong></p> 
+<ul><li>默认情况，一个HBase的表只有一个Region，被托管在一个RegionServer中<br> <img src="https://images2.imgbox.com/06/9a/I8lShy6M_o.png" alt="在这里插入图片描述"></li><li>每个Region有两个重要的属性：Start Key、End Key，表示这个Region维护的ROWKEY范围</li><li>如果只有一个Region，那么Start Key、End Key都是空的，没有边界。所有的数据都会放在这个Region中，但当数据越来越大时，会将Region分裂，取一个Mid Key来分裂成两个Region</li><li>预分区个数 = 节点的倍数。默认Region的大小为10G，假设我们预估1年下来的大小为10T，则10000G / 10G = 1000个Region，所以，我们可以预设为1000个Region，这样，1000个Region将均衡地分布在各个节点上</li></ul> 
+<p><strong>ROWKEY避免热点设计</strong></p> 
+<ol><li> <p>反转策略</p> 
+  <ul><li>如果设计出的ROWKEY在数据分布上不均匀，但ROWKEY尾部的数据却呈现出了良好的随机性，可以考虑将ROWKEY的翻转，或者直接将尾部的bytes提前到ROWKEY的开头。</li><li>反转策略可以使ROWKEY随机分布，但是牺牲了ROWKEY的有序性</li><li>缺点：利于Get操作，但不利于Scan操作，因为数据在原ROWKEY上的自然顺序已经被打乱</li></ul> </li><li> <p>加盐策略</p> 
+  <ul><li>Salting（加盐）的原理是在原ROWKEY的前面添加固定长度的随机数，也就是给ROWKEY分配一个随机前缀使它和之间的ROWKEY的开头不同</li><li>随机数能保障数据在所有Regions间的负载均衡</li><li>缺点：因为添加的是随机数，基于原ROWKEY查询时无法知道随机数是什么，那样在查询的时候就需要去各个可能的Regions中查找，加盐对比读取是无力的</li></ul> </li><li> <p>哈希策略</p> 
+  <ul><li>基于 ROWKEY的完整或部分数据进行 Hash，而后将Hashing后的值完整替换或部分替换原ROWKEY的前缀部分</li><li>这里说的 hash 包含 MD5、sha1、sha256 或 sha512 等算法</li><li>缺点：Hashing 也不利于 Scan，因为打乱了原RowKey的自然顺序</li></ul> </li></ol> 
+<h5><a id="453__43"></a>4.5.3 陌陌打招呼数据预分区</h5> 
+<p><strong>预分区</strong><br> 在HBase中，可以通过指定start key、end key来进行分区，还可以直接指定Region的数量，指定分区的策略。</p> 
+<ol><li>指定 start key、end key来分区</li></ol> 
+<pre><code class="prism language-shell">hbase<span class="token operator">&gt;</span> create <span class="token string">'ns1:t1'</span>, <span class="token string">'f1'</span>, SPLITS <span class="token operator">=</span><span class="token operator">&gt;</span> <span class="token punctuation">[</span><span class="token string">'10'</span>, <span class="token string">'20'</span>, <span class="token string">'30'</span>, <span class="token string">'40'</span><span class="token punctuation">]</span>
+hbase<span class="token operator">&gt;</span> create <span class="token string">'t1'</span>, <span class="token string">'f1'</span>, SPLITS <span class="token operator">=</span><span class="token operator">&gt;</span> <span class="token punctuation">[</span><span class="token string">'10'</span>, <span class="token string">'20'</span>, <span class="token string">'30'</span>, <span class="token string">'40'</span><span class="token punctuation">]</span>
+hbase<span class="token operator">&gt;</span> create <span class="token string">'t1'</span>, <span class="token string">'f1'</span>, SPLITS_FILE <span class="token operator">=</span><span class="token operator">&gt;</span> <span class="token string">'splits.txt'</span>, OWNER <span class="token operator">=</span><span class="token operator">&gt;</span> <span class="token string">'johndoe'</span>
+</code></pre> 
+<ol start="2"><li>指定分区数量、分区策略</li></ol> 
+<pre><code class="prism language-shell">hbase<span class="token operator">&gt;</span> create <span class="token string">'t1'</span>, <span class="token string">'f1'</span>, <span class="token punctuation">{<!-- --></span>NUMREGIONS <span class="token operator">=</span><span class="token operator">&gt;</span> <span class="token number">15</span>, SPLITALGO <span class="token operator">=</span><span class="token operator">&gt;</span> <span class="token string">'HexStringSplit'</span><span class="token punctuation">}</span>
+</code></pre> 
+<p>分区策略</p> 
+<ul><li>HexStringSplit: ROWKEY是十六进制的字符串作为前缀的</li><li>DecimalStringSplit: ROWKEY是10进制数字字符串作为前缀的</li><li>UniformSplit: ROWKEY前缀完全随机</li></ul> 
+<p>Region的数量可以按照数据量来预估。本次案例，因为受限于虚拟机，所以我们设计为6个Region。因为ROWKEY我们是使用多个字段拼接，而且前缀不是完全随机的，所以需要使用HexStringSplit。</p> 
+<p><strong>ROWKEY设计</strong></p> 
+<ul><li>为了确保数据均匀分布在每个Region，需要以MD5Hash作为前缀</li><li><strong>ROWKEY = MD5Hash_发件人账号_收件人账号_时间戳</strong><br> <img src="https://images2.imgbox.com/af/ec/Kb3oZ1Pt_o.png" alt="在这里插入图片描述"></li></ul> 
+<p><strong>业务分区脚本</strong><br> <code>create 'MOMO_CHAT:MSG', {NAME =&gt; "C1", COMPRESSION =&gt; "GZ"}, { NUMREGIONS =&gt; 6, SPLITALGO =&gt; 'HexStringSplit'}</code></p> 
+<p>执行完命令后，我们发现该表已经分为6个分区。这样将来数据就可以均匀地分布到不同的分区中了<br> <mark>注意：勾选ShowDetailName&amp;Start/EndKey，点击Recorder</mark></p> 
+<p><img src="https://images2.imgbox.com/9b/bc/AAOoPyrf_o.png" alt="在这里插入图片描述"><br> HDFS中，也有对应的6个文件夹。<br> URL：/hbase/data/MOMO_CHAT/MSG</p> 
+<p><img src="https://images2.imgbox.com/8a/53/ZQjKG7eR_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="46__80"></a>4.6 项目初始化</h4> 
+<h5><a id="461_POM_81"></a>4.6.1 导入POM依赖</h5> 
+<pre><code class="prism language-xml"><span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>repositories</span><span class="token punctuation">&gt;</span></span><span class="token comment">&lt;!-- 代码库 --&gt;</span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>repository</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>id</span><span class="token punctuation">&gt;</span></span>aliyun<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>id</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>url</span><span class="token punctuation">&gt;</span></span>http://maven.aliyun.com/nexus/content/groups/public/<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>url</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>releases</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>enabled</span><span class="token punctuation">&gt;</span></span>true<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>enabled</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>releases</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>snapshots</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>enabled</span><span class="token punctuation">&gt;</span></span>false<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>enabled</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>updatePolicy</span><span class="token punctuation">&gt;</span></span>never<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>updatePolicy</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>snapshots</span><span class="token punctuation">&gt;</span></span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>repository</span><span class="token punctuation">&gt;</span></span>
+<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>repositories</span><span class="token punctuation">&gt;</span></span>
+
+<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>dependencies</span><span class="token punctuation">&gt;</span></span>
+    <span class="token comment">&lt;!-- HBase客户端 --&gt;</span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>dependency</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>groupId</span><span class="token punctuation">&gt;</span></span>org.apache.hbase<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>groupId</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>artifactId</span><span class="token punctuation">&gt;</span></span>hbase-client<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>artifactId</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>version</span><span class="token punctuation">&gt;</span></span>2.1.0<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>version</span><span class="token punctuation">&gt;</span></span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>dependency</span><span class="token punctuation">&gt;</span></span>
+    <span class="token comment">&lt;!-- Xml操作相关 --&gt;</span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>dependency</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>groupId</span><span class="token punctuation">&gt;</span></span>com.github.cloudecho<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>groupId</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>artifactId</span><span class="token punctuation">&gt;</span></span>xmlbean<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>artifactId</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>version</span><span class="token punctuation">&gt;</span></span>1.5.5<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>version</span><span class="token punctuation">&gt;</span></span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>dependency</span><span class="token punctuation">&gt;</span></span>
+    <span class="token comment">&lt;!-- 操作Office库 --&gt;</span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>dependency</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>groupId</span><span class="token punctuation">&gt;</span></span>org.apache.poi<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>groupId</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>artifactId</span><span class="token punctuation">&gt;</span></span>poi<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>artifactId</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>version</span><span class="token punctuation">&gt;</span></span>4.0.1<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>version</span><span class="token punctuation">&gt;</span></span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>dependency</span><span class="token punctuation">&gt;</span></span>
+    <span class="token comment">&lt;!-- 操作Office库 --&gt;</span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>dependency</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>groupId</span><span class="token punctuation">&gt;</span></span>org.apache.poi<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>groupId</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>artifactId</span><span class="token punctuation">&gt;</span></span>poi-ooxml<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>artifactId</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>version</span><span class="token punctuation">&gt;</span></span>4.0.1<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>version</span><span class="token punctuation">&gt;</span></span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>dependency</span><span class="token punctuation">&gt;</span></span>
+    <span class="token comment">&lt;!-- 操作Office库 --&gt;</span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>dependency</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>groupId</span><span class="token punctuation">&gt;</span></span>org.apache.poi<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>groupId</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>artifactId</span><span class="token punctuation">&gt;</span></span>poi-ooxml-schemas<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>artifactId</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>version</span><span class="token punctuation">&gt;</span></span>4.0.1<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>version</span><span class="token punctuation">&gt;</span></span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>dependency</span><span class="token punctuation">&gt;</span></span>
+    <span class="token comment">&lt;!-- 操作JSON --&gt;</span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>dependency</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>groupId</span><span class="token punctuation">&gt;</span></span>com.alibaba<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>groupId</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>artifactId</span><span class="token punctuation">&gt;</span></span>fastjson<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>artifactId</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>version</span><span class="token punctuation">&gt;</span></span>1.2.62<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>version</span><span class="token punctuation">&gt;</span></span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>dependency</span><span class="token punctuation">&gt;</span></span>
+    <span class="token comment">&lt;!-- phoenix core --&gt;</span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>dependency</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>groupId</span><span class="token punctuation">&gt;</span></span>org.apache.phoenix<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>groupId</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>artifactId</span><span class="token punctuation">&gt;</span></span>phoenix-core<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>artifactId</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>version</span><span class="token punctuation">&gt;</span></span>5.0.0-HBase-2.0<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>version</span><span class="token punctuation">&gt;</span></span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>dependency</span><span class="token punctuation">&gt;</span></span>
+    <span class="token comment">&lt;!-- phoenix 客户端 --&gt;</span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>dependency</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>groupId</span><span class="token punctuation">&gt;</span></span>org.apache.phoenix<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>groupId</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>artifactId</span><span class="token punctuation">&gt;</span></span>phoenix-queryserver-client<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>artifactId</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>version</span><span class="token punctuation">&gt;</span></span>5.0.0-HBase-2.0<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>version</span><span class="token punctuation">&gt;</span></span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>dependency</span><span class="token punctuation">&gt;</span></span>
+<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>dependencies</span><span class="token punctuation">&gt;</span></span>
+
+
+<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>build</span><span class="token punctuation">&gt;</span></span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>plugins</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>plugin</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>groupId</span><span class="token punctuation">&gt;</span></span>org.apache.maven.plugins<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>groupId</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>artifactId</span><span class="token punctuation">&gt;</span></span>maven-compiler-plugin<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>artifactId</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>version</span><span class="token punctuation">&gt;</span></span>3.1<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>version</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>configuration</span><span class="token punctuation">&gt;</span></span>
+                <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>target</span><span class="token punctuation">&gt;</span></span>1.8<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>target</span><span class="token punctuation">&gt;</span></span>
+                <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>source</span><span class="token punctuation">&gt;</span></span>1.8<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>source</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>configuration</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>plugin</span><span class="token punctuation">&gt;</span></span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>plugins</span><span class="token punctuation">&gt;</span></span>
+<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>build</span><span class="token punctuation">&gt;</span></span>
+</code></pre> 
+<h5><a id="462__163"></a>4.6.2 拷贝配置文件</h5> 
+<p>将配套资料中的以下几个文件拷贝到resources目录。</p> 
+<ul><li>core-site.xml</li><li>hbase-site.xml</li><li>log4j.properties</li></ul> 
+<h5><a id="463__169"></a>4.6.3 创建包结构</h5> 
+<table><thead><tr><th>cn.itcast.momo_chat.service</th><th>用于存放数据服务接口相关代码，例如：查询的API代码</th></tr></thead><tbody><tr><td>cn.itcast.momo_chat.service.impl</td><td>用于存放数据服务接口实现类相关代码，例如：查询的API代码</td></tr><tr><td>cn.itcast.momo_chat.tool</td><td>工具类</td></tr><tr><td>cn.itcast.momo_chat.entity</td><td>存放实体类</td></tr></tbody></table> 
+<h5><a id="464_ExcelReader_177"></a>4.6.4 导入ExcelReader工具类</h5> 
+<p>在资料包中有一个ExcelReader.java文件，ExcelReader工具类可以读取Excel中的数据称为HashMap这样，方便我们快速生成数据。</p> 
+<p>ExcelReader工具类主要有两个方法：</p> 
+<blockquote> 
+ <p>1.readXlsx——用于将指定路径的Excel文件中的工作簿读取为Map结构<br> 2.randomColumn——随机生成某一列中的数据。</p> 
+</blockquote> 
+<p><mark>将ExcelReader添加到cn.itcast.momo_chat.tool包中。</mark></p> 
+<h5><a id="465__186"></a>4.6.5 创建实体类</h5> 
+<p>在cn.itcast.momo_chat.entity包中创建一个名为Msg的实体类，使用Java代码描述陌陌消息。</p> 
+<table><thead><tr><th>字段名</th><th>说明</th></tr></thead><tbody><tr><td>msg_time</td><td>消息时间</td></tr><tr><td>sender_nickyname</td><td>发件人昵称</td></tr><tr><td>sender_account</td><td>发件人账号</td></tr><tr><td>sender_sex</td><td>发件人性别</td></tr><tr><td>sender_ip</td><td>发件人IP</td></tr><tr><td>sender_os</td><td>发件人系统</td></tr><tr><td>sender_phone_type</td><td>发件人手机型号</td></tr><tr><td>sender_network</td><td>发件人网络制式</td></tr><tr><td>sender_gps</td><td>发件人GPS</td></tr><tr><td>receiver_nickyname</td><td>收件人昵称</td></tr><tr><td>receiver_ip</td><td>收件人IP</td></tr><tr><td>receiver_account</td><td>收件人账号</td></tr><tr><td>receiver_os</td><td>收件人系统</td></tr><tr><td>receiver_phone_type</td><td>收件人手机型号</td></tr><tr><td>receiver_network</td><td>收件人网络制式</td></tr><tr><td>receiver_gps</td><td>收件人GPS</td></tr><tr><td>receiver_sex</td><td>收件人性别</td></tr><tr><td>msg_type</td><td>消息类型</td></tr><tr><td>distance</td><td>双方距离</td></tr><tr><td>message</td><td>消息</td></tr></tbody></table> 
+<p>操作步骤：</p> 
+<blockquote> 
+ <p>1.使用列编辑，快速复制讲义中上述的表格字段给实体类添加成员变量<br> 2.使用IDEA快捷键 Alt + Insert 键快速生成 getter/setter 方法，并重写toString方法</p> 
+</blockquote> 
+<p>参考代码：</p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">Msg</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">private</span> <span class="token class-name">String</span> msg_time<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token class-name">String</span> sender_nickyname<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token class-name">String</span> sender_account<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token class-name">String</span> sender_sex<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token class-name">String</span> sender_ip<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token class-name">String</span> sender_os<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token class-name">String</span> sender_phone_type<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token class-name">String</span> sender_network<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token class-name">String</span> sender_gps<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token class-name">String</span> receiver_nickyname<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token class-name">String</span> receiver_ip<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token class-name">String</span> receiver_account<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token class-name">String</span> receiver_os<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token class-name">String</span> receiver_phone_type<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token class-name">String</span> receiver_network<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token class-name">String</span> receiver_gps<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token class-name">String</span> receiver_sex<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token class-name">String</span> msg_type<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token class-name">String</span> distance<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token class-name">String</span> message<span class="token punctuation">;</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">getMsg_time</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> msg_time<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">setMsg_time</span><span class="token punctuation">(</span><span class="token class-name">String</span> msg_time<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>msg_time <span class="token operator">=</span> msg_time<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">getSender_nickyname</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> sender_nickyname<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">setSender_nickyname</span><span class="token punctuation">(</span><span class="token class-name">String</span> sender_nickyname<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>sender_nickyname <span class="token operator">=</span> sender_nickyname<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">getSender_account</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> sender_account<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">setSender_account</span><span class="token punctuation">(</span><span class="token class-name">String</span> sender_account<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>sender_account <span class="token operator">=</span> sender_account<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">getSender_sex</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> sender_sex<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">setSender_sex</span><span class="token punctuation">(</span><span class="token class-name">String</span> sender_sex<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>sender_sex <span class="token operator">=</span> sender_sex<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">getSender_ip</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> sender_ip<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">setSender_ip</span><span class="token punctuation">(</span><span class="token class-name">String</span> sender_ip<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>sender_ip <span class="token operator">=</span> sender_ip<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">getSender_os</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> sender_os<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">setSender_os</span><span class="token punctuation">(</span><span class="token class-name">String</span> sender_os<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>sender_os <span class="token operator">=</span> sender_os<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">getSender_phone_type</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> sender_phone_type<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">setSender_phone_type</span><span class="token punctuation">(</span><span class="token class-name">String</span> sender_phone_type<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>sender_phone_type <span class="token operator">=</span> sender_phone_type<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">getSender_network</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> sender_network<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">setSender_network</span><span class="token punctuation">(</span><span class="token class-name">String</span> sender_network<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>sender_network <span class="token operator">=</span> sender_network<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">getSender_gps</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> sender_gps<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">setSender_gps</span><span class="token punctuation">(</span><span class="token class-name">String</span> sender_gps<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>sender_gps <span class="token operator">=</span> sender_gps<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">getReceiver_nickyname</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> receiver_nickyname<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">setReceiver_nickyname</span><span class="token punctuation">(</span><span class="token class-name">String</span> receiver_nickyname<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>receiver_nickyname <span class="token operator">=</span> receiver_nickyname<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">getReceiver_ip</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> receiver_ip<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">setReceiver_ip</span><span class="token punctuation">(</span><span class="token class-name">String</span> receiver_ip<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>receiver_ip <span class="token operator">=</span> receiver_ip<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">getReceiver_account</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> receiver_account<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">setReceiver_account</span><span class="token punctuation">(</span><span class="token class-name">String</span> receiver_account<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>receiver_account <span class="token operator">=</span> receiver_account<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">getReceiver_os</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> receiver_os<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">setReceiver_os</span><span class="token punctuation">(</span><span class="token class-name">String</span> receiver_os<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>receiver_os <span class="token operator">=</span> receiver_os<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">getReceiver_phone_type</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> receiver_phone_type<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">setReceiver_phone_type</span><span class="token punctuation">(</span><span class="token class-name">String</span> receiver_phone_type<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>receiver_phone_type <span class="token operator">=</span> receiver_phone_type<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">getReceiver_network</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> receiver_network<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">setReceiver_network</span><span class="token punctuation">(</span><span class="token class-name">String</span> receiver_network<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>receiver_network <span class="token operator">=</span> receiver_network<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">getReceiver_gps</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> receiver_gps<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">setReceiver_gps</span><span class="token punctuation">(</span><span class="token class-name">String</span> receiver_gps<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>receiver_gps <span class="token operator">=</span> receiver_gps<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">getReceiver_sex</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> receiver_sex<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">setReceiver_sex</span><span class="token punctuation">(</span><span class="token class-name">String</span> receiver_sex<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>receiver_sex <span class="token operator">=</span> receiver_sex<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">getMsg_type</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> msg_type<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">setMsg_type</span><span class="token punctuation">(</span><span class="token class-name">String</span> msg_type<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>msg_type <span class="token operator">=</span> msg_type<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">getDistance</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> distance<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">setDistance</span><span class="token punctuation">(</span><span class="token class-name">String</span> distance<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>distance <span class="token operator">=</span> distance<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">getMessage</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> message<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">setMessage</span><span class="token punctuation">(</span><span class="token class-name">String</span> message<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>message <span class="token operator">=</span> message<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">toString</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token constant">JSON</span><span class="token punctuation">.</span><span class="token function">toJSONString</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/1ab8ef2af2a0426ad762fb13ca187c4e/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">MySQL登录报错1045解决办法-1045-Access denied for user ‘root‘@‘‘(using password:YES)</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/07e69728071c3c80a241e04c3e804c2b/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">蓝桥杯模块学习4——数码管（深夜学习——单片机）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

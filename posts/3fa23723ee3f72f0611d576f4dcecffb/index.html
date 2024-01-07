@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>ARM调试(2):在keil利用指令跟踪宏单元(ITM)重定向printf，并完成scanf实现数据双向交互 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="ARM调试(2):在keil利用指令跟踪宏单元(ITM)重定向printf，并完成scanf实现数据双向交互" />
+<meta property="og:description" content="在keil利用指令跟踪宏单元(ITM)重定向printf，并完成scanf实现数据双向交互 文章目录 在keil利用指令跟踪宏单元(ITM)重定向printf，并完成scanf实现数据双向交互1. 开发环境2. ITM简介和硬件需求2.1 技术简介2.1 硬件支持2.1.1 首先我们知道，对于使用不一样的调试器或下载器，我们常用的ARM下载方式有三种接口：2.1.2 调试接口大概分为三种，如图：2.1.3 简化的下载接口引脚的说明2.1.3 ITM需要多接一根线 3. 用ST-LINK v2来实现ITM3.1 KEIL中配置3.2 mcu内部程序printf重定向-使用标准c库3.3 通过KEIL的Debug（printf）Viewer查看打印信息 4. 利用JLINK调试器配置ITM输出4.1 KEIL 配置4.2 mcu程序4.3 jlink不能像stlink那样调试成功的缘由4.4 用jlink来配置mcu寄存器`0xE0042004U `的bit5为14.5 解释为什么ST-LINK不需要设置寄存器`0xE0042004U ` 5. KEIL 实现scanf，完成双向通信6. 升级双向通信功能7. 针对JLINK和ST-LINK仿真器实现ITM的说明8 利用ITM调试实现逻辑分析仪功能其他：参考声明 声明：由于STM32有很好的配套软件，如cubeMX,因此软件替我们做了很多事，这将导致不能对ITM进行一个全面的了解，当我们需要移植到其它ARM上难以成功，因此本文选取了GD32来实现ITM，完整的展现配置的原理和过程，同时对JLINK和ST-LINK的不同配置方法进行叙述，由于能力有限，难免会有理解的错误，若发现错误请留言，让我在分享中得到收获，谢谢。 1. 开发环境 系统：win10IDE：keil5开发板：GD32F450调试器：J-LINK V10和st-link v2两种方案分别实现 2. ITM简介和硬件需求 平时调试代码的时候大家都喜欢用printf函数来输出一些打印信息，来提示自己代码的执行情况，而最常用的方法就是将printf映射到串口等外设资源上，可是当串口被占用的时候，就显得无能为例了，本文通过GD32来介绍通过调试口，只需多利用ARM芯片的一个引脚，借助仿真器，不使用其他任何芯片外设达到printf输出的一种方法-ITM。
+2.1 技术简介 ITM：Instrumentation Trace Macrocell，指令跟踪宏单元。ITM 的一个主要用途，就是支持调试消息。
+在《ARM Cortex-M3与Cortex-M4权威指南》的这本书的第18章2节有对ITM的介绍和实现的完整叙述，本节总结如下：
+在Cortex-M3、Cortex-M4、Cortex-M7系列MCU中，内核的调试组件有一个仪器跟踪宏单元(ITM) 。ITM是处理器中非常有用的调试特性，ITM中存在32个激励端口寄存器，而对于这些寄存器的写操作会产生通过单针串行线(SWV)接口或多针跟踪接口输出的跟踪包。利用ITM这个特性，将printf重定向到ITM，就可以通过SWV接口输出。而SWV接口输出对应的引脚就是SWO引脚。
+ITM 包含 32 个刺激(Stimulus)端口，允许不同的软件把数据输出到不同的端口，从而让调试主机可以把它们的消息分离开，这样的好处是可以将printf分组，通过上位机来监听不一样的端口来实现过滤。与基于 UART 的文字输出不同，使用 ITM 输出不会对应用程序造成很大的延迟，在 ITM 内部有一个 FIFO，它使写入的输出消息得到缓冲。
+为了让更多人理解ITM模块，怎样输出调试信息，这里再深入说明一下(声明：下面这部分知识和图片取自别的文章1)：
+TPIU：Trace Port Interface Unit，跟踪端口接口单元。ITM模块属于Cortex-M内核调试组件中的一部分内容，ITM输出的消息被送往 TPIU(跟踪端口接口单元),这里的TPIU，对应SWO串行线输出。这里TPIU要和上面说的【ITM 包含 32 个刺激(Stimulus)端口】区分开来。ITM的32个刺激(Stimulus)端口并不是要对应32个SWO引脚,32个刺激端口调试信息可通过一个SWO引脚输出，下面详细讲述。 注意：ITM是内核的功能，因此需要处理器带这个组件，比如你的芯片是 Cortex-M0或M0&#43;的ARM内核，是无法不支持ITM，对于这种无法支持ITM的，我们有的可以采用半主机(semihosting)模式进行调试，后面有时间我会讲解半主机调试。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/3fa23723ee3f72f0611d576f4dcecffb/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-05-14T12:09:03+08:00" />
+<meta property="article:modified_time" content="2022-05-14T12:09:03+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">ARM调试(2):在keil利用指令跟踪宏单元(ITM)重定向printf，并完成scanf实现数据双向交互</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-tomorrow-night">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="keilITMprintfscanf_0"></a>在keil利用指令跟踪宏单元(ITM)重定向printf，并完成scanf实现数据双向交互</h2> 
+<p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#keilITMprintfscanf_0" rel="nofollow">在keil利用指令跟踪宏单元(ITM)重定向printf，并完成scanf实现数据双向交互</a></li><li><ul><li><a href="#1__7" rel="nofollow">1. 开发环境</a></li><li><a href="#2_ITM_14" rel="nofollow">2. ITM简介和硬件需求</a></li><li><ul><li><a href="#21__18" rel="nofollow">2.1 技术简介</a></li><li><a href="#21__38" rel="nofollow">2.1 硬件支持</a></li><li><ul><li><a href="#211_ARM_42" rel="nofollow">2.1.1 首先我们知道，对于使用不一样的调试器或下载器，我们常用的ARM下载方式有三种接口：</a></li><li><a href="#212__48" rel="nofollow">2.1.2 调试接口大概分为三种，如图：</a></li><li><a href="#213__67" rel="nofollow">2.1.3 简化的下载接口引脚的说明</a></li><li><a href="#213_ITM_83" rel="nofollow">2.1.3 ITM需要多接一根线</a></li></ul> 
+   </li></ul> 
+   </li><li><a href="#3_STLINK_v2ITM_100" rel="nofollow">3. 用ST-LINK v2来实现ITM</a></li><li><ul><li><a href="#31_KEIL_104" rel="nofollow">3.1 KEIL中配置</a></li><li><a href="#32_mcuprintfc_117" rel="nofollow">3.2 mcu内部程序printf重定向-使用标准c库</a></li><li><a href="#33_KEILDebugprintfViewer_184" rel="nofollow">3.3 通过KEIL的Debug（printf）Viewer查看打印信息</a></li></ul> 
+   </li><li><a href="#4_JLINKITM_189" rel="nofollow">4. 利用JLINK调试器配置ITM输出</a></li><li><ul><li><a href="#41_KEIL__193" rel="nofollow">4.1 KEIL 配置</a></li><li><a href="#42_mcu_201" rel="nofollow">4.2 mcu程序</a></li><li><a href="#43_jlinkstlink_205" rel="nofollow">4.3 jlink不能像stlink那样调试成功的缘由</a></li><li><a href="#44_jlinkmcu0xE0042004U_bit51_212" rel="nofollow">4.4 用jlink来配置mcu寄存器`0xE0042004U `的bit5为1</a></li><li><a href="#45_STLINK0xE0042004U__248" rel="nofollow">4.5 解释为什么ST-LINK不需要设置寄存器`0xE0042004U `</a></li></ul> 
+   </li><li><a href="#5_KEIL_scanf_254" rel="nofollow">5. KEIL 实现scanf，完成双向通信</a></li><li><a href="#6__306" rel="nofollow">6. 升级双向通信功能</a></li><li><a href="#7_JLINKSTLINKITM_350" rel="nofollow">7. 针对JLINK和ST-LINK仿真器实现ITM的说明</a></li><li><a href="#8_ITM_363" rel="nofollow">8 利用ITM调试实现逻辑分析仪功能</a></li><li><a href="#_389" rel="nofollow">其他：参考声明</a></li></ul> 
+ </li></ul> 
+</div> 
+<br> 
+<strong>声明：由于STM32有很好的配套软件，如cubeMX,因此软件替我们做了很多事，这将导致不能对ITM进行一个全面的了解，当我们需要移植到其它ARM上难以成功，因此本文选取了GD32来实现ITM，完整的展现配置的原理和过程，同时对JLINK和ST-LINK的不同配置方法进行叙述，由于能力有限，难免会有理解的错误，若发现错误请留言，让我在分享中得到收获，谢谢</strong>。 
+<p></p> 
+<h3><a id="1__7"></a>1. 开发环境</h3> 
+<ul><li>系统：win10</li><li>IDE：keil5</li><li>开发板：GD32F450</li><li>调试器：J-LINK V10和st-link v2两种方案分别实现</li></ul> 
+<h3><a id="2_ITM_14"></a>2. ITM简介和硬件需求</h3> 
+<p>平时调试代码的时候大家都喜欢用printf函数来输出一些打印信息，来提示自己代码的执行情况，而最常用的方法就是将printf映射到串口等外设资源上，可是当串口被占用的时候，就显得无能为例了，本文通过GD32来介绍通过调试口，只需多利用ARM芯片的一个引脚，借助仿真器，不使用其他任何芯片外设达到printf输出的一种方法-<strong>ITM</strong>。</p> 
+<h4><a id="21__18"></a>2.1 技术简介</h4> 
+<p><strong>ITM</strong>：Instrumentation Trace Macrocell，指令跟踪宏单元。ITM 的一个主要用途，就是支持调试消息。</p> 
+<p>在《ARM Cortex-M3与Cortex-M4权威指南》的这本书的第18章2节有对ITM的介绍和实现的完整叙述，本节总结如下：</p> 
+<p>在Cortex-M3、Cortex-M4、Cortex-M7系列MCU中，内核的调试组件有一个仪器跟踪宏单元(ITM) 。ITM是处理器中非常有用的调试特性，ITM中存在32个激励端口寄存器，而对于这些寄存器的写操作会产生通过单针串行线(SWV)接口或多针跟踪接口输出的跟踪包。利用ITM这个特性，将printf重定向到ITM，就可以通过SWV接口输出。而SWV接口输出对应的引脚就是SWO引脚。</p> 
+<p>ITM 包含 32 个刺激(Stimulus)端口，允许不同的软件把数据输出到不同的端口，从而让调试主机可以把它们的消息分离开，这样的好处是可以将printf分组，通过上位机来监听不一样的端口来实现过滤。与基于 UART 的文字输出不同，使用 ITM 输出不会对应用程序造成很大的延迟，在 ITM 内部有一个 FIFO，它使写入的输出消息得到缓冲。</p> 
+<p>为了让更多人理解ITM模块，怎样输出调试信息，这里再深入说明一下(声明：下面这部分知识和图片取自别的文章<sup class="footnote-ref"><a href="#fn1" rel="nofollow" id="fnref1">1</a></sup>)：<br> <img src="https://images2.imgbox.com/59/e8/CdsMCx5y_o.png" alt="在这里插入图片描述" width="600" height="310"></p> 
+<ol><li>TPIU：Trace Port Interface Unit，跟踪端口接口单元。</li><li>ITM模块属于Cortex-M内核调试组件中的一部分内容，ITM输出的消息被送往 TPIU(跟踪端口接口单元),这里的TPIU，对应SWO串行线输出。</li><li>这里TPIU要和上面说的【ITM 包含 32 个刺激(Stimulus)端口】区分开来。</li><li>ITM的32个刺激(Stimulus)端口并不是要对应32个SWO引脚,32个刺激端口调试信息可通过一个SWO引脚输出，下面详细讲述。</li></ol> 
+<p>注意：ITM是内核的功能，因此需要处理器带这个组件，比如你的芯片是 Cortex-M0或M0+的ARM内核，是无法不支持ITM，对于这种无法支持ITM的，我们有的可以采用半主机(semihosting)模式进行调试，后面有时间我会讲解半主机调试。</p> 
+<h4><a id="21__38"></a>2.1 硬件支持</h4> 
+<p>从上面我们知道，ITM的实现除了处理器支持外，对调试器也有要求。</p> 
+<h5><a id="211_ARM_42"></a>2.1.1 首先我们知道，对于使用不一样的调试器或下载器，我们常用的ARM下载方式有三种接口：</h5> 
+<ol><li>串口接口，这种情况一般是开机时候通过boot引脚来控制运行芯片固化的boot loader完成串口下载。只能用来下载，不能debug。因为这个比较简单，本文不讨论。</li><li>JTAG接口，可以用来下载和调试，但调试速度和效果不如SW，因为JTAG的最牛功能是借助BSDL来实现边界扫描。</li><li>SW接口，可以用来下载和调试，ITM的实现必须借助SW接口。</li></ol> 
+<h5><a id="212__48"></a>2.1.2 调试接口大概分为三种，如图：</h5> 
+<p>虽然我们买ARM板上面的调试接口可能五花八门，但是本质上都是从这3种接口删删减减演化而来的，下面我们说的是最标准的接口：</p> 
+<ol><li> <p>最常用的20pin调试接口：<br> <img src="https://images2.imgbox.com/8e/e2/jevrNB5f_o.png" alt="在这里插入图片描述" width="800" height="250"></p> </li><li> <p>不常见的10pin调试接口：<br> <img src="https://images2.imgbox.com/e0/2d/1IPsc0Nb_o.png" alt="在这里插入图片描述" width="800" height="200"></p> </li><li> <p>几乎不用的一种调试接口：<br> <img src="https://images2.imgbox.com/b7/15/TmXKJmQ8_o.png" alt="在这里插入图片描述" width="800" height="250"></p> </li></ol> 
+<p>有关接口的详细说明请<a href="https://www2.keil.com/coresight/coresight-connectors" rel="nofollow">参考ARM KEIL官网介绍</a>；图上黄色和黑色的字表示不同协议下载方式的不同名字和功能。<strong>因为SW接口和JTAG接口是复用的，所以可以将sw调试器直接插在jtag接口上使用，上图中黄色字体代表这个引脚在SW接口中的含义</strong>。</p> 
+<p>通过上面我们知道，这些标准接口有些引脚是重复的(如GND)，有些引脚平时debug又用不着，因此为了节约pcb空间和提高引脚利用率，我们往往都是设计<strong>简化的下载接口</strong>。</p> 
+<h5><a id="213__67"></a>2.1.3 简化的下载接口引脚的说明</h5> 
+<ul><li> <p>JTAG 调试提供五个引脚的接口：JTAG 时钟引脚（JTCK），JTAG 模式选择引脚（JTMS），JTAG 数据输入引脚（JTDI），JTAG 数据输出引脚（JTDO），JTAG 复位引脚（NJTRST，低电平有效）。</p> </li><li> <p>串行调试（SWD）提供两个引脚的接口：数据输入输出引脚（SWDIO）和时钟引脚（SWCLK），两个引脚与 JTAG 调试接口的两个引脚复用，SWDIO 和 JTMS复用，SWCLK 和 JTCK 复用。</p> </li><li> <p>当异步跟踪功能开启时，JTDO 引脚也用作异步跟踪数据输出（TRACESWO）。</p> </li></ul> 
+<blockquote> 
+ <p>名词解释：<br> SWD：Serial Wire Debug，串行线调试.<br> SWO：Serial Wire Output，串行线输出.<br> SWV：Serial Wire Viewer，串行线查看器.<br> SW是Serial Wire，是一种下载接口。SWD全称Serial Wire Debug，是利用SW接口调试的一种方式.</p> 
+</blockquote> 
+<p>GD32F450调试接口对应引脚如图：<br> <img src="https://images2.imgbox.com/ef/f1/9N4E6WDi_o.png" alt="在这里插入图片描述" width="400" height="200"></p> 
+<h5><a id="213_ITM_83"></a>2.1.3 ITM需要多接一根线</h5> 
+<p><strong>若想使用ITM，调试方式必须设置为SWD方式</strong></p> 
+<p>和传统的SWD下载相比，实现ITM必须在多接一根线，如下图<sup class="footnote-ref"><a href="#fn1" rel="nofollow" id="fnref1:1">1</a></sup>:<br> <img src="https://images2.imgbox.com/04/01/RvrcOkkD_o.png" alt="在这里插入图片描述" width="600" height="200"></p> 
+<p>刚才我们有说ITM包含了32个端口，它们就是通过SWO引脚，将打印的信息输出到keil，keil在通过选择监听端口，我们可以直接用它来输出一些调试信息。</p> 
+<p>SWO引脚可以类比为UART的Tx引脚，如果不连接此引脚，则（SWV）终端不会接收打印信息。</p> 
+<p>针对STM32使用cubeMAX配置，网上有很多，如参考strongerHuang的文章，写的很好：<a href="https://strongerhuang.blog.csdn.net/article/details/94378265" rel="nofollow">文章地址</a>；我就不在叙述了。</p> 
+<p><strong>本文介绍的是更为通用的方法，使用GD32F450进行介绍，因为JLINK和stlink配置方法是不同的，最后我会详细讲解两者区别</strong>。</p> 
+<h3><a id="3_STLINK_v2ITM_100"></a>3. 用ST-LINK v2来实现ITM</h3> 
+<p>因为GD32可以在keil上来使用ST-LINK进行下载和调试，配置比较简单，那我们由浅入深，先介绍ST-LINK来实现ITM。后面我们在介绍较难的jlink配置实现ITM。</p> 
+<h4><a id="31_KEIL_104"></a>3.1 KEIL中配置</h4> 
+<p>本人使用的是st官方发行的STLINK V2，接好GD32开发板，将ST-LINK插入电脑上，在keil配置如下：<br> <img src="https://images2.imgbox.com/9f/fc/gaL70DDy_o.png" alt="在这里插入图片描述" width="800" height="400"></p> 
+<p><img src="https://images2.imgbox.com/a1/5a/Y4xRYZ4I_o.png" alt="在这里插入图片描述" width="500" height="400"></p> 
+<p>不同的调试器这个界面略有区别，这个是st-link的(后面有讲jlink如何配置)，时钟要设置的和芯片core时钟一致(GD32F450内核时钟为200M)。</p> 
+<p>开启Trace，勾选Autodetect。</p> 
+<p>端口选择需要和<code>ITM_SendChar</code>函数选择的一致，这里选择端口0，下面程序中关于端口设置会详细介绍。</p> 
+<h4><a id="32_mcuprintfc_117"></a>3.2 mcu内部程序printf重定向-使用标准c库</h4> 
+<p>printf的重定向有使用<strong>标准ARM C库</strong>和keil的<strong>MicroLIB库</strong>两种方案，本章介绍较为复杂的标准ARM C库方法，这两种库的区别请参考我的另<a href="https://blog.csdn.net/Zhichao_Zhang/article/details/124292095?spm=1001.2014.3001.5501">一篇文章</a>，对照那篇文章很容易将<strong>标准ARM C库</strong>方案改为keil的<strong>MicroLIB库</strong>方案。</p> 
+<pre><code class="prism language-c"><span class="token comment">//在KEIL MDK 用的重定向函数</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdio.h&gt;</span> </span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"gd32f4xx.h"</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">pragma</span> <span class="token expression"><span class="token function">import</span><span class="token punctuation">(</span>__use_no_semihosting_swi<span class="token punctuation">)</span> </span><span class="token comment">//确保没有从 C 库链接使用半主机的函数       </span></span>
+
+<span class="token comment">//因为禁止了半主机模式，需要重写一个半主机模式下的接口，如下</span>
+<span class="token keyword">int</span> <span class="token function">_ttywrch</span><span class="token punctuation">(</span><span class="token keyword">int</span> ch<span class="token punctuation">)</span>    
+<span class="token punctuation">{<!-- --></span>
+    ch<span class="token operator">=</span>ch<span class="token punctuation">;</span>
+	<span class="token keyword">return</span> ch<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//标准库需要的支持函数                 </span>
+<span class="token keyword">struct</span> <span class="token class-name">__FILE</span> 
+<span class="token punctuation">{<!-- --></span> 
+	<span class="token keyword">int</span> handle<span class="token punctuation">;</span> <span class="token comment">/* 在此处增加自己需要的内容 */</span> 
+<span class="token punctuation">}</span><span class="token punctuation">;</span> 
+
+FILE __stdout<span class="token punctuation">;</span>    
+FILE __stdin<span class="token punctuation">;</span>
+
+<span class="token comment">//定义_sys_exit()以避免使用半主机模式    </span>
+<span class="token keyword">void</span> <span class="token function">_sys_exit</span><span class="token punctuation">(</span><span class="token keyword">int</span> x<span class="token punctuation">)</span> 
+<span class="token punctuation">{<!-- --></span> 
+	lable<span class="token operator">:</span> <span class="token keyword">goto</span> lable<span class="token punctuation">;</span> <span class="token comment">/* 死循环 */</span>
+<span class="token punctuation">}</span> 
+
+<span class="token keyword">int</span> <span class="token function">fputc</span><span class="token punctuation">(</span><span class="token keyword">int</span> ch<span class="token punctuation">,</span> FILE <span class="token operator">*</span>f<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>      
+    <span class="token comment">//调取core_cm4中的函数</span>
+    <span class="token keyword">return</span> <span class="token punctuation">(</span><span class="token function">ITM_SendChar</span><span class="token punctuation">(</span>ch<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>这个<code>ITM_SendChar </code>函数来自<code>core_cm4.h</code>,因为这个文件来自ARM，因此不管您用的谁家的处理器，只要是Cortex-M3、Cortex-M4、Cortex-M7之一，那就一定能在对应的core_cmX.h中找到这些函数，如图：<br> <img src="https://images2.imgbox.com/3b/1a/3VTQyTRL_o.png" alt="在这里插入图片描述" width="800" height="650"></p> 
+<p>通过上图我们知道，ITM不止支持发送，还支持接收，通过接收来实现scanf的设置我们在后面讲，现在先配置发送。</p> 
+<p>我们已经知道ITM有32个刺激(Stimulus)端口，printf可以映射到任何端口，在通过keil中的配置，就可以实现不同端口的printf，若要映射到为其他端口，参考下图配置为映射到端口1：<br> <img src="https://images2.imgbox.com/9a/22/aSWlNuVo_o.png" alt="在这里插入图片描述" width="600" height="210"></p> 
+<p>那么你有没有这样的想法，那就是通过修改ITM_SendChar函数，来实现多个端口的printf端口，这时候上位机就可以订阅他感兴趣的端口输出，可以实现printf分组。请各位自己去验证吧。</p> 
+<p>下面就可以直接在main函数里面写printf就可以输出了：</p> 
+<pre><code class="prism language-c"><span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">while</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+        <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"\nITM test out\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">delay_1ms</span><span class="token punctuation">(</span><span class="token number">400</span><span class="token punctuation">)</span><span class="token punctuation">;</span>    
+    <span class="token punctuation">}</span>
+
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p><strong>注意：根据mcu芯片用户手册可知，芯片上电后调试引脚默认就是调试功能，所以不需要在程序里面初始化SWO引脚，这一就是为什么没有在main中初始化引脚的原因</strong>，</p> 
+<h4><a id="33_KEILDebugprintfViewer_184"></a>3.3 通过KEIL的Debug（printf）Viewer查看打印信息</h4> 
+<p>确定链接调试器并接上mcu后，就可以进行debug调试了：点击：<img src="https://images2.imgbox.com/ed/25/jdYJ3j7U_o.png" alt="在这里插入图片描述" width="100" height="70">这个调试按钮，进入调试界面，然后点击<code>View-&gt;Serial Windows-&gt;Debug(printf)Viewer</code>就会显示printf打印的信息了，如图：<br> <img src="https://images2.imgbox.com/18/47/kti4irkR_o.png" alt="在这里插入图片描述" width="700" height="450"></p> 
+<h3><a id="4_JLINKITM_189"></a>4. 利用JLINK调试器配置ITM输出</h3> 
+<p>当你仿照ST-LINK配置的时候，用JLINK进行调试会发现不行，具体的现象是调用printf会在fputc调取ITM_SendChar(ch)卡住，这是因为JLINK还需要添加额外的配置。下面我们详细叙述。</p> 
+<h4><a id="41_KEIL__193"></a>4.1 KEIL 配置</h4> 
+<p><strong>先插上JLINK</strong>。配置主要就是使能跟踪Trace，配置CPU时钟，以及ITM端口，和使用stlink类似配置。<br> <img src="https://images2.imgbox.com/2b/1c/MG0SgdfF_o.png" alt="在这里插入图片描述" width="800" height="450"><br> <img src="https://images2.imgbox.com/ac/17/s9oe8Hpo_o.png" alt="在这里插入图片描述" width="600" height="500"></p> 
+<p>同样端口选择需要和<code>ITM_SendChar</code>函数选择的一致，不同的调试器这个界面略有区别，这个是jlink的，设置时钟为core时钟(GD32F450内核时钟为200M)，几乎跟用st-link的时候没有区别，勾上Autodetect选项。</p> 
+<h4><a id="42_mcu_201"></a>4.2 mcu程序</h4> 
+<p>和使用ST-link调试一样，mcu内部程序不变，上面有，我就不再写一次了。</p> 
+<h4><a id="43_jlinkstlink_205"></a>4.3 jlink不能像stlink那样调试成功的缘由</h4> 
+<p>通过上面的步骤使用jlink调试，你会发现不能用，printf会在ITM_SendChar里面卡主，我开始就在这卡了很久，后来查芯片数据手册发现如下：<br> <img src="https://images2.imgbox.com/46/c1/j5UwPAwf_o.png" alt="在这里插入图片描述" width="800" height="600"></p> 
+<p>手册里面说若要使用跟踪引脚，需要使能，需要设置这个寄存器<code>0xE0042004U </code>的bit5为1，那下面我们就配置一下这个寄存器吧。（后面我会解释为啥前面用ST-LINK不需要设置这个）。</p> 
+<h4><a id="44_jlinkmcu0xE0042004U_bit51_212"></a>4.4 用jlink来配置mcu寄存器<code>0xE0042004U </code>的bit5为1</h4> 
+<p>首先新建一个文件，叫XXX.ini,本文就起名为<strong>JLINK_ITM_CONFING.ini</strong>，在这个文件中添加以下内容：</p> 
+<pre><code class="prism language-c">FUNC <span class="token keyword">void</span> <span class="token function">DebugSetup</span> <span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>  
+
+<span class="token function">_WDWORD</span><span class="token punctuation">(</span><span class="token number">0xE0042004</span><span class="token punctuation">,</span> <span class="token number">0x00000020</span><span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">// DBGMCU_CR  </span>
+
+<span class="token punctuation">}</span>    
+<span class="token function">DebugSetup</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>                     <span class="token comment">// Debugger Setup </span>
+</code></pre> 
+<p>然后将这个文件添加到keil中，如图：<br> <img src="https://images2.imgbox.com/be/f2/p7H5uCac_o.png" alt="在这里插入图片描述" width="600" height="500"></p> 
+<p>你可能疑惑这个文件有什么用，这里解释以下，当你启动debug的时候，这个文件里面的程序将会最先执行，这里可以放一些函数，来实现一些配置和初始化，利用这个你似乎可以完成很多事情。而这个<code>_WDWORD(0xE0042004, 0x00000020);</code>的意思就是通过调试接口，将mcu的<code>0xE0042004</code>的寄存器地址赋值为<code>0x00000020</code>,正好是bit5为1；这个时候，你的jlink就可以实现ITM功能了。</p> 
+<p>当你仔细阅读用户手册关于调试相关寄存器你会发现，除了这个bit5外，其他的bit位也很有用，比如调试的时候可以关闭看门狗，关闭定时器等。同时你可以在.ini里面设置多个寄存器，如：</p> 
+<pre><code class="prism language-c">FUNC <span class="token keyword">void</span> <span class="token function">DebugSetup</span> <span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>  
+
+<span class="token function">_WDWORD</span><span class="token punctuation">(</span><span class="token number">0xE0042004</span><span class="token punctuation">,</span> <span class="token number">0x00000027</span><span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">// DBGMCU_CR  </span>
+<span class="token function">_WDWORD</span><span class="token punctuation">(</span><span class="token number">0xE000ED08</span><span class="token punctuation">,</span> <span class="token number">0x20000000</span><span class="token punctuation">)</span><span class="token punctuation">;</span>   <span class="token comment">// Setup Vector Table Offset Register  </span>
+<span class="token punctuation">}</span>  
+  
+<span class="token function">DebugSetup</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>                       <span class="token comment">// Debugger Setup </span>
+</code></pre> 
+<p>是不是可玩性极强呢。</p> 
+<p>这时候你可能会思考，既然是设置mcu的寄存器，那我也可以不使用这个.ini文件，我直接在mcu的程序里面，在main函数里面添加<code>*((int*)0xE0042004) = 0x00000020 </code>给这个寄存器赋值不就可以了吗，当然可以，你可以去验证这个方法。</p> 
+<h4><a id="45_STLINK0xE0042004U__248"></a>4.5 解释为什么ST-LINK不需要设置寄存器<code>0xE0042004U </code></h4> 
+<p>为了验证这件事我通过在程序中添加代码，打印<strong>0xE0042004</strong>里面的值，调试发现，当我使用stlink在debug的时候，默认会将bit5设置为1，而用jlink就不会，那这是不是说明stlink的固件里有程序替我们实现了那个.ini文件的功能呢。通过这件事我突然想到，我曾和人发生争执，那就是debug的时候看门狗会不会运行，当时我俩各执一词，现在想来，恐怕是我俩用了不一样的调试器和配置影响到了mcu的debug寄存器的配置，才会导致我俩看到的不一样吧。</p> 
+<h3><a id="5_KEIL_scanf_254"></a>5. KEIL 实现scanf，完成双向通信</h3> 
+<p>printf完成了，要是还可以scanf，那不就实现双向通信了吗，下面我们就介绍scanf的实现。</p> 
+<p>printf是借助SWO引脚实现的，我们说过SWO是输出，是单向的。那scanf咋办，是不是要添加引脚，答案是不需要。我猜测scanf的传输是借助SWDIO引脚来实现的，因为我们现在都知道ITM的printf必须在SW调试模式下才有效，而我发现scanf不管是在JTAG还是SW模式下都可以实现。这就说明printf和scanf在实现原理可能是不同的。懒得再查资料了，就此打住，请知道的直接留言给我吧。</p> 
+<p>直接在mcu里面再添加程序如下：</p> 
+<pre><code class="prism language-c"><span class="token keyword">volatile</span> <span class="token class-name">int32_t</span> ITM_RxBuffer <span class="token operator">=</span> <span class="token number">0x5AA55AA5</span><span class="token punctuation">;</span> <span class="token comment">//初始化为EMPTY，在ITM_CheckChar函数内部和其他使用</span>
+
+<span class="token keyword">int</span> <span class="token function">fgetc</span><span class="token punctuation">(</span>FILE <span class="token operator">*</span>f<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">char</span> tmp<span class="token punctuation">;</span>
+    <span class="token keyword">while</span><span class="token punctuation">(</span><span class="token function">ITM_CheckChar</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//会在这卡主，等待用户输入</span>
+    tmp <span class="token operator">=</span> <span class="token function">ITM_ReceiveChar</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>tmp <span class="token operator">==</span> <span class="token number">13</span><span class="token punctuation">)</span> tmp <span class="token operator">=</span> <span class="token number">10</span><span class="token punctuation">;</span><span class="token comment">//当接收到回车键，就替换成换行键</span>
+    <span class="token keyword">return</span> <span class="token punctuation">(</span><span class="token function">ITM_SendChar</span><span class="token punctuation">(</span>tmp<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//回显</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>根据<a href="https://www.habaijian.com/" rel="nofollow">**ASCII **</a>可以知道13是回车键CR，10是换行键LF，这样就可以实现友好的回显功能。</p> 
+<p>下面就可以直接在main函数里面写scanf和printf来实现mcu数据接收发送。例子：</p> 
+<pre><code class="prism language-c"><span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">char</span> textbuffer<span class="token punctuation">[</span><span class="token number">40</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+    <span class="token comment">//SCB-&gt;CCR |= SCB_CCR_STKALING_Msk;//使能双字栈对齐</span>
+    <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"\nhello word!\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">while</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+        <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"\nplease enter text:\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">fgets</span><span class="token punctuation">(</span>textbuffer<span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">sizeof</span><span class="token punctuation">(</span>textbuffer<span class="token punctuation">)</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token constant">stdin</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"\nyou enteren:%s\n"</span><span class="token punctuation">,</span> textbuffer<span class="token punctuation">)</span><span class="token punctuation">;</span>      
+    <span class="token punctuation">}</span>
+
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>fgets 读取用户输入(stdin)并存入textbuffer中，当然还可以用scanf来替换，scanf实现如下：</p> 
+<pre><code class="prism language-c"><span class="token function">scanf</span><span class="token punctuation">(</span><span class="token string">"%s"</span><span class="token punctuation">,</span> <span class="token operator">&amp;</span>textbuffer<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>但是我们不推荐这样写，因为scanf这个函数不会检测缓冲溢出，也可以使用其他方法，如直接改造fgetc，来实现类似串口接收的效果，很容易，就不再讨论了。</p> 
+<p>这样就可以实现数据双向传输了,利用fgets和printf实现了发送返回，如下图：<br> <img src="https://images2.imgbox.com/29/ac/XvEiR4TT_o.png" alt="在这里插入图片描述" width="800" height="500"></p> 
+<h3><a id="6__306"></a>6. 升级双向通信功能</h3> 
+<p>上面的方法，有两个非常严重的问题，第一就是若想实现printf就要启动debug，但是已启动debug，程序就会复位，针对这个问题，请参考我的另一篇文章：<a href="https://blog.csdn.net/Zhichao_Zhang/article/details/124729729?spm=1001.2014.3001.5502">ARM调试(3):在keil中不复位调试MCU</a> 。<br> 还有一个问题那就是当不在调试的时候，断电重启，printf会被程序忽略，不会有任何影响，可是接收函数<code>fgets</code>函数不会被忽略，导致会在这里面卡住，卡住的原因是fgets会调用fgetc，重写的fgetc函数里面的while是等待用户输入，然而因为用户没调试就无法输入，程序就会死在这里。如下：<br> <img src="https://images2.imgbox.com/75/36/p8tKBeue_o.png" alt="在这里插入图片描述" width="400" height="250"></p> 
+<p>那么就需要一件事，那就是让输入只在调试的时候有效，不调试的时候就忽略scanf，当然我们可以添加宏来解决这件事，调试的时候打开宏编译一下下载进去，不调试的时候在关闭宏，但是这样很麻烦，还要不断的编译程序。</p> 
+<p>有一种办法可以很好的解决这件事，根据上面的知识我们知道，当启动debug的时候，mcu的<code>0xE0042004</code>的寄存器地址赋值为<code>0x00000020</code>，而不调试的时候，0xE0042004的值是0，那么通过判断<code>0xE0042004</code>的寄存器的bit5位，就可以知道是不是在调试了.</p> 
+<p>因此可以封装一下scanf函数，<strong>下面的程序是我盲写的，没验证对错</strong>，但是我感觉差不多应该是对的，可能需要小改，请自己去实验，同时也可以根据自己的想法，改成类似串口那样的方式。</p> 
+<pre><code class="prism language-c"><span class="token comment">//封装fgets</span>
+<span class="token keyword">char</span><span class="token operator">*</span> <span class="token function">itm_fgets</span><span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span>string<span class="token punctuation">,</span><span class="token keyword">int</span> n<span class="token punctuation">,</span> FILE <span class="token operator">*</span>stream<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">if</span><span class="token punctuation">(</span><span class="token operator">*</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token keyword">int</span><span class="token operator">*</span><span class="token punctuation">)</span><span class="token number">0xE0042004</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0x00000020</span><span class="token punctuation">)</span>
+		<span class="token keyword">return</span> <span class="token function">scanf</span><span class="token punctuation">(</span>string<span class="token punctuation">,</span> n<span class="token punctuation">,</span> stream<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">else</span>
+        <span class="token keyword">return</span> null<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//主函数测试</span>
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">char</span> textbuffer<span class="token punctuation">[</span><span class="token number">40</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+    <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"\nhello word!\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">while</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+        <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"\nplease enter text:\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token function">itm_fgets</span><span class="token punctuation">(</span>textbuffer<span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">sizeof</span><span class="token punctuation">(</span>textbuffer<span class="token punctuation">)</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">!=</span> null<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+          <span class="token comment">//判空操作，因为不调试的时候，这些变量是不会收到数据的  </span>
+        <span class="token punctuation">}</span>
+        <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"\nyou enteren:%s\n"</span><span class="token punctuation">,</span> textbuffer<span class="token punctuation">)</span><span class="token punctuation">;</span>      
+    <span class="token punctuation">}</span>
+
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<h3><a id="7_JLINKSTLINKITM_350"></a>7. 针对JLINK和ST-LINK仿真器实现ITM的说明</h3> 
+<p>本例程都是借助keil来实现不同仿真器的ITM，这样做有一个不好之处，就是keil必须点击debug调试才可以进行交互.但其实每种仿真器都有自己的ide,利用这些ide就可以直接和mcu进行交互，<strong>这对于不需要源码的人来讲非常的方便</strong>。</p> 
+<p>jlink利用J-Link Commaner，<img src="https://images2.imgbox.com/79/fd/tbqeLs3B_o.png" alt="在这里插入图片描述" width="60" height="60"><a href="https://www.segger.com/downloads/jlink/" rel="nofollow">官网下载地址</a>，可以实现ITM调试。</p> 
+<p>stlink的STM32 ST-LINK Utility，<img src="https://images2.imgbox.com/4e/d0/1MwqGidO_o.png" alt="在这里插入图片描述" width="60" height="70">可以实现ITM调试：<br> <img src="https://images2.imgbox.com/63/2f/OwTKUCNe_o.png" alt="在这里插入图片描述" width="600" height="450"></p> 
+<p>具体方法网上有很多教程，本文就不赘述了。</p> 
+<p>注意：GD32F450虽然能在keil中用st-link下载程序，但是使用不了STM32 ST-LINK Utility，根据网上的文章，stm32芯片是可以使用STM32 ST-LINK Utility进行调试的。</p> 
+<h3><a id="8_ITM_363"></a>8 利用ITM调试实现逻辑分析仪功能</h3> 
+<p>使用keil调试还有许多实用的功能，比如对全局变量进行逻辑分析等：</p> 
+<p>首先创建以后个全局变量，如：<code>int a</code>；并在程序中改变它的值</p> 
+<p>开启debug，点击下图设置，调出分析仪窗口：</p> 
+<p><img src="https://images2.imgbox.com/1a/ef/dyc7oQa9_o.png" alt="在这里插入图片描述" width="600" height="450"></p> 
+<p>右击变量a，将其添加到分析仪器中。<br> <img src="https://images2.imgbox.com/02/37/xV07QIfm_o.png" alt="在这里插入图片描述" width="600" height="450"></p> 
+<p>这时候这个变量a的变化就实时绘制到这个界面中了<br> <img src="https://images2.imgbox.com/15/7a/Irwk2aS3_o.png" alt="在这里插入图片描述" width="600" height="450"></p> 
+<p>观察其他变量的方法怎样设置请看下面两篇文章，感觉讲的挺好的，我没仔细研究。</p> 
+<p>文章1：<a href="http://t.zoukankan.com/CodeWorkerLiMing-p-12007400.html" rel="nofollow">链接</a></p> 
+<p>文章2：<a href="http://www.360doc.com/content/22/0314/09/32515739_1021431734.shtml" rel="nofollow">链接</a></p> 
+<h3><a id="_389"></a>其他：参考声明</h3> 
+<hr class="footnotes-sep"> 
+<section class="footnotes"> 
+ <ol class="footnotes-list"><li id="fn1" class="footnote-item"><p>本文参考了strongerHuang的文章，他的csdn<a href="https://strongerhuang.blog.csdn.net/?type=blog" rel="nofollow">账号</a>，本文一些图也取自这篇文章，<a href="https://www.strongerhuang.com/printf/printf%E7%B3%BB%E5%88%97%E6%95%99%E7%A8%8B03_SWO%E6%89%93%E5%8D%B0%E8%BE%93%E5%87%BA%E9%85%8D%E7%BD%AE%EF%BC%8C%E5%9F%BA%E4%BA%8EKeil%E3%80%8EDebug%EF%BC%88printf%EF%BC%89Viewer%E3%80%8F.html" rel="nofollow">文章地址</a>； <a href="#fnref1" rel="nofollow" class="footnote-backref">↩︎</a> <a href="#fnref1:1" rel="nofollow" class="footnote-backref">↩︎</a></p> </li></ol> 
+</section>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/691211a3ce88b18fe7d453481454ef77/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">pinia快速入门</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/71cc91a0ba4a2aca0c4720b0a740f529/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">ubuntu18.04 安装annconda后 python版本管理</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>CTF PWN练习之返回地址覆盖 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="CTF PWN练习之返回地址覆盖" />
+<meta property="og:description" content="今天进行的实验是CTF PWN练习之返回地址覆盖，来体验一下新的溢出方式。
+学习地址覆盖之前还有些小知识需要掌握，不然做题的时候你肯定一脸懵逼,首先是函数调用约定，然后还要知道基本的缓冲区溢出攻击模型。
+函数调用约定
+函数调用约定描述了函数传递参数的方式和栈协同工作的技术细节，不同的函数调用约定原理基本相同，但在细节上是有差别的，包括函数参数的传递方式、参数的入栈顺序、函数返回时由谁来平衡堆栈扥。本实验中着重讲解C语言函数调用约定。
+通过前面几个PWN系列实验的学习，我们可以发现在gdb中通过disas指令对main函数进行反汇编时，函数的开头和结尾的反汇编指令都是一样的：
+push %ebp
+mov %esp,%ebp
+…
+leave
+ret
+在函数大开头，首先是一条push %ebp指令，将ebp寄存器压入栈中，用于保存ebp寄存器的值，接着是mov
+%esp,%ebp将esp寄存器的值传递给ebp寄存器；在函数的末尾，leave指令相当于mov %ebp,%esp和pop
+%ebp两条指令，其作用刚好与开头的两条指令相反，即恢复esp和ebp寄存器的内容。
+如果在函数A中调用了函数B，我们称函数A为主调函数，函数B为被调函数，如果函数B的声明为int B(int arg1, int arg2, int
+arg3)，那么函数A中的调用函数B时的汇编指令的形式如下：
+push arg3
+push arg2
+push arg1
+call B
+连续三个push将函数的参数按照从右往左的顺序进行压栈，然后执行call
+B来调用函数B。注意在gdb中看到的效果可能不是三个push，而是三个mov来对栈进行操作，这是因为Linux采用AT&amp;T风格的汇编，而上面的指令使用的是Intel风格的汇编，比较容易理解。
+call指令的内部细节为：将下一条指令的地址压入栈中，然后跳转到函数B去执行代码。这里说的call下一条指令的地址也就是通常所说的返回地址。函数B最后一条retn指令会从栈上弹出返回地址，并赋值给EIP寄存器，达到返回函数A继续执行的目的。
+基本的缓冲区溢出攻击模型
+基本的缓冲区溢出攻击通常是通过改写函数返回地址的形式来发起攻击的。如A调用B函数，正常情况下B函数返回时执行retn指令，从栈上取出返回地址跳转回A函数继续执行代码。而一旦返回地址被缓冲区溢出数据改写，那么我们就可以控制函数B跳转到指定的地方去执行代码了。
+1. 实验内容和步骤 本文涉及相关实验：[《PWN练习之返回地址覆盖》](https://www.hetianlab.com/expc.do?ec=ECID172.19.104.182014110409173900001&amp;pk_campaign=freebuf-
+wemedia)。
+做实验前先好好审题，看一下描述。
+主机/home/test/5目录下有一个pwn5程序，执行这个程序可以输入数据进行测试，正常情况下程序接收输入数据后不会产生任何输出信息并直接退出，然后当输入一定的数据量时，可能会提示
+Segmentation fault
+的错误信息，当输入的精心构造的输入数据时可对程序发起溢出攻击，达到改写程序执行流程的目的，攻击成功时将输出如下信息：
+Congratulations, you pwned it.
+请对pwn5程序进行逆向分析和调试，找到程序内部的漏洞，并构造特殊的输入数据，使之输出成功的提示信息。
+使用cd /home/test/5切换到程序所在目录，执行cat pwn5.c即可看到源代码：
+#include &lt;stdio.h&gt;
+void win()
+{
+printf(“Congratulations, you pwned it.\n”);
+}
+int main(int argc, char** argv)" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/d1b73a462906bc422550fda8673d35c5/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-08-04T11:40:02+08:00" />
+<meta property="article:modified_time" content="2023-08-04T11:40:02+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">CTF PWN练习之返回地址覆盖</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>今天进行的实验是CTF PWN练习之返回地址覆盖，来体验一下新的溢出方式。</p> 
+<p>学习地址覆盖之前还有些小知识需要掌握，不然做题的时候你肯定一脸懵逼,首先是函数调用约定，然后还要知道基本的缓冲区溢出攻击模型。</p> 
+<p><strong>函数调用约定</strong></p> 
+<p>函数调用约定描述了函数传递参数的方式和栈协同工作的技术细节，不同的函数调用约定原理基本相同，但在细节上是有差别的，包括函数参数的传递方式、参数的入栈顺序、函数返回时由谁来平衡堆栈扥。本实验中着重讲解C语言函数调用约定。</p> 
+<p>通过前面几个PWN系列实验的学习，我们可以发现在gdb中通过disas指令对main函数进行反汇编时，函数的开头和结尾的反汇编指令都是一样的：</p> 
+<p>push %ebp</p> 
+<p>mov %esp,%ebp</p> 
+<p>…</p> 
+<p>leave</p> 
+<p>ret</p> 
+<p>在函数大开头，首先是一条push %ebp指令，将ebp寄存器压入栈中，用于保存ebp寄存器的值，接着是mov<br> %esp,%ebp将esp寄存器的值传递给ebp寄存器；在函数的末尾，leave指令相当于mov %ebp,%esp和pop<br> %ebp两条指令，其作用刚好与开头的两条指令相反，即恢复esp和ebp寄存器的内容。</p> 
+<p>如果在函数A中调用了函数B，我们称函数A为主调函数，函数B为被调函数，如果函数B的声明为int B(int arg1, int arg2, int<br> arg3)，那么函数A中的调用函数B时的汇编指令的形式如下：</p> 
+<p>push arg3</p> 
+<p>push arg2</p> 
+<p>push arg1</p> 
+<p>call B</p> 
+<p>连续三个push将函数的参数按照从右往左的顺序进行压栈，然后执行call<br> B来调用函数B。注意在gdb中看到的效果可能不是三个push，而是三个mov来对栈进行操作，这是因为Linux采用AT&amp;T风格的汇编，而上面的指令使用的是Intel风格的汇编，比较容易理解。</p> 
+<p>call指令的内部细节为：将下一条指令的地址压入栈中，然后跳转到函数B去执行代码。这里说的call下一条指令的地址也就是通常所说的返回地址。函数B最后一条retn指令会从栈上弹出返回地址，并赋值给EIP寄存器，达到返回函数A继续执行的目的。</p> 
+<p><img src="https://images2.imgbox.com/33/2c/RXGnXNNE_o.jpg" alt="headImg.action?news=666b7c59-65b8-4d61-a443-512ac67c7322.png"></p> 
+<p><strong>基本的缓冲区溢出攻击模型</strong></p> 
+<p>基本的缓冲区溢出攻击通常是通过改写函数返回地址的形式来发起攻击的。如A调用B函数，正常情况下B函数返回时执行retn指令，从栈上取出返回地址跳转回A函数继续执行代码。而一旦返回地址被缓冲区溢出数据改写，那么我们就可以控制函数B跳转到指定的地方去执行代码了。</p> 
+<p><img src="https://images2.imgbox.com/66/93/QZx33qQz_o.jpg" alt="headImg.action?news=2a74cade-00ba-4e0f-ba1f-5393ae106750.png"></p> 
+<h4><a id="1__48"></a>1. 实验内容和步骤</h4> 
+<p>本文涉及相关实验：[《PWN练习之返回地址覆盖》](https://www.hetianlab.com/expc.do?ec=ECID172.19.104.182014110409173900001&amp;pk_campaign=freebuf-<br> wemedia)。</p> 
+<p>做实验前先好好审题，看一下描述。</p> 
+<p>主机/home/test/5目录下有一个pwn5程序，执行这个程序可以输入数据进行测试，正常情况下程序接收输入数据后不会产生任何输出信息并直接退出，然后当输入一定的数据量时，可能会提示<br> <strong>Segmentation fault</strong><br> 的错误信息，当输入的精心构造的输入数据时可对程序发起溢出攻击，达到改写程序执行流程的目的，攻击成功时将输出如下信息：</p> 
+<p><strong>Congratulations, you pwned it.</strong></p> 
+<p>请对pwn5程序进行逆向分析和调试，找到程序内部的漏洞，并构造特殊的输入数据，使之输出成功的提示信息。</p> 
+<p>使用cd /home/test/5切换到程序所在目录，执行cat pwn5.c即可看到源代码：</p> 
+<p>#include &lt;stdio.h&gt;</p> 
+<p>void win()</p> 
+<p>{<!-- --></p> 
+<p>printf(“Congratulations, you pwned it.\n”);</p> 
+<p>}</p> 
+<p>int main(int argc, char** argv)</p> 
+<p>{<!-- --></p> 
+<p>char buffer[64];</p> 
+<p>gets(buffer); // 存在缓冲区溢出</p> 
+<p>return 0;</p> 
+<p>}</p> 
+<p>程序定义了一个64字节大小的buffer数组，然后使用gets获取输入数据，我们知道gets是不安全的函数，这里会引发缓冲区溢出，栈上函数的返回地址可以被改写，当返回地址被改写为win函数的地址时，就可以输出成功提示的信息。</p> 
+<p>gets(buffer)这个溢出太明显了，问题就是不知道我们要输入多少位才能溢出。</p> 
+<p>执行gdb pwn5即可开始通过gdb对pwn5进行调试，现在我们需要阅读main函数的汇编代码，在gdb中执行disas main命令即可：</p> 
+<p>我们首先使用b *0x080483f8对main函数的第一条指令下一个断点，同时使用b<br> *0x08048408对gets函数的调用下一个断点，然后输入r命令运行程序，将会在第一个断点处断下，如下图所示：</p> 
+<p><img src="https://images2.imgbox.com/02/da/MiT9pKuM_o.jpg" alt="headImg.action?news=c22021b3-9df2-4ce3-9d2c-a715d4eca654.png"></p> 
+<p>这时候运行i r<br> $esp来查看esp寄存器的值，通过前面对函数调用约定的分析，我们知道这时候栈顶存储的就是返回地址，这时候esp寄存器的值为0xffffd6cc。</p> 
+<p>在gdb中输入c命令让程序继续执行，将在第二个断点断下，通过对汇编指令的分析，我们知道eax寄存器存储了buffer的起始地址，所以运行i r<br> $eax来查看buffer的地址：</p> 
+<p><img src="https://images2.imgbox.com/d7/eb/86CQ4p5N_o.jpg" alt="headImg.action?news=99013fac-420f-4438-ac24-5ef7ee1ba589.png"></p> 
+<p>我们看到eax寄存器的值为0xffffd680，那么这两个地址的差为76，如下图下图所示：</p> 
+<p><img src="https://images2.imgbox.com/20/28/K9OGmMI6_o.jpg" alt="headImg.action?news=39a214e9-c1a3-49f6-b706-bbbbdd70a068.png"></p> 
+<p>也就是说，在覆盖了76字节数据后，如果再覆盖4个字节，就可以把返回地址覆盖为我们想要的地址了。</p> 
+<p>在gdb中执行disas win查看win函数的地址为0x080483e4，接下来就可以构造输入数据来发起溢出攻击了。</p> 
+<p>我们只要合理控制输入数据的第77~80字节的内容，就可以实现对函数返回地址进行覆盖，从而成功发起溢出攻击了。</p> 
+<p>现在win函数的地址为0x080483e4，转换为小端格式是’\xe4\x83\x04\x08’，那么可以构造这样的命令来进行溢出测试：</p> 
+<p>python -c “print ‘A’*76+‘\xe4\x83\x04\x08’” | ./pwn5</p> 
+<p>攻击效果如下图所示：</p> 
+<p><img src="https://images2.imgbox.com/a4/fe/5DuiCucq_o.jpg" alt="headImg.action?news=fde503c7-e89e-4654-88ba-927a42493016.png"></p> 
+<h3><a id="_124"></a>最后</h3> 
+<p>分享一个快速学习【网络安全】的方法，「也许是」最全面的学习方法：<br> <strong>1、网络安全理论知识（2天）</strong><br> ①了解行业相关背景，前景，确定发展方向。<br> ②学习网络安全相关法律法规。<br> ③网络安全运营的概念。<br> ④等保简介、等保规定、流程和规范。（非常重要）</p> 
+<p><strong>2、渗透测试基础（一周）</strong><br> ①渗透测试的流程、分类、标准<br> ②信息收集技术：主动/被动信息搜集、Nmap工具、Google Hacking<br> ③漏洞扫描、漏洞利用、原理，利用方法、工具（MSF）、绕过IDS和反病毒侦察<br> ④主机攻防演练：MS17-010、MS08-067、MS10-046、MS12-20等</p> 
+<p><strong>3、操作系统基础（一周）</strong><br> ①Windows系统常见功能和命令<br> ②Kali Linux系统常见功能和命令<br> ③操作系统安全（系统入侵排查/系统加固基础）</p> 
+<p><strong>4、计算机网络基础（一周）</strong><br> ①计算机网络基础、协议和架构<br> ②网络通信原理、OSI模型、数据转发流程<br> ③常见协议解析（HTTP、TCP/IP、ARP等）<br> ④网络攻击技术与网络安全防御技术<br> ⑤Web漏洞原理与防御：主动/被动攻击、DDOS攻击、CVE漏洞复现</p> 
+<p><strong>5、数据库基础操作（2天）</strong><br> ①数据库基础<br> ②SQL语言基础<br> ③数据库安全加固</p> 
+<p><strong>6、Web渗透（1周）</strong><br> ①HTML、CSS和JavaScript简介<br> ②OWASP Top10<br> ③Web漏洞扫描工具<br> ④Web渗透工具：Nmap、BurpSuite、SQLMap、其他（菜刀、漏扫等）</p> 
+<p><img src="https://images2.imgbox.com/b2/bb/IFfRfQbh_o.png" alt="在这里插入图片描述"></p> 
+<p>恭喜你，如果学到这里，你基本可以从事一份网络安全相关的工作，比如渗透测试、Web 渗透、安全服务、安全分析等岗位；如果等保模块学的好，还可以从事等保工程师。薪资区间6k-15k。</p> 
+<p>到此为止，大概1个月的时间。你已经成为了一名“脚本小子”。那么你还想往下探索吗？</p> 
+<p>想要入坑黑客&amp;网络安全的朋友，给大家准备了一份：282G全网最全的网络安全资料包免费领取！<br> <strong>点【文末卡片】，免费领取</strong></p> 
+<p>有了这些基础，如果你要深入学习，可以参考下方这个超详细学习路线图，按照这个路线学习，完全够支撑你成为一名优秀的中高级网络安全工程师：<br> <img src="https://images2.imgbox.com/5f/4e/Pgpcbbi5_o.png" alt=""></p> 
+<p><strong>[高清学习路线图或XMIND文件（点击文末卡片领取）]</strong></p> 
+<p><strong>还有一些学习中收集的视频、文档资源，有需要的可以自取：</strong><br> 每个成长路线对应板块的配套视频：<br> <img src="https://images2.imgbox.com/68/14/4jAJVqLL_o.png" alt=""><br> <img src="https://images2.imgbox.com/99/b4/SUK5ghjV_o.png" alt=""><br> 当然除了有配套的视频，同时也为大家整理了各种文档和书籍资料&amp;工具，并且已经帮大家分好类了。<br> <img src="https://images2.imgbox.com/3c/65/hSbTAHjv_o.png" alt=""><br> <strong>因篇幅有限，仅展示部分资料，需要的可以【点下方卡片免费领取】</strong></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/b1b8493f3cf60f32f430d6e49a7a8a46/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">SpringDataJPA框架使用笔记</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/323581c99d7f61d77a1e5675fe7c0464/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">学了一个礼拜 JavaScript 为什么还是学不会？</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,954 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【图像生成】(四) Diffusion原理 &amp; pytorch代码实例 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【图像生成】(四) Diffusion原理 &amp; pytorch代码实例" />
+<meta property="og:description" content="1.简介 之前介绍完了图像生成网络GAN和VAE，终于来到了Diffusion。stable diffusion里比较复杂，同时用到了diffusion，VAE，CLIP等模型，这里我们主要着重介绍diffusion网络本身。
+2.原理 Diffusion扩散模型从字面上来理解，就是对噪声进行扩散。它一共有两个扩散步骤：
+正向扩散：根据预先设定的噪声进度在图像中添加高斯噪声，直到数据分布趋于先验分布反向扩撒：去除图像中的噪声，本质上是学习逐步恢复原数据分布 正向扩散过程很好理解，每次step都在之前step的图像基础上加上随机的高斯噪声，这样经过多个step之后，图像将会变成完全的一个噪声图像。
+反向扩散过程其实就是用UNet网络去预测逆向的高斯噪声，从而使图像去噪。在噪声微小的前提下，逆向的去噪过程也可以等同于预测高斯噪声。
+根据马尔可夫链式推导法则，用表示第t个step的图像，表示该数据的概率分布，所以前向扩散方程可以表示为：
+其中，表示第t个step的噪声系数。在第二个公式中，为高斯函数的输出，为高斯函数的输入，而为高斯函数的均值，为高斯函数的方差。换言之，第t个step的图像可以从第t-1个step的图像再加上一个均值为，方差为的高斯噪声得到。
+为什么均值和方差要设置为和，这一切都是为了后面的参数重整化技巧。
+因为在训练中，要对图像加不同step的噪声，由此让网络学习到不同噪声程度的数据。然而在实际训练中，当需要得到step较大的加噪图像时，我们不可能每次都从step=0开始重新加噪，这样时间成本太大。同时在上一篇文章VAE中我们可以知道，必须要将随机数限制在正态函数中，不然没法去反向推导梯度，因此采用了高斯函数被分解为特定均值和方差的正态函数这一方法。在扩散模型中，我们需要对多个高斯噪声进行叠加，有没有一种方法可以把叠加的高斯函数也分解为特定均值和方差的正态函数呢？
+参数重整化：高斯函数可以被分解为特定均值和方差的正态函数，公式可以表达为：
+因此，第t个step的图像可以表示为：
+需要注意的是，当两个高斯分布相加时，满足如下规律：
+因此第四行公式可以直接转换为第五行公式。
+所以现在我们直接把各个step的算出来就可以了，不用再每个step进行迭代。
+在反向噪声扩散中，由于每次加的噪声很小，所以也可以视为高斯分布，使用神经网络UNet进行拟合。这里推导公式比较复杂，可以参考原论文2006.11239.pdf (arxiv.org)
+最后，通过KL散度来让正向分布和反向分布尽可能接近。训练和采样流程如下：
+3.代码 接下来我们用pytorch来实现Diffusion在MNIST数据集上的生成。
+3.1模型 Unet中上采样和下采样模块都基于resblock，同时还有对step进行embedding的全连接层。数据进行下采样之后，再使上采样输出与step embeding向量进行相加，再输入进下一层上采样层中。
+class ResidualConvBlock(nn.Module): def __init__( self, in_channels: int, out_channels: int, is_res: bool = False ) -&gt; None: super().__init__() &#39;&#39;&#39; standard ResNet style convolutional block &#39;&#39;&#39; self.same_channels = in_channels==out_channels self.is_res = is_res self.conv1 = nn.Sequential( nn.Conv2d(in_channels, out_channels, 3, 1, 1), nn.BatchNorm2d(out_channels), nn.GELU(), ) self.conv2 = nn.Sequential( nn." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/33cb25ba254b16fe1f51dcd27911908a/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-08-09T18:42:54+08:00" />
+<meta property="article:modified_time" content="2023-08-09T18:42:54+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【图像生成】(四) Diffusion原理 &amp; pytorch代码实例</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2></h2> 
+<h2>1.简介</h2> 
+<p>之前介绍完了图像生成网络GAN和VAE，终于来到了Diffusion。stable diffusion里比较复杂，同时用到了diffusion，VAE，CLIP等模型，这里我们主要着重介绍diffusion网络本身。</p> 
+<hr> 
+<h2>2.原理</h2> 
+<p>Diffusion扩散模型从字面上来理解，就是对噪声进行扩散。它一共有两个扩散步骤：</p> 
+<ul><li>正向扩散：根据预先设定的噪声进度在图像中添加高斯噪声，直到数据分布趋于先验分布</li><li>反向扩撒：去除图像中的噪声，本质上是学习逐步恢复原数据分布</li></ul> 
+<p> 正向扩散过程很好理解，每次step都在之前step的图像基础上加上随机的高斯噪声，这样经过多个step之后，图像将会变成完全的一个噪声图像。</p> 
+<p>反向扩散过程其实就是用UNet网络去预测逆向的高斯噪声，从而使图像去噪。在噪声微小的前提下，逆向的去噪过程也可以等同于预测高斯噪声。</p> 
+<p><img alt="" height="680" src="https://images2.imgbox.com/aa/cd/3LPpaaQ2_o.png" width="1200"></p> 
+<p>根据马尔可夫链式推导法则，用<img alt="x_{t}" class="mathcode" src="https://images2.imgbox.com/bd/e6/zmEjgPev_o.png">表示第t个step的图像，<img alt="p(x_{t})" class="mathcode" src="https://images2.imgbox.com/c7/a3/thSf7fk5_o.png">表示该数据的概率分布，所以前向扩散方程可以表示为：</p> 
+<p style="text-align:center;"><img alt="q(x_{1},...,x_{T}|x_{0})=\prod_{t=1}^{T}p(x_{t}|x_{t-1})" class="mathcode" src="https://images2.imgbox.com/0c/31/z5FLwF6o_o.png"></p> 
+<p style="text-align:center;"><img alt="p(x_{t}|x_{t-1})=\mathcal N(x_{t};\sqrt{1-\beta _{t}}x_{t-1},\beta _{t}I)" class="mathcode" src="https://images2.imgbox.com/f7/de/IMUpXXgY_o.png"></p> 
+<p>其中，<img alt="\beta _{t}" class="mathcode" src="https://images2.imgbox.com/db/50/5jDjRBkC_o.png">表示第t个step的噪声系数。在第二个公式中，<img alt="x_{t}" class="mathcode" src="https://images2.imgbox.com/b0/73/9CWyjXgq_o.png">为高斯函数的输出，<img alt="x_{t-1}" class="mathcode" src="https://images2.imgbox.com/46/30/KazLlkG0_o.png">为高斯函数的输入，而<img alt="\sqrt{1-\beta _{t}}" class="mathcode" src="https://images2.imgbox.com/e3/1e/iqPpgaLX_o.png">为高斯函数的均值，<img alt="\beta _{t}" class="mathcode" src="https://images2.imgbox.com/71/63/ULUdCTm9_o.png">为高斯函数的方差。换言之，第t个step的图像<img alt="x_{t}" class="mathcode" src="https://images2.imgbox.com/78/70/ktBcAQdK_o.png">可以从第t-1个step的图像<img alt="x_{t-1}" class="mathcode" src="https://images2.imgbox.com/75/72/vmILMUZ7_o.png">再加上一个均值为<img alt="\sqrt{1-\beta _{t}}" class="mathcode" src="https://images2.imgbox.com/80/60/KXNutGIz_o.png">，方差为<img alt="\beta _{t}" class="mathcode" src="https://images2.imgbox.com/01/ac/Vz4xfvFD_o.png">的高斯噪声得到。</p> 
+<p>为什么均值和方差要设置为<img alt="\sqrt{1-\beta _{t}}" class="mathcode" src="https://images2.imgbox.com/0a/45/Clo3Opbp_o.png">和<img alt="\beta _{t}" class="mathcode" src="https://images2.imgbox.com/5c/c8/EzJd14zb_o.png">，这一切都是为了后面的参数重整化技巧。</p> 
+<p>因为在训练中，要对图像加不同step的噪声，由此让网络学习到不同噪声程度的数据。然而在实际训练中，当需要得到step较大的加噪图像时，我们不可能每次都从step=0开始重新加噪，这样时间成本太大。同时在上一篇文章VAE中我们可以知道，必须要将随机数限制在正态函数中，不然没法去反向推导梯度，因此采用了高斯函数被分解为特定均值和方差的正态函数这一方法。在扩散模型中，我们需要对多个高斯噪声进行叠加，有没有一种方法可以把叠加的高斯函数也分解为特定均值和方差的正态函数呢？</p> 
+<p><strong>参数重整化：</strong>高斯函数可以被分解为特定均值和方差的正态函数，公式可以表达为：</p> 
+<p style="text-align:center;"><img alt="if" class="mathcode" src="https://images2.imgbox.com/9c/fc/9374z94f_o.png"> <img alt="z \sim \mathcal N (\mu ,\sigma ^{2})" class="mathcode" src="https://images2.imgbox.com/65/ac/w3jblkF2_o.png">  <img alt="then" class="mathcode" src="https://images2.imgbox.com/d0/a9/asr5FcVT_o.png"></p> 
+<p style="text-align:center;"><img alt="z=\mu +\sigma \varepsilon" class="mathcode" src="https://images2.imgbox.com/47/8b/57j6jybQ_o.png">  <img alt="where" class="mathcode" src="https://images2.imgbox.com/e5/a0/baDJlpwe_o.png"> <img alt="\varepsilon =\mathcal N(0,1)" class="mathcode" src="https://images2.imgbox.com/18/9d/iHhHj0jN_o.png"></p> 
+<p>因此，第t个step的图像可以表示为：</p> 
+<p style="text-align:center;"><img alt="\begin{aligned} x_{t}&amp;=\sqrt{1-\beta _{t}}x_{t-1}+\sqrt{\beta _{t}}\epsilon_{t-1} \\ &amp;=\sqrt{\alpha _{t}}x_{t-1}+\sqrt{1-\alpha _{t}}\epsilon_{t-1}\\ &amp;=\sqrt{\alpha _{t}}(\sqrt{\alpha _{t-1}}x_{t-2}+\sqrt{1-\alpha _{t-1}}\epsilon_{t-2})+\sqrt{1-\alpha _{t-1}}\epsilon_{t-1}\\ &amp;= \sqrt{\alpha _{t}\alpha _{t-1}}x_{t-2}+\sqrt{\alpha_{t}(1-\alpha _{t-1})}\epsilon _{t-2}+\sqrt{1-\alpha _{t}}\epsilon _{t-1} \\ &amp;=\sqrt{\alpha _{t}\alpha _{t-1}}x_{t-2}+\sqrt{1-\alpha _{t}\alpha _{t-1}}\epsilon\bar{}_{t-2}\\ &amp;......\\ &amp;=\sqrt{ \bar{\alpha_{t}}}x_{0}+\sqrt{1-\bar{\alpha _{t}}}\epsilon \end{aligned}" class="mathcode" src="https://images2.imgbox.com/e3/81/v3yD6FFy_o.png"></p> 
+<p>需要注意的是，当两个高斯分布相加时，满足如下规律：</p> 
+<p style="text-align:center;"><img alt="Z = X + Y" class="mathcode" src="https://images2.imgbox.com/42/42/TVaLQJQT_o.png"></p> 
+<p style="text-align:center;"><img alt="Z \sim \mathcal N (\mu_{X}+\mu_{Y} ,\sigma_{X}^{2}+\sigma_{Y}^{2})" class="mathcode" src="https://images2.imgbox.com/d4/db/0vkryplH_o.png"></p> 
+<p>因此第四行公式可以直接转换为第五行公式。</p> 
+<p>所以现在我们直接把各个step的<img alt="\bar{\alpha _{t}}" class="mathcode" src="https://images2.imgbox.com/11/51/xd1zjIkp_o.png">算出来就可以了，不用再每个step进行迭代。</p> 
+<p>在反向噪声扩散中，由于每次加的噪声很小，所以<img alt="q(x_{t-1}|x_{t})" class="mathcode" src="https://images2.imgbox.com/a6/b0/UHRGYYXp_o.png">也可以视为高斯分布，使用神经网络UNet进行拟合。这里推导公式比较复杂，可以参考原论文<a href="https://arxiv.org/pdf/2006.11239.pdf" rel="nofollow" title="2006.11239.pdf (arxiv.org)">2006.11239.pdf (arxiv.org)</a></p> 
+<p>最后，通过KL散度来让正向分布<img alt="p" class="mathcode" src="https://images2.imgbox.com/ab/d0/2pwn5vi6_o.png">和反向分布<img alt="q" class="mathcode" src="https://images2.imgbox.com/95/0c/Tqx9pDRH_o.png">尽可能接近。训练和采样流程如下：</p> 
+<p><img alt="" height="330" src="https://images2.imgbox.com/24/18/9eB9vmeL_o.png" width="1200"></p> 
+<hr> 
+<h2>3.代码</h2> 
+<p>接下来我们用pytorch来实现Diffusion在MNIST数据集上的生成。</p> 
+<h3>3.1模型</h3> 
+<p>Unet中上采样和下采样模块都基于resblock，同时还有对step进行embedding的全连接层。数据进行下采样之后，再使上采样输出与step embeding向量进行相加，再输入进下一层上采样层中。</p> 
+<pre><code class="language-python">
+class ResidualConvBlock(nn.Module):
+    def __init__(
+        self, in_channels: int, out_channels: int, is_res: bool = False
+    ) -&gt; None:
+        super().__init__()
+        '''
+        standard ResNet style convolutional block
+        '''
+        self.same_channels = in_channels==out_channels
+        self.is_res = is_res
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, 3, 1, 1),
+            nn.BatchNorm2d(out_channels),
+            nn.GELU(),
+        )
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(out_channels, out_channels, 3, 1, 1),
+            nn.BatchNorm2d(out_channels),
+            nn.GELU(),
+        )
+
+    def forward(self, x: torch.Tensor) -&gt; torch.Tensor:
+        if self.is_res:
+            x1 = self.conv1(x)
+            x2 = self.conv2(x1)
+            # this adds on correct residual in case channels have increased
+            if self.same_channels:
+                out = x + x2
+            else:
+                out = x1 + x2
+            return out / 1.414
+        else:
+            x1 = self.conv1(x)
+            x2 = self.conv2(x1)
+            return x2
+
+
+class UnetDown(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(UnetDown, self).__init__()
+        '''
+        process and downscale the image feature maps
+        '''
+        layers = [ResidualConvBlock(in_channels, out_channels), nn.MaxPool2d(2)]
+        self.model = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.model(x)
+
+
+class UnetUp(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(UnetUp, self).__init__()
+        '''
+        process and upscale the image feature maps
+        '''
+        layers = [
+            nn.ConvTranspose2d(in_channels, out_channels, 2, 2),
+            ResidualConvBlock(out_channels, out_channels),
+            ResidualConvBlock(out_channels, out_channels),
+        ]
+        self.model = nn.Sequential(*layers)
+
+    def forward(self, x, skip):
+        x = torch.cat((x, skip), 1)
+        x = self.model(x)
+        return x
+
+
+class EmbedFC(nn.Module):
+    def __init__(self, input_dim, emb_dim):
+        super(EmbedFC, self).__init__()
+        '''
+        generic one layer FC NN for embedding things  
+        '''
+        self.input_dim = input_dim
+        layers = [
+            nn.Linear(input_dim, emb_dim),
+            nn.GELU(),
+            nn.Linear(emb_dim, emb_dim),
+        ]
+        self.model = nn.Sequential(*layers)
+
+    def forward(self, x):
+        x = x.view(-1, self.input_dim)
+        return self.model(x)
+class Unet(nn.Module):
+    def __init__(self, in_channels, n_feat=256):
+        super(Unet, self).__init__()
+
+        self.in_channels = in_channels
+        self.n_feat = n_feat
+
+        self.init_conv = ResidualConvBlock(in_channels, n_feat, is_res=True)
+
+        self.down1 = UnetDown(n_feat, n_feat)
+        self.down2 = UnetDown(n_feat, 2 * n_feat)
+
+        self.to_vec = nn.Sequential(nn.AvgPool2d(7), nn.GELU())
+
+        self.timeembed1 = EmbedFC(1, 2 * n_feat)
+        self.timeembed2 = EmbedFC(1, 1 * n_feat)
+
+        self.up0 = nn.Sequential(
+            # nn.ConvTranspose2d(6 * n_feat, 2 * n_feat, 7, 7), # when concat temb and cemb end up w 6*n_feat
+            nn.ConvTranspose2d(2 * n_feat, 2 * n_feat, 7, 7),  # otherwise just have 2*n_feat
+            nn.GroupNorm(8, 2 * n_feat),
+            nn.ReLU(),
+        )
+
+        self.up1 = UnetUp(4 * n_feat, n_feat)
+        self.up2 = UnetUp(2 * n_feat, n_feat)
+        self.out = nn.Sequential(
+            nn.Conv2d(2 * n_feat, n_feat, 3, 1, 1),
+            nn.GroupNorm(8, n_feat),
+            nn.ReLU(),
+            nn.Conv2d(n_feat, self.in_channels, 3, 1, 1),
+        )
+
+    def forward(self, x, t):
+        '''
+        输入加噪图像和对应的时间step，预测反向噪声的正态分布
+        :param x: 加噪图像
+        :param t: 对应step
+        :return: 正态分布噪声
+        '''
+        x = self.init_conv(x)
+        down1 = self.down1(x)
+        down2 = self.down2(down1)
+        hiddenvec = self.to_vec(down2)
+
+        # embed time step
+        temb1 = self.timeembed1(t).view(-1, self.n_feat * 2, 1, 1)
+        temb2 = self.timeembed2(t).view(-1, self.n_feat, 1, 1)
+
+        # 将上采样输出与step编码相加，输入到下一个上采样层
+        up1 = self.up0(hiddenvec)
+        up2 = self.up1(up1 + temb1, down2)
+        up3 = self.up2(up2 + temb2, down1)
+        out = self.out(torch.cat((up3, x), 1))
+        return out</code></pre> 
+<p></p> 
+<h3>3.2训练</h3> 
+<p>训练时随机选择step和随机生成正态分布噪声，通过叠加后得到加噪图像，然后将加噪图像和step一起输入进Unet中，得到当前step的预测正态分布噪声，并与真实正态分布噪声计算loss。</p> 
+<pre><code class="language-python">    def forward(self, x):
+        """
+        训练过程中, 随机选择step和生成噪声
+        """
+        # 随机选择step
+        _ts = torch.randint(1, self.n_T + 1, (x.shape[0],)).to(self.device)  # t ~ Uniform(0, n_T)
+        # 随机生成正态分布噪声
+        noise = torch.randn_like(x)  # eps ~ N(0, 1)
+        # 加噪后的图像x_t
+        x_t = (
+                self.sqrtab[_ts, None, None, None] * x
+                + self.sqrtmab[_ts, None, None, None] * noise
+
+        )
+
+        # 将unet预测的对应step的正态分布噪声与真实噪声做对比
+        return self.loss_mse(noise, self.model(x_t, _ts / self.n_T))
+</code></pre> 
+<h3>3.3推理&amp;可视化</h3> 
+<p>推理的时候从随机的初始噪声开始，预测当前噪声的上一个step的正态分布噪声，然后根据采样公式得到反向扩散的均值和方差，最后根据重整化公式计算出上一个step的图像。重复多个step后得到最终的去噪图像。</p> 
+<pre><code class="language-python">    def sample(self, n_sample, size, device):
+        # 随机生成初始噪声图片 x_T ~ N(0, 1)
+        x_i = torch.randn(n_sample, *size).to(device)
+        for i in range(self.n_T, 0, -1):
+            t_is = torch.tensor([i / self.n_T]).to(device)
+            t_is = t_is.repeat(n_sample, 1, 1, 1)
+
+            z = torch.randn(n_sample, *size).to(device) if i &gt; 1 else 0
+
+            eps = self.model(x_i, t_is)
+            x_i = x_i[:n_sample]
+            x_i = self.oneover_sqrta[i] * (x_i - eps * self.mab_over_sqrtmab[i]) + self.sqrt_beta_t[i] * z
+        return x_i</code></pre> 
+<pre><code class="language-python">@torch.no_grad()
+    def visualize_results(self, epoch):
+        self.sampler.eval()
+        # 保存结果路径
+        output_path = 'results/Diffusion'
+        if not os.path.exists(output_path):
+            os.makedirs(output_path)
+
+        tot_num_samples = self.sample_num
+        image_frame_dim = int(np.floor(np.sqrt(tot_num_samples)))
+        out = self.sampler.sample(tot_num_samples, (1, 28, 28), self.device)
+        save_image(out, os.path.join(output_path, '{}.jpg'.format(epoch)), nrow=image_frame_dim)</code></pre> 
+<p class="img-center"><img alt="" height="302" src="https://images2.imgbox.com/0b/c5/zIVO5cuk_o.jpg" width="302"></p> 
+<p> </p> 
+<p>完整代码如下：</p> 
+<pre><code class="language-python">import torch, time, os
+import numpy as np
+import torch.nn as nn
+import torch.optim as optim
+from torchvision.datasets import MNIST
+from torchvision import transforms
+from torch.utils.data import DataLoader
+from torchvision.utils import save_image
+import torch.nn.functional as F
+
+
+class ResidualConvBlock(nn.Module):
+    def __init__(
+        self, in_channels: int, out_channels: int, is_res: bool = False
+    ) -&gt; None:
+        super().__init__()
+        '''
+        standard ResNet style convolutional block
+        '''
+        self.same_channels = in_channels==out_channels
+        self.is_res = is_res
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, 3, 1, 1),
+            nn.BatchNorm2d(out_channels),
+            nn.GELU(),
+        )
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(out_channels, out_channels, 3, 1, 1),
+            nn.BatchNorm2d(out_channels),
+            nn.GELU(),
+        )
+
+    def forward(self, x: torch.Tensor) -&gt; torch.Tensor:
+        if self.is_res:
+            x1 = self.conv1(x)
+            x2 = self.conv2(x1)
+            # this adds on correct residual in case channels have increased
+            if self.same_channels:
+                out = x + x2
+            else:
+                out = x1 + x2
+            return out / 1.414
+        else:
+            x1 = self.conv1(x)
+            x2 = self.conv2(x1)
+            return x2
+
+
+class UnetDown(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(UnetDown, self).__init__()
+        '''
+        process and downscale the image feature maps
+        '''
+        layers = [ResidualConvBlock(in_channels, out_channels), nn.MaxPool2d(2)]
+        self.model = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.model(x)
+
+
+class UnetUp(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(UnetUp, self).__init__()
+        '''
+        process and upscale the image feature maps
+        '''
+        layers = [
+            nn.ConvTranspose2d(in_channels, out_channels, 2, 2),
+            ResidualConvBlock(out_channels, out_channels),
+            ResidualConvBlock(out_channels, out_channels),
+        ]
+        self.model = nn.Sequential(*layers)
+
+    def forward(self, x, skip):
+        x = torch.cat((x, skip), 1)
+        x = self.model(x)
+        return x
+
+
+class EmbedFC(nn.Module):
+    def __init__(self, input_dim, emb_dim):
+        super(EmbedFC, self).__init__()
+        '''
+        generic one layer FC NN for embedding things  
+        '''
+        self.input_dim = input_dim
+        layers = [
+            nn.Linear(input_dim, emb_dim),
+            nn.GELU(),
+            nn.Linear(emb_dim, emb_dim),
+        ]
+        self.model = nn.Sequential(*layers)
+
+    def forward(self, x):
+        x = x.view(-1, self.input_dim)
+        return self.model(x)
+class Unet(nn.Module):
+    def __init__(self, in_channels, n_feat=256):
+        super(Unet, self).__init__()
+
+        self.in_channels = in_channels
+        self.n_feat = n_feat
+
+        self.init_conv = ResidualConvBlock(in_channels, n_feat, is_res=True)
+
+        self.down1 = UnetDown(n_feat, n_feat)
+        self.down2 = UnetDown(n_feat, 2 * n_feat)
+
+        self.to_vec = nn.Sequential(nn.AvgPool2d(7), nn.GELU())
+
+        self.timeembed1 = EmbedFC(1, 2 * n_feat)
+        self.timeembed2 = EmbedFC(1, 1 * n_feat)
+
+        self.up0 = nn.Sequential(
+            # nn.ConvTranspose2d(6 * n_feat, 2 * n_feat, 7, 7), # when concat temb and cemb end up w 6*n_feat
+            nn.ConvTranspose2d(2 * n_feat, 2 * n_feat, 7, 7),  # otherwise just have 2*n_feat
+            nn.GroupNorm(8, 2 * n_feat),
+            nn.ReLU(),
+        )
+
+        self.up1 = UnetUp(4 * n_feat, n_feat)
+        self.up2 = UnetUp(2 * n_feat, n_feat)
+        self.out = nn.Sequential(
+            nn.Conv2d(2 * n_feat, n_feat, 3, 1, 1),
+            nn.GroupNorm(8, n_feat),
+            nn.ReLU(),
+            nn.Conv2d(n_feat, self.in_channels, 3, 1, 1),
+        )
+
+    def forward(self, x, t):
+        '''
+        输入加噪图像和对应的时间step，预测反向噪声的正态分布
+        :param x: 加噪图像
+        :param t: 对应step
+        :return: 正态分布噪声
+        '''
+        x = self.init_conv(x)
+        down1 = self.down1(x)
+        down2 = self.down2(down1)
+        hiddenvec = self.to_vec(down2)
+
+        # embed time step
+        temb1 = self.timeembed1(t).view(-1, self.n_feat * 2, 1, 1)
+        temb2 = self.timeembed2(t).view(-1, self.n_feat, 1, 1)
+
+        # 将上采样输出与step编码相加，输入到下一个上采样层
+        up1 = self.up0(hiddenvec)
+        up2 = self.up1(up1 + temb1, down2)
+        up3 = self.up2(up2 + temb2, down1)
+        out = self.out(torch.cat((up3, x), 1))
+        return out
+
+class DDPM(nn.Module):
+    def __init__(self, model, betas, n_T, device):
+        super(DDPM, self).__init__()
+        self.model = model.to(device)
+
+        # register_buffer 可以提前保存alpha相关，节约时间
+        for k, v in self.ddpm_schedules(betas[0], betas[1], n_T).items():
+            self.register_buffer(k, v)
+
+        self.n_T = n_T
+        self.device = device
+        self.loss_mse = nn.MSELoss()
+
+    def ddpm_schedules(self, beta1, beta2, T):
+        '''
+        提前计算各个step的alpha，这里beta是线性变化
+        :param beta1: beta的下限
+        :param beta2: beta的下限
+        :param T: 总共的step数
+        '''
+        assert beta1 &lt; beta2 &lt; 1.0, "beta1 and beta2 must be in (0, 1)"
+
+        beta_t = (beta2 - beta1) * torch.arange(0, T + 1, dtype=torch.float32) / T + beta1 # 生成beta1-beta2均匀分布的数组
+        sqrt_beta_t = torch.sqrt(beta_t)
+        alpha_t = 1 - beta_t
+        log_alpha_t = torch.log(alpha_t)
+        alphabar_t = torch.cumsum(log_alpha_t, dim=0).exp() # alpha累乘
+
+        sqrtab = torch.sqrt(alphabar_t) # 根号alpha累乘
+        oneover_sqrta = 1 / torch.sqrt(alpha_t) # 1 / 根号alpha
+
+        sqrtmab = torch.sqrt(1 - alphabar_t) # 根号下（1-alpha累乘）
+        mab_over_sqrtmab_inv = (1 - alpha_t) / sqrtmab
+
+        return {
+            "alpha_t": alpha_t,  # \alpha_t
+            "oneover_sqrta": oneover_sqrta,  # 1/\sqrt{\alpha_t}
+            "sqrt_beta_t": sqrt_beta_t,  # \sqrt{\beta_t}
+            "alphabar_t": alphabar_t,  # \bar{\alpha_t}
+            "sqrtab": sqrtab,  # \sqrt{\bar{\alpha_t}} # 加噪标准差
+            "sqrtmab": sqrtmab,  # \sqrt{1-\bar{\alpha_t}}  # 加噪均值
+            "mab_over_sqrtmab": mab_over_sqrtmab_inv,  # (1-\alpha_t)/\sqrt{1-\bar{\alpha_t}}
+        }
+    def forward(self, x):
+        """
+        训练过程中, 随机选择step和生成噪声
+        """
+        # 随机选择step
+        _ts = torch.randint(1, self.n_T + 1, (x.shape[0],)).to(self.device)  # t ~ Uniform(0, n_T)
+        # 随机生成正态分布噪声
+        noise = torch.randn_like(x)  # eps ~ N(0, 1)
+        # 加噪后的图像x_t
+        x_t = (
+                self.sqrtab[_ts, None, None, None] * x
+                + self.sqrtmab[_ts, None, None, None] * noise
+
+        )
+
+        # 将unet预测的对应step的正态分布噪声与真实噪声做对比
+        return self.loss_mse(noise, self.model(x_t, _ts / self.n_T))
+
+    def sample(self, n_sample, size, device):
+        # 随机生成初始噪声图片 x_T ~ N(0, 1)
+        x_i = torch.randn(n_sample, *size).to(device)
+        for i in range(self.n_T, 0, -1):
+            t_is = torch.tensor([i / self.n_T]).to(device)
+            t_is = t_is.repeat(n_sample, 1, 1, 1)
+
+            z = torch.randn(n_sample, *size).to(device) if i &gt; 1 else 0
+
+            eps = self.model(x_i, t_is)
+            x_i = x_i[:n_sample]
+            x_i = self.oneover_sqrta[i] * (x_i - eps * self.mab_over_sqrtmab[i]) + self.sqrt_beta_t[i] * z
+        return x_i
+
+
+class ImageGenerator(object):
+    def __init__(self):
+        '''
+        初始化，定义超参数、数据集、网络结构等
+        '''
+        self.epoch = 20
+        self.sample_num = 100
+        self.batch_size = 256
+        self.lr = 0.0001
+        self.n_T = 400
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.init_dataloader()
+        self.sampler = DDPM(model=Unet(in_channels=1), betas=(1e-4, 0.02), n_T=self.n_T, device=self.device).to(self.device)
+        self.optimizer = optim.Adam(self.sampler.model.parameters(), lr=self.lr)
+
+    def init_dataloader(self):
+        '''
+        初始化数据集和dataloader
+        '''
+        tf = transforms.Compose([
+            transforms.ToTensor(),
+        ])
+        train_dataset = MNIST('./data/',
+                              train=True,
+                              download=True,
+                              transform=tf)
+        self.train_dataloader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, drop_last=True)
+        val_dataset = MNIST('./data/',
+                            train=False,
+                            download=True,
+                            transform=tf)
+        self.val_dataloader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False)
+
+    def train(self):
+        self.sampler.train()
+        print('训练开始!!')
+        for epoch in range(self.epoch):
+            self.sampler.model.train()
+            loss_mean = 0
+            for i, (images, labels) in enumerate(self.train_dataloader):
+                images, labels = images.to(self.device), labels.to(self.device)
+
+                # 将latent和condition拼接后输入网络
+                loss = self.sampler(images)
+                loss_mean += loss.item()
+                self.optimizer.zero_grad()
+                loss.backward()
+                self.optimizer.step()
+            train_loss = loss_mean / len(self.train_dataloader)
+            print('epoch:{}, loss:{:.4f}'.format(epoch, train_loss))
+            self.visualize_results(epoch)
+
+    @torch.no_grad()
+    def visualize_results(self, epoch):
+        self.sampler.eval()
+        # 保存结果路径
+        output_path = 'results/Diffusion'
+        if not os.path.exists(output_path):
+            os.makedirs(output_path)
+
+        tot_num_samples = self.sample_num
+        image_frame_dim = int(np.floor(np.sqrt(tot_num_samples)))
+        out = self.sampler.sample(tot_num_samples, (1, 28, 28), self.device)
+        save_image(out, os.path.join(output_path, '{}.jpg'.format(epoch)), nrow=image_frame_dim)
+
+
+
+if __name__ == '__main__':
+    generator = ImageGenerator()
+    generator.train()
+</code></pre> 
+<hr> 
+<h2>4. condition代码及结果</h2> 
+<p>如果我们要生成condition条件下的图像，我们需要对condition向量进行embedding后再拼接到unet输入中。</p> 
+<pre><code class="language-python">import torch, time, os
+import numpy as np
+import torch.nn as nn
+import torch.optim as optim
+from torchvision.datasets import MNIST
+from torchvision import transforms
+from torch.utils.data import DataLoader
+from torchvision.utils import save_image
+import torch.nn.functional as F
+
+
+class ResidualConvBlock(nn.Module):
+    def __init__(
+        self, in_channels: int, out_channels: int, is_res: bool = False
+    ) -&gt; None:
+        super().__init__()
+        '''
+        standard ResNet style convolutional block
+        '''
+        self.same_channels = in_channels==out_channels
+        self.is_res = is_res
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, 3, 1, 1),
+            nn.BatchNorm2d(out_channels),
+            nn.GELU(),
+        )
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(out_channels, out_channels, 3, 1, 1),
+            nn.BatchNorm2d(out_channels),
+            nn.GELU(),
+        )
+
+    def forward(self, x: torch.Tensor) -&gt; torch.Tensor:
+        if self.is_res:
+            x1 = self.conv1(x)
+            x2 = self.conv2(x1)
+            # this adds on correct residual in case channels have increased
+            if self.same_channels:
+                out = x + x2
+            else:
+                out = x1 + x2
+            return out / 1.414
+        else:
+            x1 = self.conv1(x)
+            x2 = self.conv2(x1)
+            return x2
+
+
+class UnetDown(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(UnetDown, self).__init__()
+        '''
+        process and downscale the image feature maps
+        '''
+        layers = [ResidualConvBlock(in_channels, out_channels), nn.MaxPool2d(2)]
+        self.model = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.model(x)
+
+
+class UnetUp(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(UnetUp, self).__init__()
+        '''
+        process and upscale the image feature maps
+        '''
+        layers = [
+            nn.ConvTranspose2d(in_channels, out_channels, 2, 2),
+            ResidualConvBlock(out_channels, out_channels),
+            ResidualConvBlock(out_channels, out_channels),
+        ]
+        self.model = nn.Sequential(*layers)
+
+    def forward(self, x, skip):
+        x = torch.cat((x, skip), 1)
+        x = self.model(x)
+        return x
+
+
+class EmbedFC(nn.Module):
+    def __init__(self, input_dim, emb_dim):
+        super(EmbedFC, self).__init__()
+        '''
+        generic one layer FC NN for embedding things  
+        '''
+        self.input_dim = input_dim
+        layers = [
+            nn.Linear(input_dim, emb_dim),
+            nn.GELU(),
+            nn.Linear(emb_dim, emb_dim),
+        ]
+        self.model = nn.Sequential(*layers)
+
+    def forward(self, x):
+        x = x.view(-1, self.input_dim)
+        return self.model(x)
+class Unet(nn.Module):
+    def __init__(self, in_channels, n_feat=256, n_classes=10):
+        super(Unet, self).__init__()
+
+        self.in_channels = in_channels
+        self.n_feat = n_feat
+
+        self.init_conv = ResidualConvBlock(in_channels, n_feat, is_res=True)
+
+        self.down1 = UnetDown(n_feat, n_feat)
+        self.down2 = UnetDown(n_feat, 2 * n_feat)
+
+        self.to_vec = nn.Sequential(nn.AvgPool2d(7), nn.GELU())
+
+        self.timeembed1 = EmbedFC(1, 2 * n_feat)
+        self.timeembed2 = EmbedFC(1, 1 * n_feat)
+        self.conditionembed1 = EmbedFC(n_classes, 2 * n_feat)
+        self.conditionembed2 = EmbedFC(n_classes, 1 * n_feat)
+
+        self.up0 = nn.Sequential(
+            # nn.ConvTranspose2d(6 * n_feat, 2 * n_feat, 7, 7), # when concat temb and cemb end up w 6*n_feat
+            nn.ConvTranspose2d(2 * n_feat, 2 * n_feat, 7, 7),  # otherwise just have 2*n_feat
+            nn.GroupNorm(8, 2 * n_feat),
+            nn.ReLU(),
+        )
+
+        self.up1 = UnetUp(4 * n_feat, n_feat)
+        self.up2 = UnetUp(2 * n_feat, n_feat)
+        self.out = nn.Sequential(
+            nn.Conv2d(2 * n_feat, n_feat, 3, 1, 1),
+            nn.GroupNorm(8, n_feat),
+            nn.ReLU(),
+            nn.Conv2d(n_feat, self.in_channels, 3, 1, 1),
+        )
+
+    def forward(self, x, c, t):
+        '''
+        输入加噪图像和对应的时间step，预测反向噪声的正态分布
+        :param x: 加噪图像
+        :param c: contition向量
+        :param t: 对应step
+        :return: 正态分布噪声
+        '''
+        x = self.init_conv(x)
+        down1 = self.down1(x)
+        down2 = self.down2(down1)
+        hiddenvec = self.to_vec(down2)
+
+        # embed time step
+        temb1 = self.timeembed1(t).view(-1, self.n_feat * 2, 1, 1)
+        temb2 = self.timeembed2(t).view(-1, self.n_feat, 1, 1)
+        cemb1 = self.conditionembed1(c).view(-1, self.n_feat * 2, 1, 1)
+        cemb2 = self.conditionembed2(c).view(-1, self.n_feat, 1, 1)
+
+        # 将上采样输出与step编码相加，输入到下一个上采样层
+        up1 = self.up0(hiddenvec)
+        up2 = self.up1(cemb1 * up1 + temb1, down2)
+        up3 = self.up2(cemb2 * up2 + temb2, down1)
+        out = self.out(torch.cat((up3, x), 1))
+        return out
+
+class DDPM(nn.Module):
+    def __init__(self, model, betas, n_T, device):
+        super(DDPM, self).__init__()
+        self.model = model.to(device)
+
+        # register_buffer 可以提前保存alpha相关，节约时间
+        for k, v in self.ddpm_schedules(betas[0], betas[1], n_T).items():
+            self.register_buffer(k, v)
+
+        self.n_T = n_T
+        self.device = device
+        self.loss_mse = nn.MSELoss()
+
+    def ddpm_schedules(self, beta1, beta2, T):
+        '''
+        提前计算各个step的alpha，这里beta是线性变化
+        :param beta1: beta的下限
+        :param beta2: beta的下限
+        :param T: 总共的step数
+        '''
+        assert beta1 &lt; beta2 &lt; 1.0, "beta1 and beta2 must be in (0, 1)"
+
+        beta_t = (beta2 - beta1) * torch.arange(0, T + 1, dtype=torch.float32) / T + beta1 # 生成beta1-beta2均匀分布的数组
+        sqrt_beta_t = torch.sqrt(beta_t)
+        alpha_t = 1 - beta_t
+        log_alpha_t = torch.log(alpha_t)
+        alphabar_t = torch.cumsum(log_alpha_t, dim=0).exp() # alpha累乘
+
+        sqrtab = torch.sqrt(alphabar_t) # 根号alpha累乘
+        oneover_sqrta = 1 / torch.sqrt(alpha_t) # 1 / 根号alpha
+
+        sqrtmab = torch.sqrt(1 - alphabar_t) # 根号下（1-alpha累乘）
+        mab_over_sqrtmab_inv = (1 - alpha_t) / sqrtmab
+
+        return {
+            "alpha_t": alpha_t,  # \alpha_t
+            "oneover_sqrta": oneover_sqrta,  # 1/\sqrt{\alpha_t}
+            "sqrt_beta_t": sqrt_beta_t,  # \sqrt{\beta_t}
+            "alphabar_t": alphabar_t,  # \bar{\alpha_t}
+            "sqrtab": sqrtab,  # \sqrt{\bar{\alpha_t}} # 加噪标准差
+            "sqrtmab": sqrtmab,  # \sqrt{1-\bar{\alpha_t}}  # 加噪均值
+            "mab_over_sqrtmab": mab_over_sqrtmab_inv,  # (1-\alpha_t)/\sqrt{1-\bar{\alpha_t}}
+        }
+
+    def forward(self, x, c):
+        """
+        训练过程中, 随机选择step和生成噪声
+        """
+        # 随机选择step
+        _ts = torch.randint(1, self.n_T + 1, (x.shape[0],)).to(self.device)  # t ~ Uniform(0, n_T)
+        # 随机生成正态分布噪声
+        noise = torch.randn_like(x)  # eps ~ N(0, 1)
+        # 加噪后的图像x_t
+        x_t = (
+                self.sqrtab[_ts, None, None, None] * x
+                + self.sqrtmab[_ts, None, None, None] * noise
+
+        )
+
+        # 将unet预测的对应step的正态分布噪声与真实噪声做对比
+        return self.loss_mse(noise, self.model(x_t, c, _ts / self.n_T))
+
+    def sample(self, n_sample, c, size, device):
+        # 随机生成初始噪声图片 x_T ~ N(0, 1)
+        x_i = torch.randn(n_sample, *size).to(device)
+        for i in range(self.n_T, 0, -1):
+            t_is = torch.tensor([i / self.n_T]).to(device)
+            t_is = t_is.repeat(n_sample, 1, 1, 1)
+
+            z = torch.randn(n_sample, *size).to(device) if i &gt; 1 else 0
+
+            eps = self.model(x_i, c, t_is)
+            x_i = x_i[:n_sample]
+            x_i = self.oneover_sqrta[i] * (x_i - eps * self.mab_over_sqrtmab[i]) + self.sqrt_beta_t[i] * z
+        return x_i
+
+
+class ImageGenerator(object):
+    def __init__(self):
+        '''
+        初始化，定义超参数、数据集、网络结构等
+        '''
+        self.epoch = 20
+        self.sample_num = 100
+        self.batch_size = 256
+        self.lr = 0.0001
+        self.n_T = 400
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.init_dataloader()
+        self.sampler = DDPM(model=Unet(in_channels=1), betas=(1e-4, 0.02), n_T=self.n_T, device=self.device).to(self.device)
+        self.optimizer = optim.Adam(self.sampler.model.parameters(), lr=self.lr)
+
+    def init_dataloader(self):
+        '''
+        初始化数据集和dataloader
+        '''
+        tf = transforms.Compose([
+            transforms.ToTensor(),
+        ])
+        train_dataset = MNIST('./data/',
+                              train=True,
+                              download=True,
+                              transform=tf)
+        self.train_dataloader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, drop_last=True)
+        val_dataset = MNIST('./data/',
+                            train=False,
+                            download=True,
+                            transform=tf)
+        self.val_dataloader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False)
+
+    def train(self):
+        self.sampler.train()
+        print('训练开始!!')
+        for epoch in range(self.epoch):
+            self.sampler.model.train()
+            loss_mean = 0
+            for i, (images, labels) in enumerate(self.train_dataloader):
+                images, labels = images.to(self.device), labels.to(self.device)
+                labels = F.one_hot(labels, num_classes=10).float()
+                # 将latent和condition拼接后输入网络
+                loss = self.sampler(images, labels)
+                loss_mean += loss.item()
+                self.optimizer.zero_grad()
+                loss.backward()
+                self.optimizer.step()
+            train_loss = loss_mean / len(self.train_dataloader)
+            print('epoch:{}, loss:{:.4f}'.format(epoch, train_loss))
+            self.visualize_results(epoch)
+
+    @torch.no_grad()
+    def visualize_results(self, epoch):
+        self.sampler.eval()
+        # 保存结果路径
+        output_path = 'results/Diffusion'
+        if not os.path.exists(output_path):
+            os.makedirs(output_path)
+
+        tot_num_samples = self.sample_num
+        image_frame_dim = int(np.floor(np.sqrt(tot_num_samples)))
+        labels = F.one_hot(torch.Tensor(np.repeat(np.arange(10), 10)).to(torch.int64), num_classes=10).to(self.device).float()
+        out = self.sampler.sample(tot_num_samples, labels, (1, 28, 28), self.device)
+        save_image(out, os.path.join(output_path, '{}.jpg'.format(epoch)), nrow=image_frame_dim)
+
+
+
+if __name__ == '__main__':
+    generator = ImageGenerator()
+    generator.train()
+</code></pre> 
+<p class="img-center"><img alt="" height="302" src="https://images2.imgbox.com/c4/61/GWMfhguo_o.jpg" width="302"></p> 
+<p style="text-align:justify;">但是如果我们只用condition条件，网络可能过拟合后就无法生成非condition条件下的图像。为了同时满足condition和非condition生成，可以采用classifier free guide的方法，即将condition和非condition同时输入进网络同时训练。代码后续有机会补上~</p> 
+<hr> 
+<p>业务合作/学习交流+v：lizhiTechnology</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/c07aaf868e9482fec2daa994cd372f09/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">快速获得图像中像素值的小工具</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/947522ae6040fa71f299b43faa5a72d8/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">掌握C语言输入技巧：getchar()函数消除回车符困扰</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

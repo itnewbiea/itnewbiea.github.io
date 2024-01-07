@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>opencv dnn模块 示例(22) 目标检测 object_detection 之 yolov7 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="opencv dnn模块 示例(22) 目标检测 object_detection 之 yolov7" />
+<meta property="og:description" content="在YOLOv6 初版出来不久，YOLOv7就立马横空出世了。与YOLOv5、YOLOv6不同，YOLOv7是由YOLOv4团队的原班人马提出的（官方出品）。从论文的表上来看，目前YOLOv7无论是在实时性还是准确率上都已经超过了当时已知的所有目标检测算法。并且它在COCO数据集上达到了56.8%的AP。
+文章目录 1、YOLOv7介绍1.1、创新点1.2、详细设计1.2.1、聚合网络设计1.2.2、卷积重参化1.2.3、基于concatenate的模型缩放1.2.4、标签分配1.2.5、训练时的其它策略 1.3、实验结果 2、测试2.1、官方脚本测试2.2、opencv dnn测试2.3、测试统计 3、Opencv dnn 批量推理 1、YOLOv7介绍 1.1、创新点 模型结构重参化和动态标签分配已经成为了目标检测领域中的主要优化方向。针对于结构重参化，作者
+通过分析梯度的传播路径来为网络中的不同层进行结构重参化优化，并且提出了不同规划的模型结构重参化。在动态标签分配上，因为模型有多个输出层，所以在训练时就难以为不同的分支分配更好地动态目标。所以作者提出了一个新的动态标签分配办法：coarse-to-fine，即由粗到细引导标签分配的策略。
+还提出了扩展和复合缩放的方式，通过这种方式可以更高效利用参数量和计算量。这样不仅可以减少大量参数，还可以提高推理速度以及检测精度。
+并且设计了几个可以训练的bag-of-freebies。这样使得模型在不更改本身结构时，大大提高检测精度。
+1.2、详细设计 1.2.1、聚合网络设计 为了增强网络的实时性检测，YOLOv7里使使用VoVNet的变体CSPVOVNet。不仅考虑模型的参数量、计算量、内存访问次数、输入输出的通道比、element-wise操作等方面分析参数的数量、计算量和计算密度，还分析了梯度的在模型中流动路径，通过这个来使得不同层的权重能够学习到更加多样化的特征。
+还提出了基于ELAN的Extended-ELAN，也就是E-ELAN方法。通过高效长程注意力网络来控制梯度的最短最长路径，让更深的网络可以更加高效地学习和收敛。作者提出的E-ELAN使用expand、shuffle、merge cardinality来实现在不破坏原有梯度路径的情况下，提升网络的学习能力。无论梯度路径长度和大规模ELAN中计算块的堆叠数量如何，网络都能够达到稳定状态，但是倘若继续这样一直地堆叠这一些计算块下去，反而可能会破坏这种稳定的状态，从而导致降低参数的利用率。
+在结构方面，E-ELAN只改变块本身的架构，对于过渡层的架构则没有改变，这边的调整策略是使用组卷积来扩展计算块的通道和基数，将对计算层的所有计算块应用相同的组参数和通道数，然后，对于每个计算块输出的特征图会根据设置的组参数g被随即打乱成g个组，之后再将它们连接在一起。注意到这个时候，每组特征图的通道数和原来架构中的通道数是一样的，最后，添加g组的特征图来执行合并基数。E-ELAN除了保持原有的ELAN设计架构外，还可以帮助其它组的计算块学习到更加多样化的特征。
+1.2.2、卷积重参化 重参化技术是模型在推理时将多个模块合并成一个模块的方法，其实就是一种集成技术。常见的重参化技术有：
+一种是用不同的训练数据训练多个相同的模型，然后对多个训练模型的权重进行平均。一种是对不同迭代次数下模型权重进行加权平均。 然RepConv在VGG上取得了很不错的效果，但将它直接应用于ResNet和DenseNet或其他骨干网络时，它的精度却下降得很厉害。作者就是用梯度传播路径的方法来分析，因为RepConv结合了3×3卷积，1×1卷积，和在一个卷积层中的identity连接，可是这个identity破坏力ResNet的残差连接以及DenseNet的跨层连接，为不同的特征图提供了更多的梯度多样性。
+因此，作者认为，在同时使用重参化卷积和残差连接或者跨层连接时，不应该存在identity连接，而且作者还分析重参数化的卷积应该如何与不同的网络结构相结合以及设计了不同的重参数化的卷积。
+1.2.3、基于concatenate的模型缩放 模型缩放是调整模型的大小来生成不同尺度的模型，用于满足不同场景下的推理需求。如今的网络中，主要的缩放因子有input size、depth、width、stage，通过控制这些参数，模型的参数量、计算量、推理速度和精度都有一个很好的平衡。同时，网络架构搜索NAS技术也经常使用到。
+作者还发现使用concatenate模型时，不能单独地分析缩放因子的影响，还必须结合通道数的变化一起分析，因为在这过程中会导致输入通道和输出通道的比例会发生变化，从而导致模型的硬件使用率降低。还提出了一种复合缩放方法，这样不仅可以保持模型在初始设计时的特性还可以保持性能最佳时的结构。
+1.2.4、标签分配 但近年来，需要研究者会利用网络的推理结果来结合GT，去生成一些软标签，如IOU。在YOLOv7中，有辅助头也有引导头，在训练时，它们二者都需要得到监督。因此，需要考虑如何为辅助头和引导头进行标签分配。因此在这里，作者提出了一种新的标签分配方法，是以引导头为主，通过引导头的推理来指引辅助头和自身的学习。
+使用引导头的推理结果作为指导，生成从粗到细的层次标签，分别用于辅助头和引导头的学习。为了使那些超粗的正网格影响更小，会在解码器中设置限制，来使超粗的正网格无法完美地产生软标签。通过以上的机制，允许在学习过程中动态调整细标签和粗标签的重要性，使细标签的始终优于粗标签。
+1.2.5、训练时的其它策略 Batch Normalization：
+即将Batch Normalization层直接连接到卷积层中。这样可以在推理时将Batch Normalization的均值和方差直接融合到卷积层的偏差和权重中。
+YOLOR中结合隐性知识和卷积特征图的加法和乘法方法
+在YOLOR中，它认为隐式知识可以在推理时通过预计算步骤被简化为向量。然后再把这个向量和前一个或后一个卷积层的偏差和权重融合在一起。
+EMA：
+EMA是一种在mean teacher中使用的技术，在系统中使用EMA模型纯粹作为最终的推理模型。EMA可以用来估计变量的局部均值，使得变量的更新与一段时间内的历史取值有关，这里可以取得平滑的作用。如果取n步的平均，就能使得模型更加得鲁棒。
+1.3、实验结果 作者为边缘GPU、普通GPU、高性能云GPU三种不同场景设计了三种模型，分别是YOLOv7-Tiny、YOLOv7和YOLOv7-W6。并且通过论文中的复合缩放方法，对整个模型的深度、宽度进行缩放，得到了YOLOv7-X、YOLOv7-E6和YOLOv7-D6。以及在YOLOv7-E6基础上使用了E-ELAN技术来获得YOLOv7-E6E。
+可以看到以下和其他目标检测器的速度、精度对比结果。
+2、测试 以模型 YOLOv7.pt 为例进行测试 下载链接
+2.1、官方脚本测试 使用默认脚本参数，设置--device 0使用GPU加速对目录中的所有图片进行推理。代码中当使用GPU加速时，提前进行了warmup。
+(yolo_pytorch) E:\DeepLearning\yolov7&gt;python detect.py --weights yolov7.pt --source inference/images --device 0 Namespace(weights=[&#39;yolov7.pt&#39;], source=&#39;inference/images&#39;, img_size=640, conf_thres=0.25, iou_thres=0." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/4ce0dd70142a4fede9efeb636b366db4/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-11-10T21:45:00+08:00" />
+<meta property="article:modified_time" content="2023-11-10T21:45:00+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">opencv dnn模块 示例(22) 目标检测 object_detection 之 yolov7</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>在YOLOv6 初版出来不久，YOLOv7就立马横空出世了。与YOLOv5、YOLOv6不同，YOLOv7是由YOLOv4团队的原班人马提出的（官方出品）。从论文的表上来看，目前YOLOv7无论是在实时性还是准确率上都已经超过了当时已知的所有目标检测算法。并且它在COCO数据集上达到了56.8%的AP。</p> 
+<p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#1YOLOv7_3" rel="nofollow">1、YOLOv7介绍</a></li><li><ul><li><a href="#11_4" rel="nofollow">1.1、创新点</a></li><li><a href="#12_12" rel="nofollow">1.2、详细设计</a></li><li><ul><li><a href="#121_13" rel="nofollow">1.2.1、聚合网络设计</a></li><li><a href="#122_20" rel="nofollow">1.2.2、卷积重参化</a></li><li><a href="#123concatenate_30" rel="nofollow">1.2.3、基于concatenate的模型缩放</a></li><li><a href="#124_36" rel="nofollow">1.2.4、标签分配</a></li><li><a href="#125_41" rel="nofollow">1.2.5、训练时的其它策略</a></li></ul> 
+   </li><li><a href="#13_51" rel="nofollow">1.3、实验结果</a></li></ul> 
+  </li><li><a href="#2_59" rel="nofollow">2、测试</a></li><li><ul><li><a href="#21_62" rel="nofollow">2.1、官方脚本测试</a></li><li><a href="#22opencv_dnn_99" rel="nofollow">2.2、opencv dnn测试</a></li><li><a href="#23_128" rel="nofollow">2.3、测试统计</a></li></ul> 
+  </li><li><a href="#3Opencv_dnn__145" rel="nofollow">3、Opencv dnn 批量推理</a></li></ul> 
+</div> 
+<p></p> 
+<h2><a id="1YOLOv7_3"></a>1、YOLOv7介绍</h2> 
+<h3><a id="11_4"></a>1.1、创新点</h3> 
+<p>模型结构重参化和动态标签分配已经成为了目标检测领域中的主要优化方向。针对于结构重参化，作者<br> 通过分析梯度的传播路径来为网络中的不同层进行结构重参化优化，并且提出了不同规划的模型结构重参化。在动态标签分配上，因为模型有多个输出层，所以在训练时就难以为不同的分支分配更好地动态目标。所以作者提出了一个新的动态标签分配办法：coarse-to-fine，即由粗到细引导标签分配的策略。</p> 
+<p>还提出了扩展和复合缩放的方式，通过这种方式可以更高效利用参数量和计算量。这样不仅可以减少大量参数，还可以提高推理速度以及检测精度。</p> 
+<p>并且设计了几个可以训练的bag-of-freebies。这样使得模型在不更改本身结构时，大大提高检测精度。</p> 
+<h3><a id="12_12"></a>1.2、详细设计</h3> 
+<h4><a id="121_13"></a>1.2.1、聚合网络设计</h4> 
+<p>为了增强网络的实时性检测，YOLOv7里使使用VoVNet的变体CSPVOVNet。不仅考虑模型的参数量、计算量、内存访问次数、输入输出的通道比、element-wise操作等方面分析参数的数量、计算量和计算密度，还分析了梯度的在模型中流动路径，通过这个来使得不同层的权重能够学习到更加多样化的特征。<br> <img src="https://images2.imgbox.com/ee/86/ST0gl7Md_o.png" alt="在这里插入图片描述"><br> 还提出了基于ELAN的Extended-ELAN，也就是E-ELAN方法。通过高效长程注意力网络来控制梯度的最短最长路径，让更深的网络可以更加高效地学习和收敛。作者提出的E-ELAN使用expand、shuffle、merge cardinality来实现在不破坏原有梯度路径的情况下，提升网络的学习能力。无论梯度路径长度和大规模ELAN中计算块的堆叠数量如何，网络都能够达到稳定状态，但是倘若继续这样一直地堆叠这一些计算块下去，反而可能会破坏这种稳定的状态，从而导致降低参数的利用率。<br> <img src="https://images2.imgbox.com/b3/a0/aNOOzSt1_o.png" alt="在这里插入图片描述"><br> 在结构方面，E-ELAN只改变块本身的架构，对于过渡层的架构则没有改变，这边的调整策略是使用组卷积来扩展计算块的通道和基数，将对计算层的所有计算块应用相同的组参数和通道数，然后，对于每个计算块输出的特征图会根据设置的组参数g被随即打乱成g个组，之后再将它们连接在一起。注意到这个时候，每组特征图的通道数和原来架构中的通道数是一样的，最后，添加g组的特征图来执行合并基数。E-ELAN除了保持原有的ELAN设计架构外，还可以帮助其它组的计算块学习到更加多样化的特征。</p> 
+<h4><a id="122_20"></a>1.2.2、卷积重参化</h4> 
+<p>重参化技术是模型在推理时将多个模块合并成一个模块的方法，其实就是一种集成技术。常见的重参化技术有：</p> 
+<ul><li>一种是用不同的训练数据训练多个相同的模型，然后对多个训练模型的权重进行平均。</li><li>一种是对不同迭代次数下模型权重进行加权平均。</li></ul> 
+<p>然RepConv在VGG上取得了很不错的效果，但将它直接应用于ResNet和DenseNet或其他骨干网络时，它的精度却下降得很厉害。作者就是用梯度传播路径的方法来分析，因为RepConv结合了3×3卷积，1×1卷积，和在一个卷积层中的identity连接，可是这个identity破坏力ResNet的残差连接以及DenseNet的跨层连接，为不同的特征图提供了更多的梯度多样性。</p> 
+<p>因此，作者认为，在同时使用重参化卷积和残差连接或者跨层连接时，不应该存在identity连接，而且作者还分析重参数化的卷积应该如何与不同的网络结构相结合以及设计了不同的重参数化的卷积。<br> <img src="https://images2.imgbox.com/28/5b/KcvWkche_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="123concatenate_30"></a>1.2.3、基于concatenate的模型缩放</h4> 
+<p>模型缩放是调整模型的大小来生成不同尺度的模型，用于满足不同场景下的推理需求。如今的网络中，主要的缩放因子有input size、depth、width、stage，通过控制这些参数，模型的参数量、计算量、推理速度和精度都有一个很好的平衡。同时，网络架构搜索NAS技术也经常使用到。</p> 
+<p>作者还发现使用concatenate模型时，不能单独地分析缩放因子的影响，还必须结合通道数的变化一起分析，因为在这过程中会导致输入通道和输出通道的比例会发生变化，从而导致模型的硬件使用率降低。还提出了一种复合缩放方法，这样不仅可以保持模型在初始设计时的特性还可以保持性能最佳时的结构。</p> 
+<p><img src="https://images2.imgbox.com/8b/f7/CUU0kqaU_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="124_36"></a>1.2.4、标签分配</h4> 
+<p>但近年来，需要研究者会利用网络的推理结果来结合GT，去生成一些软标签，如IOU。在YOLOv7中，有辅助头也有引导头，在训练时，它们二者都需要得到监督。因此，需要考虑如何为辅助头和引导头进行标签分配。因此在这里，作者提出了一种新的标签分配方法，是以引导头为主，通过引导头的推理来指引辅助头和自身的学习。<br> <img src="https://images2.imgbox.com/d5/5a/rKeoIpfH_o.png" alt="在这里插入图片描述"><br> 使用引导头的推理结果作为指导，生成从粗到细的层次标签，分别用于辅助头和引导头的学习。为了使那些超粗的正网格影响更小，会在解码器中设置限制，来使超粗的正网格无法完美地产生软标签。通过以上的机制，允许在学习过程中动态调整细标签和粗标签的重要性，使细标签的始终优于粗标签。<br> <img src="https://images2.imgbox.com/be/e2/mmtmUUlR_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="125_41"></a>1.2.5、训练时的其它策略</h4> 
+<ul><li> <p>Batch Normalization：<br> 即将Batch Normalization层直接连接到卷积层中。这样可以在推理时将Batch Normalization的均值和方差直接融合到卷积层的偏差和权重中。</p> </li><li> <p>YOLOR中结合隐性知识和卷积特征图的加法和乘法方法<br> 在YOLOR中，它认为隐式知识可以在推理时通过预计算步骤被简化为向量。然后再把这个向量和前一个或后一个卷积层的偏差和权重融合在一起。</p> </li><li> <p>EMA：<br> EMA是一种在mean teacher中使用的技术，在系统中使用EMA模型纯粹作为最终的推理模型。EMA可以用来估计变量的局部均值，使得变量的更新与一段时间内的历史取值有关，这里可以取得平滑的作用。如果取n步的平均，就能使得模型更加得鲁棒。</p> </li></ul> 
+<h3><a id="13_51"></a>1.3、实验结果</h3> 
+<p>作者为边缘GPU、普通GPU、高性能云GPU三种不同场景设计了三种模型，分别是YOLOv7-Tiny、YOLOv7和YOLOv7-W6。并且通过论文中的复合缩放方法，对整个模型的深度、宽度进行缩放，得到了YOLOv7-X、YOLOv7-E6和YOLOv7-D6。以及在YOLOv7-E6基础上使用了E-ELAN技术来获得YOLOv7-E6E。<br> <img src="https://images2.imgbox.com/22/c9/zM7sKbRi_o.png" alt="在这里插入图片描述"></p> 
+<p>可以看到以下和其他目标检测器的速度、精度对比结果。<br> <img src="https://images2.imgbox.com/c1/12/Jb65odix_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="2_59"></a>2、测试</h2> 
+<p>以模型 YOLOv7.pt 为例进行测试 <a href="https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7.pt">下载链接</a></p> 
+<h3><a id="21_62"></a>2.1、官方脚本测试</h3> 
+<p>使用默认脚本参数，设置<code>--device 0</code>使用GPU加速对目录中的所有图片进行推理。代码中当使用GPU加速时，提前进行了warmup。</p> 
+<pre><code class="prism language-sh"><span class="token punctuation">(</span>yolo_pytorch<span class="token punctuation">)</span> E:<span class="token punctuation">\</span>DeepLearning<span class="token punctuation">\</span>yolov<span class="token operator"><span class="token file-descriptor important">7</span>&gt;</span>python detect.py <span class="token parameter variable">--weights</span> yolov7.pt <span class="token parameter variable">--source</span> inference/images <span class="token parameter variable">--device</span> <span class="token number">0</span>
+Namespace<span class="token punctuation">(</span>weights<span class="token operator">=</span><span class="token punctuation">[</span><span class="token string">'yolov7.pt'</span><span class="token punctuation">]</span>, <span class="token assign-left variable">source</span><span class="token operator">=</span><span class="token string">'inference/images'</span>, <span class="token assign-left variable">img_size</span><span class="token operator">=</span><span class="token number">640</span>, <span class="token assign-left variable">conf_thres</span><span class="token operator">=</span><span class="token number">0.25</span>, <span class="token assign-left variable">iou_thres</span><span class="token operator">=</span><span class="token number">0.45</span>, <span class="token assign-left variable">device</span><span class="token operator">=</span><span class="token string">'0'</span>, <span class="token assign-left variable">view_img</span><span class="token operator">=</span>False, <span class="token assign-left variable">save_txt</span><span class="token operator">=</span>False, <span class="token assign-left variable">save_conf</span><span class="token operator">=</span>False, <span class="token assign-left variable">nosave</span><span class="token operator">=</span>False, <span class="token assign-left variable">classes</span><span class="token operator">=</span>None, <span class="token assign-left variable">agnostic_nms</span><span class="token operator">=</span>False, <span class="token assign-left variable">augment</span><span class="token operator">=</span>False, <span class="token assign-left variable">update</span><span class="token operator">=</span>False, <span class="token assign-left variable">project</span><span class="token operator">=</span><span class="token string">'runs/detect'</span>, <span class="token assign-left variable">name</span><span class="token operator">=</span><span class="token string">'exp'</span>, <span class="token assign-left variable">exist_ok</span><span class="token operator">=</span>False, <span class="token assign-left variable">no_trace</span><span class="token operator">=</span>False<span class="token punctuation">)</span>
+YOLOR  v0.1-122-g3b41c2c torch <span class="token number">1.13</span>.1+cu117 CUDA:0 <span class="token punctuation">(</span>NVIDIA GeForce GTX <span class="token number">1080</span> Ti, <span class="token number">11263</span>.75MB<span class="token punctuation">)</span>
+
+Fusing layers<span class="token punctuation">..</span>.
+RepConv.fuse_repvgg_block
+RepConv.fuse_repvgg_block
+RepConv.fuse_repvgg_block
+Model Summary: <span class="token number">306</span> layers, <span class="token number">36905341</span> parameters, <span class="token number">6652669</span> gradients
+ Convert model to Traced-model<span class="token punctuation">..</span>.
+ traced_script_module saved<span class="token operator">!</span>
+ model is traced<span class="token operator">!</span>
+
+D:<span class="token punctuation">\</span>Python<span class="token punctuation">\</span>anaconda3<span class="token punctuation">\</span>envs<span class="token punctuation">\</span>yolo_pytorch<span class="token punctuation">\</span>lib<span class="token punctuation">\</span>site-packages<span class="token punctuation">\</span>torch<span class="token punctuation">\</span>functional.py:504: UserWarning: torch.meshgrid: <span class="token keyword">in</span> an upcoming release, it will be required to pass the indexing argument. <span class="token punctuation">(</span>Triggered internally at C:<span class="token punctuation">\</span>actions-runner<span class="token punctuation">\</span>_work<span class="token punctuation">\</span>pytorch<span class="token punctuation">\</span>pytorch<span class="token punctuation">\</span>builder<span class="token punctuation">\</span>windows<span class="token punctuation">\</span>pytorch<span class="token punctuation">\</span>aten<span class="token punctuation">\</span>src<span class="token punctuation">\</span>ATen<span class="token punctuation">\</span>native<span class="token punctuation">\</span>TensorShape.cpp:3191.<span class="token punctuation">)</span>
+  <span class="token builtin class-name">return</span> _VF.meshgrid<span class="token punctuation">(</span>tensors, **kwargs<span class="token punctuation">)</span>  <span class="token comment"># type: ignore[attr-defined]</span>
+<span class="token number">4</span> persons, <span class="token number">1</span> bus, <span class="token number">1</span> tie, Done. <span class="token punctuation">(</span><span class="token number">28</span>.0ms<span class="token punctuation">)</span> Inference, <span class="token punctuation">(</span><span class="token number">4</span>.0ms<span class="token punctuation">)</span> NMS
+ The image with the result is saved in: runs<span class="token punctuation">\</span>detect<span class="token punctuation">\</span>exp19<span class="token punctuation">\</span>bus.jpg
+<span class="token number">1</span> bicycle, <span class="token number">1</span> car, <span class="token number">1</span> truck, <span class="token number">1</span> dog, Done. <span class="token punctuation">(</span><span class="token number">22</span>.0ms<span class="token punctuation">)</span> Inference, <span class="token punctuation">(</span><span class="token number">1</span>.0ms<span class="token punctuation">)</span> NMS
+ The image with the result is saved in: runs<span class="token punctuation">\</span>detect<span class="token punctuation">\</span>exp19<span class="token punctuation">\</span>dog.jpg
+<span class="token number">5</span> horses, Done. <span class="token punctuation">(</span><span class="token number">20</span>.0ms<span class="token punctuation">)</span> Inference, <span class="token punctuation">(</span><span class="token number">1</span>.0ms<span class="token punctuation">)</span> NMS
+ The image with the result is saved in: runs<span class="token punctuation">\</span>detect<span class="token punctuation">\</span>exp19<span class="token punctuation">\</span>horses.jpg
+<span class="token number">2</span> persons, <span class="token number">1</span> tie, <span class="token number">1</span> cake, Done. <span class="token punctuation">(</span><span class="token number">21</span>.0ms<span class="token punctuation">)</span> Inference, <span class="token punctuation">(</span><span class="token number">2</span>.0ms<span class="token punctuation">)</span> NMS
+ The image with the result is saved in: runs<span class="token punctuation">\</span>detect<span class="token punctuation">\</span>exp19<span class="token punctuation">\</span>image1.jpg
+<span class="token number">2</span> persons, <span class="token number">1</span> sports ball, Done. <span class="token punctuation">(</span><span class="token number">19</span>.0ms<span class="token punctuation">)</span> Inference, <span class="token punctuation">(</span><span class="token number">1</span>.0ms<span class="token punctuation">)</span> NMS
+ The image with the result is saved in: runs<span class="token punctuation">\</span>detect<span class="token punctuation">\</span>exp19<span class="token punctuation">\</span>image2.jpg
+<span class="token number">1</span> dog, <span class="token number">1</span> horse, Done. <span class="token punctuation">(</span><span class="token number">18</span>.0ms<span class="token punctuation">)</span> Inference, <span class="token punctuation">(</span><span class="token number">2</span>.0ms<span class="token punctuation">)</span> NMS
+ The image with the result is saved in: runs<span class="token punctuation">\</span>detect<span class="token punctuation">\</span>exp19<span class="token punctuation">\</span>image3.jpg
+<span class="token number">3</span> persons, <span class="token number">1</span> tie, Done. <span class="token punctuation">(</span><span class="token number">17</span>.0ms<span class="token punctuation">)</span> Inference, <span class="token punctuation">(</span><span class="token number">1</span>.0ms<span class="token punctuation">)</span> NMS
+ The image with the result is saved in: runs<span class="token punctuation">\</span>detect<span class="token punctuation">\</span>exp19<span class="token punctuation">\</span>zidane.jpg
+Done. <span class="token punctuation">(</span><span class="token number">0</span>.759s<span class="token punctuation">)</span>
+</code></pre> 
+<p>对于图片bus.jpg 的推理耗时为28ms。切换为CPU时，耗时增大到 770ms。</p> 
+<h3><a id="22opencv_dnn_99"></a>2.2、opencv dnn测试</h3> 
+<p>导出 onnx 模型：</p> 
+<ul><li>类似yolov4，三个尺度输出<br> 三个尺度输出分别为 [1,3,80,80,85]、 [1,3,40,40,85]、 [1,3,20,20,85]<pre><code class="prism language-sh">python export.py <span class="token parameter variable">--weights</span> yolov7.pt <span class="token parameter variable">--simplify</span> --img-size <span class="token number">640</span> <span class="token number">640</span> --max-wh <span class="token number">640</span>
+</code></pre> </li><li>grid导出，三个尺度输出进行合并<br> 合并输出结果 [3<em>80</em>80 + 3<em>40</em>40 + 3<em>20</em>20, 85] = [25200, 85]<pre><code class="prism language-sh">python export.py <span class="token parameter variable">--weights</span> yolov7.pt <span class="token parameter variable">--grid</span> <span class="token parameter variable">--simplify</span> --img-size <span class="token number">640</span> <span class="token number">640</span> --max-wh <span class="token number">640</span>
+</code></pre> </li><li>end2end<br> 根据指定参数，添加NMS输出的结果<pre><code class="prism language-sh">python export.py <span class="token parameter variable">--weights</span> yolov7.pt <span class="token parameter variable">--grid</span> <span class="token parameter variable">--end2end</span> <span class="token parameter variable">--simplify</span> --topk-all <span class="token number">100</span> --iou-thres <span class="token number">0.65</span> --conf-thres <span class="token number">0.35</span> --img-size <span class="token number">640</span> <span class="token number">640</span> --max-wh <span class="token number">640</span>
+</code></pre> </li></ul> 
+<p>使用Netron上看上述三个脚本生成的onnx文件模型结构</p> 
+<p><img src="https://images2.imgbox.com/57/49/qCBPxyhl_o.png" alt="****"><br> 这里为了方便，使用 <code>--grid</code> 导出的模型，直接复用前面 yolov5、yolor、yolov6的代码，识别置信度比yolov6低一些。<br> <img src="https://images2.imgbox.com/e0/03/SA9zzZjw_o.png" alt="在这里插入图片描述"></p> 
+<p>另外，官方在yolov5he yolov6的基础上，提供了 anchor free 的模型文件 <a href="https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7-u6.pt">yolov7-u6.pt</a>。</p> 
+<h3><a id="23_128"></a>2.3、测试统计</h3> 
+<p>python（CPU）：797ms<br> python（GPU）：28ms</p> 
+<p>opencv dnn（CPU）：890ms<br> opencv dnn（GPU）：28ms</p> 
+<p>后面测试包含 预处理+推理+后处理<br> openvino（CPU）：409ms<br> onnxruntime（GPU）：31ms<br> TensorRT：21ms</p> 
+<p>end2end模型的测试：<br> onnxruntime（CPU）：460ms<br> onnxruntime（GPU）：32ms<br> TensorRT：14ms</p> 
+<h2><a id="3Opencv_dnn__145"></a>3、Opencv dnn 批量推理</h2> 
+<p>当使用如下代码进行简单的批量推理时</p> 
+<pre><code class="prism language-c"><span class="token keyword">auto</span> inputImgs <span class="token operator">=</span> std<span class="token operator">::</span>vector<span class="token operator">&lt;</span>cv<span class="token operator">::</span>Mat<span class="token operator">&gt;</span><span class="token punctuation">{<!-- --></span>modelInput<span class="token punctuation">,</span> modelInput<span class="token punctuation">,</span> modelInput<span class="token punctuation">}</span><span class="token punctuation">;</span>
+<span class="token function">blobFromImages</span><span class="token punctuation">(</span>inputImgs<span class="token punctuation">,</span> blob<span class="token punctuation">,</span> scale<span class="token punctuation">,</span> cv<span class="token operator">::</span><span class="token function">Size2f</span><span class="token punctuation">(</span>inpWidth<span class="token punctuation">,</span> inpHeight<span class="token punctuation">)</span><span class="token punctuation">,</span> mean<span class="token punctuation">,</span> swapRB<span class="token punctuation">,</span> false<span class="token punctuation">)</span><span class="token punctuation">;</span>
+net<span class="token punctuation">.</span><span class="token function">setInput</span><span class="token punctuation">(</span>blob<span class="token punctuation">)</span><span class="token punctuation">;</span>
+net<span class="token punctuation">.</span><span class="token function">forward</span><span class="token punctuation">(</span>outs<span class="token punctuation">,</span> outNames<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>报错如下：</p> 
+<pre><code>[ERROR:0@4.559] global net_impl.cpp:1172 cv::dnn::dnn4_v20230620::Net::Impl::getLayerShapesRecursively     input[0] = [ 3 1 3 9 80 80 ]
+[ERROR:0@4.560] global net_impl.cpp:1182 cv::dnn::dnn4_v20230620::Net::Impl::getLayerShapesRecursively Exception message: OpenCV(4.8.0) D:\opencv\opencv4.8.0\sources\modules\dnn\src\layers\permute_layer.cpp:162: error: (-215:Assertion failed) (int)_numAxes == inputs[0].size() in function 'cv::dnn::PermuteLayerImpl::getMemoryShapes'
+</code></pre> 
+<p>yolov7要是实现批量推理，需要增加参数 <code>--dynamic-batch</code>，完成命令为</p> 
+<pre><code>python export.py --weights runs\train\yolov7-custom3\weights\best.pt --grid --simplify --img-size 640 640 --max-wh 640 --dynamic-batch
+</code></pre> 
+<p>这里使用训练模型的类别数为4，因此常规一张图一推理的维度为 [1，25200, 9]，按照常识，输入为[1x3,640,640]时，输出应该为[1x3,25200,9]，但是实际为 [1, 25200x3, 9] = [1, 75600, 9]，查看 转换都后onnx模型，<br> <img src="https://images2.imgbox.com/e2/ab/IaAmKoYf_o.png" alt="在这里插入图片描述"></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/81e9b5c0f47000aae84fca914771349a/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">PXE无人值守安装统信UOS1060桌面版系统</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/3628f3b4b00199bbc09bf2396777775e/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">如何使用JS实现轮播图</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

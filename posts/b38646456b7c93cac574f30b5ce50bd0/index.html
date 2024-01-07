@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>libopus 实现pcm 编码到opus - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="libopus 实现pcm 编码到opus" />
+<meta property="og:description" content="opus 是一种音频格式，常用于语音通话、视频会议中。最近做了个pcm 到opus 的编码，踩了不少坑，特此记录一下。
+目录
+1、基础知识
+2、使用流程
+2.1 创建编码器
+2.2 编码器配置
+2.3 进行编码
+2.4 完整代码
+3、结果验证
+4、参考资料
+1、基础知识 opus 支持2.5、5、10、20、40、60ms 等帧长，对于一个48000khz 的 16bit，双通道，20 ms 的pcm 音频来说，每ms 样本数为 48000/1000 = 48，采用位深为16bit/8 = 2byte，所以需要的pcm 字节数为
+pcm size = 48 样本/ms X 20ms X 2byte X 2 channel = 3840 byte 对于采样为16 bit 的2声道的PCM 数据来说，其内存布局如下图所示
+LLLL LLLL LLLL LLLL RRRR RRRR RRRR RRRR opus 编码函数是 opus_encode，其输入数组是 opus_int16 数组，2字节，要进行unsigned char 数组到 opus_int16 数组的转换后才能送入编码器。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/b38646456b7c93cac574f30b5ce50bd0/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-11-08T11:41:08+08:00" />
+<meta property="article:modified_time" content="2022-11-08T11:41:08+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">libopus 实现pcm 编码到opus</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>opus 是一种音频格式，常用于语音通话、视频会议中。最近做了个pcm 到opus 的编码，踩了不少坑，特此记录一下。</p> 
+<p id="main-toc"><strong>目录</strong></p> 
+<p id="1%E3%80%81%E5%9F%BA%E7%A1%80%E7%9F%A5%E8%AF%86-toc" style="margin-left:40px;"><a href="#1%E3%80%81%E5%9F%BA%E7%A1%80%E7%9F%A5%E8%AF%86" rel="nofollow">1、基础知识</a></p> 
+<p id="2%E3%80%81%E4%BD%BF%E7%94%A8%E6%B5%81%E7%A8%8B-toc" style="margin-left:40px;"><a href="#2%E3%80%81%E4%BD%BF%E7%94%A8%E6%B5%81%E7%A8%8B" rel="nofollow">2、使用流程</a></p> 
+<p id="2.1%20%E5%88%9B%E5%BB%BA%E7%BC%96%E7%A0%81%E5%99%A8-toc" style="margin-left:80px;"><a href="#2.1%20%E5%88%9B%E5%BB%BA%E7%BC%96%E7%A0%81%E5%99%A8" rel="nofollow">2.1 创建编码器</a></p> 
+<p id="2.2%20%E7%BC%96%E7%A0%81%E5%99%A8%E9%85%8D%E7%BD%AE-toc" style="margin-left:80px;"><a href="#2.2%20%E7%BC%96%E7%A0%81%E5%99%A8%E9%85%8D%E7%BD%AE" rel="nofollow">2.2 编码器配置</a></p> 
+<p id="2.3%20%E8%BF%9B%E8%A1%8C%E7%BC%96%E7%A0%81-toc" style="margin-left:80px;"><a href="#2.3%20%E8%BF%9B%E8%A1%8C%E7%BC%96%E7%A0%81" rel="nofollow">2.3 进行编码</a></p> 
+<p id="2.4%20%E5%AE%8C%E6%95%B4%E4%BB%A3%E7%A0%81-toc" style="margin-left:80px;"><a href="#2.4%20%E5%AE%8C%E6%95%B4%E4%BB%A3%E7%A0%81" rel="nofollow">2.4 完整代码</a></p> 
+<p id="3%E3%80%81%E7%BB%93%E6%9E%9C%E9%AA%8C%E8%AF%81-toc" style="margin-left:40px;"><a href="#3%E3%80%81%E7%BB%93%E6%9E%9C%E9%AA%8C%E8%AF%81" rel="nofollow">3、结果验证</a></p> 
+<p id="%E5%8F%82%E8%80%83-toc" style="margin-left:40px;"><a href="#%E5%8F%82%E8%80%83" rel="nofollow">4、参考资料</a></p> 
+<hr id="hr-toc"> 
+<p></p> 
+<h3 id="1%E3%80%81%E5%9F%BA%E7%A1%80%E7%9F%A5%E8%AF%86">1、基础知识</h3> 
+<p>opus 支持2.5、5、10、20、40、60ms 等帧长，对于一个48000khz 的 16bit，双通道，20 ms 的pcm 音频来说，每ms 样本数为 48000/1000 = 48，采用位深为16bit/8 = 2byte，所以需要的pcm 字节数为</p> 
+<pre><code class="language-cpp">   pcm size = 48 样本/ms  X 20ms X 2byte X 2 channel = 3840 byte</code></pre> 
+<p> 对于采样为16 bit 的2声道的PCM 数据来说，其内存布局如下图所示</p> 
+<pre><code class="language-cpp">LLLL LLLL LLLL LLLL RRRR RRRR RRRR RRRR</code></pre> 
+<p> opus 编码函数是 opus_encode，其输入数组是 opus_int16 数组，2字节，要进行unsigned char 数组到 opus_int16 数组的转换后才能送入编码器。</p> 
+<p></p> 
+<h3 id="2%E3%80%81%E4%BD%BF%E7%94%A8%E6%B5%81%E7%A8%8B">2、使用流程</h3> 
+<h4 id="2.1%20%E5%88%9B%E5%BB%BA%E7%BC%96%E7%A0%81%E5%99%A8">2.1 创建编码器</h4> 
+<pre><code class="language-cpp">OPUS_EXPORT OPUS_WARN_UNUSED_RESULT OpusEncoder *opus_encoder_create(
+    opus_int32 Fs,
+    int channels,
+    int application,
+    int *error
+);</code></pre> 
+<p>fs：采样率，8000，12000，16000，24000，48000 之一</p> 
+<p>channels：通道数</p> 
+<p>application：编码模式，有三种：</p> 
+<p> OPUS_APPLICATION_VOIP：对语音信号进行处理，适用于voip 业务场景</p> 
+<p> OPUS_APPLICATION_AUDIO：这个模式适用于音乐类型等非语音内容</p> 
+<p> OPUS_APPLICATION_RESTRICTED_LOWDELAY：低延迟模式</p> 
+<p>error ：编码返回值</p> 
+<p></p> 
+<h4 id="2.2%20%E7%BC%96%E7%A0%81%E5%99%A8%E9%85%8D%E7%BD%AE">2.2 编码器配置</h4> 
+<pre><code class="language-cpp">opus_encoder_ctl(OpusEncoder *st, int request, ...)</code></pre> 
+<p> st：opus_encoder_create 创建的结构体</p> 
+<p> request：宏定义的配置参数</p> 
+<p></p> 
+<p> 典型配置</p> 
+<pre><code class="language-cpp">    opus_encoder_ctl(encoder, OPUS_SET_VBR(0));//0:CBR, 1:VBR
+    opus_encoder_ctl(encoder, OPUS_SET_VBR_CONSTRAINT(true));
+    opus_encoder_ctl(encoder, OPUS_SET_BITRATE(96000));
+    opus_encoder_ctl(encoder, OPUS_SET_COMPLEXITY(8));//8    0~10
+    opus_encoder_ctl(encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
+    opus_encoder_ctl(encoder, OPUS_SET_LSB_DEPTH(16));//每个采样16个bit，2个byte
+    opus_encoder_ctl(encoder, OPUS_SET_DTX(0));
+    opus_encoder_ctl(encoder, OPUS_SET_INBAND_FEC(0));</code></pre> 
+<p></p> 
+<h4 id="2.3%20%E8%BF%9B%E8%A1%8C%E7%BC%96%E7%A0%81">2.3 进行编码</h4> 
+<pre><code class="language-cpp">OPUS_EXPORT OPUS_WARN_UNUSED_RESULT opus_int32 opus_encode(
+    OpusEncoder *st,
+    const opus_int16 *pcm,
+    int frame_size,
+    unsigned char *data,
+    opus_int32 max_data_bytes
+) </code></pre> 
+<p>st：opus编码器实例</p> 
+<p>pcm：输入的pcm 数据，双通道的话数据交叉存储，大小为 frame_size x channels x sizeof(ipus_int16)。</p> 
+<p>frme_size：<span style="color:#fe2c24;">每个通道中输入音频信号的样本数，这里不是传pcm 数组大小，比如采用的是 48000 hz 编码，20ms 帧长，那么frame_size 应该是48*2 = 960，pcm 分配大小= frame_size x channels x sizeof(ipus_int16)。</span></p> 
+<p>data：输出缓冲区，接收编码后的数据</p> 
+<p>max_data_bytes：输出缓冲区大小</p> 
+<p>返回值：实际编码后输出数据大小</p> 
+<p></p> 
+<h4 id="2.4%20%E5%AE%8C%E6%95%B4%E4%BB%A3%E7%A0%81">2.4 完整代码</h4> 
+<p>base_type.h</p> 
+<pre><code class="language-cpp">
+#ifndef __BASE_TYPE_H__
+#define __BASE_TYPE_H__
+typedef struct StreamInfo
+{
+    unsigned char *data;
+    int len;
+    int dts;
+}StreamInfo;
+
+#endif
+</code></pre> 
+<p>OpusEncoderImpl.h</p> 
+<pre><code class="language-cpp">
+#ifndef __OPUSENCODERIMPL_H
+#define __OPUSENCODERIMPL_H 
+#include "include/opus/opus.h"
+#include &lt;vector&gt;
+#include &lt;mutex&gt;
+#include "base_type.h"
+#include &lt;queue&gt;
+#include &lt;thread&gt;
+
+
+class OpusEncoderImpl
+{
+private:
+   OpusEncoder *encoder;
+   const int channel_num;
+   int sample_rate;
+   std::queue&lt;StreamInfo&gt; info_queue;
+   std::queue &lt;unsigned char&gt; pcm_queue;
+   std::mutex mutex;
+   bool isRuning = true;
+   std::mutex access_mutex;
+   std::unique_ptr&lt;std::thread&gt; m_thread;
+public:
+    OpusEncoderImpl(int sampleRate, int channel);
+    void Feed(unsigned char*data, int len);
+    bool PopFrame(StreamInfo &amp;info);
+    void EncodeRun();
+    void Stop();
+    ~OpusEncoderImpl();
+};
+</code></pre> 
+<p>OpusEncoderImpl.cpp</p> 
+<pre><code class="language-cpp">#include "OpusEncoderImpl.h"
+#include "OpusDecoderImpl.h"
+#include &lt;unistd.h&gt;
+#include &lt;stdlib.h&gt;
+#define MAX_PACKET_SIZE 3*1276
+
+/*
+* sampleRate:采样率
+* channel：通道数
+*/
+
+OpusEncoderImpl::OpusEncoderImpl(int sampleRate, int channel):channel_num(channel),sample_rate(sampleRate)
+ {
+    int err;
+    int applications[3] = {OPUS_APPLICATION_AUDIO, OPUS_APPLICATION_VOIP, OPUS_APPLICATION_RESTRICTED_LOWDELAY};
+   
+    encoder = opus_encoder_create(sampleRate, channel_num, applications[1], &amp;err);
+
+    if(err != OPUS_OK || encoder == NULL) {
+        printf("打开opus 编码器失败\n");
+    }
+
+    opus_encoder_ctl(encoder, OPUS_SET_VBR(0));//0:CBR, 1:VBR
+    opus_encoder_ctl(encoder, OPUS_SET_VBR_CONSTRAINT(true));
+    opus_encoder_ctl(encoder, OPUS_SET_BITRATE(96000));
+    opus_encoder_ctl(encoder, OPUS_SET_COMPLEXITY(8));//8    0~10
+    opus_encoder_ctl(encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
+    opus_encoder_ctl(encoder, OPUS_SET_LSB_DEPTH(16));//每个采样16个bit，2个byte
+    opus_encoder_ctl(encoder, OPUS_SET_DTX(0));
+    opus_encoder_ctl(encoder, OPUS_SET_INBAND_FEC(0));
+
+    EncodeRun();
+}
+//每一帧pcm 是23ms
+void OpusEncoderImpl::Feed(unsigned char *data, int len) {
+    mutex.lock();
+    for(auto i = 0;i &lt; len;i++) {
+        pcm_queue.emplace(data[i]);
+    }
+    mutex.unlock();
+}
+
+bool OpusEncoderImpl::PopFrame(StreamInfo &amp;info) {
+    if(info_queue.size() &gt; 0) {
+        access_mutex.lock();
+        info = info_queue.front();
+        info_queue.pop();
+        access_mutex.unlock();
+        return true;
+    }
+
+    return false;
+}
+
+
+//48000 采样率，48个样本/ms * 20ms * 2 channel = 1920
+void OpusEncoderImpl::EncodeRun() {
+    m_thread = std::make_unique&lt;std::thread&gt;([this](){
+        const int frame_size = 48*20;//960
+        const int input_len = sizeof(opus_int16) * frame_size * 2;
+
+        FILE *opus_file = fopen("/data/bin/out.customopus", "wb+");
+        FILE *pcm_file = fopen("/data/bin/out.pcm", "wb+");
+        OpusDecoderImpl decoder(48000, channel_num);
+
+        opus_int16 input_data[frame_size * 2] = {0};//frame_size*channels*sizeof(opus_int16)
+        unsigned char input_buffer[input_len] = {0};//每一帧的数据量
+        unsigned char out_data[MAX_PACKET_SIZE] = {0};
+        
+        while (isRuning) {   
+            if(pcm_queue.size() &gt;= input_len) {
+                mutex.lock();              
+                for(int i = 0;i &lt; input_len;i++) 
+                {
+                    input_buffer[i] = pcm_queue.front();
+                    pcm_queue.pop();
+                }
+
+                // for (size_t i = 0; i &lt; frame_size * channel_num; i++)
+                // {
+                //     input_data[i] = input_buffer[2*i + 1] &lt;&lt; 8 | input_buffer[2*i];
+                // }
+
+                mutex.unlock();
+                memcpy(input_data, input_buffer, input_len);
+                // fwrite(input_buffer, 1, input_len, pcm_file);
+                // fflush(pcm_file);          
+                auto ret = opus_encode(encoder, input_data, frame_size, out_data, MAX_PACKET_SIZE);
+                if(ret &lt; 0) {
+                    printf("opus编码失败, %d\n", ret);
+                    break;
+                }
+
+                //写入文件
+                // uint32_t len = static_cast&lt;int&gt;(ret);
+                // fwrite(&amp;len, 1, sizeof(uint32_t), opus_file);
+                //fwrite(out_data, 1, ret, opus_file);              
+                //fflush(opus_file);             
+                unsigned char* opus_buffer = (unsigned char*)malloc(ret);
+                memcpy(opus_buffer, out_data, ret);
+                //decoder.Decode(opus_buffer, ret);
+
+                StreamInfo info;
+                info.data = opus_buffer;
+                info.len = ret;
+                info.dts = 20;
+                access_mutex.lock();             
+                info_queue.push(info);
+                access_mutex.unlock();                      
+                
+            }else {
+                usleep(1000);
+            }  
+        } 
+    });
+
+}
+
+void OpusEncoderImpl::Stop() {
+    isRuning = false;
+    m_thread-&gt;join();
+
+    while (pcm_queue.size() &gt; 0)
+    {
+        pcm_queue.pop();
+    }
+
+    opus_encoder_destroy(encoder);
+    
+}
+
+OpusEncoderImpl::~OpusEncoderImpl() {
+
+}
+</code></pre> 
+<h3 id="3%E3%80%81%E7%BB%93%E6%9E%9C%E9%AA%8C%E8%AF%81">3、结果验证</h3> 
+<p>验证方法一是将编码后的文件打包成ogg，或者将编码后的数据再解码成pcm，用audacity 查看，这里是采用的是后者。</p> 
+<p></p> 
+<p>OpusDecoderImpl.h</p> 
+<pre><code class="language-cpp">
+#ifndef __OPUSDECODERIMPL_H
+#define __OPUSDECODERIMPL_H
+#include &lt;stdio.h&gt;
+#include "include/opus/opus.h"
+#include &lt;vector&gt;
+#include &lt;mutex&gt;
+#include "base_type.h"
+#include &lt;queue&gt;
+#include &lt;thread&gt;
+
+class OpusDecoderImpl
+{
+private:
+    /* data */
+    OpusDecoder *decoder;
+    int sample_rate;
+    int channel_num;
+    FILE *pcm_file;
+public:
+    bool Decode(unsigned char* in_data, int len);
+    OpusDecoderImpl(int sampleRate, int channel);
+    ~OpusDecoderImpl();
+};
+
+#endif
+</code></pre> 
+<p>OpusDecoderImpl.cpp</p> 
+<pre><code class="language-cpp">#include "OpusDecoderImpl.h"
+#define MAX_FRAME_SIZE 6*960
+#define CHANNELS 2
+
+OpusDecoderImpl::OpusDecoderImpl(int sampleRate, int channel) 
+{
+    int err;
+    decoder = opus_decoder_create(sampleRate, channel, &amp;err);
+    opus_decoder_ctl(decoder, OPUS_SET_LSB_DEPTH(16));
+    sample_rate = sample_rate;
+    channel_num = channel;
+    if(err &lt; 0 || decoder == NULL)
+    {
+        printf("创建解码器失败\n");
+        return;
+    }
+
+    pcm_file = fopen("/data/bin/decode.pcm", "wb+");
+}
+
+bool OpusDecoderImpl::Decode(unsigned char* in_data, int len)
+{
+    unsigned char pcm_bytes[MAX_FRAME_SIZE * CHANNELS * 2];
+    opus_int16 out[MAX_FRAME_SIZE * CHANNELS];
+    auto frame_size = opus_decode(decoder, in_data, len, out, MAX_FRAME_SIZE, 0);
+
+    if (frame_size &lt; 0)
+    {
+       printf("解码失败\n");
+       return false;
+    }
+
+    for (auto i = 0; i &lt; channel_num * frame_size; i++)
+    {
+        pcm_bytes[2 * i] = out[i] &amp; 0xFF;
+        pcm_bytes[2 * i + 1] = (out[i] &gt;&gt; 8) &amp; 0xFF;
+    }
+
+    fwrite(pcm_bytes, sizeof(short), frame_size * channel_num, pcm_file);
+    fflush(pcm_file);
+    return true;
+}
+
+OpusDecoderImpl::~OpusDecoderImpl()
+{
+
+}</code></pre> 
+<p></p> 
+<p>补上函数调用(ps：代码可能会有语法错误，请自行解决)</p> 
+<pre><code class="language-cpp">int main(int argc, char** argc)
+{
+    OpusEncoderImpl opusEncoder = new OpusEncoderImpl(48000, 2);
+
+    for (size_t i = 0; i &lt; 100; i++)
+    {
+        opusEncoder.Feed(pcm_data, pcm_len);//送pcm 数据编码
+    }
+
+    //读取编码后的opus，一般放在单独线程，这里只是为了方便
+    StreamInfo info;
+    while (opusEncoder.PopFrame(info))
+    {
+        .....
+    }
+    
+    opusEncoder.Stop();
+    
+}</code></pre> 
+<p></p> 
+<p></p> 
+<h3 id="%E5%8F%82%E8%80%83"><strong>4、参考资料</strong></h3> 
+<p><a href="https://blog.csdn.net/caijiwyj/article/details/120480404" title="音频和OPUS开源库简介_WuYuJun's blog的博客-CSDN博客_opus库">音频和OPUS开源库简介_WuYuJun's blog的博客-CSDN博客_opus库</a></p> 
+<p><a href="https://blog.csdn.net/taotao86520/article/details/108192548?spm=1001.2101.3001.6650.4&amp;utm_medium=distribute.pc_relevant.none-task-blog-2~default~CTRLIST~Rate-4-108192548-blog-115837786.pc_relevant_aa&amp;depth_1-utm_source=distribute.pc_relevant.none-task-blog-2~default~CTRLIST~Rate-4-108192548-blog-115837786.pc_relevant_aa&amp;utm_relevant_index=8" title="音视频编解码--Opus编解码系列1_Fenngtun的博客-CSDN博客">音视频编解码--Opus编解码系列1_Fenngtun的博客-CSDN博客</a></p> 
+<p><a href="https://blog.csdn.net/u011942101/article/details/115837786" title="Qt 之 opus编码_老菜鸟的每一天的博客-CSDN博客_opus编码">Qt 之 opus编码_老菜鸟的每一天的博客-CSDN博客_opus编码</a></p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p>  </p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/06867af678952d38aababb0822bc3b28/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">深度学习原理-----循环神经网络（RNN、LSTM）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/0d588506dbbfd4ab38792db72fbc5d9c/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">手机如何实现边充电边传输数据？</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>HNSW算法原理（一） - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="HNSW算法原理（一）" />
+<meta property="og:description" content="原文链接：https://blog.csdn.net/CHIERYU/article/details/81989920
+HNSW算法可类比于skip lists数据结构，对于增和查操作，其与skip lists有很多相同之处，下面讲讲HNSW算法中的2个关键问题，即：如何确定待插入点的层次，如何调参。
+一、HSNW算法将样本插入到第几层 每个样本属于哪个层呢？
+首先要写一个确定层次的函数，样本点属于每一层的概率是确定好的，且是从底层到高层逐渐递减的。
+确定每层概率的函数如下：
+//from faiss code //levelMult = 1/log(M) void HNSW::set_default_probas(int M, float levelMult) { int nn = 0; cum_nneighbor_per_level.push_back (0); for (int level = 0; ;level&#43;&#43;) { float proba = exp(-level / levelMult) * (1 - exp(-1 / levelMult)); if (proba &lt; 1e-9) break; assign_probas.push_back(proba); nn &#43;= level == 0 ? M * 2 : M;//特别地，第0层要求2M个邻居，以提高recall cum_nneighbor_per_level.push_back (nn); } } 上述代码的原理可以参考如下图片内容来辅助理解，层次t越大，那么概率应该越小。
+确定样本层次的函数如下： //from faiss code int HNSW::random_level() { double f = rng." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/43bd21ca38a021786453289c88567044/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2019-01-22T11:23:20+08:00" />
+<meta property="article:modified_time" content="2019-01-22T11:23:20+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">HNSW算法原理（一）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p> </p> 
+<p>原文链接：<a href="https://blog.csdn.net/CHIERYU/article/details/81989920">https://blog.csdn.net/CHIERYU/article/details/81989920</a></p> 
+<p>HNSW算法可类比于skip lists数据结构，对于增和查操作，其与skip lists有很多相同之处，下面讲讲HNSW算法中的2个关键问题，即：如何确定待插入点的层次，如何调参。</p> 
+<h3>一、HSNW算法将样本插入到第几层</h3> 
+<p>每个样本属于哪个层呢？</p> 
+<p>首先要写一个确定层次的函数，样本点属于每一层的概率是确定好的，且是从底层到高层逐渐递减的。</p> 
+<p>确定每层概率的函数如下：</p> 
+<pre class="has"><code class="language-cpp">//from faiss code
+//levelMult = 1/log(M)
+void HNSW::set_default_probas(int M, float levelMult)
+{
+    int nn = 0; 
+    cum_nneighbor_per_level.push_back (0); 
+    for (int level = 0; ;level++) {
+        float proba = exp(-level / levelMult) * (1 - exp(-1 / levelMult));
+        if (proba &lt; 1e-9) break;
+        assign_probas.push_back(proba);
+        nn += level == 0 ? M * 2 : M;//特别地，第0层要求2M个邻居，以提高recall
+        cum_nneighbor_per_level.push_back (nn);
+    }
+}</code></pre> 
+<p>上述代码的原理可以参考如下图片内容来辅助理解，层次t越大，那么概率应该越小。</p> 
+<p style="text-align:center;"><img alt="" class="has" height="199" src="https://images2.imgbox.com/12/35/dCzSvCRt_o.png" width="652"></p> 
+<p>确定样本层次的函数如下： </p> 
+<pre class="has"><code class="language-cpp">//from faiss code
+int HNSW::random_level()
+{
+    double f = rng.rand_float();
+    // could be a bit faster with bissection
+    for (int level = 0; level &lt; assign_probas.size(); level++) {
+        if (f &lt; assign_probas[level]) {
+            return level;
+        }    
+        f -= assign_probas[level];
+    }    
+    // happens with exponentially low probability
+    return assign_probas.size() - 1; 
+}</code></pre> 
+<p>然后确定n个样本，每个样本的层次，它跟特征无关。</p> 
+<pre class="has"><code class="language-cpp">//from faiss code
+for (int i = 0; i &lt; n; i++) {
+    int pt_level = hnsw.random_level();
+    hnsw.levels.push_back(pt_level + 1);
+}
+
+int max_level = 0;
+for (int i = 0; i &lt; n; i++) {
+    int pt_level = hnsw.levels[i + n0] - 1;
+    if (pt_level &gt; max_level) max_level = pt_level;
+    hnsw.offsets.push_back(hnsw.offsets.back() + cum_nneighbor_per_level[pt_level + 1]);
+    hnsw.neighbors.resize(hnsw.offsets.back(), -1);
+}
+</code></pre> 
+<p>上面的代码来自faiss，下面看看 <a href="https://github.com/nmslib/hnswlib/blob/master/hnswlib/hnswalg.h">hnswlib</a>上是如何确定样本的层次的。</p> 
+<pre class="has"><code>//from nmslib code
+//c++11随机数产生器
+std::default_random_engine level_generator_;
+size_t random_seed = 100
+level_generator_.seed(random_seed);
+
+int getRandomLevel(double reverse_size) {
+	//产生U(0,1)的随机数x,那么1-x也是均匀分布，-log(1-x)就是指数分布
+	std::uniform_real_distribution&lt;double&gt; distribution(0.0, 1.0);
+	//逆变换采样？
+	double r = -log(distribution(level_generator_)) * reverse_size;
+	return (int) r;
+}
+
+//调用
+size_t M_ = 16
+mult_ = 1 / log(1.0 * M_);// 0.83048202372
+int curlevel = getRandomLevel(mult_);</code></pre> 
+<p>下图中，横坐标表示概率，取值范围在[0,1]区间，对应蓝色的线往横坐标投影值；纵坐标表示某个点所在的最高层次，取值从0到正无穷，对应蓝色的线往纵坐标投影值。从中可以看到一个点对应的最高层次很大概率是第0层：</p> 
+<div style="text-align:center;"> 
+ <figure class="image"> 
+  <img alt="" src="https://images2.imgbox.com/b4/60/JG4e26DA_o.png"> 
+  <figcaption>
+    getRandomLevel函数结果与随机数对应关系 
+  </figcaption> 
+ </figure> 
+</div> 
+<p> </p> 
+<p>再看看Online-hnsw中是如何确定样本的层次的：</p> 
+<pre class="has"><code>//from online-hnsw code
+//https://github.com/andrusha97/online-hnsw/blob/master/include/hnsw/index.hpp
+size_t random_level() {
+	// I avoid use of uniform_real_distribution to control how many times random() is called.
+	// This makes inserts reproducible across standard libraries.
+
+	// NOTE: This works correctly for standard random engines because their value_type is required to be unsigned.
+	auto sample = random() - random_t::min();
+	auto max_rand = random_t::max() - random_t::min();
+
+	// If max_rand is too large, decrease it so that it can be represented by double.
+	//此处保证max_rand在[0,2^20]之间
+	if (max_rand &gt; 1048576) {
+		sample /= max_rand / 1048576;
+		max_rand /= max_rand / 1048576;
+	}
+
+	double x = std::min(1.0, std::max(0.0, double(sample) / double(max_rand)));
+	//注意此处系数与hnswlib不同，第0层的是1/log(2M_+1),非0层是1/log(M_+1)
+	return static_cast&lt;size_t&gt;(-std::log(x) / std::log(double(options.max_links + 1)));
+}</code></pre> 
+<p>这样就预先设置了每层有多少样本点，当使用时：</p> 
+<pre class="has"><code class="language-cpp">//from faiss code
+// build histogram
+for (int i = 0; i &lt; n; i++) {
+    storage_idx_t pt_id = i + n0;
+    int pt_level = hnsw.levels[pt_id] - 1;
+    while (pt_level &gt;= hist.size())
+        hist.push_back(0);
+    hist[pt_level] ++;
+}
+
+// accumulate
+std::vector&lt;int&gt; offsets(hist.size() + 1, 0);
+for (int i = 0; i &lt; hist.size() - 1; i++) {
+    offsets[i + 1] = offsets[i] + hist[i];
+}
+</code></pre> 
+<p>每个段的元素数目确定了，那每个段是哪些元素呢？这是由hnsw.random_level()随机确定的。</p> 
+<pre class="has"><code class="language-cpp">//from faiss code
+// bucket sort
+for (int i = 0; i &lt; n; i++) {
+    storage_idx_t pt_id = i + n0;
+    int pt_level = hnsw.levels[pt_id] - 1;
+    order[offsets[pt_level]++] = pt_id;
+}
+</code></pre> 
+<p>至此，HNSW的插入样本的层次就确定了。</p> 
+<p>具体添加元素是怎么操作的呢？</p> 
+<p>调用函数add_with_locks。</p> 
+<h3>二、HNSW的算法性能影响因素</h3> 
+<p>HNSW算法需要调节的参数有哪些：M，efConstruction，levelMult，M_max0</p> 
+<p>为了获得最佳的性能，那么要求不同层的邻居点之间的重叠要小，为了降低重叠，那么就要降低levelMult，但是会使得每层的hop的个数增加，从而降低速度。在低位数据上调节好的参数到高维空间中很难成立，It is hard to expect the same behavior for high dimensional data since in this case the k-NN graph already has very short greedy algorithm paths.  但是在高维空间增加levelMult会让速度更快却没有负面效果。但是对于128维来说还是有影响的。</p> 
+<p>Further increase(&gt;100 in a 10M SIFT dataset) of the efConstruction leads to little extra performance but in exchange of significantly longer construction time.</p> 
+<p>在遍历的过程中，traverse the graph,从1度邻居点，到2度邻居点，不断往外扩，扩的过程中将更近的点加入结果列表中。由于下一个点属于上层的概率为p=exp(-levelMult)，因此在搜索该节点的邻居时是有概率为p的可能性到此为止的，代码中bool visisted来标记是否访问过（想想看如何做并行访问）。</p> 
+<h3> </h3> 
+<p>想要了解更多关于faiss的线程问题，可以参考：<a href="http://houjie13.com/articles/2018/06/25/1529933223485.html" rel="nofollow">http://houjie13.com/articles/2018/06/25/1529933223485.html</a></p> 
+<p>本文原文链接：<a href="https://blog.csdn.net/CHIERYU/article/details/81989920">https://blog.csdn.net/CHIERYU/article/details/81989920</a></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/2a2d191113bfb5c84e68990e5714fa47/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">ubuntu16.04 安装pcl1.8.0</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/d27378104e8c7632747bfa12635d9970/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">使用MDK5.25，提示“The connected J-Link is defective,Proper operation cannot be guaranteed.”解决办法。</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

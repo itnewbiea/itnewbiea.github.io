@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Linux进程调度 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Linux进程调度" />
+<meta property="og:description" content="转自：深入理解Linux进程调度(0.4)_进程调度 城_城中之城的博客-CSDN博客
+一、进程调度概览
+进程调度是操作系统最重要的内容之一，也是学习操作系统的重点和难点。关于进程本身的实现和管理请参看《深入理解Linux进程管理》。关于进程调度，我们首先就会问出一些问题，什么是进程调度，为什么要进程调度，如何进行调度。下面我们用一幅图把这些问题关联起来：
+在这里插入图片描述
+这张图把进程调度的所有问题和知识点都关联了起来，本文后面所有的内容都是对这张图的解释和扩展延伸，下面让我们来一一讲解。
+1.1 什么是调度
+什么是调度？调度是CPU资源管理器。操作系统的作用之一就是系统资源管理器。CPU是计算机系统中最重要的资源，当然也要管理。所有进程的运行都需要CPU，对CPU该如何管理呢？对于直接共享型的事物，我们有两种管理方法：一种是时间分割管理，另一种是空间分割管理。由于CPU自身的特性，没有空间分割相似性，只有时间分割相似性，所以我们只能对CPU进行时间分割管理。对CPU进行时间分割管理的具体做法就叫做进程调度。
+那么调度的是什么呢？进程调度，调度的当然是进程啦，也对也不对。我们知道进程是资源分配的单位，线程是执行的单位。早期的时候没有多线程，进程就是线程，线程就是进程，所以此时进程调度调度的是进程。但是当有了多线程之后，线程变成了执行的单位，进程不再是执行的单位，进程调度调度的就是线程了。不过由于历史原因，大家都习惯叫进程调度，所以现在这个领域的名称还是叫进程调度。后文中说到调度进程的地方都是调度的线程，由于习惯问题，我们还说调度进程不说调度线程，请大家要注意。
+对线程的调度可以有两种方式：一种是直接调度线程，不考虑它们所属的进程，这种方式叫做直接调度或者一级调度；另一种是先调度进程，再在进程内部调度线程，这种方式叫做间接调度或者二级调度。POSIX规定，操作系统可以选择这两种方式中的任何一种都行。Linux选择的是一级调度，为什么会这么选择呢？主要是为了提高进程的并发性，充分利用多CPU多核的优势。如果使用二级调度的话，看似每个进程之间都公平了，但是有些进程的计算量比较大，就无法通过多开线程提高自己的性能，这样对系统整体的性能是有害的，也不利用发挥计算机多CPU的优势。一级调度看似对有些进程不公平，但是计算量小的进程少开线程，计算量大的进程多开线程，相对还是很公平的。
+就像国家希望每个企业都做大做强，但是同时也会反垄断一样。Linux也推出了cgroup组调度机制，来限制某个或者某一类进程对CPU资源的过度占用。本文中不讲cgroup组调度机制，后文的讲解都是假设没有cgroup组调度。
+1.2 为什么要调度
+我们知道了什么是调度，那么为什么要调度呢，没有调度会怎么样呢？最早的计算机是没有调度的，程序只能一个一个地运行，一个进程死亡之后才能去运行下一个进程。这里面首先存在的问题就是我们没法同时运行多个进程。其次就算我们不需要同时运行多个进程，程序在运行的过程中如果要等IO，CPU就只能空转，这也十分浪费CPU资源。于是最早的多任务——协作式多任务诞生了，当程序由于要等IO而阻塞时就会去调度执行其它的进程。但是协作式多任务存在着很大的问题，就是每个进程运行的时间片长短是不确定的，而且是很偶然很随机的。如果一个进程它一直在做运算就是不进行IO操作，那么它就会一直霸占CPU。针对这个问题，当时想出的方法是道德解决方案。内核向进程提供系统调用sched_yield，它会使进程主动放弃CPU让其它进程来执行。然后要求所有的程序员在程序中合适的地方尽量多地加入sched_yield调用。这个方法在当时是管用的，因为当时计算机的使用者(同时也是程序员)仅限于少数科研机构和政府机关的部分人员，一台电脑的共同使用者都认识，面子上还得过得去。
+后来随着计算机的普及，以及计算机的使用者和程序员这两个角色的分离，主要靠道德约束的协作式多任务已经行不通了，我们需要强制性多任务，也就是抢占式多任务。抢占式多任务使得每个进程都可以相对公平地平分CPU时间，如果一个进程运行了过长的时间就会被强制性地调度出去，不管这个进程是否愿意。有了抢占式多任务，我们在宏观上不仅可以同时运行多个进程，而且它们会一起齐头并进地往前运行，不会出现某个进程被饿死的情况，这样我们使用电脑的体验就非常完美了。抢占式多任务和协作式多任务不是对立的，它们是相互独立的，可以同时存在于系统中。
+抢占又分为用户抢占和内核抢占。由于抢占对进程来说是异步的，进程被抢占时不一定运行在什么地方，有可能运行在用户空间，也有可能运行在内核空间(进程通过系统调用进入内核空间)。如果抢占点是在用户空间，那么抢占就是安全的，如果在内核空间就不一定安全，这是为什么呢？因为对于用户空间来说，如果抢占会导致线程同步问题，那么用户空间有责任使用线程同步机制来保护临界区，只要用户空间做好同步就不会出问题。如果内核也做好了同步措施，内核抢占也不会出问题，但是内核最初的设计就没有考虑内核抢占问题，所以刚开始的时候内核是不能抢占的。后来内核开发者对内核进行了完善，把内核所有的临界区都加上了同步措施，然后内核就是可抢占的了。内核能抢占了不代表内核一定会抢占，内核会不会抢占由config选项控制，可以开启也可以关闭，因为内核抢占还会影响系统的响应性和性能。开启内核抢占会提高系统的响应性但是会降低一点性能，关闭内核抢占会降低系统的响应性但是会提高一点性能。因此把内核抢占做成配置项，可以让大家灵活配置。服务器系统一般不需要与用户交互，所以会关闭内核抢占来提高性能，桌面系统会开启内核抢占来提高系统的响应性，来增加用户体验。
+现在我们再来看一下为什么要调度。因为如果没有调度的话，就不能实现多任务，一次就只能运行一个程序，我们使用电脑的体验就会大大降低。有了调度就有了多任务，我们就能同时在电脑上做很多事情，使用体验就会非常好。
+1.3 为什么能调度
+我们再来看看为什么能调度呢。我们把协作式多任务叫做主动调度，抢占式多任务叫做被动调度。为什么能调度分为两部分：为什么能触发调度和为什么能执行调度。对于主动调度，调度是进程主动触发的，这个是肯定能的。对于被动调度，在图灵机模型中是做不到的，因为图灵机是一条线性一直往前走的，进程在执行时，进程要是不主动，是不可能跳到其它进程来执行的。被动调度能做到的原因关键就在于中断机制，因为中断是强行在正常的执行流中插入了一段代码，它能改变后续代码的走向。有了中断机制，我们就可以创建一个定时器中断，以固定的时间间隔比如每10ms来触发中断，检测进程是否运行时间过长，如果过长就触发调度。这样任何进程都不可能霸占CPU，所以进程都能公平地共享CPU时间。关于中断的原理，请参看《深入理解Linux中断机制》。这里引用其中的一幅图来看一下：
+在这里插入图片描述
+可以看到在纯图灵机模型中，进程如果不主动进行调度，是没有外力强迫进程进行调度的，进程就能一直霸占CPU。有了中断机制之后，在中断的处理中可以触发调度，在中断返回的点可以执行调度，这样就可以避免进程霸占CPU了。
+前面说的是为何能触发进程调度，主动调度是进程自己触发的，被动调度是在中断中触发的。现在来看看为何能执行调度，执行调度包括两部分：选择进程和切换进程。选择进程是纯软件的，肯定能实现。切换进程是怎么切换呢？一个进程执行的好好的，怎么就切换了呢，需不需要硬件的支持呢？进程切换主要是切换执行栈和用户空间，这两个都需要用到CPU特定的指令。进程切换的具体原理和细节我们在2.7节中讲。
+1.4 何时调度
+我们前面已经讲了主动调度(协作式多任务)和被动调度(抢占式多任务)。
+对于主动调度，触发调度和执行调度是同步的、一体的，触发即执行。主动调度发生的时机有IO等待、加锁失败等各种阻塞操作以及用户空间主动调用sched_yield。
+对于被动调度，触发调度和执行调度是异步的、分离的，触发调度并不会立马执行调度，而是做个需要调度的标记，然后在之后的某个合适的地方会检测这个标记，如果被设置就进行调度。触发调度的点有：在定时器中断中发现当前进程超时了，在唤醒进程时发现新进程需要抢占当前进程，在迁移进程时发现新进程需要抢占当前进程，在改变进程优先级时发现新进程需要抢占当前进程。其中第一个触发点是当前进程需要被抢占，它是用来保证公平调度，防止进程霸占CPU的，后三个触发点是新进程需要抢占当前进程，它是用来提高系统响应性的。执行调度的点有：系统调用完成之后即将返回用户空间，中断完成之后即将返回用户空间，如果开启了内核抢占的话则还有,中断完成之后即将返回内核,如果中断发生在禁止抢占临界区中，那么中断完成之后返回内核是不会执行调度的，而是会在临界区结束的时候执行调度。下面我们借用《深入理解Linux中断机制》中的几个图来看一下这几个执行调度检测点：
+在这里插入图片描述
+系统调用完成之后即将返回用户空间和中断完成之后即将返回用户空间，是非常好的执行进行调度的点，也就是此图中的三个箭头的地方。CPU异常在意义上不是系统调用，但是在形式上和逻辑上相当于是系统调用。
+在这里插入图片描述
+在这里插入图片描述
+中断发生在内核空间的场景，如果开启了内核抢占，如果被抢占的内核代码不是在禁用抢占临界区，中断返回时是执行调度的点。如果被抢占的内核代码在禁用抢占临界区中，在执行调度的点被推迟到了临界区的出口处。
+1.5 如何调度
+现在到了执行调度的时刻了。执行调度分为两步：一是选择下一个要执行的进程，二是切换进程。选择下一个要执行的进程，这就是调度算法了。首先调度算法只能从Runnable的进程中进行选择，不能选择Blocked进程，因为选择了也没有意义。其次算法还要区分进程类型，比如普通进程与实时进程，肯定要优先选择实时进程，在同一类型的进程中还要有具体的算法来决定到底选择哪个进程。在Linux中一共把进程分为了5类，每一类都有一个具体的算法。类之间的关系是优先选择高类的进程，只有当高类没有Runnable进程时才会去选择低类进程。
+进程选择好了之后就要切换进程了。切换进程分两步：第一步是切换用户空间，第二步是切换执行栈(线程栈)。如果要切换的两个线程属于同一个进程就不需要切换用户空间了。切换用户空间是一个CPU架构相关的事情，在x86 CPU上是给CR3寄存器赋值新进程的页表树的根指针。此时切换的执行栈是线程的内核栈，执行栈代表的是当前线程的执行情况，切换执行栈就是切换线程。线程的用户栈信息都在内核栈里保存着。切换完内核栈之后，线程继续执行就会返回用户空间，由于此时用户空间已经切换完成，内核栈上也保存着用户栈的信息，所以线程能返回到正确的用户空间线程上去。
+下面我们画个图来看一下：
+在这里插入图片描述
+对于一个CPU来说，永远只有一个当前进程在运行，当执行进程调度时，需要从其它进程中选择一个进程，把它旋转到最下方作为当前进程，它就开始运行了。
+1.6 调度均衡
+前面所说的都是针对一个CPU的情况，对于多个CPU来说，每个CPU也是这样的逻辑。但是有一点不同的是，如果一个系统上的多个CPU忙的忙死闲的闲死，显然不太好，因此多个CPU之间会进行调度均衡。调度均衡可以分为个体均衡和总体均衡。个体均衡是从进程的角度出发选择到一个相对清闲的CPU上去运行。总体均衡是从CPU的角度出发如何从别的CPU上拉取一些进程到自己这来执行，使得所有CPU的工作量尽量平均。个体均衡的触发点有三个：一是新进程刚创建时，二是进程要执行新程序时，三是进程被唤醒时，在这三个点进程都可以选择去哪个CPU的运行队列上去等待执行。在个体均衡下，每个进程都尽量选择相对清闲的CPU，所以所有CPU的负载应该还是会比较均衡的。但是时间长了可能还是会出现负载不均衡的情况，此时就要进行总体均衡了。总体均衡的触发点有三个：一是CPU即将idle前会去找到最忙的CPU然后拉取一些任务过来；二是定时器中断的周期性检测，会检查是否所有的CPU都一样忙，如果忙闲差别太大就会进行进程迁移，使得所有CPU忙闲程度接近；三是在idle进程中如果CPU发现自己太忙而有的CPU在idle就会唤醒那个CPU进行负载均衡。
+1.7 调度器评价
+狭义的调度器指的是具体的调度算法，广义的调度器指的是整个调度体系。不过两者的评价指标是相同的，所以我们这里不具体区分调度器是指调度算法还是调度体系。调度器的评价指标有以下几个：
+1.响应性，当一个进程发生事件需要去处理的时候能否及时被调度。这一点和使用体验是密切相关的，当我们用鼠标点击一个程序的时候，肯定希望程序立即能做出响应，如果程序过了好几秒才有反应，那我们肯定会很烦的。
+2.吞吐量，系统在相同的时间内能够运行更多的程序、执行更多的指令。这个首先要求调度器本身的代码要尽量的高效。如果调度器写得非常复杂，运行一次就需要好几毫秒的话，那留给进程运行的时间就不多了。其次进程调度的频率要低，如果进程调度的频率比较高的话，那调度器执行的次数就比较多，从而占用了较多的CPU时间，而且频繁切换进程也会影响缓存的性能。从这一点来看响应性和吞吐量是有矛盾的，提高响应性会增加进程切换的频率，而这会降低系统的吞吐量。
+3.公平性，指的是相对公平性，每个进程实际获得的时间份额与应当获得的时间份额都相差不大。不会出现有些进程饥饿的情况，也不会出现有些进程获得过多时间份额的情况。
+4.适应性，指的是系统无论是调度几个进程还是调度几万个进程，都能撑得住，都能收放自如，各项指标都不能受到太大的影响。
+5.节能性，自从智能手机越来越普及，而手机的电池技术一直没有较大的突破，所以省电对手机来说就是一项非常重要的任务，调度器也不可避免地要考虑省电问题了。
+1.8 调度器历史
+Linux的调度器经历了长久的发展，是内核中被优化最多目前最完善的模块之一。下面我们来看一下Linux调度器发展的历史。
+Traditional Scheduler: v1.0 – v2.4
+这一阶段的调度器和传统的UNIX上的调度器逻辑是一样的。全局只有一个运行队列，所有进程都放在一个队列上。进程区分IO密集型和CPU密集型，根据进程的睡眠时间计算动态优先级，按照动态优先级决定进程的调度顺序，按照优先级分配进程的时间片大小，时间片大小是等差数列。进程在运行队列上并没有特定的排序，每次选择下一个进程的时候都要遍历整个队列，所以算法的时间复杂度是O(n)。在SMP上也只有一个运行队列，当CPU比较多进程也比较多的时候，锁冲突比较严重。
+O(1) Scheduler: v2.5 – v2.6.22
+此调度器主要是针对传统调度器进行了改进。首先把运行队列从单一变量变成了per-CPU变量，每个CPU一个运行队列，这样就不会有锁冲突了，不过这样就需要调度均衡了。其次把运行队列的一个链表分成了两个链表数组：活动数组和过期数组。时间片没用耗尽的进程放在活动数组中，时间片耗尽的进程放在过期数组中，当所有进程的时间片都耗尽的时候交换两个数组，重新分配时间片。两个数组都使用动态优先级排序，并用bitmap来表示哪个优先级队列中有可运行的进程，把选择进程的算法复杂度降低到了O(1)。对进程区分IO密集型和CPU密集型并计算动态优先级这一点和传统调度器一样没有变。
+SD Scheduler：(未合入)" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/3e1a88ecbebb803152a21c99ecffe742/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-07-08T23:09:24+08:00" />
+<meta property="article:modified_time" content="2023-07-08T23:09:24+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Linux进程调度</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>转自：<a href="https://blog.csdn.net/orangeboyye/article/details/126109076" title="深入理解Linux进程调度(0.4)_进程调度 城_城中之城的博客-CSDN博客">深入理解Linux进程调度(0.4)_进程调度 城_城中之城的博客-CSDN博客</a></p> 
+<p>一、进程调度概览</p> 
+<p>进程调度是操作系统最重要的内容之一，也是学习操作系统的重点和难点。关于进程本身的实现和管理请参看《深入理解Linux进程管理》。关于进程调度，我们首先就会问出一些问题，什么是进程调度，为什么要进程调度，如何进行调度。下面我们用一幅图把这些问题关联起来：</p> 
+<p><img alt="" height="499" src="https://images2.imgbox.com/f3/61/NXnuTjv0_o.png" width="830"></p> 
+<p> </p> 
+<p>在这里插入图片描述<br> 这张图把进程调度的所有问题和知识点都关联了起来，本文后面所有的内容都是对这张图的解释和扩展延伸，下面让我们来一一讲解。</p> 
+<p>1.1 什么是调度</p> 
+<p>什么是调度？调度是CPU资源管理器。操作系统的作用之一就是系统资源管理器。CPU是计算机系统中最重要的资源，当然也要管理。所有进程的运行都需要CPU，对CPU该如何管理呢？对于直接共享型的事物，我们有两种管理方法：一种是时间分割管理，另一种是空间分割管理。由于CPU自身的特性，没有空间分割相似性，只有时间分割相似性，所以我们只能对CPU进行时间分割管理。对CPU进行时间分割管理的具体做法就叫做进程调度。</p> 
+<p>那么调度的是什么呢？进程调度，调度的当然是进程啦，也对也不对。我们知道进程是资源分配的单位，线程是执行的单位。早期的时候没有多线程，进程就是线程，线程就是进程，所以此时进程调度调度的是进程。但是当有了多线程之后，线程变成了执行的单位，进程不再是执行的单位，进程调度调度的就是线程了。不过由于历史原因，大家都习惯叫进程调度，所以现在这个领域的名称还是叫进程调度。后文中说到调度进程的地方都是调度的线程，由于习惯问题，我们还说调度进程不说调度线程，请大家要注意。</p> 
+<p>对线程的调度可以有两种方式：一种是直接调度线程，不考虑它们所属的进程，这种方式叫做直接调度或者一级调度；另一种是先调度进程，再在进程内部调度线程，这种方式叫做间接调度或者二级调度。POSIX规定，操作系统可以选择这两种方式中的任何一种都行。Linux选择的是一级调度，为什么会这么选择呢？主要是为了提高进程的并发性，充分利用多CPU多核的优势。如果使用二级调度的话，看似每个进程之间都公平了，但是有些进程的计算量比较大，就无法通过多开线程提高自己的性能，这样对系统整体的性能是有害的，也不利用发挥计算机多CPU的优势。一级调度看似对有些进程不公平，但是计算量小的进程少开线程，计算量大的进程多开线程，相对还是很公平的。</p> 
+<p>就像国家希望每个企业都做大做强，但是同时也会反垄断一样。Linux也推出了cgroup组调度机制，来限制某个或者某一类进程对CPU资源的过度占用。本文中不讲cgroup组调度机制，后文的讲解都是假设没有cgroup组调度。</p> 
+<p>1.2 为什么要调度</p> 
+<p>我们知道了什么是调度，那么为什么要调度呢，没有调度会怎么样呢？最早的计算机是没有调度的，程序只能一个一个地运行，一个进程死亡之后才能去运行下一个进程。这里面首先存在的问题就是我们没法同时运行多个进程。其次就算我们不需要同时运行多个进程，程序在运行的过程中如果要等IO，CPU就只能空转，这也十分浪费CPU资源。于是最早的多任务——协作式多任务诞生了，当程序由于要等IO而阻塞时就会去调度执行其它的进程。但是协作式多任务存在着很大的问题，就是每个进程运行的时间片长短是不确定的，而且是很偶然很随机的。如果一个进程它一直在做运算就是不进行IO操作，那么它就会一直霸占CPU。针对这个问题，当时想出的方法是道德解决方案。内核向进程提供系统调用sched_yield，它会使进程主动放弃CPU让其它进程来执行。然后要求所有的程序员在程序中合适的地方尽量多地加入sched_yield调用。这个方法在当时是管用的，因为当时计算机的使用者(同时也是程序员)仅限于少数科研机构和政府机关的部分人员，一台电脑的共同使用者都认识，面子上还得过得去。</p> 
+<p>后来随着计算机的普及，以及计算机的使用者和程序员这两个角色的分离，主要靠道德约束的协作式多任务已经行不通了，我们需要强制性多任务，也就是抢占式多任务。抢占式多任务使得每个进程都可以相对公平地平分CPU时间，如果一个进程运行了过长的时间就会被强制性地调度出去，不管这个进程是否愿意。有了抢占式多任务，我们在宏观上不仅可以同时运行多个进程，而且它们会一起齐头并进地往前运行，不会出现某个进程被饿死的情况，这样我们使用电脑的体验就非常完美了。抢占式多任务和协作式多任务不是对立的，它们是相互独立的，可以同时存在于系统中。</p> 
+<p>抢占又分为用户抢占和内核抢占。由于抢占对进程来说是异步的，进程被抢占时不一定运行在什么地方，有可能运行在用户空间，也有可能运行在内核空间(进程通过系统调用进入内核空间)。如果抢占点是在用户空间，那么抢占就是安全的，如果在内核空间就不一定安全，这是为什么呢？因为对于用户空间来说，如果抢占会导致线程同步问题，那么用户空间有责任使用线程同步机制来保护临界区，只要用户空间做好同步就不会出问题。如果内核也做好了同步措施，内核抢占也不会出问题，但是内核最初的设计就没有考虑内核抢占问题，所以刚开始的时候内核是不能抢占的。后来内核开发者对内核进行了完善，把内核所有的临界区都加上了同步措施，然后内核就是可抢占的了。内核能抢占了不代表内核一定会抢占，内核会不会抢占由config选项控制，可以开启也可以关闭，因为内核抢占还会影响系统的响应性和性能。开启内核抢占会提高系统的响应性但是会降低一点性能，关闭内核抢占会降低系统的响应性但是会提高一点性能。因此把内核抢占做成配置项，可以让大家灵活配置。服务器系统一般不需要与用户交互，所以会关闭内核抢占来提高性能，桌面系统会开启内核抢占来提高系统的响应性，来增加用户体验。</p> 
+<p>现在我们再来看一下为什么要调度。因为如果没有调度的话，就不能实现多任务，一次就只能运行一个程序，我们使用电脑的体验就会大大降低。有了调度就有了多任务，我们就能同时在电脑上做很多事情，使用体验就会非常好。</p> 
+<p>1.3 为什么能调度</p> 
+<p>我们再来看看为什么能调度呢。我们把协作式多任务叫做主动调度，抢占式多任务叫做被动调度。为什么能调度分为两部分：为什么能触发调度和为什么能执行调度。对于主动调度，调度是进程主动触发的，这个是肯定能的。对于被动调度，在图灵机模型中是做不到的，因为图灵机是一条线性一直往前走的，进程在执行时，进程要是不主动，是不可能跳到其它进程来执行的。被动调度能做到的原因关键就在于中断机制，因为中断是强行在正常的执行流中插入了一段代码，它能改变后续代码的走向。有了中断机制，我们就可以创建一个定时器中断，以固定的时间间隔比如每10ms来触发中断，检测进程是否运行时间过长，如果过长就触发调度。这样任何进程都不可能霸占CPU，所以进程都能公平地共享CPU时间。关于中断的原理，请参看《深入理解Linux中断机制》。这里引用其中的一幅图来看一下：<br> 在这里插入图片描述<br> 可以看到在纯图灵机模型中，进程如果不主动进行调度，是没有外力强迫进程进行调度的，进程就能一直霸占CPU。有了中断机制之后，在中断的处理中可以触发调度，在中断返回的点可以执行调度，这样就可以避免进程霸占CPU了。</p> 
+<p>前面说的是为何能触发进程调度，主动调度是进程自己触发的，被动调度是在中断中触发的。现在来看看为何能执行调度，执行调度包括两部分：选择进程和切换进程。选择进程是纯软件的，肯定能实现。切换进程是怎么切换呢？一个进程执行的好好的，怎么就切换了呢，需不需要硬件的支持呢？进程切换主要是切换执行栈和用户空间，这两个都需要用到CPU特定的指令。进程切换的具体原理和细节我们在2.7节中讲。</p> 
+<p>1.4 何时调度</p> 
+<p>我们前面已经讲了主动调度(协作式多任务)和被动调度(抢占式多任务)。</p> 
+<p>对于主动调度，触发调度和执行调度是同步的、一体的，触发即执行。主动调度发生的时机有IO等待、加锁失败等各种阻塞操作以及用户空间主动调用sched_yield。</p> 
+<p>对于被动调度，触发调度和执行调度是异步的、分离的，触发调度并不会立马执行调度，而是做个需要调度的标记，然后在之后的某个合适的地方会检测这个标记，如果被设置就进行调度。触发调度的点有：在定时器中断中发现当前进程超时了，在唤醒进程时发现新进程需要抢占当前进程，在迁移进程时发现新进程需要抢占当前进程，在改变进程优先级时发现新进程需要抢占当前进程。其中第一个触发点是当前进程需要被抢占，它是用来保证公平调度，防止进程霸占CPU的，后三个触发点是新进程需要抢占当前进程，它是用来提高系统响应性的。执行调度的点有：系统调用完成之后即将返回用户空间，中断完成之后即将返回用户空间，如果开启了内核抢占的话则还有,中断完成之后即将返回内核,如果中断发生在禁止抢占临界区中，那么中断完成之后返回内核是不会执行调度的，而是会在临界区结束的时候执行调度。下面我们借用《深入理解Linux中断机制》中的几个图来看一下这几个执行调度检测点：</p> 
+<p><img alt="" height="502" src="https://images2.imgbox.com/4c/02/2BJTBh4T_o.png" width="831"><br> 在这里插入图片描述<br> 系统调用完成之后即将返回用户空间和中断完成之后即将返回用户空间，是非常好的执行进行调度的点，也就是此图中的三个箭头的地方。CPU异常在意义上不是系统调用，但是在形式上和逻辑上相当于是系统调用。</p> 
+<p><img alt="" height="401" src="https://images2.imgbox.com/80/36/wckofbFP_o.png" width="753"></p> 
+<p><img alt="" height="687" src="https://images2.imgbox.com/95/ac/hD2ceG9X_o.png" width="797"><br> 在这里插入图片描述<br> 在这里插入图片描述<br> 中断发生在内核空间的场景，如果开启了内核抢占，如果被抢占的内核代码不是在禁用抢占临界区，中断返回时是执行调度的点。如果被抢占的内核代码在禁用抢占临界区中，在执行调度的点被推迟到了临界区的出口处。</p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p>1.5 如何调度</p> 
+<p>现在到了执行调度的时刻了。执行调度分为两步：一是选择下一个要执行的进程，二是切换进程。选择下一个要执行的进程，这就是调度算法了。首先调度算法只能从Runnable的进程中进行选择，不能选择Blocked进程，因为选择了也没有意义。其次算法还要区分进程类型，比如普通进程与实时进程，肯定要优先选择实时进程，在同一类型的进程中还要有具体的算法来决定到底选择哪个进程。在Linux中一共把进程分为了5类，每一类都有一个具体的算法。类之间的关系是优先选择高类的进程，只有当高类没有Runnable进程时才会去选择低类进程。</p> 
+<p>进程选择好了之后就要切换进程了。切换进程分两步：第一步是切换用户空间，第二步是切换执行栈(线程栈)。如果要切换的两个线程属于同一个进程就不需要切换用户空间了。切换用户空间是一个CPU架构相关的事情，在x86 CPU上是给CR3寄存器赋值新进程的页表树的根指针。此时切换的执行栈是线程的内核栈，执行栈代表的是当前线程的执行情况，切换执行栈就是切换线程。线程的用户栈信息都在内核栈里保存着。切换完内核栈之后，线程继续执行就会返回用户空间，由于此时用户空间已经切换完成，内核栈上也保存着用户栈的信息，所以线程能返回到正确的用户空间线程上去。</p> 
+<p>下面我们画个图来看一下：<br> 在这里插入图片描述<br> 对于一个CPU来说，永远只有一个当前进程在运行，当执行进程调度时，需要从其它进程中选择一个进程，把它旋转到最下方作为当前进程，它就开始运行了。</p> 
+<p>1.6 调度均衡</p> 
+<p>前面所说的都是针对一个CPU的情况，对于多个CPU来说，每个CPU也是这样的逻辑。但是有一点不同的是，如果一个系统上的多个CPU忙的忙死闲的闲死，显然不太好，因此多个CPU之间会进行调度均衡。调度均衡可以分为个体均衡和总体均衡。个体均衡是从进程的角度出发选择到一个相对清闲的CPU上去运行。总体均衡是从CPU的角度出发如何从别的CPU上拉取一些进程到自己这来执行，使得所有CPU的工作量尽量平均。个体均衡的触发点有三个：一是新进程刚创建时，二是进程要执行新程序时，三是进程被唤醒时，在这三个点进程都可以选择去哪个CPU的运行队列上去等待执行。在个体均衡下，每个进程都尽量选择相对清闲的CPU，所以所有CPU的负载应该还是会比较均衡的。但是时间长了可能还是会出现负载不均衡的情况，此时就要进行总体均衡了。总体均衡的触发点有三个：一是CPU即将idle前会去找到最忙的CPU然后拉取一些任务过来；二是定时器中断的周期性检测，会检查是否所有的CPU都一样忙，如果忙闲差别太大就会进行进程迁移，使得所有CPU忙闲程度接近；三是在idle进程中如果CPU发现自己太忙而有的CPU在idle就会唤醒那个CPU进行负载均衡。</p> 
+<p>1.7 调度器评价</p> 
+<p>狭义的调度器指的是具体的调度算法，广义的调度器指的是整个调度体系。不过两者的评价指标是相同的，所以我们这里不具体区分调度器是指调度算法还是调度体系。调度器的评价指标有以下几个：</p> 
+<p>1.响应性，当一个进程发生事件需要去处理的时候能否及时被调度。这一点和使用体验是密切相关的，当我们用鼠标点击一个程序的时候，肯定希望程序立即能做出响应，如果程序过了好几秒才有反应，那我们肯定会很烦的。</p> 
+<p>2.吞吐量，系统在相同的时间内能够运行更多的程序、执行更多的指令。这个首先要求调度器本身的代码要尽量的高效。如果调度器写得非常复杂，运行一次就需要好几毫秒的话，那留给进程运行的时间就不多了。其次进程调度的频率要低，如果进程调度的频率比较高的话，那调度器执行的次数就比较多，从而占用了较多的CPU时间，而且频繁切换进程也会影响缓存的性能。从这一点来看响应性和吞吐量是有矛盾的，提高响应性会增加进程切换的频率，而这会降低系统的吞吐量。</p> 
+<p>3.公平性，指的是相对公平性，每个进程实际获得的时间份额与应当获得的时间份额都相差不大。不会出现有些进程饥饿的情况，也不会出现有些进程获得过多时间份额的情况。</p> 
+<p>4.适应性，指的是系统无论是调度几个进程还是调度几万个进程，都能撑得住，都能收放自如，各项指标都不能受到太大的影响。</p> 
+<p>5.节能性，自从智能手机越来越普及，而手机的电池技术一直没有较大的突破，所以省电对手机来说就是一项非常重要的任务，调度器也不可避免地要考虑省电问题了。</p> 
+<p>1.8 调度器历史</p> 
+<p>Linux的调度器经历了长久的发展，是内核中被优化最多目前最完善的模块之一。下面我们来看一下Linux调度器发展的历史。</p> 
+<p>Traditional Scheduler: v1.0 – v2.4<br> 这一阶段的调度器和传统的UNIX上的调度器逻辑是一样的。全局只有一个运行队列，所有进程都放在一个队列上。进程区分IO密集型和CPU密集型，根据进程的睡眠时间计算动态优先级，按照动态优先级决定进程的调度顺序，按照优先级分配进程的时间片大小，时间片大小是等差数列。进程在运行队列上并没有特定的排序，每次选择下一个进程的时候都要遍历整个队列，所以算法的时间复杂度是O(n)。在SMP上也只有一个运行队列，当CPU比较多进程也比较多的时候，锁冲突比较严重。</p> 
+<p>O(1) Scheduler: v2.5 – v2.6.22<br> 此调度器主要是针对传统调度器进行了改进。首先把运行队列从单一变量变成了per-CPU变量，每个CPU一个运行队列，这样就不会有锁冲突了，不过这样就需要调度均衡了。其次把运行队列的一个链表分成了两个链表数组：活动数组和过期数组。时间片没用耗尽的进程放在活动数组中，时间片耗尽的进程放在过期数组中，当所有进程的时间片都耗尽的时候交换两个数组，重新分配时间片。两个数组都使用动态优先级排序，并用bitmap来表示哪个优先级队列中有可运行的进程，把选择进程的算法复杂度降低到了O(1)。对进程区分IO密集型和CPU密集型并计算动态优先级这一点和传统调度器一样没有变。</p> 
+<p>SD Scheduler：(未合入)<br> 楼梯调度器，它是对O(1)调度器的改进，算法复杂还是O(1)。之前的调度器都区分IO密集型和CPU密集型，算法要对进程的类型进行探测，根据探测结果调整动态优先级。这就有很大的问题，探测不一定准确，而且进程还可以欺骗调度器，最终会导致调度有很大的不公平性。楼梯调度器是第一次尝试使用公平调度算法，它废除了动态优先级，不再区分IO密集型进程和CPU密集型进程，但是仍然让IO密集型进程保持较高的响应性。在实现上，楼梯调度算法废弃了过期数组，只使用一个数组。当进程使用完自己的时间片之后，其时间片就会被减半并下降到下一个优先级，其本身的优先级还是不变的。当进程下降到最后一个优先级之后就再回到它本来的优先级队列并重新分配时间片。整个过程就像下楼梯一样，所以这个算法就叫做楼梯调度器。此算法虽然没有合入到标准内核，但是它第一次证明了可以采取完全公平的思想进行调度，也就是不区分IO密集型和CPU密集型进程。</p> 
+<p>RSDL Scheduler：(未合入)<br> 旋转楼梯调度器，是对楼梯调度器的改进。又重新引入了过期数组，为每个优先级都分配一个组时间配额记为Tg，进程本身的时间片记为Tp。当进程用完自己的时间片时会下降一个优先级，当一个优先级的Tg被用完时，组内所有的进程都会下降一个优先级。进程下降到最低优先级之后会被放入过期数组，当活动数组为空时就会交换活动数组和过期数组。由于加了Tg，使得低优先级进程的调度延迟可控，进一步增加了公平性。</p> 
+<p>CFS: Completely Fair Scheduler: v2.6.23 – now<br> 完全公平调度器，从SD/RSDL中吸取了完全公平的思想，不再区分IO密集型进程与CPU密集型进程，不再根据睡眠时间调整动态优先级，所有普通进程都按优先级相对平分CPU时间，算法复杂度是O(logn)。此时对调度器框架也进行了重构，和之前的有很大的不同。之前的调度器是一个算法调度所有进程，在算法内部区别对待实时进程和普通进程。现在的调度器框架是先区分不同类型的进程，普通进程一个调度类，实时进程一个调度类，调度类里面再去实现具体的调度算法。CFS是普通调度类的算法。</p> 
+<p>二、进程调度框架</p> 
+<p>前面我们对进程调度的概念和逻辑进行了讲解，现在我们来看一下Linux上进程调度的框架结构。本章只讲总体框架，不讲具体算法，具体算法在后面的章节中讲。</p> 
+<p>2.1 调度队列</p> 
+<p>我们先来看一下进程的状态转换图。</p> 
+<p><img alt="" height="505" src="https://images2.imgbox.com/56/4e/ZDv9kilb_o.png" width="824"><br> 在这里插入图片描述<br> 处于就绪(Runnable)状态的进程可以被调度到CPU上去执行。但是处于就绪状态的进程可能不止一个，所以我们需要一个运行队列来安放所有就绪的进程，由于CPU也不止一个，所以我们需要NR_CPU个运行队列。</p> 
+<p> </p> 
+<p>我们看一下调度队列的定义(代码经过了高度删减)：<br> linux-src/kernel/sched/sched.h</p> 
+<p>struct rq {<!-- --><br>     raw_spinlock_t        __lock;<br>     unsigned int        nr_running;</p> 
+<p>    struct cfs_rq        cfs;<br>     struct rt_rq        rt;<br>     struct dl_rq        dl;</p> 
+<p>    struct task_struct __rcu    *curr;<br>     struct task_struct    *idle;<br>     struct task_struct    *stop;</p> 
+<p>    int            cpu;<br>     int            online;<br> };</p> 
+<p> </p> 
+<p>linux-src/kernel/sched/core.c</p> 
+<p>DEFINE_PER_CPU_SHARED_ALIGNED(struct rq, runqueues);</p> 
+<p>    1</p> 
+<p>内核定义了一个per-CPU变量runqueues，其类型是struct rq。所有的就绪进程都会被放入某个CPU的rq上去，具体放到哪个rq上，这个在调度均衡里面讲。内核一共定义了五个调度类(这个在2.5中细讲)，属于不同调度类的进程会被放入不同的子队列，所以rq中包含三个子运行队列cfs_rq、rt_rq、dl_rq。为啥只有3个子运行队列呢？因为有两个调度类idle、stop，每个CPU只能有一个进程，所以没必要弄个队列，直接关联它们的进程就可以了，就是上面代码中的两个struct task_struct * 类型的指针变量idle、stop。</p> 
+<p>2.2 进程唤醒</p> 
+<p>进程是怎么被放入运行队列的呢？都是通过进程唤醒来放入的，包括新创建的进程也是。新建唤醒和阻塞唤醒的代码不太一样，下面我们分别来看一下。</p> 
+<p>我们先来看一下新建唤醒的代码：<br> linux-src/kernel/sched/core.c</p> 
+<p>void wake_up_new_task(struct task_struct *p)<br> {<!-- --><br>     struct rq_flags rf;<br>     struct rq *rq;</p> 
+<p>    raw_spin_lock_irqsave(&amp;p-&gt;pi_lock, rf.flags);<br>     WRITE_ONCE(p-&gt;__state, TASK_RUNNING);</p> 
+<p>    p-&gt;recent_used_cpu = task_cpu(p);<br>     rseq_migrate(p);<br>     __set_task_cpu(p, select_task_rq(p, task_cpu(p), WF_FORK));</p> 
+<p>    rq = __task_rq_lock(p, &amp;rf);<br>     update_rq_clock(rq);</p> 
+<p>    activate_task(rq, p, ENQUEUE_NOCLOCK);</p> 
+<p>    check_preempt_curr(rq, p, WF_FORK);<br>     task_rq_unlock(rq, p, &amp;rf);<br> }</p> 
+<p>  </p> 
+<p>在fork中会调用此函数唤醒新创建的进程，把它放入到运行队列中等待被调度。此函数会先调用select_task_rq来选择自己要去哪个CPU的rq上去，然后调用activate_task把进程加入到相应的运行队列上，最后调用check_preempt_curr看一下是否需要抢占，如果需要就触发抢占。select_task_rq的逻辑我们在调度均衡中讲，check_preempt_curr的逻辑我们在下一节的被动调度中讲。</p> 
+<p>我们再来看一下阻塞唤醒的代码：<br> linux-src/kernel/sched/core.c</p> 
+<p>static int<br> try_to_wake_up(struct task_struct *p, unsigned int state, int wake_flags)<br> {<!-- --><br>     unsigned long flags;<br>     int cpu, success = 0;</p> 
+<p>    preempt_disable();<br>     if (p == current) {<!-- --><br>         goto out;<br>     }</p> 
+<p>    raw_spin_lock_irqsave(&amp;p-&gt;pi_lock, flags);<br>     if (!ttwu_state_match(p, state, &amp;success))<br>         goto unlock;</p> 
+<p>    if (READ_ONCE(p-&gt;on_rq) &amp;&amp; ttwu_runnable(p, wake_flags))<br>         goto unlock;</p> 
+<p>    cpu = select_task_rq(p, p-&gt;wake_cpu, wake_flags | WF_TTWU);<br>     if (task_cpu(p) != cpu) {<!-- --><br>         if (p-&gt;in_iowait) {<!-- --><br>             delayacct_blkio_end(p);<br>             atomic_dec(&amp;task_rq(p)-&gt;nr_iowait);<br>         }<br>         wake_flags |= WF_MIGRATED;<br>         set_task_cpu(p, cpu);<br>     }</p> 
+<p>    ttwu_queue(p, cpu, wake_flags);<br> unlock:<br>     raw_spin_unlock_irqrestore(&amp;p-&gt;pi_lock, flags);<br> out:<br>     preempt_enable();<br>     return success;<br> }</p> 
+<p>int wake_up_process(struct task_struct *p)<br> {<!-- --><br>     return try_to_wake_up(p, TASK_NORMAL, 0);<br> }</p> 
+<p>int wake_up_state(struct task_struct *p, unsigned int state)<br> {<!-- --><br>     return try_to_wake_up(p, state, 0);<br> }</p> 
+<p>int default_wake_function(wait_queue_entry_t *curr, unsigned mode, int wake_flags,<br>               void *key)<br> {<!-- --><br>     WARN_ON_ONCE(IS_ENABLED(CONFIG_SCHED_DEBUG) &amp;&amp; wake_flags &amp; ~WF_SYNC);<br>     return try_to_wake_up(curr-&gt;private, mode, wake_flags);<br> }<br><br>  </p> 
+<p>阻塞唤醒的核心逻辑是try_to_wake_up，但是内核并不是直接用这个函数，而是提供了三个封装函数。wake_up_process是默认的通用的进程唤醒接口，能唤醒TASK_NORMAL状态的进程。TASK_NORMAL就是阻塞状态的进程，包含TASK_INTERRUPTIBLE和TASK_UNINTERRUPTIBLE，前者是前睡眠能被信号唤醒，后者是深睡眠不能被信号唤醒。还有一些特殊状态的进程如被暂停的进程是不能通过wake_up_process来唤醒的，所以内核还提供了接口wake_up_state，可以自己指定唤醒什么状态的进程。还有一个封装函数default_wake_function，它是wait_queue的默认唤醒函数。</p> 
+<p>try_to_wake_up函数首先进行一些检测，先检测被唤醒的进程是否为当前进程，如果是的话直接go out。再检测进程的状态是否与state相符合，不符合就不唤醒，再看一下进程是否已经处于唤醒状态了，如果是就没有必要唤醒了。然后调用select_task_rq选择要到哪个CPU的运行队列上去运行，最后调用ttwu_queue把进程放到目标运行队列上去。基本逻辑和wake_up_new_task是一样的。</p> 
+<p>2.3 调度时机</p> 
+<p>进程放入运行队列之后就等着被调度到CPU上去运行了。但是当前进程正在使用着CPU，它什么时候能把CPU让给其它进程去运行呢？有两种情况：一是当前进程主动让出CPU，这叫主动调度；二是当前进程被动让出CPU，这叫被动调度，也就是进程抢占。</p> 
+<p>主动调度：</p> 
+<p>主动调度又可以分为自愿性主动调度和非自愿性主动调度。自愿性主动调度是指进程主动调用sched_yield让出CPU，进程本身还会回到运行队列中去等待下次调度。如果运行队列中没有其它进程的话，此进程还会继续运行。非自愿性主动调度是指进程运行时遇到了无法继续运行的情况，只能进行调度让其它进程运行。进程无法继续运行的情况有加锁失败、要读的文件现在不在内存中、进程死亡等。</p> 
+<p>下面我们来看一个非自愿性主动调度的例子，信号量获取失败时的操作：<br> linux-src/kernel/locking/semaphore.c</p> 
+<p>static inline int __sched __down_common(struct semaphore *sem, long state, long timeout)<br> {<!-- --><br>     struct semaphore_waiter waiter;</p> 
+<p>    list_add_tail(&amp;waiter.list, &amp;sem-&gt;wait_list);<br>     waiter.task = current;<br>     waiter.up = false;</p> 
+<p>    for (;;) {<!-- --><br>         if (signal_pending_state(state, current))<br>             goto interrupted;<br>         if (unlikely(timeout &lt;= 0))<br>             goto timed_out;<br>         __set_current_state(state);<br>         raw_spin_unlock_irq(&amp;sem-&gt;lock);<br>         timeout = schedule_timeout(timeout);<br>         raw_spin_lock_irq(&amp;sem-&gt;lock);<br>         if (waiter.up)<br>             return 0;<br>     }</p> 
+<p> timed_out:<br>     list_del(&amp;waiter.list);<br>     return -ETIME;</p> 
+<p> interrupted:<br>     list_del(&amp;waiter.list);<br>     return -EINTR;<br> }</p> 
+<p><br>  </p> 
+<p>先定义一个等待项，把自己加入到信号量的等待列表中，然后调用schedule_timeout执行调度。schedule_timeout和普通的调度函数schedule的区别是：schedule只能等着被具体的事件唤醒，schedule_timeout可以被事件唤醒，如果事件在规定的时间没有到来就会被定时器超时唤醒。</p> 
+<p>被动调度：</p> 
+<p>如果进程自己不调用sched_yield，也不调用任何会阻塞的函数，那么进程岂不是就可以一直霸占着CPU了。所以内核还提供了被动调度，强制进行进程调度，避免一个进程长时间霸占CPU。被动调度是被动的，不能由进程主动去调度，所以被动调度和主动调度的模式差别很大。被动调度的过程分为两步：触发调度和执行调度。触发调度仅仅是做个标记，告诉系统需要调度了。执行调度是系统会在某些特定的点去检查调度标记，如果被设置的话就执行调度。触发调度的点有： 定时器中断、唤醒进程时、迁移进程时、改变进程优先级时。执行调度的点有：从系统调用返回用户空间、从中断返回用户空间、从中断返回内核、禁用抢占临界区结束、禁用软中断临界区结束、cond_resched调用点。</p> 
+<p>定时器中断是保证抢占式多任务能实现的关键。因为其它被动调度的触发点是不确定的，只有定时器中断是确定的周期性的，因此定时器中断也被叫做调度tick。定时器中断的频率是个kconfig选项，可选的值有100、250、300、1000。默认选项是250，也就是说每4ms就会有一个定时器中断，这样就能保证被动调度的及时性，不会有进程过长的占用CPU。关于Linux时间管理与调度tick请参看《深入理解Linux时间子系统》。</p> 
+<p>下面我们来看一下调度tick的流程：<br> linux-src/kernel/sched/core.c</p> 
+<p>void scheduler_tick(void)<br> {<!-- --><br>     int cpu = smp_processor_id();<br>     struct rq *rq = cpu_rq(cpu);<br>     struct task_struct *curr = rq-&gt;curr;</p> 
+<p>    curr-&gt;sched_class-&gt;task_tick(rq, curr, 0);</p> 
+<p>#ifdef CONFIG_SMP<br>     rq-&gt;idle_balance = idle_cpu(cpu);<br>     trigger_load_balance(rq);<br> #endif<br> }</p> 
+<p></p> 
+<p>在低精度定时器、高精度定时器与固定tick、动态tick的不同组合下，定时器中断触发的方式是不同的，但是最终都会调用scheduler_tick。scheduler_tick会调用当前进程的调度类的task_tick函数，此函数根据具体的情况可能会触发调度。task_tick函数的实现细节我们在具体的调度算法中再讲。</p> 
+<p>唤醒进程有新建唤醒和阻塞唤醒，它们都有可能触发调度。我们来看一下：<br> linux-src/kernel/sched/core.c</p> 
+<p>void wake_up_new_task(struct task_struct *p)<br> {<!-- --><br>     struct rq_flags rf;<br>     struct rq *rq;</p> 
+<p>    __set_task_cpu(p, select_task_rq(p, task_cpu(p), WF_FORK));<br>     activate_task(rq, p, ENQUEUE_NOCLOCK);<br>     check_preempt_curr(rq, p, WF_FORK);<br> }</p> 
+<p>static int<br> try_to_wake_up(struct task_struct *p, unsigned int state, int wake_flags)<br> {<!-- --><br>     unsigned long flags;<br>     int cpu, success = 0;</p> 
+<p>    cpu = select_task_rq(p, p-&gt;wake_cpu, wake_flags | WF_TTWU);<br>     if (task_cpu(p) != cpu) {<!-- --><br>             set_task_cpu(p, cpu);<br>     }<br>     ttwu_queue(p, cpu, wake_flags);<br>     return success;<br> }</p> 
+<p>static void ttwu_queue(struct task_struct *p, int cpu, int wake_flags)<br> {<!-- --><br>     struct rq *rq = cpu_rq(cpu);<br>     struct rq_flags rf;</p> 
+<p>    ttwu_do_activate(rq, p, wake_flags, &amp;rf);<br> }</p> 
+<p>static void<br> ttwu_do_activate(struct rq *rq, struct task_struct *p, int wake_flags,<br>          struct rq_flags *rf)<br> {<!-- --><br>     int en_flags = ENQUEUE_WAKEUP | ENQUEUE_NOCLOCK;</p> 
+<p>    activate_task(rq, p, en_flags);<br>     ttwu_do_wakeup(rq, p, wake_flags, rf);<br> }</p> 
+<p>static void ttwu_do_wakeup(struct rq *rq, struct task_struct *p, int wake_flags,<br>                struct rq_flags *rf)<br> {<!-- --><br>     check_preempt_curr(rq, p, wake_flags);<br>     WRITE_ONCE(p-&gt;__state, TASK_RUNNING);<br> }</p> 
+<p>void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)<br> {<!-- --><br>     if (p-&gt;sched_class == rq-&gt;curr-&gt;sched_class)<br>         rq-&gt;curr-&gt;sched_class-&gt;check_preempt_curr(rq, p, flags);<br>     else if (p-&gt;sched_class &gt; rq-&gt;curr-&gt;sched_class)<br>         resched_curr(rq);<br> }</p> 
+<p>void resched_curr(struct rq *rq)<br> {<!-- --><br>     struct task_struct *curr = rq-&gt;curr;<br>     int cpu;</p> 
+<p>    cpu = cpu_of(rq);</p> 
+<p>    if (cpu == smp_processor_id()) {<!-- --><br>         set_tsk_need_resched(curr);<br>         set_preempt_need_resched();<br>         return;<br>     }<br> }<br><br>  </p> 
+<p>linux-src/include/linux/sched.h</p> 
+<p>static inline void set_tsk_need_resched(struct task_struct *tsk)<br> {<!-- --><br>     set_tsk_thread_flag(tsk,TIF_NEED_RESCHED);<br> }</p> 
+<p>static inline void set_tsk_thread_flag(struct task_struct *tsk, int flag)<br> {<!-- --><br>     set_ti_thread_flag(task_thread_info(tsk), flag);<br> }</p> 
+<p></p> 
+<p>可以看到无论是新建唤醒还是阻塞唤醒，最终都是调用check_preempt_curr函数来处理的。如果被唤醒的进程和当前进程是同一个调度类的则会调用调度类的函数来处理，这个逻辑我们在具体调度类中再讲。如果被唤醒的进程比当前进程的调度类高，则会触发调度。resched_curr函数最终会在thread_info的flag中设置TIF_NEED_RESCHED标记。</p> 
+<p>下面我们再来看一下执行调度的点，以x86为例。</p> 
+<p>系统调用返回用户空间：<br> linux-src/arch/x86/entry/common.c</p> 
+<p>__visible noinstr void do_syscall_64(struct pt_regs *regs, int nr)<br> {<!-- --><br>     nr = syscall_enter_from_user_mode(regs, nr);<br>     if (!do_syscall_x64(regs, nr) &amp;&amp; !do_syscall_x32(regs, nr) &amp;&amp; nr != -1) {<!-- --><br>         /* Invalid system call, but still a system call. */<br>         regs-&gt;ax = __x64_sys_ni_syscall(regs);<br>     }<br>     syscall_exit_to_user_mode(regs);<br> }</p> 
+<p>static noinstr bool __do_fast_syscall_32(struct pt_regs *regs)<br> {<!-- --><br>     int nr = syscall_32_enter(regs);<br>     int res;</p> 
+<p>    syscall_enter_from_user_mode_prepare(regs);<br>     do_syscall_32_irqs_on(regs, nr);<br>     syscall_exit_to_user_mode(regs);<br>     return true;<br> }</p> 
+<p>__visible noinstr void do_int80_syscall_32(struct pt_regs *regs)<br> {<!-- --><br>     int nr = syscall_32_enter(regs);</p> 
+<p>    nr = syscall_enter_from_user_mode(regs, nr);<br>     do_syscall_32_irqs_on(regs, nr);<br>     syscall_exit_to_user_mode(regs);<br> }</p> 
+<p><br>  </p> 
+<p>linux-src/kernel/entry/common.c</p> 
+<p>__visible noinstr void syscall_exit_to_user_mode(struct pt_regs *regs)<br> {<!-- --><br>     instrumentation_begin();<br>     __syscall_exit_to_user_mode_work(regs);<br>     instrumentation_end();<br>     __exit_to_user_mode();<br> }</p> 
+<p>static __always_inline void __syscall_exit_to_user_mode_work(struct pt_regs *regs)<br> {<!-- --><br>     syscall_exit_to_user_mode_prepare(regs);<br>     local_irq_disable_exit_to_user();<br>     exit_to_user_mode_prepare(regs);<br> }</p> 
+<p>static void exit_to_user_mode_prepare(struct pt_regs *regs)<br> {<!-- --><br>     unsigned long ti_work = READ_ONCE(current_thread_info()-&gt;flags);</p> 
+<p><br>     if (unlikely(ti_work &amp; EXIT_TO_USER_MODE_WORK))<br>         ti_work = exit_to_user_mode_loop(regs, ti_work);<br> }</p> 
+<p>static unsigned long exit_to_user_mode_loop(struct pt_regs *regs,<br>                         unsigned long ti_work)<br> {<!-- --><br>     while (ti_work &amp; EXIT_TO_USER_MODE_WORK) {<!-- --><br>         if (ti_work &amp; _TIF_NEED_RESCHED)<br>             schedule();<br>         if (ti_work &amp; (_TIF_SIGPENDING | _TIF_NOTIFY_SIGNAL))<br>             handle_signal_work(regs, ti_work);<br>         ti_work = READ_ONCE(current_thread_info()-&gt;flags);<br>     }</p> 
+<p>    return ti_work;<br> }</p> 
+<p><br>  </p> 
+<p>可以看到系统调用完成之后返回用户空间之前会检测thread_info flag中的_TIF_NEED_RESCHED，如果设置了就会执行调度。关于系统调用请参看《深入理解Linux系统调用》。</p> 
+<p>中断返回用户空间或者内核空间：<br> linux-src/arch/x86/include/asm/idtentry.h</p> 
+<p>#define DEFINE_IDTENTRY_IRQ(func)                    \<br> static void __##func(struct pt_regs *regs, u32 vector);            \<br>                                     \<br> __visible noinstr void func(struct pt_regs *regs,            \<br>                 unsigned long error_code)            \<br> {                                    \<br>     irqentry_state_t state = irqentry_enter(regs);            \<br>     u32 vector = (u32)(u8)error_code;                \<br>                                     \<br>     instrumentation_begin();                    \<br>     kvm_set_cpu_l1tf_flush_l1d();                    \<br>     run_irq_on_irqstack_cond(__##func, regs, vector);        \<br>     instrumentation_end();                        \<br>     irqentry_exit(regs, state);                    \<br> }</p> 
+<p>#define DEFINE_IDTENTRY(func)                        \<br> static __always_inline void __##func(struct pt_regs *regs);        \<br>                                     \<br> __visible noinstr void func(struct pt_regs *regs)            \<br> {                                    \<br>     irqentry_state_t state = irqentry_enter(regs);            \<br>                                     \<br>     instrumentation_begin();                    \<br>     __##func (regs);                        \<br>     instrumentation_end();                        \<br>     irqentry_exit(regs, state);                    \<br> }</p> 
+<p><br>  </p> 
+<p>linux-src/kernel/entry/common.c</p> 
+<p>noinstr void irqentry_exit(struct pt_regs *regs, irqentry_state_t state)<br> {<!-- --><br>     if (user_mode(regs)) {<!-- --><br>         irqentry_exit_to_user_mode(regs);<br>     } else if (!regs_irqs_disabled(regs)) {<!-- --><br>         if (IS_ENABLED(CONFIG_PREEMPTION)) {<!-- --><br>             irqentry_exit_cond_resched();<br>         }<br>     } else {<!-- --><br>         if (state.exit_rcu)<br>             rcu_irq_exit();<br>     }<br> }</p> 
+<p>noinstr void irqentry_exit_to_user_mode(struct pt_regs *regs)<br> {<!-- --><br>     instrumentation_begin();<br>     exit_to_user_mode_prepare(regs);<br>     instrumentation_end();<br>     __exit_to_user_mode();<br> }</p> 
+<p>static void exit_to_user_mode_prepare(struct pt_regs *regs)<br> {<!-- --><br>     unsigned long ti_work = READ_ONCE(current_thread_info()-&gt;flags);</p> 
+<p><br>     if (unlikely(ti_work &amp; EXIT_TO_USER_MODE_WORK))<br>         ti_work = exit_to_user_mode_loop(regs, ti_work);<br> }</p> 
+<p>static unsigned long exit_to_user_mode_loop(struct pt_regs *regs,<br>                         unsigned long ti_work)<br> {<!-- --><br>     while (ti_work &amp; EXIT_TO_USER_MODE_WORK) {<!-- --><br>         if (ti_work &amp; _TIF_NEED_RESCHED)<br>             schedule();<br>         if (ti_work &amp; (_TIF_SIGPENDING | _TIF_NOTIFY_SIGNAL))<br>             handle_signal_work(regs, ti_work);<br>         ti_work = READ_ONCE(current_thread_info()-&gt;flags);<br>     }</p> 
+<p>    return ti_work;<br> }</p> 
+<p>void irqentry_exit_cond_resched(void)<br> {<!-- --><br>     if (!preempt_count()) {<!-- --><br>         if (need_resched())<br>             preempt_schedule_irq();<br>     }<br> }</p> 
+<p><br>  </p> 
+<p>关于中断的原理请参看《深入理解Linux中断机制》。所有中断和异常的入口函数都是通过DEFINE_IDTENTRY_IRQ或DEFINE_IDTENTRY(还有其它一些类似的宏)来定义的，其中一定会调用irqentry_exit。irqentry_exit又会根据寄存器状态来判断是返回到用户空间还是内核空间。如果是返回到用户空间则会调用irqentry_exit_to_user_mode，此函数的操作和从系统调用返回用户空间是相似的，就不再赘述了。如果是返回到内核空间则会调用irqentry_exit_cond_resched，调用此函数会先检测是否配置了CONFIG_PREEMPTION，没配置就不调用。CONFIG_PREEMPTION代表的是内核抢占，在有些场景中会说成抢占，但是要明白其代表的是内核抢占。</p> 
+<p>内核有时候为了同步，需要临时禁用抢占，这个禁用的是内核抢占，因为用户抢占永远可以。当代码配置了内核抢占时才有效。禁用抢占有引用计数，释放最后一个引用时才会重新开启内核抢占。禁用抢占和开启抢占分别用宏preempt_disable和preempt_enable。preempt_enable代表临界区的结束，会去检测是否需要调度。</p> 
+<p>禁用抢占临界区结束：<br> linux-src/include/linux/preempt.h</p> 
+<p>#define preempt_disable() \<br> do { \<br>     preempt_count_inc(); \<br>     barrier(); \<br> } while (0)</p> 
+<p>#define preempt_enable() \<br> do { \<br>     barrier(); \<br>     if (unlikely(preempt_count_dec_and_test())) \<br>         __preempt_schedule(); \<br> } while (0)</p> 
+<p></p> 
+<p>preempt_disable增加引用计数，preempt_enable减少引用计数并检测是否为0，如果为0则执行调度。</p> 
+<p>禁用软中断临界区结束：<br> linux-src/include/linux/bottom_half.h</p> 
+<p>static inline void local_bh_enable(void)<br> {<!-- --><br>     __local_bh_enable_ip(_THIS_IP_, SOFTIRQ_DISABLE_OFFSET);<br> }</p> 
+<p></p> 
+<p>linux-src/kernel/softirq.c</p> 
+<p>void __local_bh_enable_ip(unsigned long ip, unsigned int cnt)<br> {<!-- --><br>     WARN_ON_ONCE(in_irq());</p> 
+<p>    if (unlikely(!in_interrupt() &amp;&amp; local_softirq_pending())) {<!-- --><br>         /*<br>          * Run softirq if any pending. And do it in its own stack<br>          * as we may be calling this deep in a task call stack already.<br>          */<br>         do_softirq();<br>     }</p> 
+<p>    preempt_count_dec();</p> 
+<p>    preempt_check_resched();<br> }</p> 
+<p></p> 
+<p>linux-src/include/linux/preempt.h</p> 
+<p>#define preempt_check_resched() \<br> do { \<br>     if (should_resched(0)) \<br>         __preempt_schedule(); \<br> } while (0)</p> 
+<p></p> 
+<p>在禁用软中断的过程中有可能其它地方已经触发了调度，因此在重新开启软中断的时候检测一下是否需要调度。</p> 
+<p>cond_resched调用点：<br> linux-src/include/linux/sched.h</p> 
+<p>#define cond_resched() ({            \<br>     ___might_sleep(__FILE__, __LINE__, 0);    \<br>     _cond_resched();            \<br> })</p> 
+<p>static inline int _cond_resched(void)<br> {<!-- --><br>     return __cond_resched();<br> }</p> 
+<p></p> 
+<p>linux-src/kernel/sched/core.c</p> 
+<p>int __sched __cond_resched(void)<br> {<!-- --><br>     if (should_resched(0)) {<!-- --><br>         preempt_schedule_common();<br>         return 1;<br>     }</p> 
+<p>    return 0;<br> }</p> 
+<p></p> 
+<p>在很多比较耗时的内核操作中都会加上cond_resched调用，用来增加抢占调度的检测点，提高系统的响应性。</p> 
+<p>2.4 调度流程</p> 
+<p>前面讲了这么多触发调度的时机，现在该执行调度了。执行调度的总体逻辑是很简单的，就两个步骤：选择进程和切换进程。选择进程是一个很麻烦的过程，牵涉到调度类和调度算法，这个在下一节中讲。切换进程虽然不太麻烦，但是还是比较难以理解的，这个在2.7节中讲。执行调度的入口函数是__schedule，无论是从什么途径执行的调度，最终都要调用这个函数。</p> 
+<p>下面我们来看一下它的代码：<br> linux-src/kernel/sched/core.c</p> 
+<p>static void __sched notrace __schedule(unsigned int sched_mode)<br> {<!-- --><br>     struct task_struct *prev, *next;<br>     struct rq_flags rf;<br>     struct rq *rq;<br>     int cpu;</p> 
+<p>    cpu = smp_processor_id();<br>     rq = cpu_rq(cpu);<br>     prev = rq-&gt;curr;</p> 
+<p>    next = pick_next_task(rq, prev, &amp;rf);</p> 
+<p>    if (likely(prev != next)) {<!-- --><br>         rq = context_switch(rq, prev, next, &amp;rf);<br>     } else {<!-- --><br>         __balance_callbacks(rq);<br>     }<br> }</p> 
+<p></p> 
+<p>代码经过删减，只留下了关键操作。首先是pick_next_task，选择下一个要执行的进程。然后是context_switch，切换进程。</p> 
+<p>2.5 调度算法</p> 
+<p>这节要讲的是pick_next_task，在讲之前我们要先讲一些概念逻辑。</p> 
+<p>内核中有调度类、调度策略、调度算法的概念，这三者是什么意思，又有什么关系呢？调度类代表的是进程对调度器的需求，主要是对调度紧迫性的需求。调度策略是调度类的子类，是对调度类的细分，是在同一个调度需求下的细微区别。调度算法是对调度类的实现，一个调度类一个调度算法。同一个调度类的调度策略是有很强的相似性的，所以在同一个算法中实现，对于它们不同的部分，算法再去进行区分。下面我们画个图来看一下Linux中的所有调度类、调度策略和调度算法。</p> 
+<p><img alt="" height="779" src="https://images2.imgbox.com/08/eb/pFqYcsv7_o.png" width="826"><br> 在这里插入图片描述<br> Linux中一共有五个调度类，分别是stop(禁令调度类)、deadline(限时调度类)、realtime(实时调度类)、time-share(分时调度类)、idle(闲时调度类)。它们的调度紧迫性从上到下，依次降低。其中禁令调度类和闲时调度类有特殊的目的，仅用于内核，没有调度策略，由于这类进程在内核启动时就设置好了，一个CPU一个相应的进程，所以也不需要调度算法。另外三个调度类可用于用户空间进程，有相应的调度策略和调度算法，也有相应的API供用户空间来设置一个进程的调度策略和优先级。调度类之间的关系是有高类的进程可运行的情况下，绝对不会去调度低类的进程，只有当高类无Runnable的进程的时候才会去调度低类的进程。这里面也有一个例外就是内核为了防止实时进程饿死普通进程，提供了一个配置参数，默认值是实时进程如果已经占用了95%的CPU时间，就会把剩余5%的CPU时间分给普通进程。</p> 
+<p> </p> 
+<p>禁令调度类是内核用来执行一些特别紧急的事物所使用的。禁令调度类的进程是内核在启动时就创建好的，一个CPU一个进程，名字叫做[migration/n]，n是CPU_ID，之后就不能再创建此类进程了。内核提供了一些接口可以向这些进程push work。调度均衡要迁移线程的时候会用到这类进程，所以它的名字叫做migration。</p> 
+<p>linux-src/include/linux/stop_machine.h</p> 
+<p>int stop_one_cpu(unsigned int cpu, cpu_stop_fn_t fn, void *arg);<br> int stop_two_cpus(unsigned int cpu1, unsigned int cpu2, cpu_stop_fn_t fn, void *arg);</p> 
+<p>int stop_machine(cpu_stop_fn_t fn, void *data, const struct cpumask *cpus);<br> int stop_machine_cpuslocked(cpu_stop_fn_t fn, void *data, const struct cpumask *cpus);</p> 
+<p></p> 
+<p>由于禁令调度类的进程优先级是最高的，只要此类进程变得Runnable了，就会立马抢占当前进程来运行，所以这几个接口的名字也都叫做stop_cpu、stop_machine之类的。大家不要望文生义地认为这几个接口能暂定CPU或者关机之类的。</p> 
+<p>限时调度类属于硬实时，适用于对调度时间有明确要求的进程。它只有一个调度策略，限时调度策略。一个进程必须通过系统调用才能把自己设置为限时调度策略，并且还要提供三个参数：运行周期、运行时间和截止时间。运行周期是说这个进程在多长时间内想要运行一次，运行时间是说这个进程每次想要运行多长时间，截止时间是说这个进程每次运行结束不能晚于什么时间。这三个参数都需要进程根据自己的实际情况向内核提供，而且不是说你提供了就一定能设置成功，内核还要检测与已有的限时调度类进程是否冲突，如果有冲突那就无法满足，就只能返回设置失败。还有一点是，运行时间是程序员要提供预估好的，如果程序实际运行时间超过了预估时间则会被切走，这可能会导致灾难性的后果。</p> 
+<p>实时调度类属于软实时，适用于那些只要可运行就希望立马能执行的进程，比如音视频的解码进程。实时调度类又分为两个调度策略，SCHED_FIFO和SCHED_RR。实时调度类的内部逻辑是让实时优先级大的进程先运行，只要有实时优先级大的进程可运行，就不会去调度实时优先级小的进程。当两个实时进程的优先级相同时，SCHED_RR和SCHED_FIFO这两个策略就有区别了，SCHED_FIFO进程如果抢占了CPU，它就会一直占着CPU，不会给同优先级的实时进程让CPU的，而SCHED_RR进程会在运行了一定的时间片之后主动让给同优先级的实时进程。</p> 
+<p>分时调度类是给广大的普通进程来用的，大家共同分享CPU。根据优先级的不同，可能有的进程分的多有的进程分的少，但是不会出现一个进程霸占CPU的情况。分时调度类下面有三个调度策略：SCHED_NORMAL、SCHED_BATCH和SCHED_IDLE。它们的基本思想都是分时，但是略有不同，SCHED_BATCH进程希望减少调度次数，每次调度能执行的时间长一点，SCHED_IDLE是优先级特别低的进程，其分到的CPU时间的比例非常低，但是也总是能保证分到。分时调度类现在的算法叫做CFS(完全公平调度)，所以分时调度类也叫做公平调度类。</p> 
+<p>闲时调度类是给内核用的，当CPU没有其它进程可以执行的时候就会运行闲时调度类的进程。此类进程是在内核启动时就创建好的，一个CPU一个进程，此后就不能再创建此类进程了。闲时调度类的进程也叫做idle进程，它在内核中有些特殊的用途，比如CPUIdle的实现就和idle进程密切相关。</p> 
+<p>大家要注意，闲时调度类和分时调度类中SCHED_IDLE调度策略不是一回事，两者没有关系，大家不要弄混淆了。</p> 
+<p>系统为每个调度类都定义了一些标准的操作，我们来看一下：<br> linux-src/kernel/sched/sched.h</p> 
+<p>struct sched_class {<!-- --><br>     void (*enqueue_task) (struct rq *rq, struct task_struct *p, int flags);<br>     void (*dequeue_task) (struct rq *rq, struct task_struct *p, int flags);<br>     void (*yield_task)   (struct rq *rq);<br>     bool (*yield_to_task)(struct rq *rq, struct task_struct *p);</p> 
+<p>    void (*check_preempt_curr)(struct rq *rq, struct task_struct *p, int flags);</p> 
+<p>    struct task_struct *(*pick_next_task)(struct rq *rq);</p> 
+<p>    void (*put_prev_task)(struct rq *rq, struct task_struct *p);<br>     void (*set_next_task)(struct rq *rq, struct task_struct *p, bool first);</p> 
+<p>#ifdef CONFIG_SMP<br>     int (*balance)(struct rq *rq, struct task_struct *prev, struct rq_flags *rf);<br>     int  (*select_task_rq)(struct task_struct *p, int task_cpu, int flags);</p> 
+<p>    struct task_struct * (*pick_task)(struct rq *rq);</p> 
+<p>    void (*migrate_task_rq)(struct task_struct *p, int new_cpu);</p> 
+<p>    void (*task_woken)(struct rq *this_rq, struct task_struct *task);</p> 
+<p>    void (*set_cpus_allowed)(struct task_struct *p,<br>                  const struct cpumask *newmask,<br>                  u32 flags);</p> 
+<p>    void (*rq_online)(struct rq *rq);<br>     void (*rq_offline)(struct rq *rq);</p> 
+<p>    struct rq *(*find_lock_rq)(struct task_struct *p, struct rq *rq);<br> #endif</p> 
+<p>    void (*task_tick)(struct rq *rq, struct task_struct *p, int queued);<br>     void (*task_fork)(struct task_struct *p);<br>     void (*task_dead)(struct task_struct *p);</p> 
+<p>    void (*switched_from)(struct rq *this_rq, struct task_struct *task);<br>     void (*switched_to)  (struct rq *this_rq, struct task_struct *task);<br>     void (*prio_changed) (struct rq *this_rq, struct task_struct *task, int oldprio);</p> 
+<p>    unsigned int (*get_rr_interval)(struct rq *rq, struct task_struct *task);</p> 
+<p>    void (*update_curr)(struct rq *rq);<br> };</p> 
+<p><br>  </p> 
+<p>每个调度类在实现自己的算法的时候都要实现这些函数指针，我们在讲到具体算法时再来讲解这些函数指针的含义。</p> 
+<p>下面我们来看一下pick_next_task的代码：<br> linux-src/kernel/sched/core.c</p> 
+<p>static struct task_struct *<br> pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)<br> {<!-- --><br>     return __pick_next_task(rq, prev, rf);<br> }</p> 
+<p>static inline struct task_struct *<br> __pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)<br> {<!-- --><br>     const struct sched_class *class;<br>     struct task_struct *p;</p> 
+<p>    /*<br>      * Optimization: we know that if all tasks are in the fair class we can<br>      * call that function directly, but only if the @prev task wasn't of a<br>      * higher scheduling class, because otherwise those lose the<br>      * opportunity to pull in more work from other CPUs.<br>      */<br>     if (likely(prev-&gt;sched_class &lt;= &amp;fair_sched_class &amp;&amp;<br>            rq-&gt;nr_running == rq-&gt;cfs.h_nr_running)) {<!-- --></p> 
+<p>        p = pick_next_task_fair(rq, prev, rf);<br>         if (unlikely(p == RETRY_TASK))<br>             goto restart;</p> 
+<p>        /* Assume the next prioritized class is idle_sched_class */<br>         if (!p) {<!-- --><br>             put_prev_task(rq, prev);<br>             p = pick_next_task_idle(rq);<br>         }</p> 
+<p>        return p;<br>     }</p> 
+<p>restart:<br>     put_prev_task_balance(rq, prev, rf);</p> 
+<p>    for_each_class(class) {<!-- --><br>         p = class-&gt;pick_next_task(rq);<br>         if (p)<br>             return p;<br>     }</p> 
+<p>    /* The idle class should always have a runnable task: */<br>     BUG();<br> }</p> 
+<p><br>  </p> 
+<p>__pick_next_task进行了一个优化，因为大部分时间系统中主要存在的都是普通进程，所以先检测运行队列的运行数量和公平运行列队中的运行数量，如果相等的话就说明系统中目前只有普通进程，那么就可以直接调用pick_next_task_fair。接着就是主逻辑了，先从高调度类进行选择，如果有可运行的进程就直接返回，如果没有就去查询下一个调度类。最后一定能返回一个进程的，因为idle进程总是可运行的。</p> 
+<p>每个调度类的具体算法逻辑在后面的章节中讲解。</p> 
+<p>2.6 进程优先级</p> 
+<p>Linux上一共有5种调度类，其中禁令调度类和闲时调度类只在内核里使用，而且一个CPU只有一个线程，所以用不到进程优先级。限时调度类用的是进程设置的三个调度参数作为调度的依据，也用不到进程优先级。所以就只有实时调度类和分时调度类会用到进程优先级。它们使用优先级的方法也并不相同，我们在讲到具体算法时再讲。</p> 
+<p>由于历史原因，实时进程和普通进程的优先级并不是一个简单的数值，而是有好几个数值体系和变换规则，我们先来看一下设置进程调度策略和优先级的API。</p> 
+<p>#include &lt;sched.h&gt;<br> int sched_setscheduler(pid_t pid, int policy, const struct sched_param *param);<br> int sched_getscheduler(pid_t pid);</p> 
+<p>#include &lt;sched.h&gt;<br> int sched_setparam(pid_t pid, const struct sched_param *param);<br> int sched_getparam(pid_t pid, struct sched_param *param);</p> 
+<p>struct sched_param {<!-- --><br>     int sched_priority;<br> };</p> 
+<p>#include &lt;unistd.h&gt;<br> int nice(int inc);</p> 
+<p></p> 
+<p>sched_setscheduler能同时设置实时调度类和分时调度类的调度策略和静态优先级，对于实时调度类，其静态优先级范围是1-99,99最大，对于分时调度类，其静态优先级必须设置为0，其动态优先级也就是nice需要通过nice接口来设置。sched_setparam可以设置实时进程的静态优先级，对于分时进程，其静态优先级必须为0。</p> 
+<p>我们再来看一下task_struct中记录优先级的字段。<br> linux-src/include/linux/sched.h</p> 
+<p>struct task_struct {<!-- --><br>     int                prio;<br>     int                static_prio;<br>     int                normal_prio;<br>     unsigned int            rt_priority;<br> }</p> 
+<p></p> 
+<p>一共有4个字段，rt_priority用来记录实时进程的用户空间的静态优先级，static_prio用来记录分时进程的用户空间的动态优先级并做了转换。然后rt_priority和static_prio一起转化为normal_prio(规范优先级)，此时实时进程和分时进程的优先级就在同一个数轴上了。最终起作用的是prio(动态优先级)，它的值默认等于normal_prio，一般不会变动。</p> 
+<p>下面我们画图来看一下进程的优先级转换：</p> 
+<p><img alt="" height="468" src="https://images2.imgbox.com/26/71/qtZhd7gR_o.png" width="844"><br> 在这里插入图片描述<br> 在用户空间的时候，实时进程和普通进程(分时进程)共享同一个优先级数轴，叫静态优先级，范围是0-99，值越大优先级越高，实时进程占用1-99，普通进程占用0。普通进程自己又新开了一个数轴，叫动态优先级，也叫nice值，范围是 -20 - 19，值越低优先级越高。</p> 
+<p> </p> 
+<p>到了内核空间的时候，实时进程有一个实时优先级，直接复制用户空间的静态优先级，普通进程有一个静态优先级，它是用户空间的nice值转换过来的，转换规则是nice+120。然后内核又定义了规范优先级，把它们都统一到同一个数轴上来。普通进程的规范优先级是直接复制其静态优先级，实时进程的规范优先级等于99减去它的实时优先级。在规范优先级的数轴上，所有进程都可以直接比较优先级了，值越小优先级越大。实时进程的规范优先级范围是0-99，但是由于它是从用户空间的优先级计算而来的，所以99这个值就用不到。</p> 
+<p>最后是动态优先级，对进程所有的处理都以动态优先级为准，动态优先级默认等于其规范优先级。以前的时候调度算法会去调整进程的动态优先级，现在不会再调了。现在只有使用了优先级继承锁的时候才会去调整进程的动态优先级。</p> 
+<p>下面让我们再画一个图总结一下：</p> 
+<p><img alt="" height="429" src="https://images2.imgbox.com/62/79/jMjgnnFq_o.png" width="831"><br> 在这里插入图片描述<br> 对于禁令调度类、限时调度类和闲时调度类，它们用不到进程优先级，但是系统在规范优先级数轴上为它们提供了象征值，其动态优先级是对规范优先级的复制，也只有象征意义。有一个特殊的情况是分时调度类里面的SCHED_IDLE调度策略的进程，它的优先级无法在规范优先级数轴上体现出来，它的优先级是在CFS算法专门处理的，直接设置的调度权重，相当于是nice 26。</p> 
+<p> </p> 
+<p>除了这些复杂的优先级体系之外，ps和top命令下的优先级体系也不相同。</p> 
+<p>ps命令优先级：</p> 
+<p><img alt="" height="283" src="https://images2.imgbox.com/a0/d4/9Be6jCo2_o.png" width="644"><br> 在这里插入图片描述<br> cls代表的是调度策略，含义如下：</p> 
+<p> </p> 
+<p>TS SCHED_OTHER/SCHED_NORMAL<br> FF SCHED_FIFO<br> RR SCHED_RR<br> B SCHED_BATCH<br> IDL SCHED_IDLE<br> DLN SCHED_DEADLINE</p> 
+<p>NI代表的是nice值，范围：-20 – 19，-20最大，只有SCHED_NORMAL和SCHED_BATCH有意义。</p> 
+<p>RTPRIO代表的实时进程的用户空间优先级，范围：1 – 99，99最大，只有SCHED_FIFO和SCHED_RR有意义。</p> 
+<p>PRI，普通进程 pri = 19 - nice, 实时进程 pri = 40 + rtprio，值越大优先级越大，普通进程 0 – 39， 实时进程 41 – 139。</p> 
+<p>top命令优先级：<br> 在这里插入图片描述<br> NI列是nice值，只对普通进程有效，对其它进程来说没有意义。</p> 
+<p>PR，普通进程 pr = 20 + nice，实时进程 pr = -1 - rt，rt是实时进程的用户空间优先级，PR值越小优先级越大，普通进程 0 – 39，实时进程 -2 – -100，-100会显示为rt，普通进程大于等于0，实时进程小于0。</p> 
+<p>2.7 进程切换</p> 
+<p>选择好下一个要执行的进程之后，就该切换进程了。切换进程一共分两步：一是切换用户空间，二是切换内核栈。下面我们来看一下代码(代码经过了高度删减)：<br> linux-src/kernel/sched/core.c</p> 
+<p>static __always_inline struct rq *<br> context_switch(struct rq *rq, struct task_struct *prev,<br>            struct task_struct *next, struct rq_flags *rf)<br> {<!-- --></p> 
+<p>    switch_mm_irqs_off(prev-&gt;active_mm, next-&gt;mm, next);</p> 
+<p>    switch_to(prev, next, prev);</p> 
+<p>    return finish_task_switch(prev);<br> }    switch_to(prev, next, prev);<br>     barrier();</p> 
+<p>    return finish_task_switch(prev);<br> }</p> 
+<p></p> 
+<p>其中switch_mm_irqs_off是切换用户空间的，switch_to是切换内核栈的。</p> 
+<p>我们继续看切换用户空间是如何执行的。<br> linux-src/arch/x86/mm/tlb.c</p> 
+<p>void switch_mm_irqs_off(struct mm_struct *prev, struct mm_struct *next,<br>             struct task_struct *tsk)<br> {<!-- --><br>     load_new_mm_cr3(next-&gt;pgd, new_asid, false);<br> }</p> 
+<p>static void load_new_mm_cr3(pgd_t *pgdir, u16 new_asid, bool need_flush)<br> {<!-- --><br>     unsigned long new_mm_cr3;</p> 
+<p>    if (need_flush) {<!-- --><br>         invalidate_user_asid(new_asid);<br>         new_mm_cr3 = build_cr3(pgdir, new_asid);<br>     } else {<!-- --><br>         new_mm_cr3 = build_cr3_noflush(pgdir, new_asid);<br>     }</p> 
+<p>    write_cr3(new_mm_cr3);<br> }</p> 
+<p></p> 
+<p>linux-src/arch/x86/include/asm/special_insns.h</p> 
+<p>tatic inline void write_cr3(unsigned long x)<br> {<!-- --><br>     native_write_cr3(x);<br> }</p> 
+<p>static inline void native_write_cr3(unsigned long val)<br> {<!-- --><br>     asm volatile("mov %0,%%cr3": : "r" (val) : "memory");<br> }</p> 
+<p>切换进程地址空间就是给寄存器CR3赋予新的值。CR3中存放的是根页表的物理地址，build_cr3会把虚拟地址转化为物理地址。关于虚拟内存空间的原理请参看《深入理解Linux内存管理》。</p> 
+<p>下面我们继续看内核栈是如何切换的。<br> linux-src/arch/x86/include/asm/switch_to.h</p> 
+<p>#define switch_to(prev, next, last)                    \<br> do {                                    \<br>     ((last) = __switch_to_asm((prev), (next)));            \<br> } while (0)</p> 
+<p></p> 
+<p>linux-src/arch/x86/entry/entry_64.S</p> 
+<p>SYM_FUNC_START(__switch_to_asm)<br>     /*<br>      * Save callee-saved registers<br>      * This must match the order in inactive_task_frame<br>      */<br>     pushq    %rbp<br>     pushq    %rbx<br>     pushq    %r12<br>     pushq    %r13<br>     pushq    %r14<br>     pushq    %r15</p> 
+<p>    /* switch stack */<br>     movq    %rsp, TASK_threadsp(%rdi)<br>     movq    TASK_threadsp(%rsi), %rsp</p> 
+<p>#ifdef CONFIG_STACKPROTECTOR<br>     movq    TASK_stack_canary(%rsi), %rbx<br>     movq    %rbx, PER_CPU_VAR(fixed_percpu_data) + stack_canary_offset<br> #endif</p> 
+<p>#ifdef CONFIG_RETPOLINE<br>     /*<br>      * When switching from a shallower to a deeper call stack<br>      * the RSB may either underflow or use entries populated<br>      * with userspace addresses. On CPUs where those concerns<br>      * exist, overwrite the RSB with entries which capture<br>      * speculative execution to prevent attack.<br>      */<br>     FILL_RETURN_BUFFER %r12, RSB_CLEAR_LOOPS, X86_FEATURE_RSB_CTXSW<br> #endif</p> 
+<p>    /* restore callee-saved registers */<br>     popq    %r15<br>     popq    %r14<br>     popq    %r13<br>     popq    %r12<br>     popq    %rbx<br>     popq    %rbp</p> 
+<p>    jmp    __switch_to<br> SYM_FUNC_END(__switch_to_asm)</p> 
+<p><br>  </p> 
+<p>切换内核栈是内核中最难理解的地方之一，难以理解的有两点：一是进程执行是如何切换的；二是switch_to宏为何有三个参数，第三个参数为啥又是prev。</p> 
+<p>我们先来解释第一个点，进程执行是如何切换的，先来画个图看一下：</p> 
+<p><img alt="" height="467" src="https://images2.imgbox.com/24/ba/0LUg3R3k_o.png" width="860"><br> 在这里插入图片描述<br> 如图中所示一样，每个线程都有一个线程栈，代表线程的执行，CPU只有一个(线程切换前后是同一个CPU)。CPU在哪个线程栈上运行，就是在运行在哪个线程，而线程栈上记录的就是线程的运行信息，所以这个线程就可以继续运行下去了。如果从单个进程的角度来看，从switch_to开始，我们的进程就暂停运行了，我们的进程就一直在这等，等到我们被唤醒并调度执行才会继续走下去。如果从CPU的角度来看，switch_to切换了内核栈，就在新的线程上运行了，函数返回的时候就会按照内核栈的调用地址返回，执行的就是新的代码了，就不是原来的代码了。当内核栈不停地返回，就会返回到用户空间，内核栈的底部记录的有用户空间的调用信息，由于前面已经切换了用户空间，所以程序就能返回到之前用户空间进入内核的地方。</p> 
+<p> </p> 
+<p>我们再来说第二点，switch_to宏为啥有三个参数，为啥这么难以理解呢？这是因为switch_to实际上包含了三个进程：一个是我们自己prev，一个是即将要切换的进程next，一个是我们下次是从哪个进程切换过来的，我们把这个进程叫做from。而switch_to通过复用prev变量而把from变量给省略了，这就导致了理解上的混乱。我们来修改一下代码，把switch_to宏给展开，并把prev改名为curr，把from变量也给显式地定义出来，来看看效果怎么样。</p> 
+<p>static __always_inline struct rq *<br> context_switch(struct rq *rq, struct task_struct *curr,<br>            struct task_struct *next, struct rq_flags *rf)<br> {<!-- --><br>     switch_mm_irqs_off(curr-&gt;active_mm, next-&gt;mm, next);</p> 
+<p>    struct task_struct *from = NULL;<br>     from = __switch_to_asm(curr, next);<br>     barrier();</p> 
+<p>    return finish_task_switch(from);<br> }</p> 
+<p></p> 
+<p>这下就好理解多了。从单个进程的角度来看，__switch_to_asm会切换到next进程去执行，我们的进程就休眠了。很久以后我们的进程醒来又重新开始执行了，__switch_to_asm返回的是把CPU让给我们的那个进程。从CPU的角度来看__switch_to_asm函数前半程在curr进程运行，后半程在next进程运行。由于切换了内核栈，所以from、curr、next这三个变量也变了，它们是不同栈上的同名的局部变量，它们的内存地址是不一样的。当前进程中的curr值会被作为next进程中的from值返回，所以在next进程中就知道了是从哪里切换过来的了。</p> 
+<p>__switch_to_asm中最关键的两句代码我们再拿出来分析一下。<br> linux-src/arch/x86/entry/entry_64.S</p> 
+<p>    /* switch stack */<br>     movq    %rsp, TASK_threadsp(%rdi)<br>     movq    TASK_threadsp(%rsi), %rsp</p> 
+<p></p> 
+<p>linux-src/include/generated/asm-offsets.h</p> 
+<p>#define TASK_threadsp 3160 /* offsetof(struct task_struct, thread.sp) */</p> 
+<p></p> 
+<p>每个进程的内核栈的栈指针都在task_struct中的thread.sp保存着，第一个mov语句是把当前进程的栈指针保存起来以备后面使用，第二个mov语句是加载next进程的栈指针，这条指令执行之后就意味着进程切换成功了。后面还有一些语句用来加载之前保存在栈上的寄存器信息。</p> 
+<p>如果大家对前面修改的代码感兴趣，想打log验证一下，可以参考下面我加的log。</p> 
+<p>static __always_inline struct rq *<br> context_switch(struct rq *rq, struct task_struct *curr,<br>            struct task_struct *next, struct rq_flags *rf)<br> {<!-- --><br>     switch_mm_irqs_off(curr-&gt;active_mm, next-&gt;mm, next);</p> 
+<p>    struct task_struct *from = NULL;<br>     if (jiffies % 1000 == 0 &amp;&amp; 1 == smp_processor_id()) {<!-- --><br>         pr_err("AAAAAA, -------------------------------------------");<br>         pr_err("AAAAAA, start");<br>         pr_err("AAAAAA, &amp;curr:%p", &amp;curr);<br>         pr_err("AAAAAA, &amp;next:%p", &amp;next);<br>         pr_err("AAAAAA, &amp;from:%p", &amp;from);<br>         pr_err("AAAAAA,  from:%p", from);<br>         pr_err("AAAAAA,  curr:%p, pid:%d, comm:%s", curr, curr-&gt;pid, curr-&gt;comm);<br>         pr_err("AAAAAA,  next:%p, pid:%d, comm:%s", next, next-&gt;pid, next-&gt;comm);<br>         dump_stack();<br>         pr_err("AAAAAA, -------------------------------------------");<br>     }<br>     from = __switch_to_asm(curr, next);<br>     barrier();<br>     if (jiffies % 1000 == 0 &amp;&amp; 1 == smp_processor_id()) {<!-- --><br>         pr_err("AAAAAA, &amp;curr:%p", &amp;curr);<br>         pr_err("AAAAAA, &amp;next:%p", &amp;next);<br>         pr_err("AAAAAA, &amp;from:%p", &amp;from);<br>         pr_err("AAAAAA,  from:%p, pid:%d, comm:%s", from, from-&gt;pid, from-&gt;comm);<br>         pr_err("AAAAAA,  curr:%p, pid:%d, comm:%s", curr, curr-&gt;pid, curr-&gt;comm);<br>         pr_err("AAAAAA,  next:%p, pid:%d, comm:%s", next, next-&gt;pid, next-&gt;comm);<br>         dump_stack();<br>         pr_err("AAAAAA, end");<br>         pr_err("AAAAAA, -------------------------------------------");<br>     }</p> 
+<p>    return finish_task_switch(from);<br> }</p> 
+<p><br>  </p> 
+<p>这里面有两个技巧，一是使用jiffies % 1000 == 0来减少log的数量，内核中进程切换非常频繁，过多的log往往难以分析，二是使用1 == smp_processor_id()把log锁定在一个CPU上，不然的话多个CPU上的切换log会相互干扰，难以理清，我们只看一个CPU上的log，就会发现逻辑很清晰。</p> 
+<p>下面我画了一个图模拟了一下单个CPU上的三个进程之间的切换，大家来看一下：</p> 
+<p><img alt="" height="666" src="https://images2.imgbox.com/3e/c0/CYtyiEls_o.png" width="832"><br> 在这里插入图片描述<br> 有三个进程pid 分别为1、3、5在CPU0上进行切换，切换顺序是1-&gt;3-&gt;5-&gt;1-&gt;5-&gt;3-&gt;1。图中是按照我修改之后的代码来画的，有from、curr、next三个指针变量。可以看到一个进程它必须先切走才能切回，因为不切走怎么能切回来呢。但是对于刚创建的进程它是没有切走过的，于是内核会为它伪造内核栈也就是切点，使得它可以切回。正常的内核栈是__schedule函数调用了__switch_to_asm函数，__switch_to_asm函数还会返回到__schedule函数。伪造的内核栈是仿佛ret_from_fork调用了__switch_to_asm函数，__switch_to_asm函数在返回的时候就会返回到ret_from_fork函数来执行。对于内核线程和普通线程伪造的栈上的数据是不一样的，对于普通线程其rbx寄存器对应的位置是0，对于内核线程其rbx寄存器对应的位置是入口函数的指针，具体来说是kthread。ret_from_fork先调用schedule_tail，然后根据rbx的不同，其为0时说明是普通进程，调用syscall_exit_to_user_mode，不为0时说明是内核线程，调用rbx也就是kthread。kthread函数一般是不会返回的，但是如果其中调用了kernel_execve建立了用户空间也可以返回，返回到ret_from_fork中后会调用syscall_exit_to_user_mode。</p> 
+<p> </p> 
+<p>对于这幅图大家可以只看一个进程的执行情况，按照一个进程pid从上往下看就可以了。也可以看整个CPU的执行情况，按照红色箭头的标号顺序来看，注意观察from、curr、next三个值的变化。</p> 
+<p>三、SMP管理</p> 
+<p>在继续讲解之前，我们先来说一下多CPU管理(这里的CPU是指逻辑CPU，在很多语境中CPU都是默认指的逻辑CPU，物理CPU要特别强调是物理CPU)。最开始的时候计算机都是单CPU的，叫做UP(Uni-Processor)，操作系统也只支持UP。后来计算机慢慢发展成了多CPU(包括多物理CPU和多核技术)，于是操作系统也要开始支持多CPU。支持多CPU的方式有两种：一种是AMP(Aymmetrical Multi-Processing)非对称多处理器，是指操作系统给每个CPU分配的工作任务不同，比如有的CPU专门运行中断，有的CPU专门运行普通进程，有的CPU专门运行实时进程；另一种是SMP(Symmetrical Multi-Processing)，操作系统对待每个CPU的方式都是一样的，并不会把某个CPU拿来专门做啥任务，每个CPU都有可能处理任何类型的任务。由于AMP的性能和适应性都不太好，所以现在流行的操作系统基本都是SMP的。对于SMP这个词来说，在很长的一段时间内，它既是指CPU在逻辑上是对称的(操作系统对待所有CPU的方式是一样的)，也指CPU在物理上是对称的(CPU在性能等所有方面都是一样的)，因为当时的多CPU技术实现上每个逻辑CPU的性能等各方面都是相同的。但是后来多CPU技术的实现出现了HMP(Heterogeneous Multi-Processing)异构多处理器，也就是大小核技术，不同的逻辑CPU它们的性能并不相同。现在内核同时支持SMP和HMP，因为两者并不矛盾，SMP指的是所有的CPU在逻辑上都是一样的，每个CPU都有可能执行任何类型的任务，HMP指的是不同的CPU它的能力大小不同，能力大的多干活，能力小的少干活。内核选项CONFIG_SMP控制是否开启SMP，如果不开启的话就是UP，系统就只能在一个CPU上运行。内核选项CONFIG_ENERGY_MODEL控制是否开启HMP，开启了之后就可以为不同的设备建立不同的能耗模型，系统在分配任务就会以此为参考决定如何分配任务，达到效率更高或者更省电的目的。</p> 
+<p>3.1 CPU拓扑结构</p> 
+<p>我们先从发展的角度来看一看CPU的拓扑结构。最早的时候一个物理CPU就是一个逻辑CPU，一个逻辑CPU包含一个控制器、一个运算器和一些寄存器，一个物理CPU包含一个裸芯片(Die)和外面的封装(Package)。然后出现了多物理CPU，也就是一个主板上有多个CPU插槽，这样计算机中就有多个CPU了。后来发现，没必要做多个物理CPU啊，一个物理CPU(Package)包含多个裸芯片(Die)不也是多CPU嘛，省事又方便。后来又发现，多个裸芯片封装在一起也很麻烦啊，直接在一个裸芯片上做多个逻辑CPU不是也可以嘛，更省事。从这之后x86和ARM的CPU做法就不一样了。在x86上是一个裸芯片(Die)包含多个核(Core)，一个核(Core)上包含多个SMT(Simultaneous Multithreading)，SMT在Intel的文档里叫做HT(Hyper-Threading)，SMT是最终的逻辑CPU。在ARM上是一个裸芯片(Die)包含多个核簇(Cluster)，一个核簇(Cluster)包含多个核(Core)。</p> 
+<p>3.2 CPUMASK</p> 
+<p>不同架构的CPU，其逻辑CPU都有一个硬件ID，此ID一般是多个字段的组合。Linux为了方便管理CPU，提出了逻辑CPU的概念，此逻辑CPU的概念是指CPU的ID是逻辑的，从0来编号一直增长的。内核会把第一个启动的CPU作为CPU0，其它CPU的编号依次为CPU1，CPU2，……。内核定义了结构体cpumask来表示各个CPU编号的集合，cpumask是个bitmap，每一个bit可以代表一个CPU的某种状态。内核中定义了五个cpumask变量，用来表示不同状态下的CPU集合。下面我们来看一下：</p> 
+<p>linux-src/include/linux/cpumask.h</p> 
+<p>typedef struct cpumask { DECLARE_BITMAP(bits, NR_CPUS); } cpumask_t;</p> 
+<p>extern struct cpumask __cpu_possible_mask;<br> extern struct cpumask __cpu_online_mask;<br> extern struct cpumask __cpu_present_mask;<br> extern struct cpumask __cpu_active_mask;<br> extern struct cpumask __cpu_dying_mask;<br> #define cpu_possible_mask ((const struct cpumask *)&amp;__cpu_possible_mask)<br> #define cpu_online_mask   ((const struct cpumask *)&amp;__cpu_online_mask)<br> #define cpu_present_mask  ((const struct cpumask *)&amp;__cpu_present_mask)<br> #define cpu_active_mask   ((const struct cpumask *)&amp;__cpu_active_mask)<br> #define cpu_dying_mask    ((const struct cpumask *)&amp;__cpu_dying_mask)</p> 
+<p></p> 
+<p>linux-src/kernel/cpu.c</p> 
+<p>struct cpumask __cpu_possible_mask __read_mostly;<br> EXPORT_SYMBOL(__cpu_possible_mask);</p> 
+<p>struct cpumask __cpu_online_mask __read_mostly;<br> EXPORT_SYMBOL(__cpu_online_mask);</p> 
+<p>struct cpumask __cpu_present_mask __read_mostly;<br> EXPORT_SYMBOL(__cpu_present_mask);</p> 
+<p>struct cpumask __cpu_active_mask __read_mostly;<br> EXPORT_SYMBOL(__cpu_active_mask);</p> 
+<p>struct cpumask __cpu_dying_mask __read_mostly;<br> EXPORT_SYMBOL(__cpu_dying_mask);</p> 
+<p></p> 
+<p>cpu_possible_mask代表的是操作系统最多能支持的CPU，cpu_present_mask代表的是计算机上存在的CPU，cpu_online_mask代表的是已经上线的CPU，cpu_active_mask代表的是未被隔离可以参与调度的CPU，cpu_dying_mask代表的是处于热下线过程中的CPU。</p> 
+<p>3.3 CPU热插拔</p> 
+<p>CPU热插拔会影响调度均衡可用的CPU。</p> 
+<p>内容暂略</p> 
+<p>3.4 CPU隔离</p> 
+<p>CPU隔离会影响调度均衡可用的CPU。</p> 
+<p>内容暂略</p> 
+<p>四、基本分时调度</p> 
+<p>Linux上的分时调度算法叫CFS(Completely Fair Scheduler)完全公平调度。它是内核核心开发者Ingo Molnar基于SD调度器和RSDL调度器的公平调度思想而开发的一款调度器，在版本2.6.23中合入内核。CFS只负责调度普通进程，包括三个调度策略NORMAL、BATCH、IDLE。</p> 
+<p>我们这章只讲单个CPU上的调度，多CPU之间的调度均衡在下一章讲。</p> 
+<p>4.1 CFS调度模型</p> 
+<p>内核文档对CFS的定义是：CFS在真实的硬件上基本模拟了完全理想的多任务处理器。完全理想的多任务处理器是指，如果把CPU的执行能力看成是100%，则N个进程可以同时并行执行，每个进程获得了1/N的CPU执行能力。例如有2个进程在2GHz的CPU上执行了20ms，则每个进程都以1GHz的速度执行了20ms。</p> 
+<p>通过CFS的定义很难理解CFS的操作逻辑是什么。我看了很多CFS的博客，也认真看了很多遍CFS的代码，虽然自己心里明白了其中的意思，但是想要给别人说清楚CFS的操作逻辑还是很难。后来我灵光乍现，突然想到了一个很好的类比场景，把这个场景稍微改造一下，就可以打造一个非常完美的CFS调度模型，可以让任何人都能理解CFS的操作逻辑。大家有没有这种生活体验，夏天的时候三四个好友一起去撸串，吃完准备走的时候发现有一瓶啤酒打开了还没喝。此时我们会把这瓶啤酒平分了，具体怎么分呢，比如三个人分，你不可能一次分完，每个杯子正好倒三分之一。我们一般会每个杯子先倒个差不多，然后再把剩余的啤酒来回往各个杯子里面倒，这样啤酒就会分的比较均匀了。也许你没经历过这样的场景，或者认为啤酒随便分就可以了，没必要分那么细。接下来还有一个场景更生动。你有没有经历过或者见过长辈们喝白酒划拳的，此时一般都会拿出5到10个小酒盅，先把每个酒盅都倒个差不多，然后再来回地往各个酒盅里面倒一点，还会去比较酒盅液面的高低，优先往液面低的杯子里面倒。如果你见过或者经历过这种场景，那么接下来的模型就很好理解了。</p> 
+<p>我们对倒白酒的这个场景进行改造，把它变成一个实验台。首先把酒盅变成细长(而且非常长)的玻璃杯，再把倒白酒的瓶子变成水龙头，能无限出水的水龙头，有一个桌子可以用来摆放所有的玻璃杯。我们一次只能拿着一个玻璃杯放到水龙头下接水。然后向你提出了第一个要求，在任意时刻所有的玻璃杯的水位高度都要相同或者尽量相同，越接近越好。此时你会怎么办，肯定是不停地切换玻璃杯啊，越快越好，一个玻璃杯接一滴水就立马换下一个。但是这立马会迎来第二个问题，切换玻璃杯的过程水龙头的水会流到地上，过于频繁的切换玻璃杯会浪费大量的水。向你提出的第二个要求就是要尽量地少浪费水，你该怎么办，那肯定是减少玻璃杯的切换啊。但是减少玻璃杯的切换又会使得不同玻璃杯的水位差变大，这真是一个两难的选择。对此我们只能进行折中，切换玻璃杯的频率不能太大也不能太小，太大浪费水，太小容易水位不均。</p> 
+<p>我们继续对这个模型进行完善。为了减少水位差我们每次都要去拿水位最低的，怎么能最快的时间拿到最低的玻璃杯呢，肯定是把水杯按照从高到底的顺序排列好，我们直接去拿第一个就好了。玻璃杯代表的是进程，不同进程的优先级不同，分到的CPU时间片也不同，为此我们让不同的玻璃杯有不同的粗细，这样比较粗的玻璃杯就能分到更多的水，因为我们在尽量保证它们的水位相同，横截面积大的玻璃杯就会占优势。进程有就绪、阻塞、运行等状态，为此我们在玻璃杯上面加个盖子，盖子有时候是打开的，有时候是关闭的。盖子关闭的时候玻璃杯是没法接水的，因此我们把它放到一边，直到有人把它的盖子打开我们再把它放到桌子上。</p> 
+<p>说到这里，大家在脑海里对这个模型应该已经有个大概的轮廓了，下面我们画图来看一下：</p> 
+<p><img alt="" height="589" src="https://images2.imgbox.com/ed/a4/O0Gv5DdV_o.png" width="821"><br> 在这里插入图片描述<br> 我们继续讲解这个图。我们每次都是从队首拿过来一个玻璃杯开始接水。在接水的过程中有两种情况可能会发生：一是一直接水直到此次接水的份额已经满了，我们把这个玻璃杯再放回到队列中去，由于此时玻璃杯刚接了不少水，水位比较高，所以会排的比较靠后；二是接水的过程中，瓶盖突然关闭了，这时就没法再接水了，我们把玻璃杯送到某个Wait Box中去，等待某个事件的发生。某个事件发生之后会把对应的Wait Box中的一个或者多个玻璃杯的瓶盖打开，然后此玻璃杯就会被送到Ready Table上。玻璃杯被送到Ready Table并不是随便一放就行了，也是要参与排序的。大家从图中可以看到，Wait Box中的玻璃杯的水位都比较低，这是因为Ready Table上的玻璃杯一直在接水，水位肯定会涨的很高，相应的Wait Box中的水位就低了。因此WaitBox中的玻璃杯被唤醒放到ReadyTable上基本都能排第一，这也是好事，让休眠时间长的进程能迅速得到执行。但是这里面也存在一个问题，就是刚开盖的玻璃杯水位太低了，它就能一直得到执行，这对其它玻璃杯来说是不公平的。因此ReadyTable上放了一个最低水位记录，刚开盖的玻璃瓶如果水位比这个值低，我们就往这个玻璃瓶中填充泡沫，使得它的水位看起来和这个最低水位记录一样高。这样新开盖的玻璃杯既能优先接水，又不能过分占便宜，非常好。最低水位记录的值也会一直更新的，正在接水的玻璃杯每次离开的时候都会更新一下这个最低水位记录。</p> 
+<p> </p> 
+<p>现在我们对这个玻璃杯接水模型的逻辑已经非常清楚了，下面我们一步一步把它和CFS的代码对应起来，你会发现契合度非常高。</p> 
+<p>4.2 CFS运行队列</p> 
+<p>所有的就绪进程都要在ReadyTable上按照水位高低排成一排，那么这个队列用什么数据结构来实现呢？先想一下这个队列都有什么需求，首先这个队列是排序的，其次我们经常对这个队列进程插入和删除操作。因此我们可以想到用红黑树来实现，因为红黑树首先是一颗二叉搜索树，是排序的，其次红黑树是平衡的，其插入和删除操作的效率都是O(logn)，非常高效。所以CFS的运行队列就是用红黑树来实现的。关于红黑树的原理，请参看《深入理解红黑树》。</p> 
+<p>下面我们来看一下CFS运行队列的代码：<br> linux-src/kernel/sched/sched.h</p> 
+<p>struct cfs_rq {<!-- --><br>     struct load_weight    load;<br>     unsigned int        nr_running;<br>     unsigned int        h_nr_running;      /* SCHED_{NORMAL,BATCH,IDLE} */<br>     unsigned int        idle_h_nr_running; /* SCHED_IDLE */</p> 
+<p>    u64            exec_clock;<br>     u64            min_vruntime;</p> 
+<p>    struct rb_root_cached    tasks_timeline;</p> 
+<p>    struct sched_entity    *curr;<br>     struct sched_entity    *next;<br>     struct sched_entity    *last;<br>     struct sched_entity    *skip;</p> 
+<p><br> #ifdef CONFIG_SMP<br>     struct sched_avg    avg;<br>     struct {<!-- --><br>         raw_spinlock_t    lock ____cacheline_aligned;<br>         int        nr;<br>         unsigned long    load_avg;<br>         unsigned long    util_avg;<br>         unsigned long    runnable_avg;<br>     } removed;<br> #endif /* CONFIG_SMP */<br> };</p> 
+<p></p> 
+<p>字段tasks_timeline就是所有分时进程所排队的队列，类型rb_root_cached就是内核中红黑树的实现，curr就是当前正在CPU上运行的进程。还有一些其它字段我们在讲到时再进行解说。进程在红黑树中排队的键值是虚拟运行时间vruntime，这个在4.5节中讲解。</p> 
+<p>4.3 进程状态表示</p> 
+<p>我们知道进程在运行的时候一直是在阻塞、就绪、执行三个状态来回转换，如下图所示：</p> 
+<p><img alt="" height="508" src="https://images2.imgbox.com/18/29/GmIA5xDX_o.png" width="830"><br> 在这里插入图片描述<br> 但是Linux中对进程运行状态的定义却和标准的操作系统理论不同。</p> 
+<p> </p> 
+<p>Linux中的定义如下(删减了一些状态)：<br> linux-src/include/linux/sched.h</p> 
+<p>/* Used in tsk-&gt;state: */<br> #define TASK_RUNNING            0x0000<br> #define TASK_INTERRUPTIBLE        0x0001<br> #define TASK_UNINTERRUPTIBLE        0x0002<br> #define TASK_DEAD            0x0080<br> #define TASK_NEW            0x0800</p> 
+<p></p> 
+<p>在Linux中就绪和执行都用TASK_RUNNING来表示，这让人很疑惑。但是用我们的模型图来看，这一点却很好理解，因为就绪和执行它们都是开盖的，状态一样，区别它们的方法是玻璃杯放置的位置，是放在桌子上还是放在水龙头下，而Linux中也是利用这一点来判断的。如下代码所示：</p> 
+<p>linux-src/include/linux/sched.h</p> 
+<p>#define task_is_running(task)        (READ_ONCE((task)-&gt;__state) == TASK_RUNNING)</p> 
+<p>    1</p> 
+<p>linux-src/kernel/sched/sched.h</p> 
+<p>static inline long se_runnable(struct sched_entity *se)<br> {<!-- --><br>     return !!se-&gt;on_rq;<br> }</p> 
+<p>static inline int task_running(struct rq *rq, struct task_struct *p)<br> {<!-- --><br> #ifdef CONFIG_SMP<br>     return p-&gt;on_cpu;<br> #else<br>     return task_current(rq, p);<br> #endif<br> }</p> 
+<p><br> static inline int task_current(struct rq *rq, struct task_struct *p)<br> {<!-- --><br>     return rq-&gt;curr == p;<br> }</p> 
+<p></p> 
+<p>task_is_running判断的是进程的状态字段是否等于TASK_RUNNING，代表进程处于就绪或者执行态。如何区分进程到底是处于就绪态还是运行态呢？se_runnable通过字段on_rq判断进程是否处于就绪态，task_running通过字段on_cpu判断进程是否处于运行态。对应起来就是：敞口的玻璃杯通过其位置是在桌子上还是在水龙头下来区分其是否正在接水，TASK_RUNNING状态的进程通过判断其是on_rq还是on_cpu来区分就绪和运行。</p> 
+<p>表示进程处于阻塞态的状态有两个：TASK_INTERRUPTIBLE和TASK_UNINTERRUPTIBLE。TASK_UNINTERRUPTIBLE表示只有WaitBox对应的事件能把玻璃杯的盖子打开，其它人谁也打不开。TASK_INTERRUPTIBLE表示除了WaitBox对应的事件之外，信号(signal)也能把盖子打开。关于信号请参看《深入理解Linux信号机制》。</p> 
+<p>4.4 优先级与权重</p> 
+<p>我们在前面讲过进程的优先级，这里只讲分时进程的优先级。优先级是如何影响进程获得CPU时间的多少呢？优先级会转化为进程的权重，进程的权重也就是玻璃杯的粗细。横截面积大的玻璃杯，接收同样容积的水，它的水位增加就比较小，就容易排到队列的前面去，就比较容易获得调度。在一段时间后，所有玻璃杯的水位高度都比较接近，同样的水位高度，横截面积大的玻璃杯装的水就多，也就是进程获得的CPU时间比较多。</p> 
+<p>进程(线程)的相关信息是记录在task_struct中的，内核又把和分时调度相关的一些信息抽出来组成了结构体sched_entity，然后把sched_entity内嵌到task_struct当中，sched_entity中包含有权重信息的记录。下面我们来看一下。<br> linux-src/include/linux/sched.h</p> 
+<p>struct task_struct {<!-- --><br>     struct sched_entity        se;<br> }</p> 
+<p>struct sched_entity {<!-- --><br>     /* For load-balancing: */<br>     struct load_weight        load;<br>     struct rb_node            run_node;<br>     struct list_head        group_node;<br>     unsigned int            on_rq;</p> 
+<p>    u64                exec_start;<br>     u64                sum_exec_runtime;<br>     u64                vruntime;<br>     u64                prev_sum_exec_runtime;</p> 
+<p>    u64                nr_migrations;</p> 
+<p>    struct sched_statistics        statistics;</p> 
+<p>#ifdef CONFIG_FAIR_GROUP_SCHED<br>     int                depth;<br>     struct sched_entity        *parent;<br>     /* rq on which this entity is (to be) queued: */<br>     struct cfs_rq            *cfs_rq;<br>     /* rq "owned" by this entity/group: */<br>     struct cfs_rq            *my_q;<br>     /* cached value of my_q-&gt;h_nr_running */<br>     unsigned long            runnable_weight;<br> #endif</p> 
+<p>#ifdef CONFIG_SMP<br>     /*<br>      * Per entity load average tracking.<br>      *<br>      * Put into separate cache line so it does not<br>      * collide with read-mostly values above.<br>      */<br>     struct sched_avg        avg;<br> #endif<br> };</p> 
+<p>struct load_weight {<!-- --><br>     unsigned long            weight;<br>     u32                inv_weight;<br> };</p> 
+<p><br>  </p> 
+<p>可以看到load_weight中有两个字段：weight和inv_weight。weight代表的是权重，inv_weight是为了方便weight参与除法运算时而添加的，它可以把对weight的除法运算转化为对inv_weight的乘法运算。inv_weight = 232/weight，当需要除以weight的时候，你只需要乘以inv_weight然后再右移32就可以了。inv_weight的值可以提前算出来保存在数组里，右移操作是个效率很高的操作，这样就提高了权重相关的运算效率。下面我们先来看一下weight的值是怎么来的。</p> 
+<p>nice值的范围是-20到19，是等差数列，转化之后的权重是等比数列，以nice 0作为权重1024，公比为0.8。之前的调度算法都是把nice值转化为等差数列的时间片或者多段等差数列的时间片，为何CFS要把这个转换变为等比数列呢？这是因为人们天然地对相对值比较敏感而不是对绝对值比较敏感，比如你工资两千的时候涨薪200和工资两万的时候涨薪200，心情绝对是不一样的。如果系统中只有两个进程，nice值分别为0和1，时间片分别为200ms和195ms，几乎没啥区别，但是当nice值分为18和19的时候，时间片分别为10ms和5ms，两者的时间差达到了一倍，同样是nice值相差1，它们的时间差的比例却如此之大，是让人无法接受的。因此把nice值转化为等比数列的权重，再按照权重去分配CPU时间是比较合理的。那么公比为何是0.8呢？这是为了让两个nice值只相差1的进程获得的CPU时间比例差为10%。我们用等式来计算一下，假设x、y是权重，y对应的nice值比x大1，我们希望 x/(x+y) - y/(x+y) = 10%，我们做一下运算，看看y与x的比值是多少。</p> 
+<p>x/(x+y) - y/(x+y) = 10%<br> (x-y)/(x+y) = 0.1<br> x-y = 0.1x + 0.1y<br> 0.9x = 1.1y<br> y/x = 0.9/1.1<br> y/x = 0.818181<br> y/x ≈ 0.8</p> 
+<p>那么为什么把nice 0 作为权重1024来进行转换呢？这是为了二进制运算方便。内核里并不是每次优先级转权重都进行运算，而是提前运算好了放在数组，每次用的时候查一下就可以了。反权重的值也提前计算好了放在了数组里。下面我们来看一下：<br> linux-src/kernel/sched/core.c</p> 
+<p>const int sched_prio_to_weight[40] = {<!-- --><br>  /* -20 */     88761,     71755,     56483,     46273,     36291,<br>  /* -15 */     29154,     23254,     18705,     14949,     11916,<br>  /* -10 */      9548,      7620,      6100,      4904,      3906,<br>  /*  -5 */      3121,      2501,      1991,      1586,      1277,<br>  /*   0 */      1024,       820,       655,       526,       423,<br>  /*   5 */       335,       272,       215,       172,       137,<br>  /*  10 */       110,        87,        70,        56,        45,<br>  /*  15 */        36,        29,        23,        18,        15,<br> };</p> 
+<p>const u32 sched_prio_to_wmult[40] = {<!-- --><br>  /* -20 */     48388,     59856,     76040,     92818,    118348,<br>  /* -15 */    147320,    184698,    229616,    287308,    360437,<br>  /* -10 */    449829,    563644,    704093,    875809,   1099582,<br>  /*  -5 */   1376151,   1717300,   2157191,   2708050,   3363326,<br>  /*   0 */   4194304,   5237765,   6557202,   8165337,  10153587,<br>  /*   5 */  12820798,  15790321,  19976592,  24970740,  31350126,<br>  /*  10 */  39045157,  49367440,  61356676,  76695844,  95443717,<br>  /*  15 */ 119304647, 148102320, 186737708, 238609294, 286331153,<br> };</p> 
+<p></p> 
+<p>Nice值从-20到19一共40个数，一排5个权重值，五八四十正好40个权重值。可以看到权重数列的公比并不是标准的0.8，而是作者以0.8为基准从nice 0开始计算，之后又进行了一些调整，主要是为了方便计算。</p> 
+<p>下面我们再来看一下设置进程权重的函数：<br> linux-src/kernel/sched/core.c</p> 
+<p>static void set_load_weight(struct task_struct *p, bool update_load)<br> {<!-- --><br>     int prio = p-&gt;static_prio - MAX_RT_PRIO;<br>     struct load_weight *load = &amp;p-&gt;se.load;</p> 
+<p>    /*<br>      * SCHED_IDLE tasks get minimal weight:<br>      */<br>     if (task_has_idle_policy(p)) {<!-- --><br>         load-&gt;weight = scale_load(WEIGHT_IDLEPRIO);<br>         load-&gt;inv_weight = WMULT_IDLEPRIO;<br>         return;<br>     }</p> 
+<p>    /*<br>      * SCHED_OTHER tasks have to update their load when changing their<br>      * weight<br>      */<br>     if (update_load &amp;&amp; p-&gt;sched_class == &amp;fair_sched_class) {<!-- --><br>         reweight_task(p, prio);<br>     } else {<!-- --><br>         load-&gt;weight = scale_load(sched_prio_to_weight[prio]);<br>         load-&gt;inv_weight = sched_prio_to_wmult[prio];<br>     }<br> }</p> 
+<p><br>  </p> 
+<p>我们先看第一行，prio = p-&gt;static_prio - MAX_RT_PRIO，由于static_prio = nice + 120，所以prio = nice + 20，nice的范围是 -20 - 19，所以prio的范围是 0 - 39，正好可以作为sched_prio_to_weight数组的下标。然后代码对SCHED_IDLE调度策略的进程进行了特殊处理，直接设置其权重为3，相当于是nice 26，反权重值也直接进行了设置。SCHED_IDLE进程的权重特别小意味其分到的CPU时间会相当的少，正好符合这个调度策略的本意。scale_load和scale_load_down是对权重进行缩放，在32位系统上它们是空操作，在64位系统上它们是放大1024倍和缩小1024倍，主要是为了在运算时提高精度，不影响权重的逻辑。所以在后文中为了叙述方便，我们直接忽略scale_load和scale_load_down。接着往下看，update_load参数会影响代码的流程，当进程是新fork时update_load为false，会走下面的流程直接设置权重和反权重，当用户空间修改进程优先级时update_load为true，会走上面的流程调用reweight_task，reweight_task也会设置进程的权重，同时也会修改运行队列的权重。</p> 
+<p>运行队列的权重等于其上所有进程的权重之和。进程在入队出队时也会相应地从运行队列中加上减去其自身的权重。</p> 
+<p>下面我们来看一下代码(经过高度删减)：<br> linux-src/kernel/sched/fair.c</p> 
+<p>static void<br> enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)<br> {<!-- --><br>     enqueue_entity(cfs_rq, se, flags);<br> }</p> 
+<p>static void<br> enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)<br> {<!-- --><br>     account_entity_enqueue(cfs_rq, se);<br> }</p> 
+<p>static void<br> account_entity_enqueue(struct cfs_rq *cfs_rq, struct sched_entity *se)<br> {<!-- --><br>     update_load_add(&amp;cfs_rq-&gt;load, se-&gt;load.weight);<br>     cfs_rq-&gt;nr_running++;<br> }</p> 
+<p>static void dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)<br> {<!-- --><br>     dequeue_entity(cfs_rq, se, flags);<br> }</p> 
+<p>static void<br> dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)<br> {<!-- --><br>     account_entity_dequeue(cfs_rq, se);<br> }</p> 
+<p>static void<br> account_entity_dequeue(struct cfs_rq *cfs_rq, struct sched_entity *se)<br> {<!-- --><br>     update_load_sub(&amp;cfs_rq-&gt;load, se-&gt;load.weight);<br>     cfs_rq-&gt;nr_running--;<br> }</p> 
+<p><br>  </p> 
+<p>可以看到运行队列的总权重和其进程数量是同步更新的。</p> 
+<p>4.5 虚拟运行时间</p> 
+<p>我们再来看一下玻璃杯的水位是如果表示的。玻璃杯的水位就是进程的虚拟运行时间，是进程进行排队的键值。玻璃杯的水位等于玻璃杯中水的体积除以玻璃杯的横截面积，进程的虚拟运行时间等于进程的实际运行时间除以相对权重。进程的实际运行时间是一段一段的，所以进程的虚拟运行时间也是一段一段增长的。进程的虚拟运行时间还会在进程入队时与运行队列的最小虚拟时间相比较，如果小的话会直接进行增加，并不对应实际的运行时间。这也就是我们前面说的对玻璃杯进行填充泡沫的操作。相对权重是相对于nice 0的权重，所以nice 0的进程其虚拟运行时间和实际运行时间是一致的。但是这种一致只是某一段时间中的一致，因为虚拟运行时间在进程入队时可能会空跳。在更新进程的真实虚拟运行时间的时候也会去更新运行队列的最小运行时间记录，使得运行队列的最小运行时间也在一直增长着。</p> 
+<p>进程的虚拟运行时间保存在task_struct中的sched_entity中的vruntime字段。运行队列的最小虚拟运行时间保证在cfs_rq的min_vruntime字段。下面我们来看一下它们的更新方法。<br> linux-src/kernel/sched/fair.c</p> 
+<p>static void update_curr(struct cfs_rq *cfs_rq)<br> {<!-- --><br>     struct sched_entity *curr = cfs_rq-&gt;curr;<br>     u64 now = rq_clock_task(rq_of(cfs_rq));<br>     u64 delta_exec;</p> 
+<p>    if (unlikely(!curr))<br>         return;</p> 
+<p>    delta_exec = now - curr-&gt;exec_start;<br>     if (unlikely((s64)delta_exec &lt;= 0))<br>         return;</p> 
+<p>    curr-&gt;exec_start = now;</p> 
+<p>    schedstat_set(curr-&gt;statistics.exec_max,<br>               max(delta_exec, curr-&gt;statistics.exec_max));</p> 
+<p>    curr-&gt;sum_exec_runtime += delta_exec;<br>     schedstat_add(cfs_rq-&gt;exec_clock, delta_exec);</p> 
+<p>    curr-&gt;vruntime += calc_delta_fair(delta_exec, curr);<br>     update_min_vruntime(cfs_rq);</p> 
+<p>    if (entity_is_task(curr)) {<!-- --><br>         struct task_struct *curtask = task_of(curr);</p> 
+<p>        trace_sched_stat_runtime(curtask, delta_exec, curr-&gt;vruntime);<br>         cgroup_account_cputime(curtask, delta_exec);<br>         account_group_exec_runtime(curtask, delta_exec);<br>     }</p> 
+<p>    account_cfs_rq_runtime(cfs_rq, delta_exec);<br> }</p> 
+<p>static inline u64 calc_delta_fair(u64 delta, struct sched_entity *se)<br> {<!-- --><br>     if (unlikely(se-&gt;load.weight != NICE_0_LOAD))<br>         delta = __calc_delta(delta, NICE_0_LOAD, &amp;se-&gt;load);</p> 
+<p>    return delta;<br> }</p> 
+<p>/*<br>  * delta_exec * weight / lw.weight<br>  *   OR<br>  * (delta_exec * (weight * lw-&gt;inv_weight)) &gt;&gt; WMULT_SHIFT<br>  *<br>  * Either weight := NICE_0_LOAD and lw \e sched_prio_to_wmult[], in which case<br>  * we're guaranteed shift stays positive because inv_weight is guaranteed to<br>  * fit 32 bits, and NICE_0_LOAD gives another 10 bits; therefore shift &gt;= 22.<br>  *<br>  * Or, weight =&lt; lw.weight (because lw.weight is the runqueue weight), thus<br>  * weight/lw.weight &lt;= 1, and therefore our shift will also be positive.<br>  */<br> static u64 __calc_delta(u64 delta_exec, unsigned long weight, struct load_weight *lw)<br> {<!-- --><br>     u64 fact = scale_load_down(weight);<br>     u32 fact_hi = (u32)(fact &gt;&gt; 32);<br>     int shift = WMULT_SHIFT;<br>     int fs;</p> 
+<p>    __update_inv_weight(lw);</p> 
+<p>    if (unlikely(fact_hi)) {<!-- --><br>         fs = fls(fact_hi);<br>         shift -= fs;<br>         fact &gt;&gt;= fs;<br>     }</p> 
+<p>    fact = mul_u32_u32(fact, lw-&gt;inv_weight);</p> 
+<p>    fact_hi = (u32)(fact &gt;&gt; 32);<br>     if (fact_hi) {<!-- --><br>         fs = fls(fact_hi);<br>         shift -= fs;<br>         fact &gt;&gt;= fs;<br>     }</p> 
+<p>    return mul_u64_u32_shr(delta_exec, fact, shift);<br> }</p> 
+<p>update_curr只能更新运行队列的当前进程，如果进程不在运行，没有实际运行时间就没有对应的虚拟运行时间。函数首先获取了当前时间now，然后用当前时间减去进程此次开始执行的时间exec_start，就得到了进程此次运行的实际时间delta_exec。进程的exec_start是在进程即将获取CPU的时候设置的，具体来说是调度流程中的pick_next_task设置的。然后再通过函数calc_delta_fair把实际运行时间转化为虚拟运行时间，把得到的结果加到进程的vruntime上。calc_delta_fair中对nice 0的进程直接返回实际运行时间，对于其它进程则调用__calc_delta进行运算。__calc_delta使用了一些复杂的数学运算技巧，比较难以理解，但是其逻辑是清晰的，就是虚拟运行时间等于实际运行时间乘以NICE_0_LOAD与进程权重的比值(delta_exec * weight / lw.weight)。接着就是更新运行队列的最小虚拟时间记录了，再往下是一些统计代码就不讲了。我们来看一下最小虚拟时间的更新。<br> linux-src/kernel/sched/fair.c</p> 
+<p>static void update_min_vruntime(struct cfs_rq *cfs_rq)<br> {<!-- --><br>     struct sched_entity *curr = cfs_rq-&gt;curr;<br>     struct rb_node *leftmost = rb_first_cached(&amp;cfs_rq-&gt;tasks_timeline);</p> 
+<p>    u64 vruntime = cfs_rq-&gt;min_vruntime;</p> 
+<p>    if (curr) {<!-- --><br>         if (curr-&gt;on_rq)<br>             vruntime = curr-&gt;vruntime;<br>         else<br>             curr = NULL;<br>     }</p> 
+<p>    if (leftmost) { /* non-empty tree */<br>         struct sched_entity *se = __node_2_se(leftmost);</p> 
+<p>        if (!curr)<br>             vruntime = se-&gt;vruntime;<br>         else<br>             vruntime = min_vruntime(vruntime, se-&gt;vruntime);<br>     }</p> 
+<p>    /* ensure we never gain time by being placed backwards. */<br>     cfs_rq-&gt;min_vruntime = max_vruntime(cfs_rq-&gt;min_vruntime, vruntime);<br> #ifndef CONFIG_64BIT<br>     smp_wmb();<br>     cfs_rq-&gt;min_vruntime_copy = cfs_rq-&gt;min_vruntime;<br> #endif<br> }</p> 
+<p><br>  </p> 
+<p>此代码的逻辑是先在当前进程的vruntime和队首进程的vruntime之间选择一个最小值，如果此值大于原先的min_vruntime，就更新cfs_rq-&gt;min_vruntime为此值。</p> 
+<p>update_curr的调用时机都有哪些？ 下面我们来一一说明一下：</p> 
+<p>1.定时器中断，更新当前进程的虚拟运行时间，只有更新了之后才知道当前进程的时间片有没有用完。<br> 2.唤醒抢占时，也要更新当前进程的虚拟运行时间，只有更新了之后才能正确判断是否能抢占。<br> 3.进程被抢占离开CPU时，从触发抢占到执行抢占还有一段时间，需要更新一下虚拟运行时间。<br> 4.进程阻塞离开CPU时，需要更新一下虚拟运行时间。<br> 5.主动让出CPU时，通过sched_yield让出CPU时更新一下虚拟运行时间。<br> 6.当前进程更改优先级时，更改优先级会改变权重，对已经运行的时间先更新一下虚拟运行时间。<br> 7.执行fork时，子进程会继承父进程的vruntime，因此要更新一下父进程的vruntime。<br> 8.用户空间定时器要统计进程的运行时间时。<br> 9.调度均衡中迁移线程时入队和出队的队列都要调用update_curr，目的是为了更新min_vruntime，因为被迁移的线程要减去旧队列的min_vruntime，加上新队列的min_vruntime，所以min_vruntime的要是最新的才好。</p> 
+<p>4.6 调度周期与粒度</p> 
+<p>在以往的调度算法中，都会有明确的调度周期和时间片的概念。比如说以1秒为一个调度周期，把1秒按照进程的优先级分成时间片分给各个进程。进程在运行的过程中时间片不断地减少，当减到0的时候就不再参与调度了。当所有进程的时间片都减到0的时候，再重新开启一个调度周期，重新分配时间片。对于在一个调度周期内突然创建或者唤醒的进程，还要进行特殊的处理。在CFS中，你会发现好像没有调度周期和时间片的概念了，但是又好像有。没有，是因为没有统一分配时间片的地方了，也没有时间片递减的逻辑了。有，是因为代码中还有调度周期和时间片的函数和变量。</p> 
+<p>在CFS调度模型中玻璃杯的水位是一直在增长的，没有时间片递减的逻辑，也不存在什么调度周期。但是一个玻璃杯总是不能一直接水的，接水时间长了也是要把切走的。在CFS中玻璃杯一次接水的最大量就叫做时间片。这个时间片和传统的时间片是不一样的，这个时间片是个检测量，没有递减的逻辑。那么时间片是怎么计算的呢？这就和调度周期有关，CFS的调度周期也和传统的调度周期不一样，CFS的调度周期仅仅是一个计算量。调度周期的计算又和调度粒度有关。调度粒度是指玻璃杯一次接水的最小量，也就是进程在CPU上至少要运行多少时间才能被抢占。调度粒度指的是被动调度中进程一次运行最少的时间，如果进程阻塞发生主动调度，不受这个限制。时间片的计算依赖调度周期，调度周期的计算依赖调度粒度，所以我们就先来讲讲调度粒度。</p> 
+<p>内核中定义了sysctl_sched_min_granularity，代表调度粒度，默认值是0.75毫秒，但这并不最终使用的值，系统在启动的时候还会对这个变量进行赋值。我们来看一下代码。<br> linux-src/kernel/sched/fair.c</p> 
+<p>unsigned int sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_LOG;</p> 
+<p>unsigned int sysctl_sched_min_granularity            = 750000ULL;<br> static unsigned int normalized_sysctl_sched_min_granularity    = 750000ULL;</p> 
+<p>unsigned int sysctl_sched_latency            = 6000000ULL;<br> static unsigned int normalized_sysctl_sched_latency    = 6000000ULL;<br> static unsigned int sched_nr_latency = 8;</p> 
+<p>unsigned int sysctl_sched_wakeup_granularity            = 1000000UL;<br> static unsigned int normalized_sysctl_sched_wakeup_granularity    = 1000000UL;</p> 
+<p>void __init sched_init_granularity(void)<br> {<!-- --><br>     update_sysctl();<br> }</p> 
+<p>static void update_sysctl(void)<br> {<!-- --><br>     unsigned int factor = get_update_sysctl_factor();</p> 
+<p>    sysctl_sched_min_granularity = factor * normalized_sysctl_sched_min_granularity;<br>     sysctl_sched_latency = factor * normalized_sysctl_sched_latency;<br>     sysctl_sched_wakeup_granularity = factor * normalized_sysctl_sched_wakeup_granularity;<br> }</p> 
+<p>static unsigned int get_update_sysctl_factor(void)<br> {<!-- --><br>     unsigned int cpus = min_t(unsigned int, num_online_cpus(), 8);<br>     unsigned int factor;</p> 
+<p>    switch (sysctl_sched_tunable_scaling) {<!-- --><br>     case SCHED_TUNABLESCALING_NONE:<br>         factor = 1;<br>         break;<br>     case SCHED_TUNABLESCALING_LINEAR:<br>         factor = cpus;<br>         break;<br>     case SCHED_TUNABLESCALING_LOG:<br>     default:<br>         factor = 1 + ilog2(cpus);<br>         break;<br>     }</p> 
+<p>    return factor;<br> }</p> 
+<p><br>  </p> 
+<p>从代码中可以看出，调度粒度、唤醒粒度、调度延迟都是其规范值乘以一个因子。这个因子的值有三种可能：一是固定等于1，二是等于CPU的个数，三是等于1加上CPU个数对2的对数。具体使用哪种情况由变量sysctl_sched_tunable_scaling的值决定，此变量的值可以通过文件/sys/kernel/debug/sched/tunable_scaling来改变，默认值是SCHED_TUNABLESCALING_LOG。我们以8核CPU为例(下文也是如此)，factor的值就是4，因此默认的调度粒度就是0.75 * 4 = 3毫秒。也就是说在一个8核系统默认配置下，调度粒度是3毫秒，一个进程如果运行还不到3毫秒是不能被抢占的。</p> 
+<p>此代码中还提到了唤醒粒度，我们也顺便讲一下。唤醒粒度是指被唤醒的进程如果其虚拟运行时间比当前进程的虚拟运行时间少的值不大于这个值的虚拟化时间就不进行抢占。唤醒粒度指的不是是否唤醒这个进程，而是唤醒这个进程之后是否进行抢占。只有当被唤醒的进程的虚拟运行时间比当前进程的少的足够多时才会进行抢占。当然这个也要同时满足调度粒度才会进行抢占。唤醒粒度的规范值是1毫秒，乘以4就是4毫秒。</p> 
+<p>此代码中还有调度延迟，它和调度周期有关，我们先来计算一下调度延迟的值。调度延迟的规范值是6毫秒，乘以4就是24毫秒。</p> 
+<p>调度周期的计算与调度粒度和调度延迟都有关系，所以我们现在才能开始计算调度周期。先来看代码</p> 
+<p>linux-src/kernel/sched/fair.c</p> 
+<p>static unsigned int sched_nr_latency = 8;</p> 
+<p>static u64 __sched_period(unsigned long nr_running)<br> {<!-- --><br>     if (unlikely(nr_running &gt; sched_nr_latency))<br>         return nr_running * sysctl_sched_min_granularity;<br>     else<br>         return sysctl_sched_latency;<br> }</p> 
+<p></p> 
+<p>调度延迟24毫秒是个固定值(在默认情况都不变的情况下)，当运行队列上的进程个数小于等于8的时候，每个进程至少能分到3毫秒，符合调度粒度是3毫秒的设定。所以当running进程的个数小于等于8时，调度周期就等于调度延迟，每个进程至少能平分到3毫秒时间。当其个数大于8时，调度周期就等于运行进程的个数乘以调度粒度。在一个调度周期内如果是所有进程平分的话，一个进程能分到3毫秒。但是由于有的进程权重高，分到的时间就会大于3毫秒，就会有进程分到的时间少于3毫秒。实际上是这样的吗？我们来看一下计算时间片的代码。</p> 
+<p>linux-src/kernel/sched/fair.c</p> 
+<p>static u64 sched_slice(struct cfs_rq *cfs_rq, struct sched_entity *se)<br> {<!-- --><br>     unsigned int nr_running = cfs_rq-&gt;nr_running;<br>     u64 slice;</p> 
+<p>    if (sched_feat(ALT_PERIOD))<br>         nr_running = rq_of(cfs_rq)-&gt;cfs.h_nr_running;</p> 
+<p>    slice = __sched_period(nr_running + !se-&gt;on_rq);</p> 
+<p>    for_each_sched_entity(se) {<!-- --><br>         struct load_weight *load;<br>         struct load_weight lw;</p> 
+<p>        cfs_rq = cfs_rq_of(se);<br>         load = &amp;cfs_rq-&gt;load;</p> 
+<p>        if (unlikely(!se-&gt;on_rq)) {<!-- --><br>             lw = cfs_rq-&gt;load;</p> 
+<p>            update_load_add(&amp;lw, se-&gt;load.weight);<br>             load = &amp;lw;<br>         }<br>         slice = __calc_delta(slice, se-&gt;load.weight, load);<br>     }</p> 
+<p>    if (sched_feat(BASE_SLICE))<br>         slice = max(slice, (u64)sysctl_sched_min_granularity);</p> 
+<p>    return slice;<br> }</p> 
+<p></p> 
+<p>变量slice被复用了，首先被用来表示调度周期。接下来的for循环，由于我们不考虑组调度，实际上只执行了一遍。slice的值等于调度周期乘以进程权重与运行队列权重的比值。如果进程的权重低于平均权重的话，那么其实将会小于调度粒度。再往下有个判断，由于BASE_SLICE的值默认是true，所以此语句会执行，slice至少等于调度粒度。由此可以得出结论，在默认情况下，进程分到的时间片不会小于调度粒度。那么此时实际的调度周期就会延长了。不过很大概率不会延长的，因为一般都会有进程因为阻塞而进行主动调度从而让出来一部分时间。</p> 
+<p>我们再来总结一下调度周期、调度延迟、调度粒度、时间片的概念意义和它们在CFS中的变量意义以及相互之间的关系。调度周期的概念是指运行队列上所有的进程都运行一遍的时间，但是在CFS中没有了标准的调度周期，调度周期是动态的，只是个计算量。调度延迟的概念是指一个进程从加入到运行队列到被放到CPU上去执行之间的时间差，显然这个时间差受进程本身和运行队列长短的影响。在CFS中，调度延迟的概念完全变了，调度延迟变成了调度周期的最小值。时间片的概念是指一个进程一次最多只能运行多长时间，然后就要被抢占了。在CFS中时间片的概念没有变，但是用法和传统的用法不一样。调度粒度是指一个进程一次至少运行多少时间才能被抢占，这个才CFS中也是如此。在CFS中，它们的计算关系是，调度周期等于调度粒度乘以Runnable进程的数量，但是不能小于调度延迟，时间片等调度周期乘以进程权重与运行队列权重的比值。</p> 
+<p>4.7 抢占调度</p> 
+<p>抢占调度有两个典型的触发点：定时器中断和进程唤醒，还有两个非典型的触发点：迁移线程和改变优先级。我们先来说定时器中断，定时器中断的主要目的就是为了进行抢占调度，防止有的进程一直占着CPU不放手。以前的算法会在定时器中断中检查进程的时间片是否已耗尽，如果耗尽的话就触发调度，不过在CFS中的具体做法与此有所不同。在CFS中不会规定固定的调度周期，调度周期都是即时计算出来的，不会给进程分配时间片进行递减，而是在定时器中断中统计进程此时占据CPU已经运行了多少时间，拿这个时间去给理论上它应当运行的时间比，如果超过了就触发调度。进程的理论运行时间就等于其权重与队列权重之比再乘以调度周期，调度周期的计算方法在上一节中讲过了。因此CFS中的调度周期和时间片与传统调度算法中的概念不同，它是一个动态的概念，只有当发生定时器中断了才会去计算一下，会根据当时的状态进行计算。比如当前进程在函数A中唤醒了很多进程，那么定时器中断是发生在函数A之前还是之后，调度周期和时间片的计算结果会有很大的不同。</p> 
+<p>下面我们来看一下定时器中断中的抢占逻辑：<br> linux-src/kernel/sched/core.c</p> 
+<p>void scheduler_tick(void)<br> {<!-- --><br>     int cpu = smp_processor_id();<br>     struct rq *rq = cpu_rq(cpu);<br>     struct task_struct *curr = rq-&gt;curr;</p> 
+<p>    curr-&gt;sched_class-&gt;task_tick(rq, curr, 0);<br> }</p> 
+<p></p> 
+<p>linux-src/kernel/sched/fair.c</p> 
+<p>static void task_tick_fair(struct rq *rq, struct task_struct *curr, int queued)<br> {<!-- --><br>     struct cfs_rq *cfs_rq;<br>     struct sched_entity *se = &amp;curr-&gt;se;</p> 
+<p>    for_each_sched_entity(se) {<!-- --><br>         cfs_rq = cfs_rq_of(se);<br>         entity_tick(cfs_rq, se, queued);<br>     }<br> }</p> 
+<p>static void<br> entity_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr, int queued)<br> {<!-- --><br>     update_curr(cfs_rq);<br>     update_load_avg(cfs_rq, curr, UPDATE_TG);<br>     update_cfs_group(curr);</p> 
+<p>    if (cfs_rq-&gt;nr_running &gt; 1)<br>         check_preempt_tick(cfs_rq, curr);<br> }</p> 
+<p>static void<br> check_preempt_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr)<br> {<!-- --><br>     unsigned long ideal_runtime, delta_exec;<br>     struct sched_entity *se;<br>     s64 delta;</p> 
+<p>    ideal_runtime = sched_slice(cfs_rq, curr);<br>     delta_exec = curr-&gt;sum_exec_runtime - curr-&gt;prev_sum_exec_runtime;<br>     if (delta_exec &gt; ideal_runtime) {<!-- --><br>         resched_curr(rq_of(cfs_rq));<br>         /*<br>          * The current task ran long enough, ensure it doesn't get<br>          * re-elected due to buddy favours.<br>          */<br>         clear_buddies(cfs_rq, curr);<br>         return;<br>     }</p> 
+<p>    /*<br>      * Ensure that a task that missed wakeup preemption by a<br>      * narrow margin doesn't have to wait for a full slice.<br>      * This also mitigates buddy induced latencies under load.<br>      */<br>     if (delta_exec &lt; sysctl_sched_min_granularity)<br>         return;</p> 
+<p>    se = __pick_first_entity(cfs_rq);<br>     delta = curr-&gt;vruntime - se-&gt;vruntime;</p> 
+<p>    if (delta &lt; 0)<br>         return;</p> 
+<p>    if (delta &gt; ideal_runtime)<br>         resched_curr(rq_of(cfs_rq));<br> }</p> 
+<p><br>  </p> 
+<p>定时器中断中会调用scheduler_tick，scheduler_tick会调用当前进程的调度类的task_tick函数指针，对于普通进程来说就是task_tick_fair函数。task_tick_fair会调用entity_tick，我们这里不考虑组调度，因此for循环只会执行一遍。在entity_tick中会先调用update_curr更新进程的运行时间，然后在当运行进程总数大于1的时候调用check_preempt_tick。check_preempt_tick就是定时器抢占的核心了。</p> 
+<p>在check_preempt_tick中会先计算出来进程的理论运行时间ideal_runtime和实际运行时间delta_exec。如果实际运行时间大于理论运行时间，就会调用resched_curr来触发抢占。如果不大于的话还会继续处理。先判断实际运行时间是否小于调度粒度，如果小于就返回。如果不小于就继续。此时会计算当前进程的虚拟运行时间与队首进程的虚拟运行时间的差值，如果差值大于前面计算出来的理论运行时间就会调用resched_curr来触发抢占。按照定时器中断的目的的话，后面这个操作是没有必要的，但是按照我们在CFS调度模型中的要求，尽量使所有玻璃杯在任意时刻的水位都尽量相同，这个操作是很有必要的，它能提高公平性。</p> 
+<p>下面我们来看一下唤醒抢占，唤醒分为新建唤醒和阻塞唤醒，最后都会调用check_preempt_curr函数来看一下是否需要抢占。下面我们来看一下代码：</p> 
+<p>linux-src/kernel/sched/core.c</p> 
+<p>void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)<br> {<!-- --><br>     if (p-&gt;sched_class == rq-&gt;curr-&gt;sched_class)<br>         rq-&gt;curr-&gt;sched_class-&gt;check_preempt_curr(rq, p, flags);<br>     else if (p-&gt;sched_class &gt; rq-&gt;curr-&gt;sched_class)<br>         resched_curr(rq);<br> }</p> 
+<p></p> 
+<p>linux-src/kernel/sched/fair.c</p> 
+<p>static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_flags)<br> {<!-- --><br>     struct task_struct *curr = rq-&gt;curr;<br>     struct sched_entity *se = &amp;curr-&gt;se, *pse = &amp;p-&gt;se;<br>     struct cfs_rq *cfs_rq = task_cfs_rq(curr);<br>     int scale = cfs_rq-&gt;nr_running &gt;= sched_nr_latency;<br>     int next_buddy_marked = 0;<br>     int cse_is_idle, pse_is_idle;</p> 
+<p>    if (test_tsk_need_resched(curr))<br>         return;</p> 
+<p>    /* Idle tasks are by definition preempted by non-idle tasks. */<br>     if (unlikely(task_has_idle_policy(curr)) &amp;&amp;<br>         likely(!task_has_idle_policy(p)))<br>         goto preempt;</p> 
+<p>    /*<br>      * Batch and idle tasks do not preempt non-idle tasks (their preemption<br>      * is driven by the tick):<br>      */<br>     if (unlikely(p-&gt;policy != SCHED_NORMAL) || !sched_feat(WAKEUP_PREEMPTION))<br>         return;</p> 
+<p>    update_curr(cfs_rq_of(se));<br>     if (wakeup_preempt_entity(se, pse) == 1) {<!-- --><br>         if (!next_buddy_marked)<br>             set_next_buddy(pse);<br>         goto preempt;<br>     }</p> 
+<p>    return;</p> 
+<p>preempt:<br>     resched_curr(rq);<br>     if (unlikely(!se-&gt;on_rq || curr == rq-&gt;idle))<br>         return;</p> 
+<p>    if (sched_feat(LAST_BUDDY) &amp;&amp; scale &amp;&amp; entity_is_task(se))<br>         set_last_buddy(se);<br> }</p> 
+<p>static int<br> wakeup_preempt_entity(struct sched_entity *curr, struct sched_entity *se)<br> {<!-- --><br>     s64 gran, vdiff = curr-&gt;vruntime - se-&gt;vruntime;</p> 
+<p>    if (vdiff &lt;= 0)<br>         return -1;</p> 
+<p>    gran = wakeup_gran(se);<br>     if (vdiff &gt; gran)<br>         return 1;</p> 
+<p>    return 0;<br> }</p> 
+<p>static unsigned long wakeup_gran(struct sched_entity *se)<br> {<!-- --><br>     unsigned long gran = sysctl_sched_wakeup_granularity;<br>     return calc_delta_fair(gran, se);<br> }</p> 
+<p></p> 
+<p>在check_preempt_curr中，同类进程会使用调度类的check_preempt_curr函数进行处理，不同类的进程，高类会抢占低类的进程。分时调度类中的相应函数是check_preempt_wakeup。此函数会先区分不同的调度策略，SCHED_IDLE策略的进程一定会被非SCHED_IDLE的进程抢占，非SCHED_NORMAL的进程一定不会抢占非SCHED_IDLE的进程。接下来会调用update_curr更新一下当前进程的时间统计，然后调用wakeup_preempt_entity来查看一下是否满足唤醒粒度，如果满足就触发调度。满足唤醒粒度的标准是当前进程的虚拟运行时间与被唤醒进程的虚拟运行时间的差值要大于唤醒粒度对应的虚拟时间。</p> 
+<p>我们再来画个图对CFS的抢占时机和抢占规则进行一下总结：</p> 
+<p><img alt="" height="625" src="https://images2.imgbox.com/24/69/i7WPESRB_o.png" width="829"><br> 在这里插入图片描述</p> 
+<p> </p> 
+<p>4.8 入队与出队</p> 
+<p>CFS中排队的进程都是放在红黑树中，我们经常要对其进行出队入队查询队首的操作。</p> 
+<p>下面我们先来看一下内核中红黑树的定义与操作：<br> linux-src/include/linux/rbtree_types.h</p> 
+<p>struct rb_root_cached {<!-- --><br>     struct rb_root rb_root;<br>     struct rb_node *rb_leftmost;<br> };</p> 
+<p>struct rb_root {<!-- --><br>     struct rb_node *rb_node;<br> };</p> 
+<p>struct rb_node {<!-- --><br>     unsigned long  __rb_parent_color;<br>     struct rb_node *rb_right;<br>     struct rb_node *rb_left;<br> }</p> 
+<p></p> 
+<p>linux-src/include/linux/rbtree.h</p> 
+<p>#define rb_first_cached(root) (root)-&gt;rb_leftmost</p> 
+<p>static __always_inline struct rb_node *<br> rb_add_cached(struct rb_node *node, struct rb_root_cached *tree,<br>           bool (*less)(struct rb_node *, const struct rb_node *));</p> 
+<p>static inline struct rb_node *<br> rb_erase_cached(struct rb_node *node, struct rb_root_cached *root);</p> 
+<p></p> 
+<p>在CFS中经常会对队首进程进行操作，因此rb_root_cached中用rb_leftmost对红黑树的最下角的节点(这个节点就是vruntime最小的节点，就是队首进程)进行了缓存，方便查找。</p> 
+<p>我们经常会对运行队列进行入队出队操作，入队出队操作可以分为两类。一类是和调度执行相关的入队出队，叫做pick_next_task和put_prev_task，pick_next_task是选择一个进程把它放到CPU上去运行，put_prev_task是把正在CPU上运行的进程放回到运行队列中去。另一类是和非执行相关的入队出队，叫做enqueue_task和dequeue_task，enqueue_task是把一个非正在CPU上执行的进程放入到队列中去，dequeue_task是把一个进程从队列中拿出来，但不是拿来去CPU上运行的。</p> 
+<p>pick_next_task和put_prev_task都是在调度流程中的选择进程过程中调用的。</p> 
+<p>下面我们看一下代码(进行了高度删减)：<br> linux-src/kernel/sched/core.c</p> 
+<p>static void __sched notrace __schedule(unsigned int sched_mode)<br> {<!-- --><br>     struct task_struct *prev, *next;<br>     unsigned long *switch_count;<br>     unsigned long prev_state;<br>     struct rq_flags rf;<br>     struct rq *rq;<br>     int cpu;</p> 
+<p>    cpu = smp_processor_id();<br>     rq = cpu_rq(cpu);<br>     prev = rq-&gt;curr;</p> 
+<p>    prev_state = READ_ONCE(prev-&gt;__state);<br>     if (!(sched_mode &amp; SM_MASK_PREEMPT) &amp;&amp; prev_state) {<!-- --><br>         if (signal_pending_state(prev_state, prev)) {<!-- --><br>             WRITE_ONCE(prev-&gt;__state, TASK_RUNNING);<br>         } else {<!-- --><br>             deactivate_task(rq, prev, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);<br>         }<br>     }</p> 
+<p>    next = pick_next_task(rq, prev, &amp;rf);</p> 
+<p>    if (likely(prev != next)) {<!-- --><br>         rq = context_switch(rq, prev, next, &amp;rf);<br>     } else {<!-- --><br>         <br>     }<br> }</p> 
+<p>void deactivate_task(struct rq *rq, struct task_struct *p, int flags)<br> {<!-- --><br>     p-&gt;on_rq = (flags &amp; DEQUEUE_SLEEP) ? 0 : TASK_ON_RQ_MIGRATING;</p> 
+<p>    dequeue_task(rq, p, flags);<br> }</p> 
+<p>static struct task_struct *<br> pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)<br> {<!-- --><br>     return __pick_next_task(rq, prev, rf);<br> }</p> 
+<p>static inline struct task_struct *<br> __pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)<br> {<!-- --><br>     const struct sched_class *class;<br>     struct task_struct *p;</p> 
+<p>    if (likely(prev-&gt;sched_class &lt;= &amp;fair_sched_class &amp;&amp;<br>            rq-&gt;nr_running == rq-&gt;cfs.h_nr_running)) {<!-- --><br>         p = pick_next_task_fair(rq, prev, rf);<br>         return p;<br>     }<br> }</p> 
+<p></p> 
+<p>linux-src/kernel/sched/fair.c</p> 
+<p>struct task_struct *<br> pick_next_task_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)<br> {<!-- --><br>     struct cfs_rq *cfs_rq = &amp;rq-&gt;cfs;<br>     struct sched_entity *se;<br>     struct task_struct *p;<br>     int new_tasks;</p> 
+<p>    if (prev)<br>         put_prev_task(rq, prev);</p> 
+<p>    do {<!-- --><br>         se = pick_next_entity(cfs_rq, NULL);<br>         set_next_entity(cfs_rq, se);<br>         cfs_rq = group_cfs_rq(se);<br>     } while (cfs_rq);</p> 
+<p>    p = task_of(se);</p> 
+<p>    return p;<br> }</p> 
+<p>static void put_prev_task_fair(struct rq *rq, struct task_struct *prev)<br> {<!-- --><br>     struct sched_entity *se = &amp;prev-&gt;se;<br>     struct cfs_rq *cfs_rq;</p> 
+<p>    for_each_sched_entity(se) {<!-- --><br>         cfs_rq = cfs_rq_of(se);<br>         put_prev_entity(cfs_rq, se);<br>     }<br> }</p> 
+<p>static void put_prev_entity(struct cfs_rq *cfs_rq, struct sched_entity *prev)<br> {<!-- --><br>     if (prev-&gt;on_rq) {<!-- --><br>         __enqueue_entity(cfs_rq, prev);<br>     }<br>     cfs_rq-&gt;curr = NULL;<br> }</p> 
+<p>static void __enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)<br> {<!-- --><br>     rb_add_cached(&amp;se-&gt;run_node, &amp;cfs_rq-&gt;tasks_timeline, __entity_less);<br> }</p> 
+<p>static struct sched_entity *<br> pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)<br> {<!-- --><br>     struct sched_entity *left = __pick_first_entity(cfs_rq);<br>     struct sched_entity *se;<br>     se = left; /* ideally we run the leftmost entity */<br>     return se;<br> }</p> 
+<p><br><br>    </p> 
+<p>在执行调度的时候会调用到pick_next_task_fair，此函数会先put_prev_task再pick_next_entity。put_prev_task最终会使用rb_add_cached把被抢占的进程放回到队列中去，对于阻塞调度的则不会。pick_next_entity最终会使用rb_first_cached来获取队首进程用来调度。</p> 
+<p>enqueue_task和dequeue_task这两个函数会在修改进程优先级、设置进程亲和性、迁移进程等操作中成对使用。enqueue_task在进程唤醒中也会使用，下面我们来看一下代码。<br> linux-src/kernel/sched/core.c</p> 
+<p>static int<br> try_to_wake_up(struct task_struct *p, unsigned int state, int wake_flags)<br> {<!-- --><br>     unsigned long flags;<br>     int cpu, success = 0;</p> 
+<p>    cpu = select_task_rq(p, p-&gt;wake_cpu, wake_flags | WF_TTWU);<br>     if (task_cpu(p) != cpu) {<!-- --><br>         set_task_cpu(p, cpu);<br>     }</p> 
+<p>    ttwu_queue(p, cpu, wake_flags);<br>     return success;<br> }</p> 
+<p>static void ttwu_queue(struct task_struct *p, int cpu, int wake_flags)<br> {<!-- --><br>     struct rq *rq = cpu_rq(cpu);<br>     struct rq_flags rf;</p> 
+<p>    ttwu_do_activate(rq, p, wake_flags, &amp;rf);<br> }</p> 
+<p>static void<br> ttwu_do_activate(struct rq *rq, struct task_struct *p, int wake_flags,<br>          struct rq_flags *rf)<br> {<!-- --><br>     activate_task(rq, p, en_flags);<br>     ttwu_do_wakeup(rq, p, wake_flags, rf);<br> }</p> 
+<p>void activate_task(struct rq *rq, struct task_struct *p, int flags)<br> {<!-- --><br>     enqueue_task(rq, p, flags);</p> 
+<p>    p-&gt;on_rq = TASK_ON_RQ_QUEUED;<br> }</p> 
+<p>static inline void enqueue_task(struct rq *rq, struct task_struct *p, int flags)<br> {<!-- --><br>     p-&gt;sched_class-&gt;enqueue_task(rq, p, flags);<br> }</p> 
+<p><br>  </p> 
+<p>linux-src/kernel/sched/fair.c</p> 
+<p>static void<br> enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)<br> {<!-- --><br>     struct cfs_rq *cfs_rq;<br>     struct sched_entity *se = &amp;p-&gt;se;</p> 
+<p>    for_each_sched_entity(se) {<!-- --><br>         if (se-&gt;on_rq)<br>             break;<br>         cfs_rq = cfs_rq_of(se);<br>         enqueue_entity(cfs_rq, se, flags);<br>     }<br> }</p> 
+<p>static void<br> enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)<br> {<!-- --><br>     bool renorm = !(flags &amp; ENQUEUE_WAKEUP) || (flags &amp; ENQUEUE_MIGRATED);<br>     bool curr = cfs_rq-&gt;curr == se;</p> 
+<p>    update_curr(cfs_rq);<br>     if (!curr)<br>         __enqueue_entity(cfs_rq, se);<br>     se-&gt;on_rq = 1;<br> }</p> 
+<p>static void __enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)<br> {<!-- --><br>     rb_add_cached(&amp;se-&gt;run_node, &amp;cfs_rq-&gt;tasks_timeline, __entity_less);<br> }</p> 
+<p><br>  </p> 
+<p>可以看出enqueue_task最终也是调用rb_add_cached把进程放入到运行队列中去的。</p> 
+<p>4.9 CFS算法评价</p> 
+<p>现在我们对CFS调度算法的各个方面都有了基本的了解，让我们再看一下CFS调度模型图来回忆一下：</p> 
+<p><img alt="" height="586" src="https://images2.imgbox.com/8e/e9/6WztCA8a_o.png" width="836"><br> 在这里插入图片描述<br> 回忆完之后，我们对CFS算法进行一下分析和评价。首先CFS取消了对IO密集型和CPU密集型进程的探测，避免了由于误探而产生的问题。虽然没有对IO密集型和CPU密集型进程进行探测区分，但是CFS还是能很好地处理这两类进程。CPU密集型进程总是进程处于Runnable状态，所以能经常运行。由于其经常会运行，水位会比较高，所以就排到后面，就给其它进程留下了机会。IO密集型进程由于经常处于阻塞状态，所以其水位就会比较低，在其唤醒之后进入队列的时候经常能排在队首且很可能会抢占当前进程，所以IO密集型的进程响应性会比较高。</p> 
+<p> </p> 
+<p>我们再来看公平性，CFS的名字就叫做完全公平调度，所以肯定是很公平的。公平性主要体现在以下几个方面。一是取消了对IO密集型和CPU密集型进程的探测，不会对IO密集型进程进行特殊的照顾，所以进程都一视同仁。二是优先级转权重的时候采用了等比数列，使得nice值相差1的进程获得的CPU时间比例总是相差10%，很公平。三是低优先级的进程随着别人的水位增长总是会排到前面的，一定会在可观的时间内得到执行，不会产生饥饿。</p> 
+<p>再来看适应性，由于采用了红黑树，CFS的出队入队查找操作都是O(logn)的，当进程变得很多时，调度效率也依然良好。与调度效率是O(n)的算法相比，适应性明显很强，和O(1)的算法相比，也不算太差。</p> 
+<p>吞吐量和很多因素有关，代码简洁，调度效率是O(logn)也会提高其吞吐量。</p> 
+<p>节能性的话，CFS本身并没有考虑这个问题。现在内核已经合入了EAS的代码，EAS是对CFS的扩展，主要是来解决调度器的节能问题的。</p> 
+<p>五、分时调度均衡</p> 
+<p>下面我们来看一下分时调度类的均衡问题，实时调度类和限时调度类的均衡问题不在这里讨论。</p> 
+<p>5.1 均衡模型</p> 
+<p>有了前面的CFS调度的知识，再来研究调度均衡的问题就比较方便了。根据前面的CFS调度模型，我画了一些CFS调度均衡模型的图，先来看一下：</p> 
+<p><img alt="" height="665" src="https://images2.imgbox.com/3c/db/xBeNHBXv_o.png" width="832"><br> 在这里插入图片描述<br> 很明显两个桌子上的玻璃杯数量相差很大，不太均衡，我们需要想办法让两个桌子上的玻璃杯均衡起来。为了实现负载均衡，我们面临三个问题。第一个问题就是如何度量水龙头0和水龙头1的负载大小。只有把它们的负载大小算出来了，我们才能判断哪个CPU忙哪个CPU闲，才能合理对它们进行负载均衡。第二个问题是如何进行均衡，从图中就可以看出有两种方式，一是Wait Box中的进程醒来去哪个运行队列上，肯定是去负载相对较小的队列上去，这个叫做个体均衡，二是对运行队列上的进程进行迁移，使得多个运行队列的负载达到接近的程度，这个叫做总体均衡。第三个问题是当CPU比较多的时候，在不同的CPU之间迁移进程的代价是不同的，而且如果要一次实现所有CPU上的均衡代价会更大，所以我们要分层次的进行均衡，这个叫做调度域。</p> 
+<p> </p> 
+<p>如何计算CPU的负载呢？我们想到的最简单的方法就是计算玻璃杯的数量，让每个运行队列上都有相同的玻璃杯。这样就行了吗？不行，玻璃杯有粗有细，粗的比细的更能装水，所以我们还需要考虑进程的权重问题。数量加权重同时考虑就行了吗？还是不行，试想一下，你刚做完负载均衡，结果一个CPU上的进程全都阻塞休眠去了，另外一个CPU上的进程一个都没休眠都在努力地运行，负载瞬间变得严重不均衡了。这种方法也不行，我们还要考虑进程以后的休眠概率问题。但是我们又不是神仙，也没法预测进程以后的休眠概率。对此我们采取的方法是回顾历史展望未来，通过统计进程之前的运行数据预测其之后的休眠概率。由此可见计算CPU的负载还是一件很麻烦的事。</p> 
+<p>个体均衡的触发时机有三个：一是阻塞进程唤醒时(WF_TTWU)，二是进程新建唤醒时(WF_FORK)，三是进程执行新的程序时(WF_EXEC)。阻塞唤醒和新建唤醒都是进程重新选择运行队列的好时机。进程执行新程序是指进程调用了execve系统调用，此时进程会重新加载程序，老的程序会被抛弃，此时也是一个重新选择运行队列的好时机。</p> 
+<p>总体均衡的触发时机有三个：一是在pick_next_task_fair时发现运行队列是空的，此时会触发new idle balance；二是在定时器中断检测负载是否均衡，如果不均衡就进行均衡，这个叫做tick load balance或者periodic load balance；三是在开启动态tick的情况下，如果一个CPU发现自己太忙而有的CPU在idle就会唤醒那个CPU进行负载均衡，这个叫做nohz idle banlance。</p> 
+<p>个体均衡与总体均衡的区别在于：个体均衡的出发点是进程，总体均衡的出发点是CPU。</p> 
+<p>关于调度均衡的具体细节推荐阅读：<br> http://www.wowotech.net/process_management/load_balance.html<br> http://www.wowotech.net/process_management/task_placement.html<br> http://www.wowotech.net/process_management/load_balance_detail.html<br> http://www.wowotech.net/process_management/task_placement_detail.html<br> http://www.wowotech.net/process_management/load_balance_function.html</p> 
+<p>5.2 负载计算</p> 
+<p>暂略</p> 
+<p>5.3 调度域</p> 
+<p>暂略</p> 
+<p>5.4 个体均衡</p> 
+<p>暂略</p> 
+<p>5.5 总体均衡</p> 
+<p>暂略</p> 
+<p>六、实时调度</p> 
+<p>暂略</p> 
+<p>6.1 基本原理</p> 
+<p>七、限时调度</p> 
+<p>暂略</p> 
+<p>7.1 基本原理</p> 
+<p>八、调度参数</p> 
+<p>暂略</p> 
+<p>8.1 编译时参数</p> 
+<p>8.2 启动时参数</p> 
+<p>8.3 运行时参数</p> 
+<p>九、调度统计</p> 
+<p>暂略</p> 
+<p>## 9.1 基本原理<br> 十、总结回顾</p> 
+<p>我们在此文中讲了非常多关于进程调度的知识点，下面我们来总结一下。</p> 
+<p><img alt="" height="502" src="https://images2.imgbox.com/00/b3/OmuT3OHM_o.png" width="830"><br> 在这里插入图片描述<br> 对着这个图让我们来回顾一下，什么是调度，为什么要调度，为什么能调度。然后是调度时机，包括主动调度和被动调度。再之后是如何调度，包括选择进程和切换进程。切换进程的逻辑是通用的，而选择进程要分为5个调度类来进行选择。讲完了在单个CPU上的调度之后，我们还要在多CPU上进行调度均衡。</p> 
+<p> </p> 
+<p>进程调度是操作系统中非常庞大非常难懂但又非常重要的部分，我们要经常理论结合代码结合实践、反复思考琢磨才能更好的理解和掌握它。</p> 
+<p>参考文献：</p> 
+<p>《Linux Kernel Development》<br> 《Understanding the Linux Kernel》<br> 《Professional Linux Kernel Architecture》<br> 《Mastering Linux Kernel Development》<br> 《Understanding the Linux Virtual Memory Manager》<br> 《Linux内核深度解析》<br> 《Linux操作系统原理与应用》<br> 《深度探索Linux操作系统》<br> 《ARM Linux内核源码剖析》<br> 《奔跑吧Linux内核》<br> 《Linux内核源代码情景分析》<br> 《Linux内核设计的艺术》<br> 《Linux内核完全注释》</p> 
+<p>LWN：https://lwn.net/Kernel/Index/<br> linux-insides：https://github.com/0xAX/linux-insides<br> 宋宝华：https://blog.csdn.net/21cnbao<br> 蜗窝科技：http://www.wowotech.net<br> CHENG Jian：https://kernel.blog.csdn.net/<br> 内核工匠：https://blog.csdn.net/feelabclihu<br> DroidPhone：https://blog.csdn.net/DroidPhone<br> Bystander_J：https://blog.csdn.net/weixin_42092278<br> 术道经纬：https://www.zhihu.com/column/c_1108400140804726784<br> Kernel Exploring：https://richardweiyang-2.gitbook.io/kernel-exploring/<br> Linux Performance：http://linuxperf.com/</p> 
+<p>Linux系统标准规范：</p> 
+<p>https://refspecs.linuxfoundation.org/<br> https://man7.org/linux/man-pages/man7/standards.7.html<br>  </p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/5e3042b70f74d2c48720426329606b1a/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">pycharm—配置python解释器【2023最新版】</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/20fb67a3d45a8b42c1bb364461cf96a6/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">植物大战僵尸源码1.0版</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>存储异构，Elasticsearch如何充分利用存储空间 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="存储异构，Elasticsearch如何充分利用存储空间" />
+<meta property="og:description" content="作者：石文
+时间：2018-07-23
+前言 ES版本：5.6.4
+ES集群可以通过配置文件将各节点的角色划分出来以便给予不同的机器配置，从而达到资源的合理利用。对于数据节点来说，使用SSD磁盘可以显著提高可以显著提高数据写入或者是查询性能。SSD磁盘相对于存储型磁盘的劣势：
+往往SSD磁盘容量较小;不同品牌的磁盘的故障率不一致。对于第2个缺点可以通过raid来防止磁盘出现错误（为什么磁盘发生错误会严重影响到集群功能？参考如下资料：http://t.cn/Rg1ILik）。机器不同的磁盘数量和不同的raid方式都会导致节点上会出现不同磁盘容量的数据节点。 ES对于节点磁盘的监控有集群级别和机器级别两种，我们还可以通过自己的机器监控系统来对节点磁盘进行监控。
+#集群级别的磁盘监控可以通过如下API获得 curl -XGET http://&lt;domain&gt;:&lt;port&gt;/_cluster/stats?pretty #机器级别的磁盘监控可以通过如下API获得 curl -XGET http://&lt;domain&gt;:&lt;port&gt;/_nodes/&lt;nodes1&gt;/stats?pretty 自己的机器监控系统可以选择性监控如下几个部分：
+磁盘剩余可用容量百分数磁盘可用容量磁盘使用率 ES任一节点出现磁盘被写满的问题后都会引发集群级别的问题（当节点被写满时会引发集群问题可参考如下链接：http://t.cn/RgFXLAf）。ES在“防止节点数据被写满”这一方面也有一些配置参数和方法（节点磁盘分配决策器），但是这些参数和方法只是能缓解“节点被写满”并不能保证节点一定不被写满。
+ES相关配置参数介绍 集群级别的磁盘控制参数有如下两种：
+ES默认开启ES节点磁盘分配决策器。
+“cluster.routing.allocation.disk.watermark.low”：此项设置是通过监控数据节点磁盘使用的水位来控制新索引分片是否可以分配到某节点。注意 ：这个设置将不影响新建索引的主分片的分配，即如果集群发现有些节点磁盘使用量到达了watermark.low的值，但是这个节点上总分片少于均值，那么新建索引的主分片将继续分配到此节点。索引这项设置将不会影响集群功能，只要集群磁盘有空间。
+“cluster.routing.allocation.disk.watermark.high”：此项设置是通过监控数据节点磁盘使用的水位来控制是否将某些节点的分片迁移出此节点。当某个节点的磁盘使用超过这个阈值，集群将会随机（优先主分片，不再有索引更新的分片）选择分片迁移到其他节点。注意 ：当节点的磁盘容量达到这个阈值时，节点存在”磁盘被写满 ”的巨大风险。当某个节点的数据盘使用量达到”cluster.routing.allocation.disk.watermark.high”这个值后，集群将会迁移出这个节点的部分分片，直到节点磁盘使用量低于该值。但是在分片向外迁移的过程中，迁移分片并发数将不受如下连两个参数的限制：
+&#34;cluster.routing.allocation.node_concurrent_recoveries&#34;：允许在节点上并发分片恢复的个数（写和读），只控制“恢复”过程的并发数，对集群“重平衡”和其他情况下的并发数没有限制。 &#34;cluster.routing.allocation.cluster_concurrent_rebalance&#34;：允许在集群上并发分片重平衡的个数，只控制“重平衡”过程的并发数，对集群“恢复”和其他情况下的并发数没有限制。 即集群可能出现大量的迁移的分片，造成集群某节点负载过重，出现长时间的“gc overhead”和“io_util”过高（IO利用率）。
+集群中存在异构型数据节点时的潜在问题 正如上文所说的，”cluster.routing.allocation.disk.watermark.low”这个值并不能阻止集群向此节点分配分片，只是不再向此节点副本分片，换句话说，这个参数对新建索引的主分片的分配决策是透明的。
+为什么”cluster.routing.allocation.disk.watermark.low”参数只能控制新建索引主分片副本分片分配的限制？
+官方文档中对这个参数的应用场景做了限制：对于新创建的索引的主分片，这个参数不会起作用。即对于新创建的索引会限制副本分片在此节点的分配，对新创建的索引的主分片的分配不受影响。这个参数起作用的场景主要是：
+集群节点挂掉或者用户更改了集群的复制片数量， 此时未分配的分片将不再向此节点分配分片集群rebalance不再向此节点分配分片新索引的副本分片不再向此节点分配 这样做的原因，本人认为是为了保持集群的平衡，ES“rebalance”是按照节点分片数来重平衡的，如果”cluster.routing.allocation.disk.watermark.low”这个值可以禁止所有分片的分配，将势必造成集群节点间分片数的不平等，从而造成持续的“重平衡”，而有些节点又禁止分配分片，这样的话，集群将处于不断启动重平衡的死循环。（个人见解，关于这个问题的讨论可参见：http://t.cn/RevxDy2）
+以下为原因：
+这么设计也是有道理的，low watermark表达的含义是磁盘空间较低，为了保护已有数据的进一步空间消耗（数据的持续写入， merge的临时空间消耗)，禁止有数据的shard向上面分配。 而新创建的索引，一开始是空的，分配上去也无所谓。 low watermark是不管磁盘数据结点是否快写满了的，有另外一个参数&#34;cluster.routing.allocation.disk.watermark.high&#34;来处理这种情况。这个阈值触发以后，ES会将该结点上的数据开始往其他结点迁移，该参数对所有shard有效。 两个watermark合理配置，可以减少数据迁移的频率，同时保障结点磁盘空间不会过低。 最后还有一道防线&#34;cluster.routing.allocation.disk.watermark.flood_stage&#34; ，万一应用写数据太猛，超过预期，磁盘空间降太快，来不及往外迁移，这个阈值触可能被触发。 触发时，ES会将结点上的索引设置为只读, 避免磁盘空间爆掉，影响结点的可用性。 上文中提到的”cluster.routing.allocation.disk.watermark.flood_stage”参数是在6.0以后版本 中才存在的，默认值是“95%”,这个参数是在某一个节点触发时，将集群中此节点上有的索引设为只读 。
+异构型数据节点存在的问题
+就想上文所说的，对于ES版本小于6.0时，如果部署了小磁盘的数据节点，风险提示如下：
+磁盘比较小的数据节点磁盘有被写满的风险。触发大量的分片迁移，影响节点性能(gc overhead和io_util)，影响集群整体性能。 出现以上问题的运维预案 某个节点将要被写满时的预案处理
+节点磁盘往往都有机器级别的磁盘监控，比如设置当机器的磁盘可用容量小于5%时，磁盘告警。此时，若磁盘本身较小，ES集群数据写入量较大，则会发生较大可能磁盘被写满。
+此时，预案操作如下：
+1.禁止集群分片分配
+2.关闭此节点，观察集群状态是否为yellow，集群状态为“yellow”时说明索引主分片都存在，集群不会出现数据丢失。
+3.清理磁盘无用信息（当ES的数据路径下挂载有磁盘时，这一步往往效果不佳，没有什么数据可以被清理的）
+4.若磁盘有可用空间，重新启动节点加入集群
+5.否则，直接清空一部分索引分片。
+ES数据节点数据存储方式：
+节点触发“cluster.routing.allocation.disk.watermark.high”节点出现大量的分片迁移
+集群中某些节点一旦出现分片迁移，将不受“cluster.routing.allocation.node_concurrent_recoveries”和“ cluster.routing.allocation.cluster_concurrent_rebalance”这两个参数的控制，即这个触发了“cluster.routing.allocation.disk.watermark.high”这个参数，会造成大量的分片迁移。已经开始迁移的分片将直到迁移完毕，不会停止。预案操作如下:" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/cc0aefa6459933b24a0332851ef0f099/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-01-19T10:50:50+08:00" />
+<meta property="article:modified_time" content="2020-01-19T10:50:50+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">存储异构，Elasticsearch如何充分利用存储空间</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>作者：石文<br> 时间：2018-07-23</p> 
+<hr> 
+<h3><a id="_4"></a>前言</h3> 
+<p><strong>ES版本：5.6.4</strong></p> 
+<p>ES集群可以通过配置文件将各节点的角色划分出来以便给予不同的机器配置，从而达到资源的合理利用。对于数据节点来说，使用SSD磁盘可以显著提高可以显著提高数据写入或者是查询性能。SSD磁盘相对于存储型磁盘的劣势：</p> 
+<ol><li>往往SSD磁盘容量较小;</li><li>不同品牌的磁盘的故障率不一致。对于第2个缺点可以通过raid来防止磁盘出现错误（为什么磁盘发生错误会严重影响到集群功能？参考如下资料：http://t.cn/Rg1ILik）。</li><li>机器不同的磁盘数量和不同的raid方式都会导致节点上会出现不同磁盘容量的数据节点。</li></ol> 
+<p>ES对于节点磁盘的监控有集群级别和机器级别两种，我们还可以通过自己的机器监控系统来对节点磁盘进行监控。</p> 
+<pre><code>#集群级别的磁盘监控可以通过如下API获得
+curl -XGET http://&lt;domain&gt;:&lt;port&gt;/_cluster/stats?pretty
+#机器级别的磁盘监控可以通过如下API获得
+curl -XGET http://&lt;domain&gt;:&lt;port&gt;/_nodes/&lt;nodes1&gt;/stats?pretty
+</code></pre> 
+<p>自己的机器监控系统可以选择性监控如下几个部分：</p> 
+<ul><li>磁盘剩余可用容量百分数</li><li>磁盘可用容量</li><li>磁盘使用率</li></ul> 
+<p>ES任一节点出现磁盘被写满的问题后都会引发集群级别的问题（当节点被写满时会引发集群问题可参考如下链接：http://t.cn/RgFXLAf）。ES在“防止节点数据被写满”这一方面也有一些配置参数和方法（节点磁盘分配决策器），但是这些参数和方法只是能缓解“节点被写满”并不能保证节点一定不被写满。</p> 
+<h3><a id="ES_29"></a>ES相关配置参数介绍</h3> 
+<p>集群级别的磁盘控制参数有如下两种：</p> 
+<p>ES默认开启ES节点磁盘分配决策器。</p> 
+<p>“cluster.routing.allocation.disk.watermark.low”：此项设置是通过监控数据节点磁盘使用的水位来控制新索引分片是否可以分配到某节点。<strong>注意</strong> ：这个设置将不影响新建索引的主分片的分配，即如果集群发现有些节点磁盘使用量到达了watermark.low的值，但是这个节点上总分片少于均值，那么新建索引的主分片将继续分配到此节点。索引这项设置将不会影响集群功能，只要集群磁盘有空间。</p> 
+<p>“cluster.routing.allocation.disk.watermark.high”：此项设置是通过监控数据节点磁盘使用的水位来控制是否将某些节点的分片迁移出此节点。当某个节点的磁盘使用超过这个阈值，集群将会随机（优先主分片，不再有索引更新的分片）选择分片迁移到其他节点。<strong>注意</strong> ：当节点的磁盘容量达到这个阈值时，节点存在”<strong>磁盘被写满</strong> ”的巨大风险。当某个节点的数据盘使用量达到”cluster.routing.allocation.disk.watermark.high”这个值后，集群将会迁移出这个节点的部分分片，直到节点磁盘使用量低于该值。但是在分片向外迁移的过程中，迁移分片并发数将不受如下连两个参数的限制：</p> 
+<pre><code>"cluster.routing.allocation.node_concurrent_recoveries"：允许在节点上并发分片恢复的个数（写和读），只控制“恢复”过程的并发数，对集群“重平衡”和其他情况下的并发数没有限制。
+"cluster.routing.allocation.cluster_concurrent_rebalance"：允许在集群上并发分片重平衡的个数，只控制“重平衡”过程的并发数，对集群“恢复”和其他情况下的并发数没有限制。
+</code></pre> 
+<p>即集群可能出现大量的迁移的分片，造成集群某节点负载过重，出现长时间的“gc overhead”和“io_util”过高（IO利用率）。</p> 
+<h3><a id="_45"></a>集群中存在异构型数据节点时的潜在问题</h3> 
+<p>正如上文所说的，”cluster.routing.allocation.disk.watermark.low”这个值并不能阻止集群向此节点分配分片，只是不再向此节点副本分片，换句话说，这个参数对新建索引的主分片的分配决策是透明的。</p> 
+<p><strong>为什么”cluster.routing.allocation.disk.watermark.low”参数只能控制新建索引主分片副本分片分配的限制？</strong><br> 官方文档中对这个参数的应用场景做了限制：对于新创建的索引的主分片，这个参数不会起作用。即对于新创建的索引会限制副本分片在此节点的分配，对新创建的索引的主分片的分配不受影响。这个参数起作用的场景主要是：</p> 
+<ol><li>集群节点挂掉或者用户更改了集群的复制片数量， 此时未分配的分片将不再向此节点分配分片</li><li>集群rebalance不再向此节点分配分片</li><li>新索引的副本分片不再向此节点分配</li></ol> 
+<p>这样做的原因，本人认为是为了保持集群的平衡，ES“rebalance”是按照节点分片数来重平衡的，如果”cluster.routing.allocation.disk.watermark.low”这个值可以禁止所有分片的分配，将势必造成集群节点间分片数的不平等，从而造成持续的“重平衡”，而有些节点又禁止分配分片，这样的话，集群将处于不断启动重平衡的死循环。（个人见解，关于这个问题的讨论可参见：http://t.cn/RevxDy2）</p> 
+<p>以下为原因：</p> 
+<pre><code>这么设计也是有道理的，low watermark表达的含义是磁盘空间较低，为了保护已有数据的进一步空间消耗（数据的持续写入， merge的临时空间消耗)，禁止有数据的shard向上面分配。 而新创建的索引，一开始是空的，分配上去也无所谓。
+ 
+low watermark是不管磁盘数据结点是否快写满了的，有另外一个参数"cluster.routing.allocation.disk.watermark.high"来处理这种情况。这个阈值触发以后，ES会将该结点上的数据开始往其他结点迁移，该参数对所有shard有效。
+ 
+两个watermark合理配置，可以减少数据迁移的频率，同时保障结点磁盘空间不会过低。
+ 
+最后还有一道防线"cluster.routing.allocation.disk.watermark.flood_stage" ，万一应用写数据太猛，超过预期，磁盘空间降太快，来不及往外迁移，这个阈值触可能被触发。 触发时，ES会将结点上的索引设置为只读, 避免磁盘空间爆掉，影响结点的可用性。
+</code></pre> 
+<p>上文中提到的”cluster.routing.allocation.disk.watermark.flood_stage”参数是在<strong>6.0以后版本</strong> 中才存在的，默认值是“95%”,这个参数是在某一个节点触发时，将集群中<strong>此节点上有的索引设为只读</strong> 。</p> 
+<p><strong>异构型数据节点存在的问题</strong><br> 就想上文所说的，对于ES版本小于6.0时，如果部署了小磁盘的数据节点，风险提示如下：</p> 
+<ol><li>磁盘比较小的数据节点磁盘有被写满的风险。</li><li>触发大量的分片迁移，影响节点性能(gc overhead和io_util)，影响集群整体性能。</li></ol> 
+<h3><a id="_77"></a>出现以上问题的运维预案</h3> 
+<p><strong>某个节点将要被写满时的预案处理</strong><br> 节点磁盘往往都有机器级别的磁盘监控，比如设置当机器的磁盘可用容量小于5%时，磁盘告警。此时，若磁盘本身较小，ES集群数据写入量较大，则会发生较大可能磁盘被写满。</p> 
+<p>此时，预案操作如下：</p> 
+<p>1.禁止集群分片分配</p> 
+<p>2.关闭此节点，观察集群状态是否为yellow，集群状态为“yellow”时说明索引主分片都存在，集群不会出现数据丢失。</p> 
+<p>3.清理磁盘无用信息（当ES的数据路径下挂载有磁盘时，这一步往往效果不佳，没有什么数据可以被清理的）</p> 
+<p>4.若磁盘有可用空间，重新启动节点加入集群</p> 
+<p>5.否则，直接清空一部分索引分片。</p> 
+<p>ES数据节点数据存储方式：</p> 
+<p><strong>节点触发“cluster.routing.allocation.disk.watermark.high”节点出现大量的分片迁移</strong></p> 
+<p>集群中某些节点一旦出现分片迁移，将不受“cluster.routing.allocation.node_concurrent_recoveries”和“ cluster.routing.allocation.cluster_concurrent_rebalance”这两个参数的控制，即这个触发了“cluster.routing.allocation.disk.watermark.high”这个参数，会造成大量的分片迁移。已经开始迁移的分片将直到迁移完毕，不会停止。预案操作如下:</p> 
+<p>1.禁止集群副本分片分配</p> 
+<p>2.若机器节点并没有立即被写满的风险，可以适当调大“cluster.routing.allocation.disk.watermark.high”值在没有分片迁移后，手动迁移部分分片，以防止节点被写满。</p> 
+<p>3.向节点新建空索引从而降低节点的磁盘使用率(当这个节点的数据盘大小相比于集群其他数据节点较小时，否则只能扩容)。</p> 
+<h3><a id="_107"></a>如何杜绝以上问题</h3> 
+<p>杜绝如上问题可以通过如下几个方面来进行操作：</p> 
+<p>集群配置方面：</p> 
+<ol><li> <p>调整”cluster.routing.allocation.disk.watermark.low”和”cluster.routing.allocation.disk.watermark.high”的值，使用“具体值”而不是“相对值”（百分数）。</p> </li><li> <p>增大”cluster.routing.allocation.disk.watermark.low”和”cluster.routing.allocation.disk.watermark.high”的差值，尽量不会让集群出现分片迁移</p> </li></ol> 
+<p>监控告警方面：</p> 
+<ol start="3"><li> <p>配置合理的机器磁盘监控报警值</p> </li><li> <p>监控集群每日数据增加量</p> </li><li> <p>监控集群索引大小和索引分片数的对应关系，尽量不要出现单个分片很大的索引。</p> </li></ol> 
+<p>对于小磁盘机器的处理方面：</p> 
+<ol start="6"><li>为小磁盘节点虚拟一部分磁盘空间。</li></ol> 
+<p>优化扩容方案：</p> 
+<ol start="7"><li> <p>为新扩容节点配置“tag”,并使用新的扩容步骤</p> </li><li> <p><strong>调整”cluster.routing.allocation.disk.watermark.low”和"cluster.routing.allocation.disk.watermark.high”的值</strong><br> 小磁盘存在时，相对值的配置值对于小磁盘节点来说是不合适的，使用具体的值可以在剩余空间上与集群其他节点保持一致。</p> </li><li> <p><strong>增大”cluster.routing.allocation.disk.watermark.low”和”cluster.routing.allocation.disk.watermark.high”的差值，尽量不会让集群出现分片迁移</strong><br> 若节点触发”cluster.routing.allocation.disk.watermark.high”值，节点开始分片迁移，影响节点和集群性能，所以尽量不要出现迁移的场景。</p> </li></ol> 
+<p><strong>如何合理安排如上的两个配置值的方法可以参看如下方式获得</strong> ：<br> 小磁盘机器上线后，如何设置watermark.low值？<br> 首先按照默认设置进行修改。比如说集群现阶段的主要数据节点的磁盘容量是2200G，默认的watermark.low值为85%，即当磁盘可用量达到330G的阈值时，集群将不再像此节点分配分片。这样的话，当有小磁盘机器上线时，修改配置 “cluster.routing.allocation.disk.watermark.low”为330G，通过这样的方法来保护小磁盘节点。在不知道配置watermark.low值的情况下，先使用默认配置。<br> <strong>如何设置watermark.high值？</strong><br> 当节点的磁盘使用量达到watermark.high值后集群将开始向外迁移分片，对于小磁盘机器，存在迁移分片的速度低于索引写入的速度从而将磁盘写满的风险。所以我们要保证在不发生迁移的情况下保证此节点不会被写满。即考虑极端的情况：当节点刚好到达85%利用率时，这一时刻新建的所有索引都将会有一个分片被分配到此节点。则节点的现有分片大小的值再加上这批索引的分片大小总值应该不超过watermark.high值这个值，并且再加上一些冗余度。此外，当节点磁盘使用率量达到watermark.high后，节点仍然可以承担一批新建的索引的分片总和值。由于磁盘告警的值为5%，所以设置这个值时应不高于95%。此外，如果设置为具体的值，当集群所有的节点都达到watermark.low值后，集群将不会为副本分配分片，所以就应该扩容了。<br> <strong>设置的风险提示</strong> ：<br> 这样做集群将不平衡，这样的话需要设置重平衡阈值，但是具体怎么设置这个值还未知。<br> 这里往往出现在两个场景。</p> 
+<p><strong>示例</strong> ：</p> 
+<p>对于某个集群，数据节点磁盘规格：<br> 1.5T 10台<br> 2.2T 10台<br> 4.4T 10台<br> 设置”cluster.routing.allocation.disk.watermark.low”为660gb（首先使用默认配置，4400<em>0.15=600gb）<br> 设置”cluster.routing.allocation.disk.watermark.high”为440gb（首先使用默认配置，4400</em>0.10=440gb）<br> 按照具体的集群情况：<br> 考虑极端的情况，同一时刻最多如下几个索引被创建（要求每个节点最多分配同一个索引的一个分片）：</p> 
+<table><thead><tr><th>索引</th><th>分片数</th><th>主分片总大小</th><th>单分片平均大小</th></tr></thead><tbody><tr><td>indices-1-2018-07-*</td><td>8</td><td>311.3gb</td><td>39gb</td></tr><tr><td>indices-2-2018-07-*</td><td>9</td><td>236.9gb</td><td>27gb</td></tr><tr><td>indices-3-2018-07-*</td><td>9</td><td>240gb</td><td>27gb</td></tr><tr><td>indices-4-2018-07-*</td><td>8</td><td>2000gb</td><td>91gb</td></tr><tr><td>总大小</td><td></td><td></td><td>184gb</td></tr></tbody></table> 
+<p>对于这个集群来说，他们的索引是一次性创建2批，所以设置：<br> 设置”cluster.routing.allocation.disk.watermark.low”为780gb<br> 设置”cluster.routing.allocation.disk.watermark.high”为220gb<br> 4400*0.05=220gb,两批索引的单个分片总和为560gb（增加0.5的冗余再取整）,则watermark.high为220gb，watermark.low为780gb。<br> <strong>配置合理的机器磁盘监控报警值</strong></p> 
+<p>对机器磁盘进行监控时，要关注到这个告警值是否合适。因为同样是磁盘可用容量小于5%时告警，1500GB的5%和4400GB的5%差距还是很大的，1500GB的的磁盘在5%时告警是存在被写满的风险。</p> 
+<p><strong>监控集群每日数据增加量</strong><br> 监控集群每日增加量可以对集群的情况做到了解，从而能够提前知道是否需要扩容器群。</p> 
+<p><strong>监控集群索引大小和索引分片数的对应关系，尽量不要出现单个分片很大的索引</strong></p> 
+<p>分片大小过于庞大，一方面影响到节点磁盘使用量的不平衡；另一方面 不利于分片迁移（占用内存）。</p> 
+<p>分片大小过于小，势必会浪费分片数，降低分片的数据关联性。（参考资料：）</p> 
+<p><strong>为小磁盘节点虚拟一部分磁盘空间</strong><br> 由于集群是按照单位节点分片数来认为集群是否平衡，是否将新的索引分片分配到哪些节点。所以我们可以在小磁盘节点上新建空索引从而为节点虚拟出一部分磁盘容量，从而不会出现单个节点触发”cluster.routing.allocation.disk.watermark.low”的值。</p> 
+<p><strong>为新扩容节点配置“tag”,并使用新的扩容步骤</strong></p> 
+<p>集群新扩容节点后，集群随即启动“rebalance”，按照默认的“rebalance”并发策略（默认为2）开启集群“rebalance”。如果集群分片较多，这个过程将耗费很长的时间。在此期间，新扩容的节点的分片数较少，集群会将新建的索引的分片分配到此节点，势必会增加节点压力。加上节点磁盘较小，则节点会很快被写满。对于此类问题，新的扩容应该按照如下方式进行扩容：</p> 
+<p>1.禁用集群“rebalance”(API的方式)</p> 
+<pre><code>curl -XPUT http://&lt;domain&gt;:&lt;port&gt;/_cluster/settings?pretty -d'{"transient":{"cluster.routing.allocation.cluster_concurrent_rebalance": 0}}'
+</code></pre> 
+<p>2.扩容新节点时，对新的节点设置“tag”值。方式有两种：</p> 
+<p>节点按照如下方式启动，配置“tag”值：</p> 
+<pre><code>./bin/elasticsearch -Enode.attr.size=small
+</code></pre> 
+<p>elasticsearch.yml配置文件中修改</p> 
+<pre><code>node.attr.size: small
+</code></pre> 
+<p>3.观察节点全部加入集群后，验证集群功能</p> 
+<p>4.向新扩容的节点新建空索引（通过这个方式来为节点扩展虚拟空间）</p> 
+<pre><code>curl -XPUT http://&lt;domain&gt;:&lt;port&gt;/&lt;indices&gt;?pretty -d'{ "index.routing.allocation.include._ip": "&lt;node1&gt;"}'
+</code></pre> 
+<p>此配置将使索引的分片只能分配到此节点（node），增加索引分片数将出现分片无法分配，集群重平衡不会对此索引进行重平衡。</p> 
+<p>5.等待集群所有数据节点分片大致平衡</p> 
+<p>6.启动集群重平衡</p> 
+<pre><code>curl -XPUT http://&lt;domain&gt;:&lt;port&gt;/_cluster/settings?pretty -d'{"transient":{"cluster.routing.allocation.cluster_concurrent_rebalance": null}}'
+</code></pre> 
+<h3><a id="_221"></a>总结</h3> 
+<p>总的来说，ES还是不要出现小磁盘的数据节点，不然就像木桶原理一样，小磁盘的数据节点将成为集群数据写入的瓶颈，造成小磁盘的节点存在被写满的风险，大磁盘的节点出现磁盘空余。6.0以后的版本中有”cluster.routing.allocation.disk.watermark.flood_stage”这个参数可以避免节点磁盘被写满。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/f59d5391e8caf9e97b9ff645e4826dee/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">java 字符串公式及条件判断表达式，计算方法</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/c37c2d26f94f4e64a818f05a602e4210/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">MongoDB 日志切割三种方式</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

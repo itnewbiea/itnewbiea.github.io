@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>分析C# 二进制序列化诟病所在，并解决问题（一） - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="分析C# 二进制序列化诟病所在，并解决问题（一）" />
+<meta property="og:description" content="文章目录 什么是序列化？二进制序列化特点常规序列化及反序列化序列化测试简单优化 什么是序列化？ 内存中的数据对象只有转换为二进制流才可以进行数据持久化和网络传输。将数据对象转换为二进制流的过程称为对象的序列化（Serialization）。反之，将二进制流恢复为数据对象的过程称为反序列化（Deserialization）。序列化需要保留充分的信息以恢复数据对象，但是为了节约存储空间和网络带宽，序列化后的二进制流又要尽可能小。序列化常见的使用场景是RPC框架的数据传输。常见的序列化方式有三种：二进制、xml、Json，当然还有新起之秀Protocol Buffers、Avro、Spearal等，
+二进制序列化特点 说起二进制序列化，大家可能是既爱又恨，爱是其保真度是其他序列化都无法比拟的，恨却是其性能和[Serializable]标签，实际上二进制序列化也可以想Json一样，只传递数据，不显示其属性，可那样的话，为什么不直接用Json呢，所以本猿还是喜欢在现有的二进制中摸爬滚打，至于标签，本猿也觉得挺重要的，因为这就在提醒开发人员，该数据对象可能会被反序列化，得小心，具体危险程度有多少，可以看看微软介绍，这里就不累述了。接下来，就让我们开始捣鼓BinaryFormatter吧。
+常规序列化及反序列化 序列化
+private static byte[] Serialize(object obj) { using (MemoryStream stream = new MemoryStream()) { BinaryFormatter binaryFormatter = new BinaryFormatter(); binaryFormatter.Serialize(stream, obj); return stream.ToArray(); } } 反序列化
+private static T Deserialize&lt;T&gt;(byte[] buffer) { using (MemoryStream stream = new MemoryStream()) { stream.Write(buffer,0,buffer.Length); stream.Position = 0; BinaryFormatter binaryFormatter = new BinaryFormatter(); return (T)binaryFormatter.Deserialize(stream); } } 或者
+private static T Deserialize&lt;T&gt;(byte[] buffer) { using (MemoryStream stream = new MemoryStream(buffer)) { BinaryFormatter binaryFormatter = new BinaryFormatter(); return (T)binaryFormatter." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/9dde4e02d88dada7394e05fef04e0799/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-02-05T15:30:11+08:00" />
+<meta property="article:modified_time" content="2021-02-05T15:30:11+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">分析C# 二进制序列化诟病所在，并解决问题（一）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><ul><li><a href="#_3" rel="nofollow">什么是序列化？</a></li><li><a href="#_6" rel="nofollow">二进制序列化特点</a></li><li><a href="#_10" rel="nofollow">常规序列化及反序列化</a></li><li><a href="#_54" rel="nofollow">序列化测试</a></li><li><a href="#_124" rel="nofollow">简单优化</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<hr color="#000000" size='1"'> 
+<h3><a id="_3"></a>什么是序列化？</h3> 
+<p>内存中的数据对象只有转换为二进制流才可以进行数据持久化和网络传输。将数据对象转换为二进制流的过程称为对象的序列化（Serialization）。反之，将二进制流恢复为数据对象的过程称为反序列化（Deserialization）。序列化需要保留充分的信息以恢复数据对象，但是为了节约存储空间和网络带宽，序列化后的二进制流又要尽可能小。序列化常见的使用场景是RPC框架的数据传输。常见的序列化方式有三种：二进制、xml、Json，当然还有新起之秀Protocol Buffers、Avro、Spearal等，</p> 
+<h3><a id="_6"></a>二进制序列化特点</h3> 
+<p>说起二进制序列化，大家可能是既爱又恨，爱是其保真度是其他序列化都无法比拟的，恨却是其性能和<code>[Serializable]</code>标签，实际上二进制序列化也可以想Json一样，只传递数据，不显示其属性，可那样的话，为什么不直接用Json呢，所以本猿还是喜欢在现有的二进制中摸爬滚打，至于标签，本猿也觉得挺重要的，因为这就在提醒开发人员，该数据对象可能会被反序列化，得小心，具体危险程度有多少，可以看看微软介绍，这里就不累述了。接下来，就让我们开始捣鼓<code>BinaryFormatter</code>吧。</p> 
+<h3><a id="_10"></a>常规序列化及反序列化</h3> 
+<p>序列化</p> 
+<pre><code class="prism language-csharp">   <span class="token keyword">private</span> <span class="token keyword">static</span> <span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token function">Serialize</span><span class="token punctuation">(</span><span class="token keyword">object</span> obj<span class="token punctuation">)</span>
+   <span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">using</span> <span class="token punctuation">(</span><span class="token class-name">MemoryStream</span> stream <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">MemoryStream</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+      <span class="token punctuation">{<!-- --></span>
+          <span class="token class-name">BinaryFormatter</span> binaryFormatter <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">BinaryFormatter</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+          binaryFormatter<span class="token punctuation">.</span><span class="token function">Serialize</span><span class="token punctuation">(</span>stream<span class="token punctuation">,</span> obj<span class="token punctuation">)</span><span class="token punctuation">;</span>
+          <span class="token keyword">return</span> stream<span class="token punctuation">.</span><span class="token function">ToArray</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span>
+   <span class="token punctuation">}</span>
+</code></pre> 
+<p>反序列化</p> 
+<pre><code class="prism language-csharp">
+       <span class="token keyword">private</span> <span class="token keyword">static</span> T <span class="token generic-method"><span class="token function">Deserialize</span><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token punctuation">]</span> buffer<span class="token punctuation">)</span>
+        <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">using</span> <span class="token punctuation">(</span><span class="token class-name">MemoryStream</span> stream <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">MemoryStream</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+            <span class="token punctuation">{<!-- --></span>
+                stream<span class="token punctuation">.</span><span class="token function">Write</span><span class="token punctuation">(</span>buffer<span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">,</span>buffer<span class="token punctuation">.</span>Length<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                stream<span class="token punctuation">.</span>Position <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+                <span class="token class-name">BinaryFormatter</span> binaryFormatter <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">BinaryFormatter</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">return</span> <span class="token punctuation">(</span>T<span class="token punctuation">)</span>binaryFormatter<span class="token punctuation">.</span><span class="token function">Deserialize</span><span class="token punctuation">(</span>stream<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+ 
+</code></pre> 
+<p>或者</p> 
+<pre><code class="prism language-csharp">        <span class="token keyword">private</span> <span class="token keyword">static</span> T <span class="token generic-method"><span class="token function">Deserialize</span><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token punctuation">]</span> buffer<span class="token punctuation">)</span>
+        <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">using</span> <span class="token punctuation">(</span><span class="token class-name">MemoryStream</span> stream <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">MemoryStream</span><span class="token punctuation">(</span>buffer<span class="token punctuation">)</span><span class="token punctuation">)</span>
+            <span class="token punctuation">{<!-- --></span>
+                <span class="token class-name">BinaryFormatter</span> binaryFormatter <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">BinaryFormatter</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">return</span> <span class="token punctuation">(</span>T<span class="token punctuation">)</span>binaryFormatter<span class="token punctuation">.</span><span class="token function">Deserialize</span><span class="token punctuation">(</span>stream<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="_54"></a>序列化测试</h3> 
+<p>看代码没什么问题，我们来测试一下</p> 
+<hr> 
+<p><strong>以下测试环境</strong><br> 测试硬件：戴尔笔记本，i5-8250u,8G RAM+256G固态+1T机械。<br> 测试系统：Window10 家庭版，x64位。</p> 
+<hr> 
+<p>首先，声明一个Student类</p> 
+<pre><code class="prism language-csharp"><span class="token punctuation">[</span><span class="token class-name">Serializable</span><span class="token punctuation">]</span>
+    <span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">Student</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">public</span> <span class="token keyword">string</span> Name <span class="token punctuation">{<!-- --></span> <span class="token keyword">get</span><span class="token punctuation">;</span> <span class="token keyword">set</span><span class="token punctuation">;</span> <span class="token punctuation">}</span>
+        <span class="token keyword">public</span> <span class="token keyword">int</span> Age <span class="token punctuation">{<!-- --></span> <span class="token keyword">get</span><span class="token punctuation">;</span> <span class="token keyword">set</span><span class="token punctuation">;</span> <span class="token punctuation">}</span>
+        <span class="token keyword">public</span> <span class="token keyword">string</span> Address <span class="token punctuation">{<!-- --></span> <span class="token keyword">get</span><span class="token punctuation">;</span> <span class="token keyword">set</span><span class="token punctuation">;</span> <span class="token punctuation">}</span>
+        <span class="token keyword">public</span> <span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token punctuation">]</span> Data <span class="token punctuation">{<!-- --></span> <span class="token keyword">get</span><span class="token punctuation">;</span> <span class="token keyword">set</span><span class="token punctuation">;</span> <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p>然后赋值，并且序列化（TimeMeasurer是RRQMCore中的一个测时器，代码原理和StopWatch用法一致）</p> 
+<pre><code class="prism language-csharp"><span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">Main</span><span class="token punctuation">(</span><span class="token keyword">string</span><span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span>
+        <span class="token punctuation">{<!-- --></span>
+            Console<span class="token punctuation">.</span><span class="token function">ReadKey</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token class-name">Student</span> student <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Student</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            student<span class="token punctuation">.</span>Name <span class="token operator">=</span> <span class="token string">"张三"</span><span class="token punctuation">;</span>
+            student<span class="token punctuation">.</span>Age <span class="token operator">=</span> <span class="token number">20</span><span class="token punctuation">;</span>
+            student<span class="token punctuation">.</span>Address <span class="token operator">=</span> <span class="token string">"中国"</span><span class="token punctuation">;</span>
+            student<span class="token punctuation">.</span>Data <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token number">1024</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+
+            <span class="token class-name">TimeSpan</span> timeSpan <span class="token operator">=</span> RRQMCore<span class="token punctuation">.</span>Diagnostics<span class="token punctuation">.</span>TimeMeasurer<span class="token punctuation">.</span><span class="token function">Run</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">=</span><span class="token operator">&gt;</span>
+            <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> <span class="token number">1000000</span><span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span>
+                <span class="token punctuation">{<!-- --></span>
+                    <span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token punctuation">]</span> datas <span class="token operator">=</span> <span class="token function">Serialize</span><span class="token punctuation">(</span>student<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span>i <span class="token operator">%</span> <span class="token number">10000</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span>
+                    <span class="token punctuation">{<!-- --></span>
+                        Console<span class="token punctuation">.</span><span class="token function">WriteLine</span><span class="token punctuation">(</span>i<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            Console<span class="token punctuation">.</span><span class="token function">WriteLine</span><span class="token punctuation">(</span>timeSpan<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            Console<span class="token punctuation">.</span><span class="token function">ReadKey</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+</code></pre> 
+<p>测试结果<br> 耗时4.74秒<br> 内存基本上没有GC<br> <img src="https://images2.imgbox.com/cc/21/ZlugoHL2_o.png" alt="在这里插入图片描述"><br> 咦，100万次序列化性能很好嘛，那还有什么问题呢？？<br> <img src="https://images2.imgbox.com/81/b2/9v6iOG5b_o.png" alt="在这里插入图片描述"><br> 加大药量，把Data的长度修改为100K，让问题怪怪滴浮出水面<br> <img src="https://images2.imgbox.com/69/09/JtKrA3ib_o.png" alt="在这里插入图片描述"><br> 问题出现了，耗时39.29秒才序列化完成，而且GC释放及其频繁。<br> <img src="https://images2.imgbox.com/2c/e9/YWzOT6NO_o.png" alt="在这里插入图片描述"><br> 事情发展到这里，相信各位已经发现了问题所在，那就让我们一起来看看。<br> 首先看看代码，我们序列化Student对象时，不清楚其实际大小，但可以简单估计一下。<br> “张三”=4Byte<br> 20=4Byte<br> “中国”=4Byte<br> 外加程序集名，Token值，类名等，粗略算50Byte<br> 合计一下就是：4+4+4+102400+50=102462</p> 
+<p>也就是说在序列化时，MemoryStream首先需要将102462Byte的数据写入流中，然后再通过ToArray方法再复制一份，然后返回字节数组。简而言之，序列化102462的数据需要两倍的内存，而且在不定时中被GC回收。再简单计算一下，102462×2×100万=190.85Gb，也就是说，内存在39秒的序列化中一共申请释放了190.85G的容量，这得多少部<code>回家的诱惑.mp4</code><br> <img src="https://images2.imgbox.com/bc/cc/UDTadgBO_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/95/ce/AOJIZIeK_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="_124"></a>简单优化</h3> 
+<p>很明显了吧，二进制序列化的诟病也基本上清晰了，那有没有解决方法呢，答案肯定是有的，我们先来做简单的优化。</p> 
+<p>可以考虑将MemoryStream 声明在类中，然后每次序列化完不要释放，在下次序列化时只需要将流位置重置就可以。</p> 
+<pre><code class="prism language-csharp">       <span class="token keyword">static</span> <span class="token class-name">MemoryStream</span> stream <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">MemoryStream</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">private</span> <span class="token keyword">static</span> <span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token function">Serialize</span><span class="token punctuation">(</span><span class="token keyword">object</span> obj<span class="token punctuation">)</span>
+        <span class="token punctuation">{<!-- --></span>
+            stream<span class="token punctuation">.</span>Position <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+            <span class="token class-name">BinaryFormatter</span> binaryFormatter <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">BinaryFormatter</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            binaryFormatter<span class="token punctuation">.</span><span class="token function">Serialize</span><span class="token punctuation">(</span>stream<span class="token punctuation">,</span> obj<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">return</span> stream<span class="token punctuation">.</span><span class="token function">ToArray</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+</code></pre> 
+<p>优化后结果<br> 从结果可以看出，用时比之前节约了两倍有余，这证明了我们的优化是立竿见影的，但是同时也看到GC释放依然密集，这也反映出优化不完全，还有改进的余地的。这就不得不引出内存池，但是因为篇幅有限（zai shui yi pian），我们下节再讲。<br> <img src="https://images2.imgbox.com/b7/2a/1gYknJhK_o.png" alt="在这里插入图片描述"></p> 
+<p>当然如果还有什么不明白的，可以私信本猿哦，QQ：505554090，QQ群：234762506</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/73b495f29ab972100467c7edd0fd134b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">区域形态学</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/2827d12f9cf7565d1a6c4be20ed985e6/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">c#爬虫-从内存中释放Selenium chromedriver.exe终极杀</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>索引下推详解 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="索引下推详解" />
+<meta property="og:description" content="本文目录 概述适用条件工作过程不使用索引条件下推优化时的查询过程使用索引条件下推优化时的查询过程EXPLAN分析 示例配置思考其他 概述 索引条件下推优化（Index Condition Pushdown (ICP) ）是MySQL5.6添加的，用于优化数据查询。
+不使用索引条件下推优化时存储引擎通过索引检索到数据，然后返回给MySQL服务器，服务器然后判断数据是否符合条件。当使用索引条件下推优化时，如果存在某些被索引的列的判断条件时，MySQL服务器将这一部分判断条件传递给存储引擎，然后由存储引擎通过判断索引是否符合MySQL服务器传递的条件，只有当索引符合条件时才会将数据检索出来返回给MySQL服务器。索引条件下推优化可以减少存储引擎查询基础表的次数，也可以减少MySQL服务器从存储引擎接收数据的次数。 网上搜了下相关的文章不少都将Index Condition Pushdown 称为索引下推优化，我认为还是索引条件下推优化更合适一些，因为这个优化技术关键的操作就是将与索引相关的条件由MySQL服务器向下传递至存储引擎，由此减少IO次数。MySQL服务器到存储引擎是向下，传递的是与索引列相关的查询条件，所以还是索引条件下推优化更容易理解一些。
+适用条件 需要整表扫描的情况。比如：range, ref, eq_ref, ref_or_null 。适用于InnoDB 引擎和 MyISAM 引擎的查询。（5.6版本不适用分区表查询，5.7版本后可以用于分区表查询）。对于InnDB引擎只适用于二级索引，因为InnDB的聚簇索引会将整行数据读到InnDB的缓冲区，这样一来索引条件下推的主要目的减少IO次数就失去了意义。因为数据已经在内存中了，不再需要去读取了。引用子查询的条件不能下推。调用存储过程的条件不能下推，存储引擎无法调用位于MySQL服务器中的存储过程。触发条件不能下推。 工作过程 既然是优化，我们要清楚优化了些什么就要了解原本是如何工作的，所以分为两部分来描述工作过程。
+不使用索引条件下推优化时的查询过程 获取下一行，首先读取索引信息，然后根据索引将整行数据读取出来。
+然后通过where条件判断当前数据是否符合条件，符合返回数据。
+使用索引条件下推优化时的查询过程 获取下一行的索引信息。
+检查索引中存储的列信息是否符合索引条件，如果符合将整行数据读取出来，如果不符合跳过读取下一行。
+用剩余的判断条件，判断此行数据是否符合要求，符合要求返回数据。
+EXPLAN分析 当使用explan进行分析时，如果使用了索引条件下推，Extra会显示Using index condition。并不是Using index因为并不能确定利用索引条件下推查询出的数据就是符合要求的数据，还需要通过其他的查询条件来判断。
+图一：不使用ICP技术（过程使用数字符号标示，如①②③等）
+过程解释：
+①：MySQL Server发出读取数据的命令，这是在执行器中执行如下代码段，通过函数指针和handle接口调用存储引擎的索引读或全表表读。此处进行的是索引读。
+if (in_first_read) { in_first_read= false; error= (*qep_tab-&gt;read_first_record)(qep_tab); //设定合适的读取函数，如设定索引读函数/全表扫描函数 } else error= info-&gt;read_record(info); ②、③：进入存储引擎，读取索引树，在索引树上查找，把满足条件的（经过查找，红色的满足）从表记录中读出（步骤④，通常有IO），从存储引擎返回⑤标识的结果。此处，不仅要在索引行进行索引读取（通常是内存中，速度快。步骤③），还要进行进行步骤④，通常有IO。
+⑥：从存储引擎返回查找到的多条元组给MySQL Server，MySQL Server在⑦得到较多的元组。
+⑦–⑧：⑦到⑧依据WHERE子句条件进行过滤，得到满足条件的元组。注意在MySQL Server层得到较多元组，然后才过滤，最终得到的是少量的、符合条件的元组。
+图二：使用ICP技术（过程使用数字符号标示，如①②③等）
+过程解释：
+①：MySQL Server发出读取数据的命令，过程同图一。
+②、③：进入存储引擎，读取索引树，在索引树上查找，把满足已经下推的条件的（经过查找，红色的满足）从表记录中读出（步骤④，通常有IO），从存储引擎返回⑤标识的结果。
+此处，不仅要在索引行进行索引读取（通常是内存中，速度快。步骤③），还要在③这个阶段依据下推的条件进行进行判断，不满足条件的，不去读取表中的数据，直接在索引树上进行下一个索引项的判断，直到有满足条件的，才进行步骤④，这样，较没有ICP的方式，IO量减少。
+⑥：从存储引擎返回查找到的少量元组给MySQL Server，MySQL Server在⑦得到少量的元组。因此比较图一无ICP的方式，返回给MySQL Server层的即是少量的、符合条件的元组。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/3ac8affe72f7c2d269f6c4786f51a85c/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-04-15T15:36:47+08:00" />
+<meta property="article:modified_time" content="2022-04-15T15:36:47+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">索引下推详解</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>本文目录</h4> 
+ <ul><li><a href="#_1" rel="nofollow">概述</a></li><li><a href="#_8" rel="nofollow">适用条件</a></li><li><a href="#_15" rel="nofollow">工作过程</a></li><li><ul><li><a href="#_18" rel="nofollow">不使用索引条件下推优化时的查询过程</a></li><li><a href="#_22" rel="nofollow">使用索引条件下推优化时的查询过程</a></li><li><a href="#EXPLAN_27" rel="nofollow">EXPLAN分析</a></li></ul> 
+  </li><li><a href="#_58" rel="nofollow">示例</a></li><li><a href="#_71" rel="nofollow">配置</a></li><li><a href="#_78" rel="nofollow">思考</a></li><li><a href="#_83" rel="nofollow">其他</a></li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_1"></a>概述</h2> 
+<p>索引条件下推优化（Index Condition Pushdown (ICP) ）是MySQL5.6添加的，用于优化数据查询。</p> 
+<blockquote> 
+ <ul><li>不使用索引条件下推优化时存储引擎通过索引检索到数据，然后返回给MySQL服务器，服务器然后判断数据是否符合条件。</li><li>当使用索引条件下推优化时，如果存在某些被索引的列的判断条件时，MySQL服务器将这一部分判断条件传递给存储引擎，然后由存储引擎通过判断索引是否符合MySQL服务器传递的条件，只有当索引符合条件时才会将数据检索出来返回给MySQL服务器。索引条件下推优化可以减少存储引擎查询基础表的次数，也可以减少MySQL服务器从存储引擎接收数据的次数。</li></ul> 
+</blockquote> 
+<p>网上搜了下相关的文章不少都将Index Condition Pushdown 称为索引下推优化，我认为还是索引条件下推优化更合适一些，因为这个优化技术关键的操作就是将与索引相关的条件由MySQL服务器向下传递至存储引擎，由此减少IO次数。MySQL服务器到存储引擎是向下，传递的是与索引列相关的查询条件，所以还是索引条件下推优化更容易理解一些。</p> 
+<h2><a id="_8"></a>适用条件</h2> 
+<ol><li>需要整表扫描的情况。比如：range, ref, eq_ref, ref_or_null 。适用于InnoDB 引擎和 MyISAM 引擎的查询。（5.6版本不适用分区表查询，5.7版本后可以用于分区表查询）。</li><li>对于InnDB引擎只适用于二级索引，因为InnDB的聚簇索引会将整行数据读到InnDB的缓冲区，这样一来索引条件下推的主要目的减少IO次数就失去了意义。因为数据已经在内存中了，不再需要去读取了。</li><li>引用子查询的条件不能下推。</li><li>调用存储过程的条件不能下推，存储引擎无法调用位于MySQL服务器中的存储过程。</li><li>触发条件不能下推。</li></ol> 
+<h2><a id="_15"></a>工作过程</h2> 
+<p>既然是优化，我们要清楚优化了些什么就要了解原本是如何工作的，所以分为两部分来描述工作过程。</p> 
+<h3><a id="_18"></a>不使用索引条件下推优化时的查询过程</h3> 
+<p>获取下一行，首先读取索引信息，然后根据索引将整行数据读取出来。<br> 然后通过where条件判断当前数据是否符合条件，符合返回数据。</p> 
+<h3><a id="_22"></a>使用索引条件下推优化时的查询过程</h3> 
+<p>获取下一行的索引信息。<br> 检查索引中存储的列信息是否符合索引条件，如果符合将整行数据读取出来，如果不符合跳过读取下一行。<br> 用剩余的判断条件，判断此行数据是否符合要求，符合要求返回数据。</p> 
+<h3><a id="EXPLAN_27"></a>EXPLAN分析</h3> 
+<p>当使用explan进行分析时，如果使用了索引条件下推，Extra会显示Using index condition。并不是Using index因为并不能确定利用索引条件下推查询出的数据就是符合要求的数据，还需要通过其他的查询条件来判断。</p> 
+<p><strong>图一：不使用ICP技术（过程使用数字符号标示，如①②③等）</strong><br> <img src="https://images2.imgbox.com/1d/a0/wNHpIe4H_o.png" alt="在这里插入图片描述"><br> <strong>过程解释：</strong><br> ①：MySQL Server发出读取数据的命令，这是在执行器中执行如下代码段，通过函数指针和handle接口调用存储引擎的索引读或全表表读。此处进行的是索引读。</p> 
+<pre><code class="prism language-java"><span class="token keyword">if</span> <span class="token punctuation">(</span>in_first_read<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+in_first_read<span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+error<span class="token operator">=</span> <span class="token punctuation">(</span><span class="token operator">*</span>qep_tab<span class="token operator">-&gt;</span>read_first_record<span class="token punctuation">)</span><span class="token punctuation">(</span>qep_tab<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">//设定合适的读取函数，如设定索引读函数/全表扫描函数</span>
+<span class="token punctuation">}</span>
+<span class="token keyword">else</span>
+error<span class="token operator">=</span> info<span class="token operator">-&gt;</span><span class="token function">read_record</span><span class="token punctuation">(</span>info<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>②、③：进入存储引擎，读取索引树，在索引树上查找，把满足条件的（经过查找，红色的满足）从表记录中读出（步骤④，通常有IO），从存储引擎返回⑤标识的结果。此处，不仅要在索引行进行索引读取（通常是内存中，速度快。步骤③），还要进行进行步骤④，通常有IO。<br> ⑥：从存储引擎返回查找到的多条元组给MySQL Server，MySQL Server在⑦得到较多的元组。<br> ⑦–⑧：⑦到⑧依据WHERE子句条件进行过滤，得到满足条件的元组。注意在MySQL Server层得到较多元组，然后才过滤，最终得到的是少量的、符合条件的元组。</p> 
+<p><strong>图二：使用ICP技术（过程使用数字符号标示，如①②③等）</strong><br> <img src="https://images2.imgbox.com/63/55/1AGU55zs_o.png" alt="在这里插入图片描述"><br> <strong>过程解释：</strong><br> ①：MySQL Server发出读取数据的命令，过程同图一。<br> ②、③：进入存储引擎，读取索引树，在索引树上查找，把满足已经下推的条件的（经过查找，红色的满足）从表记录中读出（步骤④，通常有IO），从存储引擎返回⑤标识的结果。</p> 
+<p><strong>此处，不仅要在索引行进行索引读取（通常是内存中，速度快。步骤③），还要在③这个阶段依据下推的条件进行进行判断，不满足条件的，不去读取表中的数据，直接在索引树上进行下一个索引项的判断，直到有满足条件的，才进行步骤④</strong>，这样，较没有ICP的方式，IO量减少。<br> ⑥：从存储引擎返回查找到的少量元组给MySQL Server，MySQL Server在⑦得到少量的元组。因此比较图一无ICP的方式，返回给MySQL Server层的即是少量的、符合条件的元组。<br> 另外，图中的部件层次关系，不再进行解释。</p> 
+<h2><a id="_58"></a>示例</h2> 
+<p>假设有一张people表,包含字段name、address、first_name<br> 索引为(name,address,first_name)<br> 然后我们执行下面的查询</p> 
+<pre><code class="prism language-sql"><span class="token keyword">SELECT</span> <span class="token operator">*</span> <span class="token keyword">FROM</span> person  <span class="token keyword">WHERE</span> <span class="token punctuation">`</span>name<span class="token punctuation">`</span> <span class="token operator">=</span> <span class="token string">"1"</span> <span class="token operator">AND</span> <span class="token punctuation">`</span>address<span class="token punctuation">`</span> <span class="token operator">LIKE</span> <span class="token string">"%222"</span> <span class="token operator">and</span> first_name <span class="token operator">LIKE</span> <span class="token string">"%222"</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>如果不使用索引条件下推优化的话，MySQL只能根据索引查询出name=1的所有行，然后再依次比较是否符合全部条件。</p> 
+<p>当使用了索引条件下推优化技术后，可以通过索引中存储的数据判断当前索引对应的数据是否符合条件，只有符合条件的数据才将整行数据查询出来。查看执行计划时发现extra一栏中有Using index condition信息，说明使用了索引下推。</p> 
+<p><img src="https://images2.imgbox.com/0f/35/lYh0cKns_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="_71"></a>配置</h2> 
+<p>索引下推优化是默认开启的。可以通过下面的脚本控制开关</p> 
+<pre><code class="prism language-sql"><span class="token keyword">SET</span> optimizer_switch <span class="token operator">=</span> <span class="token string">'index_condition_pushdown=off'</span><span class="token punctuation">;</span> 
+<span class="token keyword">SET</span> optimizer_switch <span class="token operator">=</span> <span class="token string">'index_condition_pushdown=on'</span><span class="token punctuation">;</span>
+</code></pre> 
+<h2><a id="_78"></a>思考</h2> 
+<p>索引下推优化技术其实就是充分利用了索引中的数据，尽量在查询出整行数据之前过滤掉无效的数据。</p> 
+<p>由于需要存储引擎将索引中的数据与条件进行判断，所以这个技术是基于存储引擎的，只有特定引擎可以使用。并且判断条件需要是在存储引擎这个层面可以进行的操作才可以，比如调用存储过程的条件就不可以，因为存储引擎没有调用存储过程的能力。</p> 
+<h2><a id="_83"></a>其他</h2> 
+<p>Using where：表示优化器需要通过索引回表查询数据；<br> Using index：表示直接访问索引就足够获取到所需要的数据，不需要通过索引回表；<br> Using index condition：在5.6版本后加入的新特性（Index Condition Pushdown）</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/bdb04193df33faf42a6d835df2c138f7/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">java连接远程服务器--SSHD方式</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/b1eff3476903827ec30e7bb468630066/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">prometheus监控k8s集群</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

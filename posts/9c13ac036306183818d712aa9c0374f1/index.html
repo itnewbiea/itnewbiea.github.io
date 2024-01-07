@@ -1,0 +1,971 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>ORB_SLAM2 代码分析及介绍（视觉VO及重定位，Tracking）第二部分 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="ORB_SLAM2 代码分析及介绍（视觉VO及重定位，Tracking）第二部分" />
+<meta property="og:description" content="文章目录 TrackMonocular中的核心步骤Frame中包含的信息畸变矫正UndistorKeyPoints和ComputeImageBounds对双目/RGB-D特征点的预处理双目特征点的处理ComputeSteroMatches深度计算公式原理 RGB特征点的处理ComputeStereoFromRGBD 特征点分配 单目相机的初始化MonocularInitialization初始化类中的初始化方法Initialize()计算基础矩阵F和单应矩阵HRANSAC算法卡方检验，以检测H矩阵为例 TrackMonocular中的核心步骤 我们在第一部分中给出了TrackMonocular函数，其中最重要的一步莫过于GrabImageMonocular，其代码如下所示：
+cv::Mat Tracking::GrabImageMonocular(const cv::Mat &amp;im, const double &amp;timestamp) { mImGray = im; // 基于图像进行一些简单的处理 if(mImGray.channels()==3) { if(mbRGB) cvtColor(mImGray,mImGray,CV_RGB2GRAY); else cvtColor(mImGray,mImGray,CV_BGR2GRAY); } else if(mImGray.channels()==4) { if(mbRGB) cvtColor(mImGray,mImGray,CV_RGBA2GRAY); else cvtColor(mImGray,mImGray,CV_BGRA2GRAY); } // 看看有没有初始化完了 if(mState==NOT_INITIALIZED || mState==NO_IMAGES_YET) mCurrentFrame = Frame(mImGray,timestamp,mpIniORBextractor,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth); else mCurrentFrame = Frame(mImGray,timestamp,mpORBextractorLeft,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth); // 进入跟踪！ Track(); return mCurrentFrame.mTcw.clone(); } 接下来，我们进入Tracking过程：
+void Tracking::Track() { if(mState==NO_IMAGES_YET) { mState = NOT_INITIALIZED; } mLastProcessedState=mState; // Get Map Mutex -&gt; Map cannot be changed unique_lock&lt;mutex&gt; lock(mpMap-&gt;mMutexMapUpdate); if(mState==NOT_INITIALIZED) { if(mSensor==System::STEREO || mSensor==System::RGBD) StereoInitialization(); else MonocularInitialization(); mpFrameDrawer-&gt;Update(this); if(mState!" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/9c13ac036306183818d712aa9c0374f1/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-03-30T19:18:56+08:00" />
+<meta property="article:modified_time" content="2022-03-30T19:18:56+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">ORB_SLAM2 代码分析及介绍（视觉VO及重定位，Tracking）第二部分</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#TrackMonocular_1" rel="nofollow">TrackMonocular中的核心步骤</a></li><li><a href="#Frame_68" rel="nofollow">Frame中包含的信息</a></li><li><ul><li><a href="#UndistorKeyPointsComputeImageBounds_218" rel="nofollow">畸变矫正UndistorKeyPoints和ComputeImageBounds</a></li><li><a href="#RGBD_293" rel="nofollow">对双目/RGB-D特征点的预处理</a></li><li><ul><li><a href="#ComputeSteroMatches_302" rel="nofollow">双目特征点的处理ComputeSteroMatches</a></li><li><ul><li><a href="#_492" rel="nofollow">深度计算公式原理</a></li></ul> 
+    </li><li><a href="#RGBComputeStereoFromRGBD_498" rel="nofollow">RGB特征点的处理ComputeStereoFromRGBD</a></li></ul> 
+   </li><li><a href="#_528" rel="nofollow">特征点分配</a></li></ul> 
+  </li><li><a href="#_554" rel="nofollow">单目相机的初始化</a></li><li><ul><li><a href="#MonocularInitialization_559" rel="nofollow">MonocularInitialization</a></li><li><a href="#Initialize_640" rel="nofollow">初始化类中的初始化方法Initialize()</a></li><li><a href="#FH_725" rel="nofollow">计算基础矩阵F和单应矩阵H</a></li><li><ul><li><a href="#RANSAC_726" rel="nofollow">RANSAC算法</a></li><li><a href="#H_738" rel="nofollow">卡方检验，以检测H矩阵为例</a></li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="TrackMonocular_1"></a>TrackMonocular中的核心步骤</h2> 
+<p>我们在第一部分中给出了TrackMonocular函数，其中最重要的一步莫过于GrabImageMonocular，其代码如下所示：</p> 
+<pre><code class="prism language-cpp">cv<span class="token operator">::</span>Mat <span class="token class-name">Tracking</span><span class="token operator">::</span><span class="token function">GrabImageMonocular</span><span class="token punctuation">(</span><span class="token keyword">const</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>im<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">double</span> <span class="token operator">&amp;</span>timestamp<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    mImGray <span class="token operator">=</span> im<span class="token punctuation">;</span>
+	<span class="token comment">// 基于图像进行一些简单的处理</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>mImGray<span class="token punctuation">.</span><span class="token function">channels</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">==</span><span class="token number">3</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>mbRGB<span class="token punctuation">)</span>
+            <span class="token function">cvtColor</span><span class="token punctuation">(</span>mImGray<span class="token punctuation">,</span>mImGray<span class="token punctuation">,</span>CV_RGB2GRAY<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">else</span>
+            <span class="token function">cvtColor</span><span class="token punctuation">(</span>mImGray<span class="token punctuation">,</span>mImGray<span class="token punctuation">,</span>CV_BGR2GRAY<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span>mImGray<span class="token punctuation">.</span><span class="token function">channels</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">==</span><span class="token number">4</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>mbRGB<span class="token punctuation">)</span>
+            <span class="token function">cvtColor</span><span class="token punctuation">(</span>mImGray<span class="token punctuation">,</span>mImGray<span class="token punctuation">,</span>CV_RGBA2GRAY<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">else</span>
+            <span class="token function">cvtColor</span><span class="token punctuation">(</span>mImGray<span class="token punctuation">,</span>mImGray<span class="token punctuation">,</span>CV_BGRA2GRAY<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+	<span class="token comment">// 看看有没有初始化完了</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>mState<span class="token operator">==</span>NOT_INITIALIZED <span class="token operator">||</span> mState<span class="token operator">==</span>NO_IMAGES_YET<span class="token punctuation">)</span>
+        mCurrentFrame <span class="token operator">=</span> <span class="token function">Frame</span><span class="token punctuation">(</span>mImGray<span class="token punctuation">,</span>timestamp<span class="token punctuation">,</span>mpIniORBextractor<span class="token punctuation">,</span>mpORBVocabulary<span class="token punctuation">,</span>mK<span class="token punctuation">,</span>mDistCoef<span class="token punctuation">,</span>mbf<span class="token punctuation">,</span>mThDepth<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">else</span>
+        mCurrentFrame <span class="token operator">=</span> <span class="token function">Frame</span><span class="token punctuation">(</span>mImGray<span class="token punctuation">,</span>timestamp<span class="token punctuation">,</span>mpORBextractorLeft<span class="token punctuation">,</span>mpORBVocabulary<span class="token punctuation">,</span>mK<span class="token punctuation">,</span>mDistCoef<span class="token punctuation">,</span>mbf<span class="token punctuation">,</span>mThDepth<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">// 进入跟踪！</span>
+    <span class="token function">Track</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> mCurrentFrame<span class="token punctuation">.</span>mTcw<span class="token punctuation">.</span><span class="token function">clone</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>接下来，我们进入Tracking过程：</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">void</span> <span class="token class-name">Tracking</span><span class="token operator">::</span><span class="token function">Track</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>mState<span class="token operator">==</span>NO_IMAGES_YET<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        mState <span class="token operator">=</span> NOT_INITIALIZED<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    mLastProcessedState<span class="token operator">=</span>mState<span class="token punctuation">;</span>
+
+    <span class="token comment">// Get Map Mutex -&gt; Map cannot be changed</span>
+    unique_lock<span class="token operator">&lt;</span>mutex<span class="token operator">&gt;</span> <span class="token function">lock</span><span class="token punctuation">(</span>mpMap<span class="token operator">-&gt;</span>mMutexMapUpdate<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">if</span><span class="token punctuation">(</span>mState<span class="token operator">==</span>NOT_INITIALIZED<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>mSensor<span class="token operator">==</span>System<span class="token operator">::</span>STEREO <span class="token operator">||</span> mSensor<span class="token operator">==</span>System<span class="token operator">::</span>RGBD<span class="token punctuation">)</span>
+            <span class="token function">StereoInitialization</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">else</span>
+            <span class="token function">MonocularInitialization</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        mpFrameDrawer<span class="token operator">-&gt;</span><span class="token function">Update</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">if</span><span class="token punctuation">(</span>mState<span class="token operator">!=</span>OK<span class="token punctuation">)</span>
+            <span class="token keyword">return</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">else</span>
+    <span class="token punctuation">{<!-- --></span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>       
+</code></pre> 
+<p>我们首先不给出Tracking的全貌，可以看到，截止目前，我们有了两个内容需要去熟悉：</p> 
+<ol><li>在没初始化的时候，代码将图搞了个Frame个类，那么这个类是什么？</li><li>在没初始化的时候，一进入Tracking就被迫初始化，那这个初始化是个什么东西？</li></ol> 
+<h2><a id="Frame_68"></a>Frame中包含的信息</h2> 
+<p>普通帧管好自己，关键帧服务优化与回环。</p> 
+<p>首先是存储了相机的一些基础信息，比如相机的内参、基线等等，这从配置文件中读入，在构造函数中为其赋值。</p> 
+<p>mvKeys 和 mvKeysRight分别是左目特征点描述子和右目特征点描述子。</p> 
+<p>mvKeysUn和mvuRight分别是畸变矫正之后的特征点描述子。</p> 
+<p>mvKeys、mvKeyRIght、mvKeysUn的类型是vector&lt;cv::KeyPoint&gt;</p> 
+<p>mvuRight的类型是vector&lt;float&gt;，记录右图中对应特征点的横坐标.我们认为双目匹配上的特征点，纵坐标是一样的。</p> 
+<p>KeyPoints的属性有<a href="https://blog.csdn.net/u010821666/article/details/52883580">这些</a>.</p> 
+<pre><code class="prism language-cpp"><span class="token comment">// Stereo</span>
+<span class="token class-name">Frame</span><span class="token operator">::</span><span class="token function">Frame</span><span class="token punctuation">(</span><span class="token keyword">const</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>imLeft<span class="token punctuation">,</span> <span class="token keyword">const</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>imRight<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">double</span> <span class="token operator">&amp;</span>timeStamp<span class="token punctuation">,</span> ORBextractor<span class="token operator">*</span> extractorLeft<span class="token punctuation">,</span> ORBextractor<span class="token operator">*</span> extractorRight<span class="token punctuation">,</span> ORBVocabulary<span class="token operator">*</span> voc<span class="token punctuation">,</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>K<span class="token punctuation">,</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>distCoef<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">float</span> <span class="token operator">&amp;</span>bf<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">float</span> <span class="token operator">&amp;</span>thDepth<span class="token punctuation">)</span>
+    <span class="token operator">:</span><span class="token function">mpORBvocabulary</span><span class="token punctuation">(</span>voc<span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token function">mpORBextractorLeft</span><span class="token punctuation">(</span>extractorLeft<span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token function">mpORBextractorRight</span><span class="token punctuation">(</span>extractorRight<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">mTimeStamp</span><span class="token punctuation">(</span>timeStamp<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">mK</span><span class="token punctuation">(</span>K<span class="token punctuation">.</span><span class="token function">clone</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token function">mDistCoef</span><span class="token punctuation">(</span>distCoef<span class="token punctuation">.</span><span class="token function">clone</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">mbf</span><span class="token punctuation">(</span>bf<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">mThDepth</span><span class="token punctuation">(</span>thDepth<span class="token punctuation">)</span><span class="token punctuation">,</span>
+     <span class="token function">mpReferenceKF</span><span class="token punctuation">(</span><span class="token keyword">static_cast</span><span class="token operator">&lt;</span>KeyFrame<span class="token operator">*</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// ORB extraction</span>
+    thread <span class="token function">threadLeft</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>Frame<span class="token operator">::</span>ExtractORB<span class="token punctuation">,</span><span class="token keyword">this</span><span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">,</span>imLeft<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    thread <span class="token function">threadRight</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>Frame<span class="token operator">::</span>ExtractORB<span class="token punctuation">,</span><span class="token keyword">this</span><span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">,</span>imRight<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    threadLeft<span class="token punctuation">.</span><span class="token function">join</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    threadRight<span class="token punctuation">.</span><span class="token function">join</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    N <span class="token operator">=</span> mvKeys<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">if</span><span class="token punctuation">(</span>mvKeys<span class="token punctuation">.</span><span class="token function">empty</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+        <span class="token keyword">return</span><span class="token punctuation">;</span>
+
+    <span class="token function">UndistortKeyPoints</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token function">ComputeStereoMatches</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    mvpMapPoints <span class="token operator">=</span> vector<span class="token operator">&lt;</span>MapPoint<span class="token operator">*</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>N<span class="token punctuation">,</span><span class="token keyword">static_cast</span><span class="token operator">&lt;</span>MapPoint<span class="token operator">*</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>    
+    mvbOutlier <span class="token operator">=</span> vector<span class="token operator">&lt;</span><span class="token keyword">bool</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>N<span class="token punctuation">,</span><span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+
+    <span class="token comment">// This is done only for the first Frame (or after a change in the calibration)</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>mbInitialComputations<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">ComputeImageBounds</span><span class="token punctuation">(</span>imLeft<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        mfGridElementWidthInv<span class="token operator">=</span><span class="token keyword">static_cast</span><span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>FRAME_GRID_COLS<span class="token punctuation">)</span><span class="token operator">/</span><span class="token punctuation">(</span>mnMaxX<span class="token operator">-</span>mnMinX<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        mfGridElementHeightInv<span class="token operator">=</span><span class="token keyword">static_cast</span><span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>FRAME_GRID_ROWS<span class="token punctuation">)</span><span class="token operator">/</span><span class="token punctuation">(</span>mnMaxY<span class="token operator">-</span>mnMinY<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        fx <span class="token operator">=</span> K<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        fy <span class="token operator">=</span> K<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        cx <span class="token operator">=</span> K<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        cy <span class="token operator">=</span> K<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        invfx <span class="token operator">=</span> <span class="token number">1.0f</span><span class="token operator">/</span>fx<span class="token punctuation">;</span>
+        invfy <span class="token operator">=</span> <span class="token number">1.0f</span><span class="token operator">/</span>fy<span class="token punctuation">;</span>
+
+        mbInitialComputations<span class="token operator">=</span><span class="token boolean">false</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    mb <span class="token operator">=</span> mbf<span class="token operator">/</span>fx<span class="token punctuation">;</span>
+
+    <span class="token function">AssignFeaturesToGrid</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+<span class="token comment">// RGBD</span>
+<span class="token class-name">Frame</span><span class="token operator">::</span><span class="token function">Frame</span><span class="token punctuation">(</span><span class="token keyword">const</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>imGray<span class="token punctuation">,</span> <span class="token keyword">const</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>imDepth<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">double</span> <span class="token operator">&amp;</span>timeStamp<span class="token punctuation">,</span> ORBextractor<span class="token operator">*</span> extractor<span class="token punctuation">,</span>ORBVocabulary<span class="token operator">*</span> voc<span class="token punctuation">,</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>K<span class="token punctuation">,</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>distCoef<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">float</span> <span class="token operator">&amp;</span>bf<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">float</span> <span class="token operator">&amp;</span>thDepth<span class="token punctuation">)</span>
+    <span class="token operator">:</span><span class="token function">mpORBvocabulary</span><span class="token punctuation">(</span>voc<span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token function">mpORBextractorLeft</span><span class="token punctuation">(</span>extractor<span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token function">mpORBextractorRight</span><span class="token punctuation">(</span><span class="token keyword">static_cast</span><span class="token operator">&lt;</span>ORBextractor<span class="token operator">*</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+     <span class="token function">mTimeStamp</span><span class="token punctuation">(</span>timeStamp<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">mK</span><span class="token punctuation">(</span>K<span class="token punctuation">.</span><span class="token function">clone</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token function">mDistCoef</span><span class="token punctuation">(</span>distCoef<span class="token punctuation">.</span><span class="token function">clone</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">mbf</span><span class="token punctuation">(</span>bf<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">mThDepth</span><span class="token punctuation">(</span>thDepth<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// ORB extraction</span>
+    <span class="token function">ExtractORB</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span>imGray<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    N <span class="token operator">=</span> mvKeys<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">if</span><span class="token punctuation">(</span>mvKeys<span class="token punctuation">.</span><span class="token function">empty</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+        <span class="token keyword">return</span><span class="token punctuation">;</span>
+
+    <span class="token function">UndistortKeyPoints</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token function">ComputeStereoFromRGBD</span><span class="token punctuation">(</span>imDepth<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    mvpMapPoints <span class="token operator">=</span> vector<span class="token operator">&lt;</span>MapPoint<span class="token operator">*</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>N<span class="token punctuation">,</span><span class="token keyword">static_cast</span><span class="token operator">&lt;</span>MapPoint<span class="token operator">*</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    mvbOutlier <span class="token operator">=</span> vector<span class="token operator">&lt;</span><span class="token keyword">bool</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>N<span class="token punctuation">,</span><span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// This is done only for the first Frame (or after a change in the calibration)</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>mbInitialComputations<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">ComputeImageBounds</span><span class="token punctuation">(</span>imGray<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        mfGridElementWidthInv<span class="token operator">=</span><span class="token keyword">static_cast</span><span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>FRAME_GRID_COLS<span class="token punctuation">)</span><span class="token operator">/</span><span class="token keyword">static_cast</span><span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>mnMaxX<span class="token operator">-</span>mnMinX<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        mfGridElementHeightInv<span class="token operator">=</span><span class="token keyword">static_cast</span><span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>FRAME_GRID_ROWS<span class="token punctuation">)</span><span class="token operator">/</span><span class="token keyword">static_cast</span><span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>mnMaxY<span class="token operator">-</span>mnMinY<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        fx <span class="token operator">=</span> K<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        fy <span class="token operator">=</span> K<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        cx <span class="token operator">=</span> K<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        cy <span class="token operator">=</span> K<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        invfx <span class="token operator">=</span> <span class="token number">1.0f</span><span class="token operator">/</span>fx<span class="token punctuation">;</span>
+        invfy <span class="token operator">=</span> <span class="token number">1.0f</span><span class="token operator">/</span>fy<span class="token punctuation">;</span>
+
+        mbInitialComputations<span class="token operator">=</span><span class="token boolean">false</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    mb <span class="token operator">=</span> mbf<span class="token operator">/</span>fx<span class="token punctuation">;</span>
+
+    <span class="token function">AssignFeaturesToGrid</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">// Monocular</span>
+<span class="token class-name">Frame</span><span class="token operator">::</span><span class="token function">Frame</span><span class="token punctuation">(</span><span class="token keyword">const</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>imGray<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">double</span> <span class="token operator">&amp;</span>timeStamp<span class="token punctuation">,</span> ORBextractor<span class="token operator">*</span> extractor<span class="token punctuation">,</span>ORBVocabulary<span class="token operator">*</span> voc<span class="token punctuation">,</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>K<span class="token punctuation">,</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>distCoef<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">float</span> <span class="token operator">&amp;</span>bf<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">float</span> <span class="token operator">&amp;</span>thDepth<span class="token punctuation">)</span>
+    <span class="token operator">:</span><span class="token function">mpORBvocabulary</span><span class="token punctuation">(</span>voc<span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token function">mpORBextractorLeft</span><span class="token punctuation">(</span>extractor<span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token function">mpORBextractorRight</span><span class="token punctuation">(</span><span class="token keyword">static_cast</span><span class="token operator">&lt;</span>ORBextractor<span class="token operator">*</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+     <span class="token function">mTimeStamp</span><span class="token punctuation">(</span>timeStamp<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">mK</span><span class="token punctuation">(</span>K<span class="token punctuation">.</span><span class="token function">clone</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token function">mDistCoef</span><span class="token punctuation">(</span>distCoef<span class="token punctuation">.</span><span class="token function">clone</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">mbf</span><span class="token punctuation">(</span>bf<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">mThDepth</span><span class="token punctuation">(</span>thDepth<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// ORB extraction</span>
+    <span class="token function">ExtractORB</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span>imGray<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    N <span class="token operator">=</span> mvKeys<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">if</span><span class="token punctuation">(</span>mvKeys<span class="token punctuation">.</span><span class="token function">empty</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+        <span class="token keyword">return</span><span class="token punctuation">;</span>
+
+    <span class="token function">UndistortKeyPoints</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// Set no stereo information</span>
+    mvuRight <span class="token operator">=</span> vector<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>N<span class="token punctuation">,</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    mvDepth <span class="token operator">=</span> vector<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>N<span class="token punctuation">,</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    mvpMapPoints <span class="token operator">=</span> vector<span class="token operator">&lt;</span>MapPoint<span class="token operator">*</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>N<span class="token punctuation">,</span><span class="token keyword">static_cast</span><span class="token operator">&lt;</span>MapPoint<span class="token operator">*</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    mvbOutlier <span class="token operator">=</span> vector<span class="token operator">&lt;</span><span class="token keyword">bool</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>N<span class="token punctuation">,</span><span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// This is done only for the first Frame (or after a change in the calibration)</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>mbInitialComputations<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">ComputeImageBounds</span><span class="token punctuation">(</span>imGray<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        mfGridElementWidthInv<span class="token operator">=</span><span class="token keyword">static_cast</span><span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>FRAME_GRID_COLS<span class="token punctuation">)</span><span class="token operator">/</span><span class="token keyword">static_cast</span><span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>mnMaxX<span class="token operator">-</span>mnMinX<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        mfGridElementHeightInv<span class="token operator">=</span><span class="token keyword">static_cast</span><span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>FRAME_GRID_ROWS<span class="token punctuation">)</span><span class="token operator">/</span><span class="token keyword">static_cast</span><span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>mnMaxY<span class="token operator">-</span>mnMinY<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        fx <span class="token operator">=</span> K<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        fy <span class="token operator">=</span> K<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        cx <span class="token operator">=</span> K<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        cy <span class="token operator">=</span> K<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        invfx <span class="token operator">=</span> <span class="token number">1.0f</span><span class="token operator">/</span>fx<span class="token punctuation">;</span>
+        invfy <span class="token operator">=</span> <span class="token number">1.0f</span><span class="token operator">/</span>fy<span class="token punctuation">;</span>
+
+        mbInitialComputations<span class="token operator">=</span><span class="token boolean">false</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    mb <span class="token operator">=</span> mbf<span class="token operator">/</span>fx<span class="token punctuation">;</span>
+
+    <span class="token function">AssignFeaturesToGrid</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="UndistorKeyPointsComputeImageBounds_218"></a>畸变矫正UndistorKeyPoints和ComputeImageBounds</h3> 
+<p>畸变矫正只对单目和RGBD的输入图像有效，双目相机的畸变矫正参数均为0，因为在数据集发布之前就预先做了矫正。</p> 
+<p><strong>双目矫正之后，将两个相机的成像平面矫正到同一平面上，两个相机的极线平行，极点在无穷远处，这是我们在函数ComputerStereoMatches()中做极线搜索的理论基础。</strong></p> 
+<p>关于双目矫正，可以参考这份<a href="https://blog.csdn.net/qq_22424571/article/details/80836342">文档</a>。总而言之，双目矫正不仅仅是对畸变进行了矫正，还使得极线得到了平行。</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">void</span> <span class="token class-name">Frame</span><span class="token operator">::</span><span class="token function">UndistortKeyPoints</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token comment">// 如果输入的图像是双目图像，则已经做好了双目矫正，其畸变参数为0</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>mDistCoef<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token operator">==</span><span class="token number">0.0</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        mvKeysUn<span class="token operator">=</span>mvKeys<span class="token punctuation">;</span>
+        <span class="token keyword">return</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+	
+    <span class="token comment">// 将特征点坐标转变为undistortPoints要求的格式</span>
+    cv<span class="token operator">::</span>Mat <span class="token function">mat</span><span class="token punctuation">(</span>N<span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">,</span>CV_32F<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">for</span><span class="token punctuation">(</span><span class="token keyword">int</span> i<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span> i<span class="token operator">&lt;</span>N<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        mat<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>i<span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token operator">=</span>mvKeys<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>pt<span class="token punctuation">.</span>x<span class="token punctuation">;</span>
+        mat<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>i<span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token operator">=</span>mvKeys<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>pt<span class="token punctuation">.</span>y<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 进行畸变矫正</span>
+    mat<span class="token operator">=</span>mat<span class="token punctuation">.</span><span class="token function">reshape</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 原图像，目标图像，相机外参</span>
+    cv<span class="token operator">::</span><span class="token function">undistortPoints</span><span class="token punctuation">(</span>mat<span class="token punctuation">,</span>mat<span class="token punctuation">,</span>mK<span class="token punctuation">,</span>mDistCoef<span class="token punctuation">,</span>cv<span class="token operator">::</span><span class="token function">Mat</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span>mK<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    mat<span class="token operator">=</span>mat<span class="token punctuation">.</span><span class="token function">reshape</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 记录矫正后的特征点</span>
+    mvKeysUn<span class="token punctuation">.</span><span class="token function">resize</span><span class="token punctuation">(</span>N<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">for</span><span class="token punctuation">(</span><span class="token keyword">int</span> i<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span> i<span class="token operator">&lt;</span>N<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        cv<span class="token operator">::</span>KeyPoint kp <span class="token operator">=</span> mvKeys<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">;</span>
+        kp<span class="token punctuation">.</span>pt<span class="token punctuation">.</span>x<span class="token operator">=</span>mat<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>i<span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        kp<span class="token punctuation">.</span>pt<span class="token punctuation">.</span>y<span class="token operator">=</span>mat<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>i<span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        mvKeysUn<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token operator">=</span>kp<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>对于每次的第一张图像，都会进行以下计算</p> 
+<pre><code class="prism language-cpp"><span class="token comment">// 通过计算图片顶点畸变矫正后的坐标来计算畸变矫正后图片的有效范围</span>
+<span class="token keyword">void</span> <span class="token class-name">Frame</span><span class="token operator">::</span><span class="token function">ComputeImageBounds</span><span class="token punctuation">(</span><span class="token keyword">const</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>imLeft<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>mDistCoef<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token operator">!=</span><span class="token number">0.0</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        cv<span class="token operator">::</span>Mat <span class="token function">mat</span><span class="token punctuation">(</span><span class="token number">4</span><span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">,</span>CV_32F<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        mat<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token operator">=</span><span class="token number">0.0</span><span class="token punctuation">;</span> mat<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token operator">=</span><span class="token number">0.0</span><span class="token punctuation">;</span>
+        mat<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token operator">=</span>imLeft<span class="token punctuation">.</span>cols<span class="token punctuation">;</span> mat<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token operator">=</span><span class="token number">0.0</span><span class="token punctuation">;</span>
+        mat<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token operator">=</span><span class="token number">0.0</span><span class="token punctuation">;</span> mat<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token operator">=</span>imLeft<span class="token punctuation">.</span>rows<span class="token punctuation">;</span>
+        mat<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token operator">=</span>imLeft<span class="token punctuation">.</span>cols<span class="token punctuation">;</span> mat<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token operator">=</span>imLeft<span class="token punctuation">.</span>rows<span class="token punctuation">;</span>
+
+        <span class="token comment">// Undistort corners</span>
+        mat<span class="token operator">=</span>mat<span class="token punctuation">.</span><span class="token function">reshape</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        cv<span class="token operator">::</span><span class="token function">undistortPoints</span><span class="token punctuation">(</span>mat<span class="token punctuation">,</span>mat<span class="token punctuation">,</span>mK<span class="token punctuation">,</span>mDistCoef<span class="token punctuation">,</span>cv<span class="token operator">::</span><span class="token function">Mat</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span>mK<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        mat<span class="token operator">=</span>mat<span class="token punctuation">.</span><span class="token function">reshape</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        mnMinX <span class="token operator">=</span> <span class="token function">min</span><span class="token punctuation">(</span>mat<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">,</span>mat<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        mnMaxX <span class="token operator">=</span> <span class="token function">max</span><span class="token punctuation">(</span>mat<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">,</span>mat<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        mnMinY <span class="token operator">=</span> <span class="token function">min</span><span class="token punctuation">(</span>mat<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">,</span>mat<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        mnMaxY <span class="token operator">=</span> <span class="token function">max</span><span class="token punctuation">(</span>mat<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">,</span>mat<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token punctuation">}</span>
+    <span class="token keyword">else</span>
+    <span class="token punctuation">{<!-- --></span>
+        mnMinX <span class="token operator">=</span> <span class="token number">0.0f</span><span class="token punctuation">;</span>
+        mnMaxX <span class="token operator">=</span> imLeft<span class="token punctuation">.</span>cols<span class="token punctuation">;</span>
+        mnMinY <span class="token operator">=</span> <span class="token number">0.0f</span><span class="token punctuation">;</span>
+        mnMaxY <span class="token operator">=</span> imLeft<span class="token punctuation">.</span>rows<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="RGBD_293"></a>对双目/RGB-D特征点的预处理</h3> 
+<p>双目/RGBD相机中可以得到特征点的立体信息，包括右目特征点信息以及特征点深度信息：</p> 
+<ol><li>双目相机通过双目特征点匹配关系计算特征点的深度值；</li><li>RGBD相机通过特征点深度构造虚拟的右目图像特征点。</li></ol> 
+<p>通过这种后处理，后续就不再区分双目特征点和RGBD特征点，都是以双目特征点的形式被处理。</p> 
+<h4><a id="ComputeSteroMatches_302"></a>双目特征点的处理ComputeSteroMatches</h4> 
+<p>首先分别对两个帧进行特征点提取和描述后，接下来进入特征点匹配。其步骤为：</p> 
+<ol><li>粗匹配：根据描述子距离（汉明距离）和金字塔层级判断。粗匹配的关系是按行寻找的，对于左目图像中的每个特征点，在右目图像对应行寻找匹配特征点；是在其上下几行里的特征点找这个点。</li><li>精匹配：根据特征点周围窗口内容的相似度进行匹配；</li><li>记录右目匹配和深度信息；</li><li>离群点筛选：以平均相似度2.1倍为标准，筛选离群点。</li></ol> 
+<pre><code class="prism language-cpp">oid <span class="token class-name">Frame</span><span class="token operator">::</span><span class="token function">ComputeStereoMatches</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    mvuRight <span class="token operator">=</span> vector<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>N<span class="token punctuation">,</span><span class="token operator">-</span><span class="token number">1.0f</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    mvDepth <span class="token operator">=</span> vector<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>N<span class="token punctuation">,</span><span class="token operator">-</span><span class="token number">1.0f</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">const</span> <span class="token keyword">int</span> thOrbDist <span class="token operator">=</span> <span class="token punctuation">(</span>ORBmatcher<span class="token operator">::</span>TH_HIGH<span class="token operator">+</span>ORBmatcher<span class="token operator">::</span>TH_LOW<span class="token punctuation">)</span><span class="token operator">/</span><span class="token number">2</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">const</span> <span class="token keyword">int</span> nRows <span class="token operator">=</span> mpORBextractorLeft<span class="token operator">-&gt;</span>mvImagePyramid<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">.</span>rows<span class="token punctuation">;</span>
+
+    <span class="token comment">//Assign keypoints to row table</span>
+    <span class="token comment">// 右目图像特征点逐行统计；将右目图像中的每个特征点注册到附近几行</span>
+    vector<span class="token operator">&lt;</span>vector<span class="token operator">&lt;</span>size_t<span class="token operator">&gt;</span> <span class="token operator">&gt;</span> <span class="token function">vRowIndices</span><span class="token punctuation">(</span>nRows<span class="token punctuation">,</span>vector<span class="token operator">&lt;</span>size_t<span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">for</span><span class="token punctuation">(</span><span class="token keyword">int</span> i<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span> i<span class="token operator">&lt;</span>nRows<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span>
+        vRowIndices<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span><span class="token function">reserve</span><span class="token punctuation">(</span><span class="token number">200</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        
+    <span class="token keyword">const</span> <span class="token keyword">int</span> Nr <span class="token operator">=</span> mvKeysRight<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">for</span><span class="token punctuation">(</span><span class="token keyword">int</span> iR<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span> iR<span class="token operator">&lt;</span>Nr<span class="token punctuation">;</span> iR<span class="token operator">++</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">const</span> cv<span class="token operator">::</span>KeyPoint <span class="token operator">&amp;</span>kp <span class="token operator">=</span> mvKeysRight<span class="token punctuation">[</span>iR<span class="token punctuation">]</span><span class="token punctuation">;</span>
+        <span class="token keyword">const</span> <span class="token keyword">float</span> <span class="token operator">&amp;</span>kpY <span class="token operator">=</span> kp<span class="token punctuation">.</span>pt<span class="token punctuation">.</span>y<span class="token punctuation">;</span>
+        <span class="token keyword">const</span> <span class="token keyword">float</span> r <span class="token operator">=</span> <span class="token number">2.0f</span><span class="token operator">*</span>mvScaleFactors<span class="token punctuation">[</span>mvKeysRight<span class="token punctuation">[</span>iR<span class="token punctuation">]</span><span class="token punctuation">.</span>octave<span class="token punctuation">]</span><span class="token punctuation">;</span>
+        <span class="token keyword">const</span> <span class="token keyword">int</span> maxr <span class="token operator">=</span> <span class="token function">ceil</span><span class="token punctuation">(</span>kpY<span class="token operator">+</span>r<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">const</span> <span class="token keyword">int</span> minr <span class="token operator">=</span> <span class="token function">floor</span><span class="token punctuation">(</span>kpY<span class="token operator">-</span>r<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">for</span><span class="token punctuation">(</span><span class="token keyword">int</span> yi<span class="token operator">=</span>minr<span class="token punctuation">;</span>yi<span class="token operator">&lt;=</span>maxr<span class="token punctuation">;</span>yi<span class="token operator">++</span><span class="token punctuation">)</span>
+            vRowIndices<span class="token punctuation">[</span>yi<span class="token punctuation">]</span><span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span>iR<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// Set limits for search</span>
+    <span class="token comment">// 粗匹配+精匹配</span>
+    <span class="token keyword">const</span> <span class="token keyword">float</span> minZ <span class="token operator">=</span> mb<span class="token punctuation">;</span>
+    <span class="token keyword">const</span> <span class="token keyword">float</span> minD <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token keyword">const</span> <span class="token keyword">float</span> maxD <span class="token operator">=</span> mbf<span class="token operator">/</span>minZ<span class="token punctuation">;</span>
+
+    <span class="token comment">// For each left keypoint search a match in the right image</span>
+    vector<span class="token operator">&lt;</span>pair<span class="token operator">&lt;</span><span class="token keyword">int</span><span class="token punctuation">,</span> <span class="token keyword">int</span><span class="token operator">&gt;</span> <span class="token operator">&gt;</span> vDistIdx<span class="token punctuation">;</span>
+    vDistIdx<span class="token punctuation">.</span><span class="token function">reserve</span><span class="token punctuation">(</span>N<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">for</span><span class="token punctuation">(</span><span class="token keyword">int</span> iL<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span> iL<span class="token operator">&lt;</span>N<span class="token punctuation">;</span> iL<span class="token operator">++</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">const</span> cv<span class="token operator">::</span>KeyPoint <span class="token operator">&amp;</span>kpL <span class="token operator">=</span> mvKeys<span class="token punctuation">[</span>iL<span class="token punctuation">]</span><span class="token punctuation">;</span>
+        <span class="token keyword">const</span> <span class="token keyword">int</span> <span class="token operator">&amp;</span>levelL <span class="token operator">=</span> kpL<span class="token punctuation">.</span>octave<span class="token punctuation">;</span>
+        <span class="token keyword">const</span> <span class="token keyword">float</span> <span class="token operator">&amp;</span>vL <span class="token operator">=</span> kpL<span class="token punctuation">.</span>pt<span class="token punctuation">.</span>y<span class="token punctuation">;</span>
+        <span class="token keyword">const</span> <span class="token keyword">float</span> <span class="token operator">&amp;</span>uL <span class="token operator">=</span> kpL<span class="token punctuation">.</span>pt<span class="token punctuation">.</span>x<span class="token punctuation">;</span>
+
+        <span class="token keyword">const</span> vector<span class="token operator">&lt;</span>size_t<span class="token operator">&gt;</span> <span class="token operator">&amp;</span>vCandidates <span class="token operator">=</span> vRowIndices<span class="token punctuation">[</span>vL<span class="token punctuation">]</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">if</span><span class="token punctuation">(</span>vCandidates<span class="token punctuation">.</span><span class="token function">empty</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+            <span class="token keyword">continue</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">const</span> <span class="token keyword">float</span> minU <span class="token operator">=</span> uL<span class="token operator">-</span>maxD<span class="token punctuation">;</span>
+        <span class="token keyword">const</span> <span class="token keyword">float</span> maxU <span class="token operator">=</span> uL<span class="token operator">-</span>minD<span class="token punctuation">;</span>
+
+        <span class="token keyword">if</span><span class="token punctuation">(</span>maxU<span class="token operator">&lt;</span><span class="token number">0</span><span class="token punctuation">)</span>
+            <span class="token keyword">continue</span><span class="token punctuation">;</span>
+		<span class="token comment">// step1 粗匹配</span>
+        <span class="token keyword">int</span> bestDist <span class="token operator">=</span> ORBmatcher<span class="token operator">::</span>TH_HIGH<span class="token punctuation">;</span>
+        size_t bestIdxR <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">const</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>dL <span class="token operator">=</span> mDescriptors<span class="token punctuation">.</span><span class="token function">row</span><span class="token punctuation">(</span>iL<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// Compare descriptor to right keypoints</span>
+        <span class="token keyword">for</span><span class="token punctuation">(</span>size_t iC<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span> iC<span class="token operator">&lt;</span>vCandidates<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> iC<span class="token operator">++</span><span class="token punctuation">)</span>
+        <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">const</span> size_t iR <span class="token operator">=</span> vCandidates<span class="token punctuation">[</span>iC<span class="token punctuation">]</span><span class="token punctuation">;</span>
+            <span class="token keyword">const</span> cv<span class="token operator">::</span>KeyPoint <span class="token operator">&amp;</span>kpR <span class="token operator">=</span> mvKeysRight<span class="token punctuation">[</span>iR<span class="token punctuation">]</span><span class="token punctuation">;</span>
+
+            <span class="token keyword">if</span><span class="token punctuation">(</span>kpR<span class="token punctuation">.</span>octave<span class="token operator">&lt;</span>levelL<span class="token operator">-</span><span class="token number">1</span> <span class="token operator">||</span> kpR<span class="token punctuation">.</span>octave<span class="token operator">&gt;</span>levelL<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">)</span>
+                <span class="token keyword">continue</span><span class="token punctuation">;</span>
+
+            <span class="token keyword">const</span> <span class="token keyword">float</span> <span class="token operator">&amp;</span>uR <span class="token operator">=</span> kpR<span class="token punctuation">.</span>pt<span class="token punctuation">.</span>x<span class="token punctuation">;</span>
+
+            <span class="token keyword">if</span><span class="token punctuation">(</span>uR<span class="token operator">&gt;=</span>minU <span class="token operator">&amp;&amp;</span> uR<span class="token operator">&lt;=</span>maxU<span class="token punctuation">)</span>
+            <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">const</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>dR <span class="token operator">=</span> mDescriptorsRight<span class="token punctuation">.</span><span class="token function">row</span><span class="token punctuation">(</span>iR<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token comment">// 关键！比较两个特征点的海明距离，dL和dR来自于mDescriptors及其Right在ORBExtractor中作为参数</span>
+                <span class="token keyword">const</span> <span class="token keyword">int</span> dist <span class="token operator">=</span> <span class="token class-name">ORBmatcher</span><span class="token operator">::</span><span class="token function">DescriptorDistance</span><span class="token punctuation">(</span>dL<span class="token punctuation">,</span>dR<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+                <span class="token keyword">if</span><span class="token punctuation">(</span>dist<span class="token operator">&lt;</span>bestDist<span class="token punctuation">)</span>
+                <span class="token punctuation">{<!-- --></span>
+                    bestDist <span class="token operator">=</span> dist<span class="token punctuation">;</span>
+                    bestIdxR <span class="token operator">=</span> iR<span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token comment">// Subpixel match by correlation</span>
+        <span class="token comment">// step2 精匹配</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>bestDist<span class="token operator">&lt;</span>thOrbDist<span class="token punctuation">)</span>
+        <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// coordinates in image pyramid at keypoint scale</span>
+            <span class="token keyword">const</span> <span class="token keyword">float</span> uR0 <span class="token operator">=</span> mvKeysRight<span class="token punctuation">[</span>bestIdxR<span class="token punctuation">]</span><span class="token punctuation">.</span>pt<span class="token punctuation">.</span>x<span class="token punctuation">;</span>
+            <span class="token keyword">const</span> <span class="token keyword">float</span> scaleFactor <span class="token operator">=</span> mvInvScaleFactors<span class="token punctuation">[</span>kpL<span class="token punctuation">.</span>octave<span class="token punctuation">]</span><span class="token punctuation">;</span>
+            <span class="token keyword">const</span> <span class="token keyword">float</span> scaleduL <span class="token operator">=</span> <span class="token function">round</span><span class="token punctuation">(</span>kpL<span class="token punctuation">.</span>pt<span class="token punctuation">.</span>x<span class="token operator">*</span>scaleFactor<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">const</span> <span class="token keyword">float</span> scaledvL <span class="token operator">=</span> <span class="token function">round</span><span class="token punctuation">(</span>kpL<span class="token punctuation">.</span>pt<span class="token punctuation">.</span>y<span class="token operator">*</span>scaleFactor<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">const</span> <span class="token keyword">float</span> scaleduR0 <span class="token operator">=</span> <span class="token function">round</span><span class="token punctuation">(</span>uR0<span class="token operator">*</span>scaleFactor<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            <span class="token comment">// sliding window search</span>
+            <span class="token keyword">const</span> <span class="token keyword">int</span> w <span class="token operator">=</span> <span class="token number">5</span><span class="token punctuation">;</span>
+            cv<span class="token operator">::</span>Mat IL <span class="token operator">=</span> mpORBextractorLeft<span class="token operator">-&gt;</span>mvImagePyramid<span class="token punctuation">[</span>kpL<span class="token punctuation">.</span>octave<span class="token punctuation">]</span><span class="token punctuation">.</span><span class="token function">rowRange</span><span class="token punctuation">(</span>scaledvL<span class="token operator">-</span>w<span class="token punctuation">,</span>scaledvL<span class="token operator">+</span>w<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">colRange</span><span class="token punctuation">(</span>scaleduL<span class="token operator">-</span>w<span class="token punctuation">,</span>scaleduL<span class="token operator">+</span>w<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            IL<span class="token punctuation">.</span><span class="token function">convertTo</span><span class="token punctuation">(</span>IL<span class="token punctuation">,</span>CV_32F<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            IL <span class="token operator">=</span> IL <span class="token operator">-</span> IL<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>w<span class="token punctuation">,</span>w<span class="token punctuation">)</span> <span class="token operator">*</span>cv<span class="token operator">::</span><span class="token class-name">Mat</span><span class="token operator">::</span><span class="token function">ones</span><span class="token punctuation">(</span>IL<span class="token punctuation">.</span>rows<span class="token punctuation">,</span>IL<span class="token punctuation">.</span>cols<span class="token punctuation">,</span>CV_32F<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            <span class="token keyword">int</span> bestDist <span class="token operator">=</span> INT_MAX<span class="token punctuation">;</span>
+            <span class="token keyword">int</span> bestincR <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+            <span class="token keyword">const</span> <span class="token keyword">int</span> L <span class="token operator">=</span> <span class="token number">5</span><span class="token punctuation">;</span>
+            vector<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span> vDists<span class="token punctuation">;</span>
+            vDists<span class="token punctuation">.</span><span class="token function">resize</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token operator">*</span>L<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            <span class="token keyword">const</span> <span class="token keyword">float</span> iniu <span class="token operator">=</span> scaleduR0<span class="token operator">+</span>L<span class="token operator">-</span>w<span class="token punctuation">;</span>
+            <span class="token keyword">const</span> <span class="token keyword">float</span> endu <span class="token operator">=</span> scaleduR0<span class="token operator">+</span>L<span class="token operator">+</span>w<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">;</span>
+            <span class="token keyword">if</span><span class="token punctuation">(</span>iniu<span class="token operator">&lt;</span><span class="token number">0</span> <span class="token operator">||</span> endu <span class="token operator">&gt;=</span> mpORBextractorRight<span class="token operator">-&gt;</span>mvImagePyramid<span class="token punctuation">[</span>kpL<span class="token punctuation">.</span>octave<span class="token punctuation">]</span><span class="token punctuation">.</span>cols<span class="token punctuation">)</span>
+                <span class="token keyword">continue</span><span class="token punctuation">;</span>
+
+            <span class="token keyword">for</span><span class="token punctuation">(</span><span class="token keyword">int</span> incR<span class="token operator">=</span><span class="token operator">-</span>L<span class="token punctuation">;</span> incR<span class="token operator">&lt;=</span><span class="token operator">+</span>L<span class="token punctuation">;</span> incR<span class="token operator">++</span><span class="token punctuation">)</span>
+            <span class="token punctuation">{<!-- --></span>
+                cv<span class="token operator">::</span>Mat IR <span class="token operator">=</span> mpORBextractorRight<span class="token operator">-&gt;</span>mvImagePyramid<span class="token punctuation">[</span>kpL<span class="token punctuation">.</span>octave<span class="token punctuation">]</span><span class="token punctuation">.</span><span class="token function">rowRange</span><span class="token punctuation">(</span>scaledvL<span class="token operator">-</span>w<span class="token punctuation">,</span>scaledvL<span class="token operator">+</span>w<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">colRange</span><span class="token punctuation">(</span>scaleduR0<span class="token operator">+</span>incR<span class="token operator">-</span>w<span class="token punctuation">,</span>scaleduR0<span class="token operator">+</span>incR<span class="token operator">+</span>w<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                IR<span class="token punctuation">.</span><span class="token function">convertTo</span><span class="token punctuation">(</span>IR<span class="token punctuation">,</span>CV_32F<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                IR <span class="token operator">=</span> IR <span class="token operator">-</span> IR<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>w<span class="token punctuation">,</span>w<span class="token punctuation">)</span> <span class="token operator">*</span>cv<span class="token operator">::</span><span class="token class-name">Mat</span><span class="token operator">::</span><span class="token function">ones</span><span class="token punctuation">(</span>IR<span class="token punctuation">.</span>rows<span class="token punctuation">,</span>IR<span class="token punctuation">.</span>cols<span class="token punctuation">,</span>CV_32F<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+                <span class="token keyword">float</span> dist <span class="token operator">=</span> cv<span class="token operator">::</span><span class="token function">norm</span><span class="token punctuation">(</span>IL<span class="token punctuation">,</span>IR<span class="token punctuation">,</span>cv<span class="token operator">::</span>NORM_L1<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">if</span><span class="token punctuation">(</span>dist<span class="token operator">&lt;</span>bestDist<span class="token punctuation">)</span>
+                <span class="token punctuation">{<!-- --></span>
+                    bestDist <span class="token operator">=</span>  dist<span class="token punctuation">;</span>
+                    bestincR <span class="token operator">=</span> incR<span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+
+                vDists<span class="token punctuation">[</span>L<span class="token operator">+</span>incR<span class="token punctuation">]</span> <span class="token operator">=</span> dist<span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+
+            <span class="token keyword">if</span><span class="token punctuation">(</span>bestincR<span class="token operator">==</span><span class="token operator">-</span>L <span class="token operator">||</span> bestincR<span class="token operator">==</span>L<span class="token punctuation">)</span>
+                <span class="token keyword">continue</span><span class="token punctuation">;</span>
+
+            <span class="token comment">// Sub-pixel match (Parabola fitting)</span>
+            <span class="token comment">// step3 亚像素插值：将特征点匹配距离拟合成二次曲线，寻找二次曲线最低点作为最优匹配点坐标</span>
+            <span class="token keyword">const</span> <span class="token keyword">float</span> dist1 <span class="token operator">=</span> vDists<span class="token punctuation">[</span>L<span class="token operator">+</span>bestincR<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+            <span class="token keyword">const</span> <span class="token keyword">float</span> dist2 <span class="token operator">=</span> vDists<span class="token punctuation">[</span>L<span class="token operator">+</span>bestincR<span class="token punctuation">]</span><span class="token punctuation">;</span>
+            <span class="token keyword">const</span> <span class="token keyword">float</span> dist3 <span class="token operator">=</span> vDists<span class="token punctuation">[</span>L<span class="token operator">+</span>bestincR<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+
+            <span class="token keyword">const</span> <span class="token keyword">float</span> deltaR <span class="token operator">=</span> <span class="token punctuation">(</span>dist1<span class="token operator">-</span>dist3<span class="token punctuation">)</span><span class="token operator">/</span><span class="token punctuation">(</span><span class="token number">2.0f</span><span class="token operator">*</span><span class="token punctuation">(</span>dist1<span class="token operator">+</span>dist3<span class="token operator">-</span><span class="token number">2.0f</span><span class="token operator">*</span>dist2<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            <span class="token keyword">if</span><span class="token punctuation">(</span>deltaR<span class="token operator">&lt;</span><span class="token operator">-</span><span class="token number">1</span> <span class="token operator">||</span> deltaR<span class="token operator">&gt;</span><span class="token number">1</span><span class="token punctuation">)</span>
+                <span class="token keyword">continue</span><span class="token punctuation">;</span>
+
+            <span class="token comment">// Re-scaled coordinate</span>
+            <span class="token comment">// step4 记录特征点的右目和深度信息</span>
+            <span class="token keyword">float</span> bestuR <span class="token operator">=</span> mvScaleFactors<span class="token punctuation">[</span>kpL<span class="token punctuation">.</span>octave<span class="token punctuation">]</span><span class="token operator">*</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token keyword">float</span><span class="token punctuation">)</span>scaleduR0<span class="token operator">+</span><span class="token punctuation">(</span><span class="token keyword">float</span><span class="token punctuation">)</span>bestincR<span class="token operator">+</span>deltaR<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">float</span> disparity <span class="token operator">=</span> <span class="token punctuation">(</span>uL<span class="token operator">-</span>bestuR<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// uL左特征点横坐标值，这里算的应该是视差</span>
+            <span class="token keyword">if</span><span class="token punctuation">(</span>disparity<span class="token operator">&gt;=</span>minD <span class="token operator">&amp;&amp;</span> disparity<span class="token operator">&lt;</span>maxD<span class="token punctuation">)</span>
+            <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">if</span><span class="token punctuation">(</span>disparity<span class="token operator">&lt;=</span><span class="token number">0</span><span class="token punctuation">)</span>
+                <span class="token punctuation">{<!-- --></span>
+                    disparity<span class="token operator">=</span><span class="token number">0.01</span><span class="token punctuation">;</span>
+                    bestuR <span class="token operator">=</span> uL<span class="token operator">-</span><span class="token number">0.01</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+                mvDepth<span class="token punctuation">[</span>iL<span class="token punctuation">]</span><span class="token operator">=</span>mbf<span class="token operator">/</span>disparity<span class="token punctuation">;</span> <span class="token comment">// 深度信息 mbf相机基线和焦距的乘积处以视差</span>
+                mvuRight<span class="token punctuation">[</span>iL<span class="token punctuation">]</span> <span class="token operator">=</span> bestuR<span class="token punctuation">;</span>	   <span class="token comment">// 右目特征点信息</span>
+                vDistIdx<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span>pair<span class="token operator">&lt;</span><span class="token keyword">int</span><span class="token punctuation">,</span><span class="token keyword">int</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>bestDist<span class="token punctuation">,</span>iL<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+	<span class="token comment">// step5 删除离群点</span>
+    <span class="token function">sort</span><span class="token punctuation">(</span>vDistIdx<span class="token punctuation">.</span><span class="token function">begin</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span>vDistIdx<span class="token punctuation">.</span><span class="token function">end</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">const</span> <span class="token keyword">float</span> median <span class="token operator">=</span> vDistIdx<span class="token punctuation">[</span>vDistIdx<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">/</span><span class="token number">2</span><span class="token punctuation">]</span><span class="token punctuation">.</span>first<span class="token punctuation">;</span>
+    <span class="token keyword">const</span> <span class="token keyword">float</span> thDist <span class="token operator">=</span> <span class="token number">1.5f</span><span class="token operator">*</span><span class="token number">1.4f</span><span class="token operator">*</span>median<span class="token punctuation">;</span>
+
+    <span class="token keyword">for</span><span class="token punctuation">(</span><span class="token keyword">int</span> i<span class="token operator">=</span>vDistIdx<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>i<span class="token operator">&gt;=</span><span class="token number">0</span><span class="token punctuation">;</span>i<span class="token operator">--</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>vDistIdx<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>first<span class="token operator">&lt;</span>thDist<span class="token punctuation">)</span>
+            <span class="token keyword">break</span><span class="token punctuation">;</span>
+        <span class="token keyword">else</span>
+        <span class="token punctuation">{<!-- --></span>
+            mvuRight<span class="token punctuation">[</span>vDistIdx<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>second<span class="token punctuation">]</span><span class="token operator">=</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+            mvDepth<span class="token punctuation">[</span>vDistIdx<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>second<span class="token punctuation">]</span><span class="token operator">=</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="_492"></a>深度计算公式原理</h5> 
+<p><img src="https://images2.imgbox.com/98/74/2Jv8q1DB_o.png" alt="请添加图片描述"><br> z是深度又称为观测距离，基线是b（两个相机间距），焦距是f，视差为d，根据该三角形的相似性，又根据等比定理有：<br> <span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           z 
+          
+         
+           b 
+          
+         
+        
+          = 
+         
+         
+          
+          
+            z 
+           
+          
+            − 
+           
+          
+            f 
+           
+          
+          
+          
+            b 
+           
+          
+            − 
+           
+          
+            d 
+           
+          
+         
+        
+          = 
+         
+         
+         
+           f 
+          
+         
+           d 
+          
+         
+        
+       
+         \frac{z}{b}=\frac{z-f}{b-d}=\frac{f}{d} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.7935600000000003em; vertical-align: -0.686em;"></span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.10756em;"><span class="" style="top: -2.314em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord mathdefault">b</span></span></span><span class="" style="top: -3.23em;"><span class="pstrut" style="height: 3em;"></span><span class="frac-line" style="border-bottom-width: 0.04em;"></span></span><span class="" style="top: -3.677em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span style="margin-right: 0.04398em;" class="mord mathdefault">z</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.686em;"><span class=""></span></span></span></span></span><span class="mclose nulldelimiter"></span></span><span class="mspace" style="margin-right: 0.2777777777777778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2777777777777778em;"></span></span><span class="base"><span class="strut" style="height: 2.14077em; vertical-align: -0.7693300000000001em;"></span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.3714399999999998em;"><span class="" style="top: -2.314em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord mathdefault">b</span><span class="mspace" style="margin-right: 0.2222222222222222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222222222222222em;"></span><span class="mord mathdefault">d</span></span></span><span class="" style="top: -3.23em;"><span class="pstrut" style="height: 3em;"></span><span class="frac-line" style="border-bottom-width: 0.04em;"></span></span><span class="" style="top: -3.677em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span style="margin-right: 0.04398em;" class="mord mathdefault">z</span><span class="mspace" style="margin-right: 0.2222222222222222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222222222222222em;"></span><span style="margin-right: 0.10764em;" class="mord mathdefault">f</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.7693300000000001em;"><span class=""></span></span></span></span></span><span class="mclose nulldelimiter"></span></span><span class="mspace" style="margin-right: 0.2777777777777778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2777777777777778em;"></span></span><span class="base"><span class="strut" style="height: 2.0574399999999997em; vertical-align: -0.686em;"></span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.3714399999999998em;"><span class="" style="top: -2.314em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord mathdefault">d</span></span></span><span class="" style="top: -3.23em;"><span class="pstrut" style="height: 3em;"></span><span class="frac-line" style="border-bottom-width: 0.04em;"></span></span><span class="" style="top: -3.677em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span style="margin-right: 0.10764em;" class="mord mathdefault">f</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.686em;"><span class=""></span></span></span></span></span><span class="mclose nulldelimiter"></span></span></span></span></span></span></span><br> 于是<span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          z 
+         
+        
+          = 
+         
+         
+          
+          
+            f 
+           
+          
+            ⋅ 
+           
+          
+            b 
+           
+          
+         
+           d 
+          
+         
+        
+       
+         z=\frac{f\cdot b}{d} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span style="margin-right: 0.04398em;" class="mord mathdefault">z</span><span class="mspace" style="margin-right: 0.2777777777777778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2777777777777778em;"></span></span><span class="base"><span class="strut" style="height: 2.0574399999999997em; vertical-align: -0.686em;"></span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.3714399999999998em;"><span class="" style="top: -2.314em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord mathdefault">d</span></span></span><span class="" style="top: -3.23em;"><span class="pstrut" style="height: 3em;"></span><span class="frac-line" style="border-bottom-width: 0.04em;"></span></span><span class="" style="top: -3.677em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span style="margin-right: 0.10764em;" class="mord mathdefault">f</span><span class="mspace" style="margin-right: 0.2222222222222222em;"></span><span class="mbin">⋅</span><span class="mspace" style="margin-right: 0.2222222222222222em;"></span><span class="mord mathdefault">b</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.686em;"><span class=""></span></span></span></span></span><span class="mclose nulldelimiter"></span></span></span></span></span></span></span></p> 
+<h4><a id="RGBComputeStereoFromRGBD_498"></a>RGB特征点的处理ComputeStereoFromRGBD</h4> 
+<p>根据上一节的示意图计算出虚假的右目特征点。</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">void</span> <span class="token class-name">Frame</span><span class="token operator">::</span><span class="token function">ComputeStereoFromRGBD</span><span class="token punctuation">(</span><span class="token keyword">const</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>imDepth<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    mvuRight <span class="token operator">=</span> vector<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>N<span class="token punctuation">,</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    mvDepth <span class="token operator">=</span> vector<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>N<span class="token punctuation">,</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">for</span><span class="token punctuation">(</span><span class="token keyword">int</span> i<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span> i<span class="token operator">&lt;</span>N<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">const</span> cv<span class="token operator">::</span>KeyPoint <span class="token operator">&amp;</span>kp <span class="token operator">=</span> mvKeys<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">;</span>
+        <span class="token keyword">const</span> cv<span class="token operator">::</span>KeyPoint <span class="token operator">&amp;</span>kpU <span class="token operator">=</span> mvKeysUn<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">const</span> <span class="token keyword">float</span> <span class="token operator">&amp;</span>v <span class="token operator">=</span> kp<span class="token punctuation">.</span>pt<span class="token punctuation">.</span>y<span class="token punctuation">;</span>
+        <span class="token keyword">const</span> <span class="token keyword">float</span> <span class="token operator">&amp;</span>u <span class="token operator">=</span> kp<span class="token punctuation">.</span>pt<span class="token punctuation">.</span>x<span class="token punctuation">;</span>
+
+        <span class="token keyword">const</span> <span class="token keyword">float</span> d <span class="token operator">=</span> imDepth<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>v<span class="token punctuation">,</span>u<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">if</span><span class="token punctuation">(</span>d<span class="token operator">&gt;</span><span class="token number">0</span><span class="token punctuation">)</span>
+        <span class="token punctuation">{<!-- --></span>
+            mvDepth<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">=</span> d<span class="token punctuation">;</span>
+            mvuRight<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">=</span> kpU<span class="token punctuation">.</span>pt<span class="token punctuation">.</span>x<span class="token operator">-</span>mbf<span class="token operator">/</span>d<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>最后得到的应该是mvKeysUn、mvuRight和mvDepth，这是RGBD和Stereo的结晶。</p> 
+<h3><a id="_528"></a>特征点分配</h3> 
+<p>这是Frame构造函数的最后一步。</p> 
+<p>在对特征点进行处理后，将其分配到48行64列的网格中以加速匹配。</p> 
+<p>每个网格是这个特征点的索引。</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">void</span> <span class="token class-name">Frame</span><span class="token operator">::</span><span class="token function">AssignFeaturesToGrid</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">int</span> nReserve <span class="token operator">=</span> <span class="token number">0.5f</span><span class="token operator">*</span>N<span class="token operator">/</span><span class="token punctuation">(</span>FRAME_GRID_COLS<span class="token operator">*</span>FRAME_GRID_ROWS<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">for</span><span class="token punctuation">(</span><span class="token keyword">unsigned</span> <span class="token keyword">int</span> i<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span> i<span class="token operator">&lt;</span>FRAME_GRID_COLS<span class="token punctuation">;</span>i<span class="token operator">++</span><span class="token punctuation">)</span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">unsigned</span> <span class="token keyword">int</span> j<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span> j<span class="token operator">&lt;</span>FRAME_GRID_ROWS<span class="token punctuation">;</span>j<span class="token operator">++</span><span class="token punctuation">)</span>
+            mGrid<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">[</span>j<span class="token punctuation">]</span><span class="token punctuation">.</span><span class="token function">reserve</span><span class="token punctuation">(</span>nReserve<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">for</span><span class="token punctuation">(</span><span class="token keyword">int</span> i<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span>i<span class="token operator">&lt;</span>N<span class="token punctuation">;</span>i<span class="token operator">++</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>	<span class="token comment">// 遍历特征点，将每个特征点索引加入到对应的网格中去</span>
+        <span class="token keyword">const</span> cv<span class="token operator">::</span>KeyPoint <span class="token operator">&amp;</span>kp <span class="token operator">=</span> mvKeysUn<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">int</span> nGridPosX<span class="token punctuation">,</span> nGridPosY<span class="token punctuation">;</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token function">PosInGrid</span><span class="token punctuation">(</span>kp<span class="token punctuation">,</span>nGridPosX<span class="token punctuation">,</span>nGridPosY<span class="token punctuation">)</span><span class="token punctuation">)</span>
+            mGrid<span class="token punctuation">[</span>nGridPosX<span class="token punctuation">]</span><span class="token punctuation">[</span>nGridPosY<span class="token punctuation">]</span><span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span>i<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h2><a id="_554"></a>单目相机的初始化</h2> 
+<p>在单目相机的构造函数中缺失了匹配这一步，虽然也有mvuRight和mvDepth但是都是空的，其以另一种方式处理。而双目和RGBD则没有这种特别的处理方式。</p> 
+<p>在代码中，需要注意的是1表示参考帧，2表示当前帧。</p> 
+<h3><a id="MonocularInitialization_559"></a>MonocularInitialization</h3> 
+<pre><code class="prism language-cpp"><span class="token keyword">void</span> <span class="token class-name">Tracking</span><span class="token operator">::</span><span class="token function">MonocularInitialization</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token comment">// step1 如果单目初始化还没创建，之后又发现这一帧里的特征点数量够了，则创建初始化器</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token operator">!</span>mpInitializer<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// Set Reference Frame</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>mCurrentFrame<span class="token punctuation">.</span>mvKeys<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">&gt;</span><span class="token number">100</span><span class="token punctuation">)</span>
+        <span class="token punctuation">{<!-- --></span>
+            mInitialFrame <span class="token operator">=</span> <span class="token function">Frame</span><span class="token punctuation">(</span>mCurrentFrame<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            mLastFrame <span class="token operator">=</span> <span class="token function">Frame</span><span class="token punctuation">(</span>mCurrentFrame<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            mvbPrevMatched<span class="token punctuation">.</span><span class="token function">resize</span><span class="token punctuation">(</span>mCurrentFrame<span class="token punctuation">.</span>mvKeysUn<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">for</span><span class="token punctuation">(</span>size_t i<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span> i<span class="token operator">&lt;</span>mCurrentFrame<span class="token punctuation">.</span>mvKeysUn<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span>
+                mvbPrevMatched<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token operator">=</span>mCurrentFrame<span class="token punctuation">.</span>mvKeysUn<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>pt<span class="token punctuation">;</span>
+
+            <span class="token keyword">if</span><span class="token punctuation">(</span>mpInitializer<span class="token punctuation">)</span>
+                <span class="token keyword">delete</span> mpInitializer<span class="token punctuation">;</span>
+
+            mpInitializer <span class="token operator">=</span>  <span class="token keyword">new</span> <span class="token function">Initializer</span><span class="token punctuation">(</span>mCurrentFrame<span class="token punctuation">,</span><span class="token number">1.0</span><span class="token punctuation">,</span><span class="token number">200</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 核心</span>
+
+            <span class="token function">fill</span><span class="token punctuation">(</span>mvIniMatches<span class="token punctuation">.</span><span class="token function">begin</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span>mvIniMatches<span class="token punctuation">.</span><span class="token function">end</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            <span class="token keyword">return</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">else</span>
+    <span class="token punctuation">{<!-- --></span>
+    	<span class="token comment">// step2 如果上一帧特征点足够了，但当前帧特征太少，则匹配失败，删除初始化器</span>
+        <span class="token comment">// Try to initialize</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token keyword">int</span><span class="token punctuation">)</span>mCurrentFrame<span class="token punctuation">.</span>mvKeys<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">&lt;=</span><span class="token number">100</span><span class="token punctuation">)</span>
+        <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">delete</span> mpInitializer<span class="token punctuation">;</span>
+            mpInitializer <span class="token operator">=</span> <span class="token keyword">static_cast</span><span class="token operator">&lt;</span>Initializer<span class="token operator">*</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token function">fill</span><span class="token punctuation">(</span>mvIniMatches<span class="token punctuation">.</span><span class="token function">begin</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span>mvIniMatches<span class="token punctuation">.</span><span class="token function">end</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">return</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+		<span class="token comment">// step3 在mInitialFrame间进行匹配搜索</span>
+        <span class="token comment">// Find correspondences</span>
+        ORBmatcher <span class="token function">matcher</span><span class="token punctuation">(</span><span class="token number">0.9</span><span class="token punctuation">,</span><span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">int</span> nmatches <span class="token operator">=</span> matcher<span class="token punctuation">.</span><span class="token function">SearchForInitialization</span><span class="token punctuation">(</span>mInitialFrame<span class="token punctuation">,</span>mCurrentFrame<span class="token punctuation">,</span>mvbPrevMatched<span class="token punctuation">,</span>mvIniMatches<span class="token punctuation">,</span><span class="token number">100</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		
+		<span class="token comment">// step4 匹配的特征点数目太少，则匹配失败，删除初始化器。</span>
+        <span class="token comment">// Check if there are enough correspondences</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>nmatches<span class="token operator">&lt;</span><span class="token number">100</span><span class="token punctuation">)</span>
+        <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">delete</span> mpInitializer<span class="token punctuation">;</span>
+            mpInitializer <span class="token operator">=</span> <span class="token keyword">static_cast</span><span class="token operator">&lt;</span>Initializer<span class="token operator">*</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">return</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+		<span class="token comment">// step5 进行单目初始化</span>
+        cv<span class="token operator">::</span>Mat Rcw<span class="token punctuation">;</span> <span class="token comment">// Current Camera Rotation</span>
+        cv<span class="token operator">::</span>Mat tcw<span class="token punctuation">;</span> <span class="token comment">// Current Camera Translation</span>
+        vector<span class="token operator">&lt;</span><span class="token keyword">bool</span><span class="token operator">&gt;</span> vbTriangulated<span class="token punctuation">;</span> <span class="token comment">// Triangulated Correspondences (mvIniMatches)</span>
+
+        <span class="token keyword">if</span><span class="token punctuation">(</span>mpInitializer<span class="token operator">-&gt;</span><span class="token function">Initialize</span><span class="token punctuation">(</span>mCurrentFrame<span class="token punctuation">,</span> mvIniMatches<span class="token punctuation">,</span> Rcw<span class="token punctuation">,</span> tcw<span class="token punctuation">,</span> mvIniP3D<span class="token punctuation">,</span> vbTriangulated<span class="token punctuation">)</span><span class="token punctuation">)</span>
+        <span class="token punctuation">{<!-- --></span>	
+        	<span class="token comment">// step6 单目初始化成功后删除未成功三角化的匹配点对</span>
+            <span class="token keyword">for</span><span class="token punctuation">(</span>size_t i<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">,</span> iend<span class="token operator">=</span>mvIniMatches<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> i<span class="token operator">&lt;</span>iend<span class="token punctuation">;</span>i<span class="token operator">++</span><span class="token punctuation">)</span>
+            <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">if</span><span class="token punctuation">(</span>mvIniMatches<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token operator">&gt;=</span><span class="token number">0</span> <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span>vbTriangulated<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">)</span>
+                <span class="token punctuation">{<!-- --></span>
+                    mvIniMatches<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token operator">=</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+                    nmatches<span class="token operator">--</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span>
+			
+			<span class="token comment">// step7 创建初始化地图</span>
+            <span class="token comment">// Set Frame Poses</span>
+            mInitialFrame<span class="token punctuation">.</span><span class="token function">SetPose</span><span class="token punctuation">(</span>cv<span class="token operator">::</span><span class="token class-name">Mat</span><span class="token operator">::</span><span class="token function">eye</span><span class="token punctuation">(</span><span class="token number">4</span><span class="token punctuation">,</span><span class="token number">4</span><span class="token punctuation">,</span>CV_32F<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            cv<span class="token operator">::</span>Mat Tcw <span class="token operator">=</span> cv<span class="token operator">::</span><span class="token class-name">Mat</span><span class="token operator">::</span><span class="token function">eye</span><span class="token punctuation">(</span><span class="token number">4</span><span class="token punctuation">,</span><span class="token number">4</span><span class="token punctuation">,</span>CV_32F<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            Rcw<span class="token punctuation">.</span><span class="token function">copyTo</span><span class="token punctuation">(</span>Tcw<span class="token punctuation">.</span><span class="token function">rowRange</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span><span class="token number">3</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">colRange</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span><span class="token number">3</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            tcw<span class="token punctuation">.</span><span class="token function">copyTo</span><span class="token punctuation">(</span>Tcw<span class="token punctuation">.</span><span class="token function">rowRange</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span><span class="token number">3</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">col</span><span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            mCurrentFrame<span class="token punctuation">.</span><span class="token function">SetPose</span><span class="token punctuation">(</span>Tcw<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            <span class="token function">CreateInitialMapMonocular</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>上述的含义是得有连续两帧合格，一旦有不合格的，删了初始化器重来。第一帧作为参考帧，第二帧作为当前帧，</p> 
+<h3><a id="Initialize_640"></a>初始化类中的初始化方法Initialize()</h3> 
+<p>初始化器的创建需要初始化类。该类的代码为：</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">bool</span> <span class="token class-name">Initializer</span><span class="token operator">::</span><span class="token function">Initialize</span><span class="token punctuation">(</span><span class="token keyword">const</span> Frame <span class="token operator">&amp;</span>CurrentFrame<span class="token punctuation">,</span> <span class="token keyword">const</span> vector<span class="token operator">&lt;</span><span class="token keyword">int</span><span class="token operator">&gt;</span> <span class="token operator">&amp;</span>vMatches12<span class="token punctuation">,</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>R21<span class="token punctuation">,</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>t21<span class="token punctuation">,</span>
+                             vector<span class="token operator">&lt;</span>cv<span class="token operator">::</span>Point3f<span class="token operator">&gt;</span> <span class="token operator">&amp;</span>vP3D<span class="token punctuation">,</span> vector<span class="token operator">&lt;</span><span class="token keyword">bool</span><span class="token operator">&gt;</span> <span class="token operator">&amp;</span>vbTriangulated<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token comment">// 初始化器Initializer对象创建时就已经指定了mvKeys1，调用本函数只需指定mvKeys2即可</span>
+    <span class="token comment">// Fill structures with current keypoints and matches with reference frame</span>
+    <span class="token comment">// Reference Frame: 1, Current Frame: 2</span>
+    mvKeys2 <span class="token operator">=</span> CurrentFrame<span class="token punctuation">.</span>mvKeysUn<span class="token punctuation">;</span>
+	
+    mvMatches12<span class="token punctuation">.</span><span class="token function">clear</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    mvMatches12<span class="token punctuation">.</span><span class="token function">reserve</span><span class="token punctuation">(</span>mvKeys2<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    mvbMatched1<span class="token punctuation">.</span><span class="token function">resize</span><span class="token punctuation">(</span>mvKeys1<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// step1 将vMatches12拷贝到mvMatches12，mvMatches12只保存匹配上的特征点对。</span>
+    <span class="token keyword">for</span><span class="token punctuation">(</span>size_t i<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">,</span> iend<span class="token operator">=</span>vMatches12<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>i<span class="token operator">&lt;</span>iend<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>vMatches12<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token operator">&gt;=</span><span class="token number">0</span><span class="token punctuation">)</span>
+        <span class="token punctuation">{<!-- --></span>
+            mvMatches12<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span><span class="token function">make_pair</span><span class="token punctuation">(</span>i<span class="token punctuation">,</span>vMatches12<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            mvbMatched1<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token operator">=</span><span class="token boolean">true</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">else</span>
+            mvbMatched1<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token operator">=</span><span class="token boolean">false</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+	<span class="token comment">// step2 准备RANSAC运算中需要的特征点对</span>
+    <span class="token keyword">const</span> <span class="token keyword">int</span> N <span class="token operator">=</span> mvMatches12<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// Indices for minimum set selection</span>
+    vector<span class="token operator">&lt;</span>size_t<span class="token operator">&gt;</span> vAllIndices<span class="token punctuation">;</span>
+    vAllIndices<span class="token punctuation">.</span><span class="token function">reserve</span><span class="token punctuation">(</span>N<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    vector<span class="token operator">&lt;</span>size_t<span class="token operator">&gt;</span> vAvailableIndices<span class="token punctuation">;</span>
+
+    <span class="token keyword">for</span><span class="token punctuation">(</span><span class="token keyword">int</span> i<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span> i<span class="token operator">&lt;</span>N<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        vAllIndices<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span>i<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// Generate sets of 8 points for each RANSAC iteration</span>
+    mvSets <span class="token operator">=</span> vector<span class="token operator">&lt;</span> vector<span class="token operator">&lt;</span>size_t<span class="token operator">&gt;</span> <span class="token operator">&gt;</span><span class="token punctuation">(</span>mMaxIterations<span class="token punctuation">,</span>vector<span class="token operator">&lt;</span>size_t<span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">8</span><span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    DUtils<span class="token operator">::</span><span class="token class-name">Random</span><span class="token operator">::</span><span class="token function">SeedRandOnce</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">for</span><span class="token punctuation">(</span><span class="token keyword">int</span> it<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span> it<span class="token operator">&lt;</span>mMaxIterations<span class="token punctuation">;</span> it<span class="token operator">++</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        vAvailableIndices <span class="token operator">=</span> vAllIndices<span class="token punctuation">;</span>
+
+        <span class="token comment">// Select a minimum set</span>
+        <span class="token keyword">for</span><span class="token punctuation">(</span>size_t j<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span> j<span class="token operator">&lt;</span><span class="token number">8</span><span class="token punctuation">;</span> j<span class="token operator">++</span><span class="token punctuation">)</span>
+        <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">int</span> randi <span class="token operator">=</span> DUtils<span class="token operator">::</span><span class="token class-name">Random</span><span class="token operator">::</span><span class="token function">RandomInt</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span>vAvailableIndices<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">int</span> idx <span class="token operator">=</span> vAvailableIndices<span class="token punctuation">[</span>randi<span class="token punctuation">]</span><span class="token punctuation">;</span>
+
+            mvSets<span class="token punctuation">[</span>it<span class="token punctuation">]</span><span class="token punctuation">[</span>j<span class="token punctuation">]</span> <span class="token operator">=</span> idx<span class="token punctuation">;</span>
+
+            vAvailableIndices<span class="token punctuation">[</span>randi<span class="token punctuation">]</span> <span class="token operator">=</span> vAvailableIndices<span class="token punctuation">.</span><span class="token function">back</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            vAvailableIndices<span class="token punctuation">.</span><span class="token function">pop_back</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+	<span class="token comment">// step3 计算F矩阵和H矩阵及其置信度</span>
+    <span class="token comment">// Launch threads to compute in parallel a fundamental matrix and a homography</span>
+    vector<span class="token operator">&lt;</span><span class="token keyword">bool</span><span class="token operator">&gt;</span> vbMatchesInliersH<span class="token punctuation">,</span> vbMatchesInliersF<span class="token punctuation">;</span>
+    <span class="token keyword">float</span> SH<span class="token punctuation">,</span> SF<span class="token punctuation">;</span>
+    cv<span class="token operator">::</span>Mat H<span class="token punctuation">,</span> F<span class="token punctuation">;</span>
+
+    thread <span class="token function">threadH</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>Initializer<span class="token operator">::</span>FindHomography<span class="token punctuation">,</span><span class="token keyword">this</span><span class="token punctuation">,</span><span class="token function">ref</span><span class="token punctuation">(</span>vbMatchesInliersH<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">ref</span><span class="token punctuation">(</span>SH<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">ref</span><span class="token punctuation">(</span>H<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    thread <span class="token function">threadF</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>Initializer<span class="token operator">::</span>FindFundamental<span class="token punctuation">,</span><span class="token keyword">this</span><span class="token punctuation">,</span><span class="token function">ref</span><span class="token punctuation">(</span>vbMatchesInliersF<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">ref</span><span class="token punctuation">(</span>SF<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">ref</span><span class="token punctuation">(</span>F<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// Wait until both threads have finished</span>
+    threadH<span class="token punctuation">.</span><span class="token function">join</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    threadF<span class="token punctuation">.</span><span class="token function">join</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">// step4 根据比分计算使用哪个矩阵恢复运动</span>
+    <span class="token comment">// Compute ratio of scores</span>
+    <span class="token keyword">float</span> RH <span class="token operator">=</span> SH<span class="token operator">/</span><span class="token punctuation">(</span>SH<span class="token operator">+</span>SF<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// Try to reconstruct from homography or fundamental depending on the ratio (0.40-0.45)</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>RH<span class="token operator">&gt;</span><span class="token number">0.40</span><span class="token punctuation">)</span>
+        <span class="token keyword">return</span> <span class="token function">ReconstructH</span><span class="token punctuation">(</span>vbMatchesInliersH<span class="token punctuation">,</span>H<span class="token punctuation">,</span>mK<span class="token punctuation">,</span>R21<span class="token punctuation">,</span>t21<span class="token punctuation">,</span>vP3D<span class="token punctuation">,</span>vbTriangulated<span class="token punctuation">,</span><span class="token number">1.0</span><span class="token punctuation">,</span><span class="token number">50</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">else</span> <span class="token comment">//if(pF_HF&gt;0.6)</span>
+        <span class="token keyword">return</span> <span class="token function">ReconstructF</span><span class="token punctuation">(</span>vbMatchesInliersF<span class="token punctuation">,</span>F<span class="token punctuation">,</span>mK<span class="token punctuation">,</span>R21<span class="token punctuation">,</span>t21<span class="token punctuation">,</span>vP3D<span class="token punctuation">,</span>vbTriangulated<span class="token punctuation">,</span><span class="token number">1.0</span><span class="token punctuation">,</span><span class="token number">50</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="FH_725"></a>计算基础矩阵F和单应矩阵H</h3> 
+<h4><a id="RANSAC_726"></a>RANSAC算法</h4> 
+<p>少数离群点回极大地影响计算结果的准确度。随着采样数量的增加，离群点数量也会增加。这是一种系统误差，难以通过增加采样点来解决。</p> 
+<p>RANSAC算法的思路是少量多次重复实验，每次实验仅使用尽可能少的点来计算，并统计本次计算中的内点数，只要尝试的次数足够多，总能找到一个包含所有内点的解。</p> 
+<p>理论上来说，计算F只要7对匹配点，计算H只要4对匹配点，ORB_SLAM2为了编程方便，每次迭代使用8对匹配点计算。</p> 
+<p>关于计算F和H的算法在这不多介绍。但是整体流程为：</p> 
+<ol><li>特征点坐标归一化（使用均值和一阶中心矩归一化，目的是为了增强计算的稳定性）；</li><li>在RANSAC的循环下计算F/H；</li><li>卡方检验。</li></ol> 
+<h4><a id="H_738"></a>卡方检验，以检测H矩阵为例</h4> 
+<pre><code class="prism language-cpp"><span class="token keyword">float</span> <span class="token class-name">Initializer</span><span class="token operator">::</span><span class="token function">CheckHomography</span><span class="token punctuation">(</span><span class="token keyword">const</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>H21<span class="token punctuation">,</span> <span class="token keyword">const</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>H12<span class="token punctuation">,</span> vector<span class="token operator">&lt;</span><span class="token keyword">bool</span><span class="token operator">&gt;</span> <span class="token operator">&amp;</span>vbMatchesInliers<span class="token punctuation">,</span> <span class="token keyword">float</span> sigma<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>   
+    <span class="token keyword">const</span> <span class="token keyword">int</span> N <span class="token operator">=</span> mvMatches12<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">const</span> <span class="token keyword">float</span> h11 <span class="token operator">=</span> H21<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">const</span> <span class="token keyword">float</span> h12 <span class="token operator">=</span> H21<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">const</span> <span class="token keyword">float</span> h13 <span class="token operator">=</span> H21<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">const</span> <span class="token keyword">float</span> h21 <span class="token operator">=</span> H21<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">const</span> <span class="token keyword">float</span> h22 <span class="token operator">=</span> H21<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">const</span> <span class="token keyword">float</span> h23 <span class="token operator">=</span> H21<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">const</span> <span class="token keyword">float</span> h31 <span class="token operator">=</span> H21<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">const</span> <span class="token keyword">float</span> h32 <span class="token operator">=</span> H21<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">const</span> <span class="token keyword">float</span> h33 <span class="token operator">=</span> H21<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">const</span> <span class="token keyword">float</span> h11inv <span class="token operator">=</span> H12<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">const</span> <span class="token keyword">float</span> h12inv <span class="token operator">=</span> H12<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">const</span> <span class="token keyword">float</span> h13inv <span class="token operator">=</span> H12<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">const</span> <span class="token keyword">float</span> h21inv <span class="token operator">=</span> H12<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">const</span> <span class="token keyword">float</span> h22inv <span class="token operator">=</span> H12<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">const</span> <span class="token keyword">float</span> h23inv <span class="token operator">=</span> H12<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">const</span> <span class="token keyword">float</span> h31inv <span class="token operator">=</span> H12<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">const</span> <span class="token keyword">float</span> h32inv <span class="token operator">=</span> H12<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">const</span> <span class="token keyword">float</span> h33inv <span class="token operator">=</span> H12<span class="token punctuation">.</span>at<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    vbMatchesInliers<span class="token punctuation">.</span><span class="token function">resize</span><span class="token punctuation">(</span>N<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 标记是否为内点</span>
+
+    <span class="token keyword">float</span> score <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>	<span class="token comment">// 置信度得分</span>
+
+    <span class="token keyword">const</span> <span class="token keyword">float</span> th <span class="token operator">=</span> <span class="token number">5.991</span><span class="token punctuation">;</span> 	<span class="token comment">// 自由度为2，显著性水平为0.05的卡方分布对应的临界阈值</span>
+
+    <span class="token keyword">const</span> <span class="token keyword">float</span> invSigmaSquare <span class="token operator">=</span> <span class="token number">1.0</span><span class="token operator">/</span><span class="token punctuation">(</span>sigma<span class="token operator">*</span>sigma<span class="token punctuation">)</span><span class="token punctuation">;</span>	<span class="token comment">// 信息矩阵，方差平方的倒数</span>
+	
+	<span class="token comment">// 双向投影，计算加权投影误差</span>
+    <span class="token keyword">for</span><span class="token punctuation">(</span><span class="token keyword">int</span> i<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span> i<span class="token operator">&lt;</span>N<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">bool</span> bIn <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+		<span class="token comment">// step1 提取特征点</span>
+        <span class="token keyword">const</span> cv<span class="token operator">::</span>KeyPoint <span class="token operator">&amp;</span>kp1 <span class="token operator">=</span> mvKeys1<span class="token punctuation">[</span>mvMatches12<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>first<span class="token punctuation">]</span><span class="token punctuation">;</span>
+        <span class="token keyword">const</span> cv<span class="token operator">::</span>KeyPoint <span class="token operator">&amp;</span>kp2 <span class="token operator">=</span> mvKeys2<span class="token punctuation">[</span>mvMatches12<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>second<span class="token punctuation">]</span><span class="token punctuation">;</span>
+		
+        <span class="token keyword">const</span> <span class="token keyword">float</span> u1 <span class="token operator">=</span> kp1<span class="token punctuation">.</span>pt<span class="token punctuation">.</span>x<span class="token punctuation">;</span>
+        <span class="token keyword">const</span> <span class="token keyword">float</span> v1 <span class="token operator">=</span> kp1<span class="token punctuation">.</span>pt<span class="token punctuation">.</span>y<span class="token punctuation">;</span>
+        <span class="token keyword">const</span> <span class="token keyword">float</span> u2 <span class="token operator">=</span> kp2<span class="token punctuation">.</span>pt<span class="token punctuation">.</span>x<span class="token punctuation">;</span>
+        <span class="token keyword">const</span> <span class="token keyword">float</span> v2 <span class="token operator">=</span> kp2<span class="token punctuation">.</span>pt<span class="token punctuation">.</span>y<span class="token punctuation">;</span>
+		
+        <span class="token comment">// Reprojection error in first image</span>
+        <span class="token comment">// x2in1 = H12*x2</span>
+		<span class="token comment">// step2 计算img2到img1的重投影误差</span>
+        <span class="token keyword">const</span> <span class="token keyword">float</span> w2in1inv <span class="token operator">=</span> <span class="token number">1.0</span><span class="token operator">/</span><span class="token punctuation">(</span>h31inv<span class="token operator">*</span>u2<span class="token operator">+</span>h32inv<span class="token operator">*</span>v2<span class="token operator">+</span>h33inv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">const</span> <span class="token keyword">float</span> u2in1 <span class="token operator">=</span> <span class="token punctuation">(</span>h11inv<span class="token operator">*</span>u2<span class="token operator">+</span>h12inv<span class="token operator">*</span>v2<span class="token operator">+</span>h13inv<span class="token punctuation">)</span><span class="token operator">*</span>w2in1inv<span class="token punctuation">;</span>
+        <span class="token keyword">const</span> <span class="token keyword">float</span> v2in1 <span class="token operator">=</span> <span class="token punctuation">(</span>h21inv<span class="token operator">*</span>u2<span class="token operator">+</span>h22inv<span class="token operator">*</span>v2<span class="token operator">+</span>h23inv<span class="token punctuation">)</span><span class="token operator">*</span>w2in1inv<span class="token punctuation">;</span>
+
+        <span class="token keyword">const</span> <span class="token keyword">float</span> squareDist1 <span class="token operator">=</span> <span class="token punctuation">(</span>u1<span class="token operator">-</span>u2in1<span class="token punctuation">)</span><span class="token operator">*</span><span class="token punctuation">(</span>u1<span class="token operator">-</span>u2in1<span class="token punctuation">)</span><span class="token operator">+</span><span class="token punctuation">(</span>v1<span class="token operator">-</span>v2in1<span class="token punctuation">)</span><span class="token operator">*</span><span class="token punctuation">(</span>v1<span class="token operator">-</span>v2in1<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">const</span> <span class="token keyword">float</span> chiSquare1 <span class="token operator">=</span> squareDist1<span class="token operator">*</span>invSigmaSquare<span class="token punctuation">;</span>
+		<span class="token comment">// step3 离群点标记上，非离群点累加计算得分</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>chiSquare1<span class="token operator">&gt;</span>th<span class="token punctuation">)</span>
+            bIn <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+        <span class="token keyword">else</span>
+            score <span class="token operator">+=</span> th <span class="token operator">-</span> chiSquare1<span class="token punctuation">;</span>
+
+        <span class="token comment">// Reprojection error in second image</span>
+        <span class="token comment">// x1in2 = H21*x1</span>
+		<span class="token comment">// step4 计算img1到img2的重投影误差</span>
+        <span class="token keyword">const</span> <span class="token keyword">float</span> w1in2inv <span class="token operator">=</span> <span class="token number">1.0</span><span class="token operator">/</span><span class="token punctuation">(</span>h31<span class="token operator">*</span>u1<span class="token operator">+</span>h32<span class="token operator">*</span>v1<span class="token operator">+</span>h33<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">const</span> <span class="token keyword">float</span> u1in2 <span class="token operator">=</span> <span class="token punctuation">(</span>h11<span class="token operator">*</span>u1<span class="token operator">+</span>h12<span class="token operator">*</span>v1<span class="token operator">+</span>h13<span class="token punctuation">)</span><span class="token operator">*</span>w1in2inv<span class="token punctuation">;</span>
+        <span class="token keyword">const</span> <span class="token keyword">float</span> v1in2 <span class="token operator">=</span> <span class="token punctuation">(</span>h21<span class="token operator">*</span>u1<span class="token operator">+</span>h22<span class="token operator">*</span>v1<span class="token operator">+</span>h23<span class="token punctuation">)</span><span class="token operator">*</span>w1in2inv<span class="token punctuation">;</span>
+
+        <span class="token keyword">const</span> <span class="token keyword">float</span> squareDist2 <span class="token operator">=</span> <span class="token punctuation">(</span>u2<span class="token operator">-</span>u1in2<span class="token punctuation">)</span><span class="token operator">*</span><span class="token punctuation">(</span>u2<span class="token operator">-</span>u1in2<span class="token punctuation">)</span><span class="token operator">+</span><span class="token punctuation">(</span>v2<span class="token operator">-</span>v1in2<span class="token punctuation">)</span><span class="token operator">*</span><span class="token punctuation">(</span>v2<span class="token operator">-</span>v1in2<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">const</span> <span class="token keyword">float</span> chiSquare2 <span class="token operator">=</span> squareDist2<span class="token operator">*</span>invSigmaSquare<span class="token punctuation">;</span>
+		<span class="token comment">// step5 离群点标记上，非离群点累加计算得分</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>chiSquare2<span class="token operator">&gt;</span>th<span class="token punctuation">)</span>	
+            bIn <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+        <span class="token keyword">else</span>
+            score <span class="token operator">+=</span> th <span class="token operator">-</span> chiSquare2<span class="token punctuation">;</span>
+
+        <span class="token keyword">if</span><span class="token punctuation">(</span>bIn<span class="token punctuation">)</span>
+            vbMatchesInliers<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token operator">=</span><span class="token boolean">true</span><span class="token punctuation">;</span>
+        <span class="token keyword">else</span>
+            vbMatchesInliers<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token operator">=</span><span class="token boolean">false</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">return</span> score<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>之后采用F和H分解得到R、t即可。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/49a07f9a43fbb3cee9a0b8a1bfcd30ce/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">数据分析使用pydotplus可视化决策树</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f21b64e7588c641683ff6188880b70f1/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Intel Realsense D435i各类标定教程</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

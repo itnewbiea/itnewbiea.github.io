@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>cilium ebpf helper函数bpf_redirect/peer/neigh - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="cilium ebpf helper函数bpf_redirect/peer/neigh" />
+<meta property="og:description" content="前面分析不同模式下报文路径时，用到了如下几个bpf helper函数，对转发性能提供了很大帮忙，这里分析下他们的
+实现原理，先概述下每个函数的作用
+bpf_redirect: 将报文重定向到指定接口，通过参数flags表示执行入向还是出向流程 bpf_redirect_peer: 将报文重定向到指定接口的peer，比较典型的是veth的peer，执行的是入向流程 bpf_redirect_neigh: 将报文重定向到指定接口，其中会查找路由表和邻居表后直接将报文从出接口发出 函数源码分析
+enum { BPF_F_INGRESS	= (1ULL &lt;&lt; 0), }; /* Internal, non-exposed redirect flags. */ enum { BPF_F_NEIGH	= (1ULL &lt;&lt; 1), BPF_F_PEER	= (1ULL &lt;&lt; 2), BPF_F_NEXTHOP	= (1ULL &lt;&lt; 3), #define BPF_F_REDIRECT_INTERNAL	(BPF_F_NEIGH | BPF_F_PEER | BPF_F_NEXTHOP) }; bpf_redirect
+设置接口索引和flags，如果flags为BPF_F_INGRESS，则将skb-&gt;dev设置为ifindex指定的dev，并将报文enqueue_to_backlog到cpu队列，下次软中断再处理报文，就像报文从ifindex指定的接口接收。如果不指定BPF_F_INGRESS，则执行dev_queue_xmit将报文从ifindex指定的接口发送出去
+BPF_CALL_2(bpf_redirect, u32, ifindex, u64, flags) { struct bpf_redirect_info *ri = this_cpu_ptr(&amp;bpf_redirect_info); if (unlikely(flags &amp; (~(BPF_F_INGRESS) | BPF_F_REDIRECT_INTERNAL))) return TC_ACT_SHOT; ri-&gt;flags = flags; ri-&gt;tgt_index = ifindex; return TC_ACT_REDIRECT; } bpf_redirect_peer" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/9ddec028333d322d740f6d8d379d7364/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-08-12T15:20:19+08:00" />
+<meta property="article:modified_time" content="2023-08-12T15:20:19+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">cilium ebpf helper函数bpf_redirect/peer/neigh</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>前面分析不同模式下报文路径时，用到了如下几个bpf helper函数，对转发性能提供了很大帮忙，这里分析下他们的<br> 实现原理，先概述下每个函数的作用</p> 
+<pre><code class="prism language-go">bpf_redirect<span class="token punctuation">:</span> 将报文重定向到指定接口，通过参数flags表示执行入向还是出向流程
+bpf_redirect_peer<span class="token punctuation">:</span> 将报文重定向到指定接口的peer，比较典型的是veth的peer，执行的是入向流程
+bpf_redirect_neigh<span class="token punctuation">:</span> 将报文重定向到指定接口，其中会查找路由表和邻居表后直接将报文从出接口发出
+</code></pre> 
+<p><strong>函数源码分析</strong></p> 
+<pre><code class="prism language-go">enum <span class="token punctuation">{<!-- --></span>
+	BPF_F_INGRESS			<span class="token operator">=</span> <span class="token punctuation">(</span>1ULL <span class="token operator">&lt;&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+<span class="token comment">/* Internal, non-exposed redirect flags. */</span>
+enum <span class="token punctuation">{<!-- --></span>
+	BPF_F_NEIGH	<span class="token operator">=</span> <span class="token punctuation">(</span>1ULL <span class="token operator">&lt;&lt;</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+	BPF_F_PEER	<span class="token operator">=</span> <span class="token punctuation">(</span>1ULL <span class="token operator">&lt;&lt;</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+	BPF_F_NEXTHOP	<span class="token operator">=</span> <span class="token punctuation">(</span>1ULL <span class="token operator">&lt;&lt;</span> <span class="token number">3</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+#define BPF_F_REDIRECT_INTERNAL	<span class="token punctuation">(</span>BPF_F_NEIGH <span class="token operator">|</span> BPF_F_PEER <span class="token operator">|</span> BPF_F_NEXTHOP<span class="token punctuation">)</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<p><strong>bpf_redirect</strong><br> 设置接口索引和flags，如果flags为BPF_F_INGRESS，则将skb-&gt;dev设置为ifindex指定的dev，并将报文enqueue_to_backlog到cpu队列，下次软中断再处理报文，就像报文从ifindex指定的接口接收。如果不指定BPF_F_INGRESS，则执行dev_queue_xmit将报文从ifindex指定的接口发送出去</p> 
+<pre><code class="prism language-go"><span class="token function">BPF_CALL_2</span><span class="token punctuation">(</span>bpf_redirect<span class="token punctuation">,</span> u32<span class="token punctuation">,</span> ifindex<span class="token punctuation">,</span> u64<span class="token punctuation">,</span> flags<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">struct</span> bpf_redirect_info <span class="token operator">*</span>ri <span class="token operator">=</span> <span class="token function">this_cpu_ptr</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>bpf_redirect_info<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">unlikely</span><span class="token punctuation">(</span>flags <span class="token operator">&amp;</span> <span class="token punctuation">(</span>~<span class="token punctuation">(</span>BPF_F_INGRESS<span class="token punctuation">)</span> <span class="token operator">|</span> BPF_F_REDIRECT_INTERNAL<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+		<span class="token keyword">return</span> TC_ACT_SHOT<span class="token punctuation">;</span>
+
+	ri<span class="token operator">-</span><span class="token operator">&gt;</span>flags <span class="token operator">=</span> flags<span class="token punctuation">;</span>
+	ri<span class="token operator">-</span><span class="token operator">&gt;</span>tgt_index <span class="token operator">=</span> ifindex<span class="token punctuation">;</span>
+
+	<span class="token keyword">return</span> TC_ACT_REDIRECT<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>bpf_redirect_peer</strong><br> 设置接口索引，并将ri-&gt;flags设置为BPF_F_PEER，参数flags只能为0</p> 
+<pre><code class="prism language-go"><span class="token function">BPF_CALL_2</span><span class="token punctuation">(</span>bpf_redirect_peer<span class="token punctuation">,</span> u32<span class="token punctuation">,</span> ifindex<span class="token punctuation">,</span> u64<span class="token punctuation">,</span> flags<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">struct</span> bpf_redirect_info <span class="token operator">*</span>ri <span class="token operator">=</span> <span class="token function">this_cpu_ptr</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>bpf_redirect_info<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">unlikely</span><span class="token punctuation">(</span>flags<span class="token punctuation">)</span><span class="token punctuation">)</span>
+		<span class="token keyword">return</span> TC_ACT_SHOT<span class="token punctuation">;</span>
+
+	ri<span class="token operator">-</span><span class="token operator">&gt;</span>flags <span class="token operator">=</span> BPF_F_PEER<span class="token punctuation">;</span>
+	ri<span class="token operator">-</span><span class="token operator">&gt;</span>tgt_index <span class="token operator">=</span> ifindex<span class="token punctuation">;</span>
+
+	<span class="token keyword">return</span> TC_ACT_REDIRECT<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>bpf_redirect_neigh</strong><br> 设置接口索引，邻居参数等</p> 
+<pre><code class="prism language-go"><span class="token function">BPF_CALL_4</span><span class="token punctuation">(</span>bpf_redirect_neigh<span class="token punctuation">,</span> u32<span class="token punctuation">,</span> ifindex<span class="token punctuation">,</span> <span class="token keyword">struct</span> bpf_redir_neigh <span class="token operator">*</span><span class="token punctuation">,</span> params<span class="token punctuation">,</span>
+	   <span class="token builtin">int</span><span class="token punctuation">,</span> plen<span class="token punctuation">,</span> u64<span class="token punctuation">,</span> flags<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">struct</span> bpf_redirect_info <span class="token operator">*</span>ri <span class="token operator">=</span> <span class="token function">this_cpu_ptr</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>bpf_redirect_info<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">unlikely</span><span class="token punctuation">(</span><span class="token punctuation">(</span>plen <span class="token operator">&amp;&amp;</span> plen <span class="token operator">&lt;</span> <span class="token function">sizeof</span><span class="token punctuation">(</span><span class="token operator">*</span>params<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">||</span> flags<span class="token punctuation">)</span><span class="token punctuation">)</span>
+		<span class="token keyword">return</span> TC_ACT_SHOT<span class="token punctuation">;</span>
+
+	ri<span class="token operator">-</span><span class="token operator">&gt;</span>flags <span class="token operator">=</span> BPF_F_NEIGH <span class="token operator">|</span> <span class="token punctuation">(</span>plen ? BPF_F_NEXTHOP <span class="token punctuation">:</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	ri<span class="token operator">-</span><span class="token operator">&gt;</span>tgt_index <span class="token operator">=</span> ifindex<span class="token punctuation">;</span>
+
+	<span class="token function">BUILD_BUG_ON</span><span class="token punctuation">(</span><span class="token function">sizeof</span><span class="token punctuation">(</span><span class="token keyword">struct</span> bpf_redir_neigh<span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token function">sizeof</span><span class="token punctuation">(</span><span class="token keyword">struct</span> bpf_nh_params<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>plen<span class="token punctuation">)</span>
+		<span class="token function">memcpy</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>ri<span class="token operator">-</span><span class="token operator">&gt;</span>nh<span class="token punctuation">,</span> params<span class="token punctuation">,</span> <span class="token function">sizeof</span><span class="token punctuation">(</span>ri<span class="token operator">-</span><span class="token operator">&gt;</span>nh<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">return</span> TC_ACT_REDIRECT<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>上面三个bpf helper函数实现很简单，只是设置flag和接口索引，并没有真正执行报文重定向的处理，但都会返回 TC_ACT_REDIRECT。</p> 
+<p>执行ebpf程序(调用上面的bpf helper函数)的函数会根据返回值进行处理，如果返回值是TC_ACT_REDIRECT才真正将报文进行重定向。<br> 执行epbf程序的位置有如下两个，即tc的入向和出向。<br> <strong>协议栈入向时执行tc上的ebpf程序</strong></p> 
+<pre><code class="prism language-go">static inline <span class="token keyword">struct</span> sk_buff <span class="token operator">*</span>
+<span class="token function">sch_handle_ingress</span><span class="token punctuation">(</span><span class="token keyword">struct</span> sk_buff <span class="token operator">*</span>skb<span class="token punctuation">,</span> <span class="token keyword">struct</span> packet_type <span class="token operator">*</span><span class="token operator">*</span>pt_prev<span class="token punctuation">,</span> <span class="token builtin">int</span> <span class="token operator">*</span>ret<span class="token punctuation">,</span>
+		   <span class="token keyword">struct</span> net_device <span class="token operator">*</span>orig_dev<span class="token punctuation">,</span> <span class="token builtin">bool</span> <span class="token operator">*</span>another<span class="token punctuation">)</span>
+	<span class="token keyword">switch</span> <span class="token punctuation">(</span><span class="token function">tcf_classify_ingress</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> miniq<span class="token operator">-</span><span class="token operator">&gt;</span>block<span class="token punctuation">,</span> miniq<span class="token operator">-</span><span class="token operator">&gt;</span>filter_list<span class="token punctuation">,</span> <span class="token operator">&amp;</span>cl_res<span class="token punctuation">,</span> <span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token operator">...</span>
+	如果返回值为 TC_ACT_REDIRECT，则将报文重定向到目标设备
+	<span class="token keyword">case</span> TC_ACT_REDIRECT<span class="token punctuation">:</span>
+		<span class="token comment">/* skb_mac_header check was done by cls/act_bpf, so
+		 * we can safely push the L2 header back before
+		 * redirecting to another netdev
+		 */</span>
+		<span class="token function">__skb_push</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> skb<span class="token operator">-</span><span class="token operator">&gt;</span>mac_len<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">skb_do_redirect</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token operator">-</span>EAGAIN<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token function">__skb_pull</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> skb<span class="token operator">-</span><span class="token operator">&gt;</span>mac_len<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token comment">//如果返回值为-EAGAIN，则设置another为true，表示要goto到another重新走一遍协议栈</span>
+			<span class="token comment">//只有经过bpf_redirect_peer设置后才会返回EAGAIN</span>
+			<span class="token operator">*</span>another <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+			<span class="token keyword">break</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+		<span class="token keyword">return</span> NULL<span class="token punctuation">;</span>
+	<span class="token operator">...</span>
+	<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>出向时执行tc上的ebpf程序</strong></p> 
+<pre><code class="prism language-go">sch_handle_egress
+	<span class="token comment">//执行ebpf程序</span>
+	<span class="token keyword">switch</span> <span class="token punctuation">(</span><span class="token function">tcf_classify</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> miniq<span class="token operator">-</span><span class="token operator">&gt;</span>filter_list<span class="token punctuation">,</span> <span class="token operator">&amp;</span>cl_res<span class="token punctuation">,</span> <span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token operator">...</span>
+	如果返回值为 TC_ACT_REDIRECT，则将报文重定向到目标设备
+	<span class="token keyword">case</span> TC_ACT_REDIRECT<span class="token punctuation">:</span>
+		<span class="token comment">/* No need to push/pop skb's mac_header here on egress! */</span>
+		<span class="token function">skb_do_redirect</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token operator">*</span>ret <span class="token operator">=</span> NET_XMIT_SUCCESS<span class="token punctuation">;</span>
+		<span class="token keyword">return</span> NULL<span class="token punctuation">;</span>
+	<span class="token keyword">default</span><span class="token punctuation">:</span>
+		<span class="token keyword">break</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+</code></pre> 
+<p>不管入向还是出向，最终都会调用skb_do_redirect，执行真正的重定向流程</p> 
+<pre><code class="prism language-go"><span class="token builtin">int</span> <span class="token function">skb_do_redirect</span><span class="token punctuation">(</span><span class="token keyword">struct</span> sk_buff <span class="token operator">*</span>skb<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">struct</span> bpf_redirect_info <span class="token operator">*</span>ri <span class="token operator">=</span> <span class="token function">this_cpu_ptr</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>bpf_redirect_info<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">struct</span> net <span class="token operator">*</span>net <span class="token operator">=</span> <span class="token function">dev_net</span><span class="token punctuation">(</span>skb<span class="token operator">-</span><span class="token operator">&gt;</span>dev<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">struct</span> net_device <span class="token operator">*</span>dev<span class="token punctuation">;</span>
+	u32 flags <span class="token operator">=</span> ri<span class="token operator">-</span><span class="token operator">&gt;</span>flags<span class="token punctuation">;</span>
+
+	<span class="token comment">//根据tgt_index获取dev</span>
+	dev <span class="token operator">=</span> <span class="token function">dev_get_by_index_rcu</span><span class="token punctuation">(</span>net<span class="token punctuation">,</span> ri<span class="token operator">-</span><span class="token operator">&gt;</span>tgt_index<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	ri<span class="token operator">-</span><span class="token operator">&gt;</span>tgt_index <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+	ri<span class="token operator">-</span><span class="token operator">&gt;</span>flags <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">unlikely</span><span class="token punctuation">(</span><span class="token operator">!</span>dev<span class="token punctuation">)</span><span class="token punctuation">)</span>
+		<span class="token keyword">goto</span> out_drop<span class="token punctuation">;</span>
+
+	<span class="token comment">//bpf_redirect_peer的处理</span>
+	<span class="token comment">//如果需要重定向到peer设备，则通过ndo_get_peer_dev(比如veth_peer_dev)获取peer的dev，赋值到skb-&gt;dev</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>flags <span class="token operator">&amp;</span> BPF_F_PEER<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">const</span> <span class="token keyword">struct</span> net_device_ops <span class="token operator">*</span>ops <span class="token operator">=</span> dev<span class="token operator">-</span><span class="token operator">&gt;</span>netdev_ops<span class="token punctuation">;</span>
+		<span class="token operator">...</span>
+		dev <span class="token operator">=</span> ops<span class="token operator">-</span><span class="token operator">&gt;</span><span class="token function">ndo_get_peer_dev</span><span class="token punctuation">(</span>dev<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token operator">...</span>
+		skb<span class="token operator">-</span><span class="token operator">&gt;</span>dev <span class="token operator">=</span> dev<span class="token punctuation">;</span>
+		<span class="token comment">//返回-EAGAIN，重新执行协议栈处理。</span>
+		<span class="token comment">//这里就能看出redirect_peer的优势，返回EAGAIN后，直接在本次软中断就能将报文送到pod内部处理，而redirect只能将报文</span>
+		<span class="token comment">//插入cpu的backlog队列，等待下次软中断的处理才能达到pod内部</span>
+		<span class="token keyword">return</span> <span class="token operator">-</span>EAGAIN<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">return</span> flags <span class="token operator">&amp;</span> BPF_F_NEIGH ?
+	       <span class="token function">__bpf_redirect_neigh</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> dev<span class="token punctuation">,</span> flags <span class="token operator">&amp;</span> BPF_F_NEXTHOP ?
+				    <span class="token operator">&amp;</span>ri<span class="token operator">-</span><span class="token operator">&gt;</span>nh <span class="token punctuation">:</span> NULL<span class="token punctuation">)</span> <span class="token punctuation">:</span>
+	       <span class="token function">__bpf_redirect</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> dev<span class="token punctuation">,</span> flags<span class="token punctuation">)</span><span class="token punctuation">;</span>
+out_drop<span class="token punctuation">:</span>
+	<span class="token function">kfree_skb</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">return</span> <span class="token operator">-</span>EINVAL<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>bpf_redirect的处理</strong></p> 
+<pre><code class="prism language-go">static <span class="token builtin">int</span> <span class="token function">__bpf_redirect</span><span class="token punctuation">(</span><span class="token keyword">struct</span> sk_buff <span class="token operator">*</span>skb<span class="token punctuation">,</span> <span class="token keyword">struct</span> net_device <span class="token operator">*</span>dev<span class="token punctuation">,</span> u32 flags<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">dev_is_mac_header_xmit</span><span class="token punctuation">(</span>dev<span class="token punctuation">)</span><span class="token punctuation">)</span>
+		<span class="token keyword">return</span> <span class="token function">__bpf_redirect_common</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> dev<span class="token punctuation">,</span> flags<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">else</span>
+		<span class="token keyword">return</span> <span class="token function">__bpf_redirect_no_mac</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> dev<span class="token punctuation">,</span> flags<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+static <span class="token builtin">int</span> <span class="token function">__bpf_redirect_common</span><span class="token punctuation">(</span><span class="token keyword">struct</span> sk_buff <span class="token operator">*</span>skb<span class="token punctuation">,</span> <span class="token keyword">struct</span> net_device <span class="token operator">*</span>dev<span class="token punctuation">,</span> u32 flags<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token comment">/* Verify that a link layer header is carried */</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">unlikely</span><span class="token punctuation">(</span>skb<span class="token operator">-</span><span class="token operator">&gt;</span>mac_header <span class="token operator">&gt;=</span> skb<span class="token operator">-</span><span class="token operator">&gt;</span>network_header<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">kfree_skb</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">return</span> <span class="token operator">-</span>ERANGE<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token function">bpf_push_mac_rcsum</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//如果flags指定了BPF_F_INGRESS，则执行__bpf_rx_skb，否则执行__bpf_tx_skb</span>
+	<span class="token keyword">return</span> flags <span class="token operator">&amp;</span> BPF_F_INGRESS ?
+	       <span class="token function">__bpf_rx_skb</span><span class="token punctuation">(</span>dev<span class="token punctuation">,</span> skb<span class="token punctuation">)</span> <span class="token punctuation">:</span> <span class="token function">__bpf_tx_skb</span><span class="token punctuation">(</span>dev<span class="token punctuation">,</span> skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>执行入向流程</p> 
+<pre><code class="prism language-go">static inline <span class="token builtin">int</span> <span class="token function">__bpf_rx_skb</span><span class="token punctuation">(</span><span class="token keyword">struct</span> net_device <span class="token operator">*</span>dev<span class="token punctuation">,</span> <span class="token keyword">struct</span> sk_buff <span class="token operator">*</span>skb<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">return</span> <span class="token function">dev_forward_skb</span><span class="token punctuation">(</span>dev<span class="token punctuation">,</span> skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token builtin">int</span> <span class="token function">dev_forward_skb</span><span class="token punctuation">(</span><span class="token keyword">struct</span> net_device <span class="token operator">*</span>dev<span class="token punctuation">,</span> <span class="token keyword">struct</span> sk_buff <span class="token operator">*</span>skb<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//先调用__dev_forward_skb清除skb中的信息，返回值为0，再调用netif_rx_internal将skb放入cpu的backlog队列</span>
+	<span class="token keyword">return</span> <span class="token function">__dev_forward_skb</span><span class="token punctuation">(</span>dev<span class="token punctuation">,</span> skb<span class="token punctuation">)</span> ?<span class="token punctuation">:</span> <span class="token function">netif_rx_internal</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token builtin">int</span> <span class="token function">__dev_forward_skb</span><span class="token punctuation">(</span><span class="token keyword">struct</span> net_device <span class="token operator">*</span>dev<span class="token punctuation">,</span> <span class="token keyword">struct</span> sk_buff <span class="token operator">*</span>skb<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token builtin">int</span> ret <span class="token operator">=</span> <span class="token function">____dev_forward_skb</span><span class="token punctuation">(</span>dev<span class="token punctuation">,</span> skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">likely</span><span class="token punctuation">(</span><span class="token operator">!</span>ret<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		skb<span class="token operator">-</span><span class="token operator">&gt;</span>protocol <span class="token operator">=</span> <span class="token function">eth_type_trans</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> dev<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token function">skb_postpull_rcsum</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> <span class="token function">eth_hdr</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">,</span> ETH_HLEN<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token keyword">return</span> ret<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+static __always_inline <span class="token builtin">int</span> <span class="token function">____dev_forward_skb</span><span class="token punctuation">(</span><span class="token keyword">struct</span> net_device <span class="token operator">*</span>dev<span class="token punctuation">,</span>
+					       <span class="token keyword">struct</span> sk_buff <span class="token operator">*</span>skb<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">skb_orphan_frags</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> GFP_ATOMIC<span class="token punctuation">)</span> <span class="token operator">||</span>
+	    <span class="token function">unlikely</span><span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">is_skb_forwardable</span><span class="token punctuation">(</span>dev<span class="token punctuation">,</span> skb<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">atomic_long_inc</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>dev<span class="token operator">-</span><span class="token operator">&gt;</span>rx_dropped<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token function">kfree_skb</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">return</span> NET_RX_DROP<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token comment">//清除skb中不必要的信息</span>
+	<span class="token function">skb_scrub_packet</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	skb<span class="token operator">-</span><span class="token operator">&gt;</span>priority <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+	<span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">/**
+ * skb_scrub_packet - scrub an skb
+ *
+ * @skb: buffer to clean
+ * @xnet: packet is crossing netns
+ *
+ * skb_scrub_packet can be used after encapsulating or decapsulting a packet
+ * into/from a tunnel. Some information have to be cleared during these
+ * operations.
+ * skb_scrub_packet can also be used to clean a skb before injecting it in
+ * another namespace (@xnet == true). We have to clear all information in the
+ * skb that could impact namespace isolation.
+ */</span>
+void <span class="token function">skb_scrub_packet</span><span class="token punctuation">(</span><span class="token keyword">struct</span> sk_buff <span class="token operator">*</span>skb<span class="token punctuation">,</span> <span class="token builtin">bool</span> xnet<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	skb<span class="token operator">-</span><span class="token operator">&gt;</span>pkt_type <span class="token operator">=</span> PACKET_HOST<span class="token punctuation">;</span>
+	skb<span class="token operator">-</span><span class="token operator">&gt;</span>skb_iif <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+	skb<span class="token operator">-</span><span class="token operator">&gt;</span>ignore_df <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+	<span class="token function">skb_dst_drop</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">skb_ext_reset</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">nf_reset_ct</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">nf_reset_trace</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+#ifdef CONFIG_NET_SWITCHDEV
+	skb<span class="token operator">-</span><span class="token operator">&gt;</span>offload_fwd_mark <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+	skb<span class="token operator">-</span><span class="token operator">&gt;</span>offload_l3_fwd_mark <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+#endif
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>xnet<span class="token punctuation">)</span>
+		<span class="token keyword">return</span><span class="token punctuation">;</span>
+
+	<span class="token function">ipvs_reset</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	skb<span class="token operator">-</span><span class="token operator">&gt;</span>mark <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+	skb<span class="token operator">-</span><span class="token operator">&gt;</span>tstamp <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>执行出向流程</p> 
+<pre><code class="prism language-go">static inline <span class="token builtin">int</span> <span class="token function">__bpf_tx_skb</span><span class="token punctuation">(</span><span class="token keyword">struct</span> net_device <span class="token operator">*</span>dev<span class="token punctuation">,</span> <span class="token keyword">struct</span> sk_buff <span class="token operator">*</span>skb<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token builtin">int</span> ret<span class="token punctuation">;</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">dev_xmit_recursion</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">net_crit_ratelimited</span><span class="token punctuation">(</span><span class="token string">"bpf: recursion limit reached on datapath, buggy bpf program?\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token function">kfree_skb</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">return</span> <span class="token operator">-</span>ENETDOWN<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	skb<span class="token operator">-</span><span class="token operator">&gt;</span>dev <span class="token operator">=</span> dev<span class="token punctuation">;</span>
+	skb<span class="token operator">-</span><span class="token operator">&gt;</span>tstamp <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+	<span class="token function">dev_xmit_recursion_inc</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//将报文从dev发送出去</span>
+	ret <span class="token operator">=</span> <span class="token function">dev_queue_xmit</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">dev_xmit_recursion_dec</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">return</span> ret<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>bpf_redirect_neigh的处理</strong></p> 
+<pre><code class="prism language-go">static <span class="token builtin">int</span> <span class="token function">__bpf_redirect_neigh</span><span class="token punctuation">(</span><span class="token keyword">struct</span> sk_buff <span class="token operator">*</span>skb<span class="token punctuation">,</span> <span class="token keyword">struct</span> net_device <span class="token operator">*</span>dev<span class="token punctuation">,</span>
+				<span class="token keyword">struct</span> bpf_nh_params <span class="token operator">*</span>nh<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">struct</span> ethhdr <span class="token operator">*</span>ethh <span class="token operator">=</span> <span class="token function">eth_hdr</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">unlikely</span><span class="token punctuation">(</span>skb<span class="token operator">-</span><span class="token operator">&gt;</span>mac_header <span class="token operator">&gt;=</span> skb<span class="token operator">-</span><span class="token operator">&gt;</span>network_header<span class="token punctuation">)</span><span class="token punctuation">)</span>
+		<span class="token keyword">goto</span> out<span class="token punctuation">;</span>
+	<span class="token function">bpf_push_mac_rcsum</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">is_multicast_ether_addr</span><span class="token punctuation">(</span>ethh<span class="token operator">-</span><span class="token operator">&gt;</span>h_dest<span class="token punctuation">)</span><span class="token punctuation">)</span>
+		<span class="token keyword">goto</span> out<span class="token punctuation">;</span>
+
+	<span class="token function">skb_pull</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> <span class="token function">sizeof</span><span class="token punctuation">(</span><span class="token operator">*</span>ethh<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">skb_unset_mac_header</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">skb_reset_network_header</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>skb<span class="token operator">-</span><span class="token operator">&gt;</span>protocol <span class="token operator">==</span> <span class="token function">htons</span><span class="token punctuation">(</span>ETH_P_IP<span class="token punctuation">)</span><span class="token punctuation">)</span>
+		<span class="token keyword">return</span> <span class="token function">__bpf_redirect_neigh_v4</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> dev<span class="token punctuation">,</span> nh<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>skb<span class="token operator">-</span><span class="token operator">&gt;</span>protocol <span class="token operator">==</span> <span class="token function">htons</span><span class="token punctuation">(</span>ETH_P_IPV6<span class="token punctuation">)</span><span class="token punctuation">)</span>
+		<span class="token keyword">return</span> <span class="token function">__bpf_redirect_neigh_v6</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> dev<span class="token punctuation">,</span> nh<span class="token punctuation">)</span><span class="token punctuation">;</span>
+out<span class="token punctuation">:</span>
+	<span class="token function">kfree_skb</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">return</span> <span class="token operator">-</span>ENOTSUPP<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+
+static <span class="token builtin">int</span> <span class="token function">__bpf_redirect_neigh_v4</span><span class="token punctuation">(</span><span class="token keyword">struct</span> sk_buff <span class="token operator">*</span>skb<span class="token punctuation">,</span> <span class="token keyword">struct</span> net_device <span class="token operator">*</span>dev<span class="token punctuation">,</span>
+				   <span class="token keyword">struct</span> bpf_nh_params <span class="token operator">*</span>nh<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">const</span> <span class="token keyword">struct</span> iphdr <span class="token operator">*</span>ip4h <span class="token operator">=</span> <span class="token function">ip_hdr</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">struct</span> net <span class="token operator">*</span>net <span class="token operator">=</span> <span class="token function">dev_net</span><span class="token punctuation">(</span>dev<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token builtin">int</span> err<span class="token punctuation">,</span> ret <span class="token operator">=</span> NET_XMIT_DROP<span class="token punctuation">;</span>
+
+	<span class="token comment">//如果没有指定下一跳信息，则查找路由表</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>nh<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">struct</span> flowi4 fl4 <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token punctuation">.</span>flowi4_flags <span class="token operator">=</span> FLOWI_FLAG_ANYSRC<span class="token punctuation">,</span>
+			<span class="token punctuation">.</span>flowi4_mark  <span class="token operator">=</span> skb<span class="token operator">-</span><span class="token operator">&gt;</span>mark<span class="token punctuation">,</span>
+			<span class="token punctuation">.</span>flowi4_tos   <span class="token operator">=</span> <span class="token function">RT_TOS</span><span class="token punctuation">(</span>ip4h<span class="token operator">-</span><span class="token operator">&gt;</span>tos<span class="token punctuation">)</span><span class="token punctuation">,</span>
+			<span class="token punctuation">.</span>flowi4_oif   <span class="token operator">=</span> dev<span class="token operator">-</span><span class="token operator">&gt;</span>ifindex<span class="token punctuation">,</span>
+			<span class="token punctuation">.</span>flowi4_proto <span class="token operator">=</span> ip4h<span class="token operator">-</span><span class="token operator">&gt;</span>protocol<span class="token punctuation">,</span>
+			<span class="token punctuation">.</span>daddr	      <span class="token operator">=</span> ip4h<span class="token operator">-</span><span class="token operator">&gt;</span>daddr<span class="token punctuation">,</span>
+			<span class="token punctuation">.</span>saddr	      <span class="token operator">=</span> ip4h<span class="token operator">-</span><span class="token operator">&gt;</span>saddr<span class="token punctuation">,</span>
+		<span class="token punctuation">}</span><span class="token punctuation">;</span>
+		<span class="token keyword">struct</span> rtable <span class="token operator">*</span>rt<span class="token punctuation">;</span>
+
+		rt <span class="token operator">=</span> <span class="token function">ip_route_output_flow</span><span class="token punctuation">(</span>net<span class="token punctuation">,</span> <span class="token operator">&amp;</span>fl4<span class="token punctuation">,</span> NULL<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">IS_ERR</span><span class="token punctuation">(</span>rt<span class="token punctuation">)</span><span class="token punctuation">)</span>
+			<span class="token keyword">goto</span> out_drop<span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>rt<span class="token operator">-</span><span class="token operator">&gt;</span>rt_type <span class="token operator">!=</span> RTN_UNICAST <span class="token operator">&amp;&amp;</span> rt<span class="token operator">-</span><span class="token operator">&gt;</span>rt_type <span class="token operator">!=</span> RTN_LOCAL<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token function">ip_rt_put</span><span class="token punctuation">(</span>rt<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token keyword">goto</span> out_drop<span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+
+		<span class="token comment">//将路由信息保存到skb</span>
+		<span class="token function">skb_dst_set</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> <span class="token operator">&amp;</span>rt<span class="token operator">-</span><span class="token operator">&gt;</span>dst<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	err <span class="token operator">=</span> <span class="token function">bpf_out_neigh_v4</span><span class="token punctuation">(</span>net<span class="token punctuation">,</span> skb<span class="token punctuation">,</span> dev<span class="token punctuation">,</span> nh<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">unlikely</span><span class="token punctuation">(</span><span class="token function">net_xmit_eval</span><span class="token punctuation">(</span>err<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+		dev<span class="token operator">-</span><span class="token operator">&gt;</span>stats<span class="token punctuation">.</span>tx_errors<span class="token operator">++</span><span class="token punctuation">;</span>
+	<span class="token keyword">else</span>
+		ret <span class="token operator">=</span> NET_XMIT_SUCCESS<span class="token punctuation">;</span>
+	<span class="token keyword">goto</span> out_xmit<span class="token punctuation">;</span>
+out_drop<span class="token punctuation">:</span>
+	dev<span class="token operator">-</span><span class="token operator">&gt;</span>stats<span class="token punctuation">.</span>tx_errors<span class="token operator">++</span><span class="token punctuation">;</span>
+	<span class="token function">kfree_skb</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+out_xmit<span class="token punctuation">:</span>
+	<span class="token keyword">return</span> ret<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+static <span class="token builtin">int</span> <span class="token function">bpf_out_neigh_v4</span><span class="token punctuation">(</span><span class="token keyword">struct</span> net <span class="token operator">*</span>net<span class="token punctuation">,</span> <span class="token keyword">struct</span> sk_buff <span class="token operator">*</span>skb<span class="token punctuation">,</span>
+			    <span class="token keyword">struct</span> net_device <span class="token operator">*</span>dev<span class="token punctuation">,</span> <span class="token keyword">struct</span> bpf_nh_params <span class="token operator">*</span>nh<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	u32 hh_len <span class="token operator">=</span> <span class="token function">LL_RESERVED_SPACE</span><span class="token punctuation">(</span>dev<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">struct</span> neighbour <span class="token operator">*</span>neigh<span class="token punctuation">;</span>
+	<span class="token builtin">bool</span> is_v6gw <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">dev_xmit_recursion</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">net_crit_ratelimited</span><span class="token punctuation">(</span><span class="token string">"bpf: recursion limit reached on datapath, buggy bpf program?\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">goto</span> out_drop<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	skb<span class="token operator">-</span><span class="token operator">&gt;</span>dev <span class="token operator">=</span> dev<span class="token punctuation">;</span>
+	skb<span class="token operator">-</span><span class="token operator">&gt;</span>tstamp <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">unlikely</span><span class="token punctuation">(</span><span class="token function">skb_headroom</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span> <span class="token operator">&lt;</span> hh_len <span class="token operator">&amp;&amp;</span> dev<span class="token operator">-</span><span class="token operator">&gt;</span>header_ops<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">struct</span> sk_buff <span class="token operator">*</span>skb2<span class="token punctuation">;</span>
+
+		skb2 <span class="token operator">=</span> <span class="token function">skb_realloc_headroom</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> hh_len<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">unlikely</span><span class="token punctuation">(</span><span class="token operator">!</span>skb2<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token function">kfree_skb</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token keyword">return</span> <span class="token operator">-</span>ENOMEM<span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>skb<span class="token operator">-</span><span class="token operator">&gt;</span>sk<span class="token punctuation">)</span>
+			<span class="token function">skb_set_owner_w</span><span class="token punctuation">(</span>skb2<span class="token punctuation">,</span> skb<span class="token operator">-</span><span class="token operator">&gt;</span>sk<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token function">consume_skb</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		skb <span class="token operator">=</span> skb2<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token function">rcu_read_lock_bh</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//没指定下一跳信息的情况下，根据上一步查到的路由信息进行处理</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>nh<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">struct</span> dst_entry <span class="token operator">*</span>dst <span class="token operator">=</span> <span class="token function">skb_dst</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">struct</span> rtable <span class="token operator">*</span>rt <span class="token operator">=</span> <span class="token function">container_of</span><span class="token punctuation">(</span>dst<span class="token punctuation">,</span> <span class="token keyword">struct</span> rtable<span class="token punctuation">,</span> dst<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+		neigh <span class="token operator">=</span> <span class="token function">ip_neigh_for_gw</span><span class="token punctuation">(</span>rt<span class="token punctuation">,</span> skb<span class="token punctuation">,</span> <span class="token operator">&amp;</span>is_v6gw<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>nh<span class="token operator">-</span><span class="token operator">&gt;</span>nh_family <span class="token operator">==</span> AF_INET6<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		neigh <span class="token operator">=</span> <span class="token function">ip_neigh_gw6</span><span class="token punctuation">(</span>dev<span class="token punctuation">,</span> <span class="token operator">&amp;</span>nh<span class="token operator">-</span><span class="token operator">&gt;</span>ipv6_nh<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		is_v6gw <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>nh<span class="token operator">-</span><span class="token operator">&gt;</span>nh_family <span class="token operator">==</span> AF_INET<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">//查找邻居表，如果查不到则创建对应的邻居表项</span>
+		neigh <span class="token operator">=</span> <span class="token function">ip_neigh_gw4</span><span class="token punctuation">(</span>dev<span class="token punctuation">,</span> nh<span class="token operator">-</span><span class="token operator">&gt;</span>ipv4_nh<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">rcu_read_unlock_bh</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">goto</span> out_drop<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">likely</span><span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">IS_ERR</span><span class="token punctuation">(</span>neigh<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token builtin">int</span> ret<span class="token punctuation">;</span>
+
+		<span class="token function">sock_confirm_neigh</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> neigh<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token function">dev_xmit_recursion_inc</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">//执行邻居子系统流程，如果有neigh状态为NUD_CONNECTED，则直接调用dev_queue_xmit发送报文，</span>
+		<span class="token comment">//否则需要先将报文缓存下来，发送arp请求学习对端mac</span>
+		ret <span class="token operator">=</span> <span class="token function">neigh_output</span><span class="token punctuation">(</span>neigh<span class="token punctuation">,</span> skb<span class="token punctuation">,</span> is_v6gw<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token function">dev_xmit_recursion_dec</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token function">rcu_read_unlock_bh</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">return</span> ret<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token function">rcu_read_unlock_bh</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+out_drop<span class="token punctuation">:</span>
+	<span class="token function">kfree_skb</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">return</span> <span class="token operator">-</span>ENETDOWN<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+static inline <span class="token keyword">struct</span> neighbour <span class="token operator">*</span><span class="token function">ip_neigh_for_gw</span><span class="token punctuation">(</span><span class="token keyword">struct</span> rtable <span class="token operator">*</span>rt<span class="token punctuation">,</span>
+						<span class="token keyword">struct</span> sk_buff <span class="token operator">*</span>skb<span class="token punctuation">,</span>
+						<span class="token builtin">bool</span> <span class="token operator">*</span>is_v6gw<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">struct</span> net_device <span class="token operator">*</span>dev <span class="token operator">=</span> rt<span class="token operator">-</span><span class="token operator">&gt;</span>dst<span class="token punctuation">.</span>dev<span class="token punctuation">;</span>
+	<span class="token keyword">struct</span> neighbour <span class="token operator">*</span>neigh<span class="token punctuation">;</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">likely</span><span class="token punctuation">(</span>rt<span class="token operator">-</span><span class="token operator">&gt;</span>rt_gw_family <span class="token operator">==</span> AF_INET<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		neigh <span class="token operator">=</span> <span class="token function">ip_neigh_gw4</span><span class="token punctuation">(</span>dev<span class="token punctuation">,</span> rt<span class="token operator">-</span><span class="token operator">&gt;</span>rt_gw4<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>rt<span class="token operator">-</span><span class="token operator">&gt;</span>rt_gw_family <span class="token operator">==</span> AF_INET6<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		neigh <span class="token operator">=</span> <span class="token function">ip_neigh_gw6</span><span class="token punctuation">(</span>dev<span class="token punctuation">,</span> <span class="token operator">&amp;</span>rt<span class="token operator">-</span><span class="token operator">&gt;</span>rt_gw6<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token operator">*</span>is_v6gw <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+		neigh <span class="token operator">=</span> <span class="token function">ip_neigh_gw4</span><span class="token punctuation">(</span>dev<span class="token punctuation">,</span> <span class="token function">ip_hdr</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token operator">-</span><span class="token operator">&gt;</span>daddr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">return</span> neigh<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+static inline <span class="token keyword">struct</span> neighbour <span class="token operator">*</span><span class="token function">ip_neigh_gw4</span><span class="token punctuation">(</span><span class="token keyword">struct</span> net_device <span class="token operator">*</span>dev<span class="token punctuation">,</span>
+					     __be32 daddr<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">struct</span> neighbour <span class="token operator">*</span>neigh<span class="token punctuation">;</span>
+
+	<span class="token comment">//查找邻居表</span>
+	neigh <span class="token operator">=</span> <span class="token function">__ipv4_neigh_lookup_noref</span><span class="token punctuation">(</span>dev<span class="token punctuation">,</span> daddr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">unlikely</span><span class="token punctuation">(</span><span class="token operator">!</span>neigh<span class="token punctuation">)</span><span class="token punctuation">)</span>
+		<span class="token comment">//查找失败，创建邻居表项</span>
+		neigh <span class="token operator">=</span> <span class="token function">__neigh_create</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>arp_tbl<span class="token punctuation">,</span> <span class="token operator">&amp;</span>daddr<span class="token punctuation">,</span> dev<span class="token punctuation">,</span> <span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">return</span> neigh<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+static inline <span class="token builtin">int</span> <span class="token function">neigh_output</span><span class="token punctuation">(</span><span class="token keyword">struct</span> neighbour <span class="token operator">*</span>n<span class="token punctuation">,</span> <span class="token keyword">struct</span> sk_buff <span class="token operator">*</span>skb<span class="token punctuation">,</span> <span class="token builtin">bool</span> skip_cache<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">const</span> <span class="token keyword">struct</span> hh_cache <span class="token operator">*</span>hh <span class="token operator">=</span> <span class="token operator">&amp;</span>n<span class="token operator">-</span><span class="token operator">&gt;</span>hh<span class="token punctuation">;</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>n<span class="token operator">-</span><span class="token operator">&gt;</span>nud_state <span class="token operator">&amp;</span> NUD_CONNECTED<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> hh<span class="token operator">-</span><span class="token operator">&gt;</span>hh_len <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span>skip_cache<span class="token punctuation">)</span>
+		<span class="token keyword">return</span> <span class="token function">neigh_hh_output</span><span class="token punctuation">(</span>hh<span class="token punctuation">,</span> skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">else</span>
+		<span class="token keyword">return</span> n<span class="token operator">-</span><span class="token operator">&gt;</span><span class="token function">output</span><span class="token punctuation">(</span>n<span class="token punctuation">,</span> skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+</code></pre>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/c0948e4f0b25d809c53a7fd818476a80/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">tp6 v3微信退款</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/83388a58c9c60cc6f29891b7c5dc2c09/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">c&#43;&#43; cpp cmake opencv 深度学习模型 推理 前向部署 代码示例示意</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

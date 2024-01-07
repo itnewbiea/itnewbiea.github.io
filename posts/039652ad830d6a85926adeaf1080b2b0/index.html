@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Cilium data path analyse（VxLAN &amp; Host Routing with Legacy） - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Cilium data path analyse（VxLAN &amp; Host Routing with Legacy）" />
+<meta property="og:description" content="环境准备 Node root@node1:~# kubectl get nodes -owide NAME STATUS ROLES AGE VERSION INTERNAL-IP EXTERNAL-IP OS-IMAGE KERNEL-VERSION CONTAINER-RUNTIME node1 Ready control-plane 13d v1.24.6 192.168.64.8 &lt;none&gt; Ubuntu 22.04.2 LTS 5.15.0-75-generic containerd://1.6.8 node2 Ready control-plane 13d v1.24.6 192.168.64.9 &lt;none&gt; Ubuntu 22.04.2 LTS 5.15.0-75-generic containerd://1.6.8 node3 Ready &lt;none&gt; 13d v1.24.6 192.168.64.10 &lt;none&gt; Ubuntu 22.04.2 LTS 5.15.0-75-generic containerd://1.6.8 Host Routing Mode root@node2:/home/cilium# cilium status KVStore: Ok etcd: 3/3 connected, lease-ID=797e8963af868a82, lock lease-ID=3f888935026348b5, has-quorum=true: https://192.168.64.10:2379 - 3." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/039652ad830d6a85926adeaf1080b2b0/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-07-22T15:08:12+08:00" />
+<meta property="article:modified_time" content="2023-07-22T15:08:12+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Cilium data path analyse（VxLAN &amp; Host Routing with Legacy）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h3><a id="_0"></a>环境准备</h3> 
+<h4><a id="Node_2"></a>Node</h4> 
+<pre><code class="prism language-shell">root@node1:~<span class="token comment"># kubectl get nodes -owide</span>
+NAME    STATUS   ROLES           AGE   VERSION   INTERNAL-IP     EXTERNAL-IP   OS-IMAGE             KERNEL-VERSION      CONTAINER-RUNTIME
+node1   Ready    control-plane   13d   v1.24.6   <span class="token number">192.168</span>.64.8    <span class="token operator">&lt;</span>none<span class="token operator">&gt;</span>        Ubuntu <span class="token number">22.04</span>.2 LTS   <span class="token number">5.15</span>.0-75-generic   containerd://1.6.8
+node2   Ready    control-plane   13d   v1.24.6   <span class="token number">192.168</span>.64.9    <span class="token operator">&lt;</span>none<span class="token operator">&gt;</span>        Ubuntu <span class="token number">22.04</span>.2 LTS   <span class="token number">5.15</span>.0-75-generic   containerd://1.6.8
+node3   Ready    <span class="token operator">&lt;</span>none<span class="token operator">&gt;</span>          13d   v1.24.6   <span class="token number">192.168</span>.64.10   <span class="token operator">&lt;</span>none<span class="token operator">&gt;</span>        Ubuntu <span class="token number">22.04</span>.2 LTS   <span class="token number">5.15</span>.0-75-generic   containerd://1.6.8
+</code></pre> 
+<h4><a id="Host_Routing_Mode_11"></a>Host Routing Mode</h4> 
+<pre><code class="prism language-shell">root@node2:/home/cilium<span class="token comment"># cilium status</span>
+KVStore:                 Ok   etcd: <span class="token number">3</span>/3 connected, lease-ID<span class="token operator">=</span>797e8963af868a82, lock lease-ID<span class="token operator">=</span>3f888935026348b5, has-quorum<span class="token operator">=</span>true: https://192.168.64.10:2379 - <span class="token number">3.5</span>.4<span class="token punctuation">;</span> https://192.168.64.8:2379 - <span class="token number">3.5</span>.4 <span class="token punctuation">(</span>Leader<span class="token punctuation">)</span><span class="token punctuation">;</span> https://192.168.64.9:2379 - <span class="token number">3.5</span>.4
+Kubernetes:              Ok   <span class="token number">1.24</span> <span class="token punctuation">(</span>v1.24.6<span class="token punctuation">)</span> <span class="token punctuation">[</span>linux/amd64<span class="token punctuation">]</span>
+Kubernetes APIs:         <span class="token punctuation">[</span><span class="token string">"cilium/v2::CiliumClusterwideNetworkPolicy"</span>, <span class="token string">"cilium/v2::CiliumNetworkPolicy"</span>, <span class="token string">"core/v1::Namespace"</span>, <span class="token string">"core/v1::Node"</span>, <span class="token string">"core/v1::Pods"</span>, <span class="token string">"core/v1::Service"</span>, <span class="token string">"discovery/v1::EndpointSlice"</span>, <span class="token string">"networking.k8s.io/v1::NetworkPolicy"</span><span class="token punctuation">]</span>
+KubeProxyReplacement:    Probe   <span class="token punctuation">[</span>enp0s2 <span class="token number">192.168</span>.64.9<span class="token punctuation">]</span>
+Host firewall:           Disabled
+CNI Chaining:            none
+Cilium:                  Ok   <span class="token number">1.12</span>.1 <span class="token punctuation">(</span>v1.12.1-4c9a630<span class="token punctuation">)</span>
+NodeMonitor:             Disabled
+IPAM:                    IPv4: <span class="token number">5</span>/254 allocated from <span class="token number">10.233</span>.65.0/24, 
+BandwidthManager:        Disabled
+Host Routing:            Legacy <span class="token comment"># 这里模式改成Legacy</span>
+Masquerading:            IPTables <span class="token punctuation">[</span>IPv4: Enabled, IPv6: Disabled<span class="token punctuation">]</span>
+Controller Status:       <span class="token number">39</span>/39 healthy
+Proxy Status:            OK, <span class="token function">ip</span> <span class="token number">10.233</span>.65.227, <span class="token number">0</span> redirects active on ports <span class="token number">10000</span>-20000
+Global Identity Range:   min <span class="token number">256</span>, max <span class="token number">65535</span>
+Hubble:                  Disabled
+Encryption:              Disabled
+Cluster health:                Warning   cilium-health daemon unreachable
+</code></pre> 
+<h3><a id="Data_Path_Analyse_34"></a>Data Path Analyse</h3> 
+<h3><a id="Same_Node_36"></a>Same Node</h3> 
+<pre><code class="prism language-shell">root@node1:~<span class="token comment"># kubectl get po -owide</span>
+NAME                                READY   STATUS    RESTARTS       AGE     IP              NODE    NOMINATED NODE   READINESS GATES
+busybox-5587dd9dcc-8x25g            <span class="token number">1</span>/1     Running   <span class="token number">2</span> <span class="token punctuation">(</span>2d2h ago<span class="token punctuation">)</span>   5d20h   <span class="token number">10.233</span>.64.174   node1   <span class="token operator">&lt;</span>none<span class="token operator">&gt;</span>           <span class="token operator">&lt;</span>none<span class="token operator">&gt;</span>
+busybox-5587dd9dcc-glk9p            <span class="token number">1</span>/1     Running   <span class="token number">2</span> <span class="token punctuation">(</span>2d2h ago<span class="token punctuation">)</span>   5d20h   <span class="token number">10.233</span>.66.244   node3   <span class="token operator">&lt;</span>none<span class="token operator">&gt;</span>           <span class="token operator">&lt;</span>none<span class="token operator">&gt;</span>
+busybox-5587dd9dcc-mnn8h            <span class="token number">1</span>/1     Running   <span class="token number">2</span> <span class="token punctuation">(</span>2d2h ago<span class="token punctuation">)</span>   5d20h   <span class="token number">10.233</span>.65.192   node2   <span class="token operator">&lt;</span>none<span class="token operator">&gt;</span>           <span class="token operator">&lt;</span>none<span class="token operator">&gt;</span>
+nginx-deployment-669895d846-bn9v7   <span class="token number">1</span>/1     Running   <span class="token number">0</span>              9d      <span class="token number">10.233</span>.65.7     node2   <span class="token operator">&lt;</span>none<span class="token operator">&gt;</span>           <span class="token operator">&lt;</span>none<span class="token operator">&gt;</span>
+</code></pre> 
+<h4><a id="node2busyboxping_node2nginx_46"></a>实验目的是在node2上的busybox中ping node2上的nginx服务并分析数据流向</h4> 
+<pre><code class="prism language-shell"><span class="token comment"># node2 上的 busybox pod</span>
+root@node2:~<span class="token comment"># crictl ps | grep busybox</span>
+2f538b17b682f       a416a98b71e22       <span class="token number">2</span> days ago          Running             busybox                   <span class="token number">2</span>                   264de6e9b5dcc       busybox-5587dd9dcc-mnn8h
+<span class="token comment"># 获取busybox的网络命名空间</span>
+root@node2:~<span class="token comment"># crictl inspect 2f538b17b682f | grep proc </span>
+            <span class="token string">"/proc/acpi"</span>,
+            <span class="token string">"/proc/kcore"</span>,
+            <span class="token string">"/proc/keys"</span>,
+            <span class="token string">"/proc/latency_stats"</span>,
+            <span class="token string">"/proc/timer_list"</span>,
+            <span class="token string">"/proc/timer_stats"</span>,
+            <span class="token string">"/proc/sched_debug"</span>,
+            <span class="token string">"/proc/scsi"</span>,
+            <span class="token string">"/proc/asound"</span>,
+            <span class="token string">"/proc/bus"</span>,
+            <span class="token string">"/proc/fs"</span>,
+            <span class="token string">"/proc/irq"</span>,
+            <span class="token string">"/proc/sys"</span>,
+            <span class="token string">"/proc/sysrq-trigger"</span>
+      <span class="token string">"process"</span><span class="token builtin class-name">:</span> <span class="token punctuation">{<!-- --></span>
+          <span class="token string">"destination"</span><span class="token builtin class-name">:</span> <span class="token string">"/proc"</span>,
+          <span class="token string">"type"</span><span class="token builtin class-name">:</span> <span class="token string">"proc"</span>,
+          <span class="token string">"source"</span><span class="token builtin class-name">:</span> <span class="token string">"proc"</span>,
+            <span class="token string">"path"</span><span class="token builtin class-name">:</span> <span class="token string">"/proc/448037/ns/ipc"</span>
+            <span class="token string">"path"</span><span class="token builtin class-name">:</span> <span class="token string">"/proc/448037/ns/uts"</span>
+            <span class="token string">"path"</span><span class="token builtin class-name">:</span> <span class="token string">"/proc/448037/ns/net"</span>
+          <span class="token string">"/proc/acpi"</span>,
+          <span class="token string">"/proc/kcore"</span>,
+          <span class="token string">"/proc/keys"</span>,
+          <span class="token string">"/proc/latency_stats"</span>,
+          <span class="token string">"/proc/timer_list"</span>,
+          <span class="token string">"/proc/timer_stats"</span>,
+          <span class="token string">"/proc/sched_debug"</span>,
+          <span class="token string">"/proc/scsi"</span>,
+          <span class="token string">"/proc/asound"</span>,
+          <span class="token string">"/proc/bus"</span>,
+          <span class="token string">"/proc/fs"</span>,
+          <span class="token string">"/proc/irq"</span>,
+          <span class="token string">"/proc/sys"</span>,
+          <span class="token string">"/proc/sysrq-trigger"</span>
+        
+<span class="token comment"># 进入busybox的网络命名空间</span>
+root@node2:~<span class="token comment"># nsenter -n -t 448037 -u bash</span>
+<span class="token comment"># 查看busybox的网卡信息和root命名空间一端的虚拟网卡ifindex</span>
+root@busybox-5587dd9dcc-mnn8h:~<span class="token comment"># ip a</span>
+<span class="token number">1</span>: lo: <span class="token operator">&lt;</span>LOOPBACK,UP,LOWER_UP<span class="token operator">&gt;</span> mtu <span class="token number">65536</span> qdisc noqueue state UNKNOWN group default qlen <span class="token number">1000</span>
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet <span class="token number">127.0</span>.0.1/8 scope <span class="token function">host</span> lo
+       valid_lft forever preferred_lft forever
+    inet6 ::1/128 scope <span class="token function">host</span> 
+       valid_lft forever preferred_lft forever
+<span class="token number">30</span>: eth0@if31: <span class="token operator">&lt;</span>BROADCAST,MULTICAST,UP,LOWER_UP<span class="token operator">&gt;</span> mtu <span class="token number">1500</span> qdisc noqueue state UP group default qlen <span class="token number">1000</span>
+    link/ether de:92:74:30:23:ff brd ff:ff:ff:ff:ff:ff link-netnsid <span class="token number">0</span>
+    inet <span class="token number">10.233</span>.65.192/32 scope global eth0
+       valid_lft forever preferred_lft forever
+    inet6 fe80::dc92:74ff:fe30:23ff/64 scope <span class="token function">link</span> 
+       valid_lft forever preferred_lft forever
+       
+<span class="token comment"># 查看路由信息</span>
+root@busybox-5587dd9dcc-mnn8h:~<span class="token comment"># ip route</span>
+default via <span class="token number">10.233</span>.65.227 dev eth0 mtu <span class="token number">1450</span> 
+<span class="token number">10.233</span>.65.227 dev eth0 scope <span class="token function">link</span>
+
+<span class="token comment"># 查看eth0 veth pair的lxc网卡信息</span>
+root@busybox-5587dd9dcc-mnn8h:~<span class="token comment"># ethtool -S eth0</span>
+NIC statistics:
+     peer_ifindex: <span class="token number">31</span>
+     rx_queue_0_xdp_packets: <span class="token number">0</span>
+     rx_queue_0_xdp_bytes: <span class="token number">0</span>
+     rx_queue_0_drops: <span class="token number">0</span>
+     rx_queue_0_xdp_redirect: <span class="token number">0</span>
+     rx_queue_0_xdp_drops: <span class="token number">0</span>
+     rx_queue_0_xdp_tx: <span class="token number">0</span>
+     rx_queue_0_xdp_tx_errors: <span class="token number">0</span>
+     tx_queue_0_xdp_xmit: <span class="token number">0</span>
+     tx_queue_0_xdp_xmit_errors: <span class="token number">0</span>
+<span class="token comment"># root命名空间一端busybox的虚拟网卡</span>
+root@node2:~<span class="token comment"># ip a | grep 31</span>
+<span class="token number">31</span>: lxccea7daed89b0@if30: <span class="token operator">&lt;</span>BROADCAST,MULTICAST,UP,LOWER_UP<span class="token operator">&gt;</span> mtu <span class="token number">1500</span> qdisc noqueue state UP group default qlen <span class="token number">1000</span>
+    link/ether 1a:a8:3d:a8:c3:e9 brd ff:ff:ff:ff:ff:ff link-netns cni-82033108-1cad-7e52-eb96-914074d3efa6
+    
+<span class="token comment"># 查看改网卡上ingress方向的tc程序</span>
+root@node2:~<span class="token comment"># tc filter show dev lxccea7daed89b0 ingress</span>
+filter protocol all pref <span class="token number">1</span> bpf chain <span class="token number">0</span> 
+filter protocol all pref <span class="token number">1</span> bpf chain <span class="token number">0</span> handle 0x1 bpf_lxc.o:<span class="token punctuation">[</span>from-container<span class="token punctuation">]</span> direct-action not_in_hw <span class="token function">id</span> <span class="token number">31686</span> tag 2678facd09e74363 jited 
+
+
+<span class="token comment"># 添加iptables trace 规则用于观察数据包经过iptables的处理</span>
+root@node2:~<span class="token comment"># iptables -t raw -I PREROUTING -p icmp -j TRACE</span>
+<span class="token comment"># 然后就可以观察日志</span>
+root@node2:~<span class="token comment"># tail -f /var/log/message</span>
+<span class="token comment"># 删除上面的iptables规则</span>
+root@node2:~<span class="token comment"># iptables -t raw -D PREROUTING 1</span>
+
+<span class="token comment"># 抓包经过lxccea7daed89b0的流量数据</span>
+root@node2:~<span class="token comment"># tcpdump -pne -i lxccea7daed89b0</span>
+
+<span class="token comment"># 抓包经过eth0的流量数据</span>
+root@busybox-5587dd9dcc-mnn8h:~<span class="token comment"># tcpdump -pne -i eth0</span>
+tcpdump: verbose output suppressed, use -v<span class="token punctuation">[</span>v<span class="token punctuation">]</span><span class="token punctuation">..</span>. <span class="token keyword">for</span> full protocol decode
+listening on eth0, link-type EN10MB <span class="token punctuation">(</span>Ethernet<span class="token punctuation">)</span>, snapshot length <span class="token number">262144</span> bytes
+
+<span class="token comment"># 查看node2上cilium-agent管理的端点信息，其中id为3508是node2上busybox的端点信息</span>
+root@node2:/home/cilium<span class="token comment"># cilium bpf endpoint list</span>
+IP ADDRESS        LOCAL ENDPOINT INFO
+<span class="token number">192.168</span>.64.9:0    <span class="token punctuation">(</span>localhost<span class="token punctuation">)</span>                                                                         
+<span class="token number">10.233</span>.65.7:0     <span class="token assign-left variable">id</span><span class="token operator">=</span><span class="token number">226</span>   <span class="token assign-left variable">flags</span><span class="token operator">=</span>0x0000 <span class="token assign-left variable">ifindex</span><span class="token operator">=</span><span class="token number">29</span>  <span class="token assign-left variable">mac</span><span class="token operator">=</span>2A:F9:C2:40:CB:5A <span class="token assign-left variable">nodemac</span><span class="token operator">=</span>DA:37:5B:AC:21:F2   
+<span class="token number">10.233</span>.65.227:0   <span class="token punctuation">(</span>localhost<span class="token punctuation">)</span>                                                                         
+<span class="token number">10.233</span>.65.41:0    <span class="token assign-left variable">id</span><span class="token operator">=</span><span class="token number">2246</span>  <span class="token assign-left variable">flags</span><span class="token operator">=</span>0x0000 <span class="token assign-left variable">ifindex</span><span class="token operator">=</span><span class="token number">15</span>  <span class="token assign-left variable">mac</span><span class="token operator">=</span>06:79:BE:64:23:E5 <span class="token assign-left variable">nodemac</span><span class="token operator">=</span><span class="token number">96</span>:AF:F0:92:98:F4   
+<span class="token number">10.233</span>.65.234:0   <span class="token assign-left variable">id</span><span class="token operator">=</span><span class="token number">1496</span>  <span class="token assign-left variable">flags</span><span class="token operator">=</span>0x0000 <span class="token assign-left variable">ifindex</span><span class="token operator">=</span><span class="token number">65</span>  <span class="token assign-left variable">mac</span><span class="token operator">=</span>CE:C7:0A:5C:5C:AF <span class="token assign-left variable">nodemac</span><span class="token operator">=</span>3E:CD:6D:44:2D:FE   
+<span class="token number">10.233</span>.65.192:0   <span class="token assign-left variable">id</span><span class="token operator">=</span><span class="token number">3508</span>  <span class="token assign-left variable">flags</span><span class="token operator">=</span>0x0000 <span class="token assign-left variable">ifindex</span><span class="token operator">=</span><span class="token number">31</span>  <span class="token assign-left variable">mac</span><span class="token operator">=</span>DE:92:74:30:23:FF <span class="token assign-left variable">nodemac</span><span class="token operator">=</span>1A:A8:3D:A8:C3:E9   
+root@node2:/home/cilium<span class="token comment"># cilium monitor --related-to 3508 -vv</span>
+Press Ctrl-C to quit
+
+<span class="token comment"># 进入nginx中获取root命名空间一端的网卡ifindex</span>
+root@node2:~<span class="token comment"># kubectl exec -it nginx-deployment-669895d846-bn9v7 -- sh</span>
+/ <span class="token comment"># ip a</span>
+<span class="token number">1</span>: lo: <span class="token operator">&lt;</span>LOOPBACK,UP,LOWER_UP<span class="token operator">&gt;</span> mtu <span class="token number">65536</span> qdisc noqueue state UNKNOWN qlen <span class="token number">1000</span>
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet <span class="token number">127.0</span>.0.1/8 scope <span class="token function">host</span> lo
+       valid_lft forever preferred_lft forever
+    inet6 ::1/128 scope <span class="token function">host</span> 
+       valid_lft forever preferred_lft forever
+<span class="token number">28</span>: eth0@if29: <span class="token operator">&lt;</span>BROADCAST,MULTICAST,UP,LOWER_UP,M-DOWN<span class="token operator">&gt;</span> mtu <span class="token number">1500</span> qdisc noqueue state UP qlen <span class="token number">1000</span>
+    link/ether 2a:f9:c2:40:cb:5a brd ff:ff:ff:ff:ff:ff
+    inet <span class="token number">10.233</span>.65.7/32 scope global eth0
+       valid_lft forever preferred_lft forever
+    inet6 fe80::28f9:c2ff:fe40:cb5a/64 scope <span class="token function">link</span> 
+       valid_lft forever preferred_lft forever
+/ <span class="token comment"># exit</span>
+<span class="token comment"># 获取root命名空间一端nginx的虚拟网卡</span>
+root@node2:~<span class="token comment"># ip a | grep 29</span>
+<span class="token number">29</span>: lxc89fe98f4c9ed@if28: <span class="token operator">&lt;</span>BROADCAST,MULTICAST,UP,LOWER_UP<span class="token operator">&gt;</span> mtu <span class="token number">1500</span> qdisc noqueue state UP group default qlen <span class="token number">1000</span>
+root@node2:~<span class="token comment"># tcpdump -pne -i lxc89fe98f4c9ed</span>
+tcpdump: verbose output suppressed, use -v<span class="token punctuation">[</span>v<span class="token punctuation">]</span><span class="token punctuation">..</span>. <span class="token keyword">for</span> full protocol decode
+listening on lxc89fe98f4c9ed, link-type EN10MB <span class="token punctuation">(</span>Ethernet<span class="token punctuation">)</span>, snapshot length <span class="token number">262144</span> bytes
+</code></pre> 
+<h4><a id="node2busyboxping_node2nginx_185"></a>node2上的busybox中ping node2上的nginx服务</h4> 
+<pre><code class="prism language-shell">root@busybox-5587dd9dcc-mnn8h:~<span class="token comment"># ping 10.233.65.7 -c 1</span>
+PING <span class="token number">10.233</span>.65.7 <span class="token punctuation">(</span><span class="token number">10.233</span>.65.7<span class="token punctuation">)</span> <span class="token number">56</span><span class="token punctuation">(</span><span class="token number">84</span><span class="token punctuation">)</span> bytes of data.
+<span class="token number">64</span> bytes from <span class="token number">10.233</span>.65.7: <span class="token assign-left variable">icmp_seq</span><span class="token operator">=</span><span class="token number">1</span> <span class="token assign-left variable">ttl</span><span class="token operator">=</span><span class="token number">63</span> <span class="token assign-left variable">time</span><span class="token operator">=</span><span class="token number">4.12</span> ms
+
+--- <span class="token number">10.233</span>.65.7 <span class="token function">ping</span> statistics ---
+<span class="token number">1</span> packets transmitted, <span class="token number">1</span> received, <span class="token number">0</span>% packet loss, <span class="token function">time</span> 0ms
+rtt min/avg/max/mdev <span class="token operator">=</span> <span class="token number">4.120</span>/4.120/4.120/0.000 ms
+</code></pre> 
+<h4><a id="1busyboxeth0_195"></a>抓包点1-busybox的eth0</h4> 
+<pre><code class="prism language-shell">root@busybox-5587dd9dcc-mnn8h:~<span class="token comment"># tcpdump -pne -i eth0</span>
+tcpdump: verbose output suppressed, use -v<span class="token punctuation">[</span>v<span class="token punctuation">]</span><span class="token punctuation">..</span>. <span class="token keyword">for</span> full protocol decode
+listening on eth0, link-type EN10MB <span class="token punctuation">(</span>Ethernet<span class="token punctuation">)</span>, snapshot length <span class="token number">262144</span> bytes
+<span class="token number">11</span>:34:00.009616 de:92:74:30:23:ff <span class="token operator">&gt;</span> ff:ff:ff:ff:ff:ff, ethertype ARP <span class="token punctuation">(</span>0x0806<span class="token punctuation">)</span>, length <span class="token number">42</span>: Request who-has <span class="token number">10.233</span>.65.227 tell <span class="token number">10.233</span>.65.192, length <span class="token number">28</span>
+<span class="token number">11</span>:34:00.009663 1a:a8:3d:a8:c3:e9 <span class="token operator">&gt;</span> de:92:74:30:23:ff, ethertype ARP <span class="token punctuation">(</span>0x0806<span class="token punctuation">)</span>, length <span class="token number">42</span>: Reply <span class="token number">10.233</span>.65.227 is-at 1a:a8:3d:a8:c3:e9, length <span class="token number">28</span>
+<span class="token number">11</span>:34:00.009684 de:92:74:30:23:ff <span class="token operator">&gt;</span> 1a:a8:3d:a8:c3:e9, ethertype IPv4 <span class="token punctuation">(</span>0x0800<span class="token punctuation">)</span>, length <span class="token number">98</span>: <span class="token number">10.233</span>.65.192 <span class="token operator">&gt;</span> <span class="token number">10.233</span>.65.7: ICMP <span class="token builtin class-name">echo</span> request, <span class="token function">id</span> <span class="token number">33753</span>, <span class="token function">seq</span> <span class="token number">1</span>, length <span class="token number">64</span>
+<span class="token number">11</span>:34:00.012892 1a:a8:3d:a8:c3:e9 <span class="token operator">&gt;</span> de:92:74:30:23:ff, ethertype IPv4 <span class="token punctuation">(</span>0x0800<span class="token punctuation">)</span>, length <span class="token number">98</span>: <span class="token number">10.233</span>.65.7 <span class="token operator">&gt;</span> <span class="token number">10.233</span>.65.192: ICMP <span class="token builtin class-name">echo</span> reply, <span class="token function">id</span> <span class="token number">33753</span>, <span class="token function">seq</span> <span class="token number">1</span>, length <span class="token number">64</span>
+</code></pre> 
+<h4><a id="2busyboxroot_206"></a>抓包点2-busybox的root命名空间一端</h4> 
+<pre><code class="prism language-shell">root@node2:~<span class="token comment"># tcpdump -pne -i lxccea7daed89b0</span>
+tcpdump: verbose output suppressed, use -v<span class="token punctuation">[</span>v<span class="token punctuation">]</span><span class="token punctuation">..</span>. <span class="token keyword">for</span> full protocol decode
+listening on lxccea7daed89b0, link-type EN10MB <span class="token punctuation">(</span>Ethernet<span class="token punctuation">)</span>, snapshot length <span class="token number">262144</span> bytes
+<span class="token number">11</span>:34:00.009630 de:92:74:30:23:ff <span class="token operator">&gt;</span> ff:ff:ff:ff:ff:ff, ethertype ARP <span class="token punctuation">(</span>0x0806<span class="token punctuation">)</span>, length <span class="token number">42</span>: Request who-has <span class="token number">10.233</span>.65.227 tell <span class="token number">10.233</span>.65.192, length <span class="token number">28</span>
+<span class="token number">11</span>:34:00.009650 1a:a8:3d:a8:c3:e9 <span class="token operator">&gt;</span> de:92:74:30:23:ff, ethertype ARP <span class="token punctuation">(</span>0x0806<span class="token punctuation">)</span>, length <span class="token number">42</span>: Reply <span class="token number">10.233</span>.65.227 is-at 1a:a8:3d:a8:c3:e9, length <span class="token number">28</span>
+<span class="token number">11</span>:34:00.009694 de:92:74:30:23:ff <span class="token operator">&gt;</span> 1a:a8:3d:a8:c3:e9, ethertype IPv4 <span class="token punctuation">(</span>0x0800<span class="token punctuation">)</span>, length <span class="token number">98</span>: <span class="token number">10.233</span>.65.192 <span class="token operator">&gt;</span> <span class="token number">10.233</span>.65.7: ICMP <span class="token builtin class-name">echo</span> request, <span class="token function">id</span> <span class="token number">33753</span>, <span class="token function">seq</span> <span class="token number">1</span>, length <span class="token number">64</span>
+<span class="token number">11</span>:34:00.012884 1a:a8:3d:a8:c3:e9 <span class="token operator">&gt;</span> de:92:74:30:23:ff, ethertype IPv4 <span class="token punctuation">(</span>0x0800<span class="token punctuation">)</span>, length <span class="token number">98</span>: <span class="token number">10.233</span>.65.7 <span class="token operator">&gt;</span> <span class="token number">10.233</span>.65.192: ICMP <span class="token builtin class-name">echo</span> reply, <span class="token function">id</span> <span class="token number">33753</span>, <span class="token function">seq</span> <span class="token number">1</span>, length <span class="token number">64</span>
+</code></pre> 
+<h4><a id="3nginxroot_217"></a>抓包点3-nginx的root命名空间一端</h4> 
+<pre><code class="prism language-shell">root@node2:~<span class="token comment"># tcpdump -pne -i lxc89fe98f4c9ed</span>
+tcpdump: verbose output suppressed, use -v<span class="token punctuation">[</span>v<span class="token punctuation">]</span><span class="token punctuation">..</span>. <span class="token keyword">for</span> full protocol decode
+listening on lxc89fe98f4c9ed, link-type EN10MB <span class="token punctuation">(</span>Ethernet<span class="token punctuation">)</span>, snapshot length <span class="token number">262144</span> bytes
+<span class="token number">11</span>:34:00.010447 da:37:5b:ac:21:f2 <span class="token operator">&gt;</span> 2a:f9:c2:40:cb:5a, ethertype IPv4 <span class="token punctuation">(</span>0x0800<span class="token punctuation">)</span>, length <span class="token number">98</span>: <span class="token number">10.233</span>.65.192 <span class="token operator">&gt;</span> <span class="token number">10.233</span>.65.7: ICMP <span class="token builtin class-name">echo</span> request, <span class="token function">id</span> <span class="token number">33753</span>, <span class="token function">seq</span> <span class="token number">1</span>, length <span class="token number">64</span>
+<span class="token number">11</span>:34:00.012797 2a:f9:c2:40:cb:5a <span class="token operator">&gt;</span> da:37:5b:ac:21:f2, ethertype IPv4 <span class="token punctuation">(</span>0x0800<span class="token punctuation">)</span>, length <span class="token number">98</span>: <span class="token number">10.233</span>.65.7 <span class="token operator">&gt;</span> <span class="token number">10.233</span>.65.192: ICMP <span class="token builtin class-name">echo</span> reply, <span class="token function">id</span> <span class="token number">33753</span>, <span class="token function">seq</span> <span class="token number">1</span>, length <span class="token number">64</span>
+<span class="token number">11</span>:34:05.149572 2a:f9:c2:40:cb:5a <span class="token operator">&gt;</span> da:37:5b:ac:21:f2, ethertype ARP <span class="token punctuation">(</span>0x0806<span class="token punctuation">)</span>, length <span class="token number">42</span>: Request who-has <span class="token number">10.233</span>.65.227 tell <span class="token number">10.233</span>.65.7, length <span class="token number">28</span>
+<span class="token number">11</span>:34:05.149882 da:37:5b:ac:21:f2 <span class="token operator">&gt;</span> 2a:f9:c2:40:cb:5a, ethertype ARP <span class="token punctuation">(</span>0x0806<span class="token punctuation">)</span>, length <span class="token number">42</span>: Reply <span class="token number">10.233</span>.65.227 is-at da:37:5b:ac:21:f2, length <span class="token number">28</span>
+</code></pre> 
+<h4><a id="4node2ciliumagentbusyboxendpoint_228"></a>抓包点4-node2上cilium-agent中busybox的endpoint</h4> 
+<pre><code class="prism language-shell">root@node2:/home/cilium<span class="token comment"># cilium monitor --related-to 3508 -vv</span>
+Press Ctrl-C to quit
+------------------------------------------------------------------------------
+<span class="token assign-left variable">level</span><span class="token operator">=</span>info <span class="token assign-left variable">msg</span><span class="token operator">=</span><span class="token string">"Initializing dissection cache..."</span> <span class="token assign-left variable">subsys</span><span class="token operator">=</span>monitor
+Ethernet        <span class="token punctuation">{<!-- --></span>Contents<span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">..</span><span class="token number">14</span><span class="token punctuation">..</span><span class="token punctuation">]</span> <span class="token assign-left variable">Payload</span><span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">..</span><span class="token number">86</span><span class="token punctuation">..</span><span class="token punctuation">]</span> <span class="token assign-left variable">SrcMAC</span><span class="token operator">=</span>1a:a8:3d:a8:c3:e9 <span class="token assign-left variable">DstMAC</span><span class="token operator">=</span>de:92:74:30:23:ff <span class="token assign-left variable">EthernetType</span><span class="token operator">=</span>IPv4 <span class="token assign-left variable">Length</span><span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">}</span>
+IPv4    <span class="token punctuation">{<!-- --></span>Contents<span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">..</span><span class="token number">20</span><span class="token punctuation">..</span><span class="token punctuation">]</span> <span class="token assign-left variable">Payload</span><span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">..</span><span class="token number">64</span><span class="token punctuation">..</span><span class="token punctuation">]</span> <span class="token assign-left variable">Version</span><span class="token operator">=</span><span class="token number">4</span> <span class="token assign-left variable">IHL</span><span class="token operator">=</span><span class="token number">5</span> <span class="token assign-left variable">TOS</span><span class="token operator">=</span><span class="token number">0</span> <span class="token assign-left variable">Length</span><span class="token operator">=</span><span class="token number">84</span> <span class="token assign-left variable">Id</span><span class="token operator">=</span><span class="token number">28212</span> <span class="token assign-left variable">Flags</span><span class="token operator">=</span> <span class="token assign-left variable">FragOffset</span><span class="token operator">=</span><span class="token number">0</span> <span class="token assign-left variable">TTL</span><span class="token operator">=</span><span class="token number">63</span> <span class="token assign-left variable">Protocol</span><span class="token operator">=</span>ICMPv4 <span class="token assign-left variable">Checksum</span><span class="token operator">=</span><span class="token number">29916</span> <span class="token assign-left variable">SrcIP</span><span class="token operator">=</span><span class="token number">10.233</span>.65.7 <span class="token assign-left variable">DstIP</span><span class="token operator">=</span><span class="token number">10.233</span>.65.192 <span class="token assign-left variable">Options</span><span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token assign-left variable">Padding</span><span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">}</span>
+ICMPv4  <span class="token punctuation">{<!-- --></span>Contents<span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">..</span><span class="token number">8</span><span class="token punctuation">..</span><span class="token punctuation">]</span> <span class="token assign-left variable">Payload</span><span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">..</span><span class="token number">56</span><span class="token punctuation">..</span><span class="token punctuation">]</span> <span class="token assign-left variable">TypeCode</span><span class="token operator">=</span>EchoReply <span class="token assign-left variable">Checksum</span><span class="token operator">=</span><span class="token number">38269</span> <span class="token assign-left variable">Id</span><span class="token operator">=</span><span class="token number">33753</span> <span class="token assign-left variable">Seq</span><span class="token operator">=</span><span class="token number">1</span><span class="token punctuation">}</span>
+  Failed to decode layer: No decoder <span class="token keyword">for</span> layer <span class="token builtin class-name">type</span> Payload
+CPU 01: MARK 0x0 FROM <span class="token number">3508</span> to-endpoint: <span class="token number">98</span> bytes <span class="token punctuation">(</span><span class="token number">98</span> captured<span class="token punctuation">)</span>, state reply, interface lxccea7daed89b0, , identity <span class="token number">5957</span>-<span class="token operator">&gt;</span><span class="token number">31615</span>, orig-ip <span class="token number">10.233</span>.65.7, to endpoint <span class="token number">3508</span>
+</code></pre> 
+<h4><a id="5iptables_241"></a>抓包点5-iptables规则链</h4> 
+<pre><code class="prism language-shell">root@node2:~<span class="token comment"># tail -f /var/log/message</span>
+
+</code></pre> 
+<p>通过上面的抓包可以看到，busybox的eth0和root命名空间一端的lxc网卡抓到的包是一样的，但是ipatables规则链中没有产生日志，因此可以说明数据包没有经过HOST NS的iptables规则链，再结合lxc网卡加载的[from-container] HOOK，这里的使用由redirect的能力。我们可以知道pod 发出流量后，流量会发给本 Pod 宿主机 lxc 接口的 tc ingress hook 的 eBPF 程序处理，eBPF 最终会查找目的 Pod，确定位于同一个节点，直接通过 redirect 方法将流量直接越过 kernel stack，送给目的 Pod 的 lxc 口，最终将流量送给目的 Pod。</p> 
+<h3><a id="Different_Node_249"></a>Different Node</h3> 
+<h4><a id="node1busyboxping_node2nginx_251"></a>node1上的busybox中ping node2上的nginx服务</h4> 
+<pre><code class="prism language-shell">root@busybox-5587dd9dcc-mnn8h:~<span class="token comment"># ping 10.233.65.7 -c 1</span>
+PING <span class="token number">10.233</span>.65.7 <span class="token punctuation">(</span><span class="token number">10.233</span>.65.7<span class="token punctuation">)</span> <span class="token number">56</span><span class="token punctuation">(</span><span class="token number">84</span><span class="token punctuation">)</span> bytes of data.
+<span class="token number">64</span> bytes from <span class="token number">10.233</span>.65.7: <span class="token assign-left variable">icmp_seq</span><span class="token operator">=</span><span class="token number">1</span> <span class="token assign-left variable">ttl</span><span class="token operator">=</span><span class="token number">63</span> <span class="token assign-left variable">time</span><span class="token operator">=</span><span class="token number">4.12</span> ms
+
+--- <span class="token number">10.233</span>.65.7 <span class="token function">ping</span> statistics ---
+<span class="token number">1</span> packets transmitted, <span class="token number">1</span> received, <span class="token number">0</span>% packet loss, <span class="token function">time</span> 0ms
+rtt min/avg/max/mdev <span class="token operator">=</span> <span class="token number">4.120</span>/4.120/4.120/0.000 ms
+</code></pre> 
+<h4><a id="1busyboxeth0_261"></a>抓包点1-busybox的eth0</h4> 
+<pre><code class="prism language-shell">root@busybox-5587dd9dcc-8x25g:~<span class="token comment"># tcpdump -pne -i eth0</span>
+tcpdump: verbose output suppressed, use -v<span class="token punctuation">[</span>v<span class="token punctuation">]</span><span class="token punctuation">..</span>. <span class="token keyword">for</span> full protocol decode
+listening on eth0, link-type EN10MB <span class="token punctuation">(</span>Ethernet<span class="token punctuation">)</span>, snapshot length <span class="token number">262144</span> bytes
+<span class="token number">14</span>:28:47.446003 fe:91:05:b3:8a:de <span class="token operator">&gt;</span> <span class="token number">32</span>:12:64:c2:23:5b, ethertype IPv4 <span class="token punctuation">(</span>0x0800<span class="token punctuation">)</span>, length <span class="token number">98</span>: <span class="token number">10.233</span>.64.174 <span class="token operator">&gt;</span> <span class="token number">10.233</span>.65.7: ICMP <span class="token builtin class-name">echo</span> request, <span class="token function">id</span> <span class="token number">11395</span>, <span class="token function">seq</span> <span class="token number">0</span>, length <span class="token number">64</span>
+<span class="token number">14</span>:28:47.446742 <span class="token number">32</span>:12:64:c2:23:5b <span class="token operator">&gt;</span> fe:91:05:b3:8a:de, ethertype IPv4 <span class="token punctuation">(</span>0x0800<span class="token punctuation">)</span>, length <span class="token number">98</span>: <span class="token number">10.233</span>.65.7 <span class="token operator">&gt;</span> <span class="token number">10.233</span>.64.174: ICMP <span class="token builtin class-name">echo</span> reply, <span class="token function">id</span> <span class="token number">11395</span>, <span class="token function">seq</span> <span class="token number">0</span>, length <span class="token number">64</span>
+<span class="token number">14</span>:28:52.638498 fe:91:05:b3:8a:de <span class="token operator">&gt;</span> <span class="token number">32</span>:12:64:c2:23:5b, ethertype ARP <span class="token punctuation">(</span>0x0806<span class="token punctuation">)</span>, length <span class="token number">42</span>: Request who-has <span class="token number">10.233</span>.64.93 tell <span class="token number">10.233</span>.64.174, length <span class="token number">28</span>
+<span class="token number">14</span>:28:52.638939 <span class="token number">32</span>:12:64:c2:23:5b <span class="token operator">&gt;</span> fe:91:05:b3:8a:de, ethertype ARP <span class="token punctuation">(</span>0x0806<span class="token punctuation">)</span>, length <span class="token number">42</span>: Reply <span class="token number">10.233</span>.64.93 is-at <span class="token number">32</span>:12:64:c2:23:5b, length <span class="token number">28</span>
+</code></pre> 
+<h4><a id="2busyboxroot_272"></a>抓包点2-busybox的root命名空间一端</h4> 
+<pre><code class="prism language-shell">root@node1:~<span class="token comment"># tcpdump -pne -i lxca58908f2f283</span>
+tcpdump: verbose output suppressed, use -v<span class="token punctuation">[</span>v<span class="token punctuation">]</span><span class="token punctuation">..</span>. <span class="token keyword">for</span> full protocol decode
+listening on lxca58908f2f283, link-type EN10MB <span class="token punctuation">(</span>Ethernet<span class="token punctuation">)</span>, snapshot length <span class="token number">262144</span> bytes
+<span class="token number">14</span>:28:47.446011 fe:91:05:b3:8a:de <span class="token operator">&gt;</span> <span class="token number">32</span>:12:64:c2:23:5b, ethertype IPv4 <span class="token punctuation">(</span>0x0800<span class="token punctuation">)</span>, length <span class="token number">98</span>: <span class="token number">10.233</span>.64.174 <span class="token operator">&gt;</span> <span class="token number">10.233</span>.65.7: ICMP <span class="token builtin class-name">echo</span> request, <span class="token function">id</span> <span class="token number">11395</span>, <span class="token function">seq</span> <span class="token number">0</span>, length <span class="token number">64</span>
+<span class="token number">14</span>:28:47.446735 <span class="token number">32</span>:12:64:c2:23:5b <span class="token operator">&gt;</span> fe:91:05:b3:8a:de, ethertype IPv4 <span class="token punctuation">(</span>0x0800<span class="token punctuation">)</span>, length <span class="token number">98</span>: <span class="token number">10.233</span>.65.7 <span class="token operator">&gt;</span> <span class="token number">10.233</span>.64.174: ICMP <span class="token builtin class-name">echo</span> reply, <span class="token function">id</span> <span class="token number">11395</span>, <span class="token function">seq</span> <span class="token number">0</span>, length <span class="token number">64</span>
+<span class="token number">14</span>:28:52.638509 fe:91:05:b3:8a:de <span class="token operator">&gt;</span> <span class="token number">32</span>:12:64:c2:23:5b, ethertype ARP <span class="token punctuation">(</span>0x0806<span class="token punctuation">)</span>, length <span class="token number">42</span>: Request who-has <span class="token number">10.233</span>.64.93 tell <span class="token number">10.233</span>.64.174, length <span class="token number">28</span>
+<span class="token number">14</span>:28:52.638928 <span class="token number">32</span>:12:64:c2:23:5b <span class="token operator">&gt;</span> fe:91:05:b3:8a:de, ethertype ARP <span class="token punctuation">(</span>0x0806<span class="token punctuation">)</span>, length <span class="token number">42</span>: Reply <span class="token number">10.233</span>.64.93 is-at <span class="token number">32</span>:12:64:c2:23:5b, length <span class="token number">28</span>
+</code></pre> 
+<h4><a id="3nginxroot_283"></a>抓包点3-nginx的root命名空间一端</h4> 
+<pre><code class="prism language-shell">root@node2:~<span class="token comment"># tcpdump -pne -i lxc89fe98f4c9ed</span>
+<span class="token number">14</span>:28:47.459487 da:37:5b:ac:21:f2 <span class="token operator">&gt;</span> 2a:f9:c2:40:cb:5a, ethertype IPv4 <span class="token punctuation">(</span>0x0800<span class="token punctuation">)</span>, length <span class="token number">98</span>: <span class="token number">10.233</span>.64.174 <span class="token operator">&gt;</span> <span class="token number">10.233</span>.65.7: ICMP <span class="token builtin class-name">echo</span> request, <span class="token function">id</span> <span class="token number">11395</span>, <span class="token function">seq</span> <span class="token number">0</span>, length <span class="token number">64</span>
+<span class="token number">14</span>:28:47.459514 2a:f9:c2:40:cb:5a <span class="token operator">&gt;</span> da:37:5b:ac:21:f2, ethertype IPv4 <span class="token punctuation">(</span>0x0800<span class="token punctuation">)</span>, length <span class="token number">98</span>: <span class="token number">10.233</span>.65.7 <span class="token operator">&gt;</span> <span class="token number">10.233</span>.64.174: ICMP <span class="token builtin class-name">echo</span> reply, <span class="token function">id</span> <span class="token number">11395</span>, <span class="token function">seq</span> <span class="token number">0</span>, length <span class="token number">64</span>
+<span class="token number">14</span>:28:52.702616 2a:f9:c2:40:cb:5a <span class="token operator">&gt;</span> da:37:5b:ac:21:f2, ethertype ARP <span class="token punctuation">(</span>0x0806<span class="token punctuation">)</span>, length <span class="token number">42</span>: Request who-has <span class="token number">10.233</span>.65.227 tell <span class="token number">10.233</span>.65.7, length <span class="token number">28</span>
+<span class="token number">14</span>:28:52.703103 da:37:5b:ac:21:f2 <span class="token operator">&gt;</span> 2a:f9:c2:40:cb:5a, ethertype ARP <span class="token punctuation">(</span>0x0806<span class="token punctuation">)</span>, length <span class="token number">42</span>: Reply <span class="token number">10.233</span>.65.227 is-at da:37:5b:ac:21:f2, length <span class="token number">28</span>
+</code></pre> 
+<h4><a id="4node2ciliumagentbusyboxendpoint_292"></a>抓包点4-node2上cilium-agent中busybox的endpoint</h4> 
+<pre><code class="prism language-shell">root@node1:/home/cilium<span class="token comment"># cilium monitor --related-to 443 -vv</span>
+Press Ctrl-C to quit
+------------------------------------------------------------------------------
+<span class="token assign-left variable">level</span><span class="token operator">=</span>info <span class="token assign-left variable">msg</span><span class="token operator">=</span><span class="token string">"Initializing dissection cache..."</span> <span class="token assign-left variable">subsys</span><span class="token operator">=</span>monitor
+Ethernet        <span class="token punctuation">{<!-- --></span>Contents<span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">..</span><span class="token number">14</span><span class="token punctuation">..</span><span class="token punctuation">]</span> <span class="token assign-left variable">Payload</span><span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">..</span><span class="token number">86</span><span class="token punctuation">..</span><span class="token punctuation">]</span> <span class="token assign-left variable">SrcMAC</span><span class="token operator">=</span>fe:91:05:b3:8a:de <span class="token assign-left variable">DstMAC</span><span class="token operator">=</span><span class="token number">32</span>:12:64:c2:23:5b <span class="token assign-left variable">EthernetType</span><span class="token operator">=</span>IPv4 <span class="token assign-left variable">Length</span><span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">}</span>
+IPv4    <span class="token punctuation">{<!-- --></span>Contents<span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">..</span><span class="token number">20</span><span class="token punctuation">..</span><span class="token punctuation">]</span> <span class="token assign-left variable">Payload</span><span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">..</span><span class="token number">64</span><span class="token punctuation">..</span><span class="token punctuation">]</span> <span class="token assign-left variable">Version</span><span class="token operator">=</span><span class="token number">4</span> <span class="token assign-left variable">IHL</span><span class="token operator">=</span><span class="token number">5</span> <span class="token assign-left variable">TOS</span><span class="token operator">=</span><span class="token number">0</span> <span class="token assign-left variable">Length</span><span class="token operator">=</span><span class="token number">84</span> <span class="token assign-left variable">Id</span><span class="token operator">=</span><span class="token number">48335</span> <span class="token assign-left variable">Flags</span><span class="token operator">=</span>DF <span class="token assign-left variable">FragOffset</span><span class="token operator">=</span><span class="token number">0</span> <span class="token assign-left variable">TTL</span><span class="token operator">=</span><span class="token number">64</span> <span class="token assign-left variable">Protocol</span><span class="token operator">=</span>ICMPv4 <span class="token assign-left variable">Checksum</span><span class="token operator">=</span><span class="token number">58962</span> <span class="token assign-left variable">SrcIP</span><span class="token operator">=</span><span class="token number">10.233</span>.64.174 <span class="token assign-left variable">DstIP</span><span class="token operator">=</span><span class="token number">10.233</span>.65.7 <span class="token assign-left variable">Options</span><span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token assign-left variable">Padding</span><span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">}</span>
+ICMPv4  <span class="token punctuation">{<!-- --></span>Contents<span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">..</span><span class="token number">8</span><span class="token punctuation">..</span><span class="token punctuation">]</span> <span class="token assign-left variable">Payload</span><span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">..</span><span class="token number">56</span><span class="token punctuation">..</span><span class="token punctuation">]</span> <span class="token assign-left variable">TypeCode</span><span class="token operator">=</span>EchoRequest <span class="token assign-left variable">Checksum</span><span class="token operator">=</span><span class="token number">58151</span> <span class="token assign-left variable">Id</span><span class="token operator">=</span><span class="token number">11088</span> <span class="token assign-left variable">Seq</span><span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">}</span>
+  Failed to decode layer: No decoder <span class="token keyword">for</span> layer <span class="token builtin class-name">type</span> Payload
+CPU 01: MARK 0x0 FROM <span class="token number">443</span> to-overlay: <span class="token number">98</span> bytes <span class="token punctuation">(</span><span class="token number">98</span> captured<span class="token punctuation">)</span>, state new, interface cilium_vxlan, , identity <span class="token number">31615</span>-<span class="token operator">&gt;</span>unknown, orig-ip <span class="token number">0.0</span>.0.0
+------------------------------------------------------------------------------
+Ethernet        <span class="token punctuation">{<!-- --></span>Contents<span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">..</span><span class="token number">14</span><span class="token punctuation">..</span><span class="token punctuation">]</span> <span class="token assign-left variable">Payload</span><span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">..</span><span class="token number">86</span><span class="token punctuation">..</span><span class="token punctuation">]</span> <span class="token assign-left variable">SrcMAC</span><span class="token operator">=</span><span class="token number">32</span>:12:64:c2:23:5b <span class="token assign-left variable">DstMAC</span><span class="token operator">=</span>fe:91:05:b3:8a:de <span class="token assign-left variable">EthernetType</span><span class="token operator">=</span>IPv4 <span class="token assign-left variable">Length</span><span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">}</span>
+IPv4    <span class="token punctuation">{<!-- --></span>Contents<span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">..</span><span class="token number">20</span><span class="token punctuation">..</span><span class="token punctuation">]</span> <span class="token assign-left variable">Payload</span><span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">..</span><span class="token number">64</span><span class="token punctuation">..</span><span class="token punctuation">]</span> <span class="token assign-left variable">Version</span><span class="token operator">=</span><span class="token number">4</span> <span class="token assign-left variable">IHL</span><span class="token operator">=</span><span class="token number">5</span> <span class="token assign-left variable">TOS</span><span class="token operator">=</span><span class="token number">0</span> <span class="token assign-left variable">Length</span><span class="token operator">=</span><span class="token number">84</span> <span class="token assign-left variable">Id</span><span class="token operator">=</span><span class="token number">47340</span> <span class="token assign-left variable">Flags</span><span class="token operator">=</span> <span class="token assign-left variable">FragOffset</span><span class="token operator">=</span><span class="token number">0</span> <span class="token assign-left variable">TTL</span><span class="token operator">=</span><span class="token number">63</span> <span class="token assign-left variable">Protocol</span><span class="token operator">=</span>ICMPv4 <span class="token assign-left variable">Checksum</span><span class="token operator">=</span><span class="token number">11062</span> <span class="token assign-left variable">SrcIP</span><span class="token operator">=</span><span class="token number">10.233</span>.65.7 <span class="token assign-left variable">DstIP</span><span class="token operator">=</span><span class="token number">10.233</span>.64.174 <span class="token assign-left variable">Options</span><span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token assign-left variable">Padding</span><span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">}</span>
+ICMPv4  <span class="token punctuation">{<!-- --></span>Contents<span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">..</span><span class="token number">8</span><span class="token punctuation">..</span><span class="token punctuation">]</span> <span class="token assign-left variable">Payload</span><span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">..</span><span class="token number">56</span><span class="token punctuation">..</span><span class="token punctuation">]</span> <span class="token assign-left variable">TypeCode</span><span class="token operator">=</span>EchoReply <span class="token assign-left variable">Checksum</span><span class="token operator">=</span><span class="token number">60199</span> <span class="token assign-left variable">Id</span><span class="token operator">=</span><span class="token number">11088</span> <span class="token assign-left variable">Seq</span><span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">}</span>
+  Failed to decode layer: No decoder <span class="token keyword">for</span> layer <span class="token builtin class-name">type</span> Payload
+CPU 01: MARK 0x0 FROM <span class="token number">443</span> to-endpoint: <span class="token number">98</span> bytes <span class="token punctuation">(</span><span class="token number">98</span> captured<span class="token punctuation">)</span>, state reply, interface lxca58908f2f283, , identity <span class="token number">5957</span>-<span class="token operator">&gt;</span><span class="token number">31615</span>, orig-ip <span class="token number">10.233</span>.65.7, to endpoint <span class="token number">443</span>
+</code></pre> 
+<h4><a id="VxLAN_tc__311"></a>VxLAN设备 tc 程序</h4> 
+<pre><code class="prism language-shell">root@node1:~<span class="token comment"># tc filter show dev cilium_vxlan ingress</span>
+filter protocol all pref <span class="token number">1</span> bpf chain <span class="token number">0</span> 
+filter protocol all pref <span class="token number">1</span> bpf chain <span class="token number">0</span> handle 0x1 bpf_overlay.o:<span class="token punctuation">[</span>from-overlay<span class="token punctuation">]</span> direct-action not_in_hw <span class="token function">id</span> <span class="token number">38054</span> tag 8dadd616a2c190d7 jited 
+root@node1:~<span class="token comment"># tc filter show dev cilium_vxlan egress</span>
+filter protocol all pref <span class="token number">1</span> bpf chain <span class="token number">0</span> 
+filter protocol all pref <span class="token number">1</span> bpf chain <span class="token number">0</span> handle 0x1 bpf_overlay.o:<span class="token punctuation">[</span>to-overlay<span class="token punctuation">]</span> direct-action not_in_hw <span class="token function">id</span> <span class="token number">38063</span> tag 634ef5728fd44f7a jited
+</code></pre> 
+<p>通过上面的抓包看一看到不同节点pod相互访问时走的vxlan隧道，因为在node1的cilium-agent监控可以看到不同于同节点的是多了一条to-overlay的请求数据包，并且经过vxlan封装的数据包此时会被HOST NS中的iptables处理。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/986b3362e88b406847223f0de5014b43/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Latex科研论文之符号篇（希腊字母&amp;拉丁词）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/1614c0fea8826958182c19d5e0b718fe/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Python进行股票分析</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

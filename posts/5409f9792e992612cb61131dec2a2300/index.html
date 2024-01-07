@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>关于hive on spark的distribute by和group by使用以及小文件合并问题 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="关于hive on spark的distribute by和group by使用以及小文件合并问题" />
+<meta property="og:description" content="欢迎关注交流微信公众号：小满锅 问题导言 最近在使用hive时，发现一些任务的因为使用mapreduce的缘故，跑的太慢了，才几十个G的数据就经常跑一个多小时，于是有了切换spark的想法。
+但是刚刚切换了spark，第二天发现跑出来的数据文件数大大增加，而且每个文件都非常小，导致下游spark任务为了每个小文件都启动一个task，申请资源对于spark来说是非常消耗资源的，任务又大大延迟了。
+查了下关于spark合并小文件，目前有几个参数会提供参考。
+输入端 set mapred.max.split.size=256000000; 设置：每个Map最大输入大小，这个值决定了合并后文件的数量； set mapred.min.split.size.per.node=100000000; 设置：一个节点上split的至少的大小，这个值决定了多个DataNode上的文件是否需要合并； set mapred.min.split.size.per.rack=100000000; 设置：一个交换机下split的至少的大小，这个值决定了多个交换机上的文件是否需要合并； set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat; 设置：输入端map合并小文件。 输出端 这个是hive on mapreduce的合并小文件参数： set hive.merge.mapfiles=true; 设置：启用小文件合并 - Map-Only作业，默认true； set hive.merge.mapredfiles=true; 设置：启用小文件合并 - Map-Reduce作业，默认false； hive.merge.size.per.task=268534456； 设置：合并后所需每个文件的大小，默认256MB;这个数值是个约数，合并后文件大小会有上下浮动。 set hive.merge.smallfiles.avgsize=16777216; 设置：小文件平均大小合并阈值，默认16MB; 上面是针对hive on mapreduce的调参，但是换了spark后，就需要调整这些了
+set hive.merge.sparkfiles=true; 设置：启用小文件合并 - Spark 作业，默认false; 有教程是这个样子，但是呢，会有一些问题，目前社区对spark合并小文件支持还不够完善，有些版本，或者有些公司的hive on spark可能这个参数设置效果没用或者根本不明显
+但是目前首有介绍其他办法，可以做到这个合并小文件
+SET spark.sql.adaptive.enabled=true; SET spark.sql.adaptive.shuffle.targetPostShuffleInputSize = 512MB; 这两个参数能够自适应调整文件大小，但是呢仅仅靠这两个参数还不够用。因为它只能调整shuffle的分区，如果过于分区输出的文件数过小(比如只有十几M)，而分区数有非常多。比如shuffle分区有200个，每个分区Read512MB，Output 20M，那么就有200个20M的小文件了。
+有人会想着，将spark.sql.adaptive.shuffle.targetPostShuffleInputSize参数调大，但是这个不可控，因为你不能确定每个任务的十几Output是多少，所以就会有问题，而且这样每个任务都要去调整这个参数，非常不友好，再说了，万一shuffle分区Output只有1M，你这个值得调到多大，那么分区Read和父分区存储得有多大压力。
+distribute by去重新调整数据分布 在上面的基础上，我们可以使用distribute by多进行一次shuffle。
+原理就是因为spark.sql.adaptive.shuffle.targetPostShuffleInputSize它只能控制每个分区的Read的大小，而随着数据量增加，每个分区的read又被固定限制，导致分区数增加不可控，从而每个分区可能输出数据量非常小的文件。那么这时候，我们只需要在原来分散零碎的数据基础上，再增加一次shuffle，也就是进行一次distribute by。在这个distribute by过程中，分区read是512M左右，而单纯的distribute by不会进行过滤之类的，所以每个分区相当于一定要读取512M的数据，然后再将它们写出512M，那么就可以将那些小文件合并了。
+distribute by和Group by group by是根据字段去分组，做聚合计算，它的执行是在select之前。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/5409f9792e992612cb61131dec2a2300/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-05-15T20:07:45+08:00" />
+<meta property="article:modified_time" content="2022-05-15T20:07:45+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">关于hive on spark的distribute by和group by使用以及小文件合并问题</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-dracula">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="_0"></a>欢迎关注交流微信公众号：小满锅</h2> 
+<h2><a id="_1"></a>问题导言</h2> 
+<p><strong>最近在使用hive时，发现一些任务的因为使用mapreduce的缘故，跑的太慢了，才几十个G的数据就经常跑一个多小时，于是有了切换spark的想法。</strong><br> <strong>但是刚刚切换了spark，第二天发现跑出来的数据文件数大大增加，而且每个文件都非常小，导致下游spark任务为了每个小文件都启动一个task，申请资源对于spark来说是非常消耗资源的，任务又大大延迟了。</strong><br> <strong>查了下关于spark合并小文件，目前有几个参数会提供参考。</strong></p> 
+<h4><a id="_7"></a>输入端</h4> 
+<pre><code class="prism language-sql">
+<span class="token keyword">set</span> mapred<span class="token punctuation">.</span>max<span class="token punctuation">.</span>split<span class="token punctuation">.</span>size<span class="token operator">=</span><span class="token number">256000000</span><span class="token punctuation">;</span>
+设置：每个Map最大输入大小，这个值决定了合并后文件的数量；
+
+<span class="token keyword">set</span> mapred<span class="token punctuation">.</span>min<span class="token punctuation">.</span>split<span class="token punctuation">.</span>size<span class="token punctuation">.</span>per<span class="token punctuation">.</span>node<span class="token operator">=</span><span class="token number">100000000</span><span class="token punctuation">;</span>
+设置：一个节点上split的至少的大小，这个值决定了多个DataNode上的文件是否需要合并；
+
+<span class="token keyword">set</span> mapred<span class="token punctuation">.</span>min<span class="token punctuation">.</span>split<span class="token punctuation">.</span>size<span class="token punctuation">.</span>per<span class="token punctuation">.</span>rack<span class="token operator">=</span><span class="token number">100000000</span><span class="token punctuation">;</span>
+设置：一个交换机下split的至少的大小，这个值决定了多个交换机上的文件是否需要合并；
+
+<span class="token keyword">set</span> hive<span class="token punctuation">.</span>input<span class="token punctuation">.</span>format<span class="token operator">=</span>org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>hadoop<span class="token punctuation">.</span>hive<span class="token punctuation">.</span>ql<span class="token punctuation">.</span>io<span class="token punctuation">.</span>CombineHiveInputFormat<span class="token punctuation">;</span>
+设置：输入端map合并小文件。
+</code></pre> 
+<h4><a id="_24"></a>输出端</h4> 
+<pre><code class="prism language-sql">这个是hive <span class="token keyword">on</span> mapreduce的合并小文件参数：
+
+<span class="token keyword">set</span> hive<span class="token punctuation">.</span><span class="token keyword">merge</span><span class="token punctuation">.</span>mapfiles<span class="token operator">=</span><span class="token boolean">true</span><span class="token punctuation">;</span>
+设置：启用小文件合并 <span class="token operator">-</span> Map<span class="token operator">-</span>Only作业，默认<span class="token boolean">true</span>；
+
+<span class="token keyword">set</span> hive<span class="token punctuation">.</span><span class="token keyword">merge</span><span class="token punctuation">.</span>mapredfiles<span class="token operator">=</span><span class="token boolean">true</span><span class="token punctuation">;</span>
+设置：启用小文件合并 <span class="token operator">-</span> Map<span class="token operator">-</span>Reduce作业，默认<span class="token boolean">false</span>；
+
+hive<span class="token punctuation">.</span><span class="token keyword">merge</span><span class="token punctuation">.</span>size<span class="token punctuation">.</span>per<span class="token punctuation">.</span>task<span class="token operator">=</span><span class="token number">268534456</span>；
+设置：合并后所需每个文件的大小，默认<span class="token number">256</span>MB<span class="token punctuation">;</span>这个数值是个约数，合并后文件大小会有上下浮动。
+
+<span class="token keyword">set</span> hive<span class="token punctuation">.</span><span class="token keyword">merge</span><span class="token punctuation">.</span>smallfiles<span class="token punctuation">.</span>avgsize<span class="token operator">=</span><span class="token number">16777216</span><span class="token punctuation">;</span>
+设置：小文件平均大小合并阈值，默认<span class="token number">16</span>MB<span class="token punctuation">;</span>
+
+</code></pre> 
+<p><strong>上面是针对hive on mapreduce的调参，但是换了spark后，就需要调整这些了</strong></p> 
+<pre><code class="prism language-sql"><span class="token keyword">set</span> hive<span class="token punctuation">.</span><span class="token keyword">merge</span><span class="token punctuation">.</span>sparkfiles<span class="token operator">=</span><span class="token boolean">true</span><span class="token punctuation">;</span>
+设置：启用小文件合并 <span class="token operator">-</span> Spark 作业，默认<span class="token boolean">false</span><span class="token punctuation">;</span>
+</code></pre> 
+<p><strong>有教程是这个样子，但是呢，会有一些问题，目前社区对spark合并小文件支持还不够完善，有些版本，或者有些公司的hive on spark可能这个参数设置效果没用或者根本不明显</strong><br> <strong>但是目前首有介绍其他办法，可以做到这个合并小文件</strong></p> 
+<pre><code class="prism language-sql"><span class="token keyword">SET</span>
+  spark<span class="token punctuation">.</span><span class="token keyword">sql</span><span class="token punctuation">.</span>adaptive<span class="token punctuation">.</span>enabled<span class="token operator">=</span><span class="token boolean">true</span><span class="token punctuation">;</span>
+<span class="token keyword">SET</span>
+  spark<span class="token punctuation">.</span><span class="token keyword">sql</span><span class="token punctuation">.</span>adaptive<span class="token punctuation">.</span>shuffle<span class="token punctuation">.</span>targetPostShuffleInputSize <span class="token operator">=</span> <span class="token number">512</span>MB<span class="token punctuation">;</span>
+</code></pre> 
+<p><strong>这两个参数能够自适应调整文件大小，但是呢仅仅靠这两个参数还不够用。因为它只能调整shuffle的分区，如果过于分区输出的文件数过小(比如只有十几M)，而分区数有非常多。比如shuffle分区有200个，每个分区Read512MB，Output 20M，那么就有200个20M的小文件了。</strong><br> <strong>有人会想着，将spark.sql.adaptive.shuffle.targetPostShuffleInputSize参数调大，但是这个不可控，因为你不能确定每个任务的十几Output是多少，所以就会有问题，而且这样每个任务都要去调整这个参数，非常不友好，再说了，万一shuffle分区Output只有1M，你这个值得调到多大，那么分区Read和父分区存储得有多大压力。</strong></p> 
+<h4><a id="distribute_by_60"></a>distribute by去重新调整数据分布</h4> 
+<p><strong>在上面的基础上，我们可以使用distribute by多进行一次shuffle。</strong><br> <strong>原理就是因为spark.sql.adaptive.shuffle.targetPostShuffleInputSize它只能控制每个分区的Read的大小，而随着数据量增加，每个分区的read又被固定限制，导致分区数增加不可控，从而每个分区可能输出数据量非常小的文件。那么这时候，我们只需要在原来分散零碎的数据基础上，再增加一次shuffle，也就是进行一次distribute by。在这个distribute by过程中，分区read是512M左右，而单纯的distribute by不会进行过滤之类的，所以每个分区相当于一定要读取512M的数据，然后再将它们写出512M，那么就可以将那些小文件合并了。</strong></p> 
+<h4><a id="distribute_byGroup_by_64"></a>distribute by和Group by</h4> 
+<p>group by是根据字段去分组，做聚合计算，它的执行是在select之前。<br> 而distribute是在select之后了。<br> 注意如果group by和distribute by字段相同的话，效果会抵消，只会进行一次shuffle。这个还有待验证，会持续更新。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/b84f711e15e2e23ca96129c7657ace2a/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">kvm虚拟机搭建</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/ed2a790a04774954e68776baf9b0aeb2/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">关于Vue报错“Component name “School“ should always be multi-word”的解决方法</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

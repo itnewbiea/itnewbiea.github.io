@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Fast R-CNN讲解 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Fast R-CNN讲解" />
+<meta property="og:description" content="文章目录 一：解决的问题二：模型结构三：训练步骤1.预训练模型2.Fine-tunningstep1:转化预训练模型step2:训练图像的RP搜索与ROI选择step3:输入网络中进行调优训练① RoI池化层② 损失函数③ 采用SVD分解改进全连接层 四：测试步骤五：Fast R-CNN的缺点 一：解决的问题 Fast R-CNN是基于R-CNN提出的，有关R-CNN的详细介绍请看R-CNN史上最全讲解。Fast R-CNN主要是为了解决R-CNN的以下几个问题：
+训练分多步。通过上一篇博文我们知道R-CNN的训练先要fine tuning一个预训练的网络，然后针对每个类别都训练一个SVM分类器，最后还要用regressors对bounding-box进行回归，另外region proposal也要单独用selective search的方式获得，步骤比较繁琐。时间和内存消耗比较大。在训练SVM和回归的时候需要用网络训练的特征作为输入，特征保存在磁盘上再读入的时间消耗还是比较大的。测试的时候也比较慢，每张图片的每个region proposal都要做卷积，重复操作太多。 二：模型结构 由图可见，Fast R-CNN剔除掉了R-CNN中的SVM分类器和bbox线性回归器，而是将两者都放在一体化网络中。同时，运用了ROI-pooling 层，将大小不一的RP转换成同样的size，因此可以将整张图像进行过SS操作后，直接输入进CNN层，一次性对所有的RP完成分类和bbox回归。
+总结以下，Fast RCNN主要有3个改进：
+1、卷积不再是对每个region proposal进行，而是直接对整张图像，这样减少了很多重复计算。原来RCNN是对每个region proposal分别做卷积，因为一张图像中有2000左右的region proposal，肯定相互之间的重叠率很高，因此产生重复计算。
+2、用ROI pooling进行特征的尺寸变换，因为全连接层的输入要求尺寸大小一样，因此不能直接把region proposal作为输入。
+3、将regressor放进网络一起训练，每个类别对应一个regressor，同时用softmax代替原来的SVM分类器。
+因此，Fast R-CNN相对于R-CNN来说，在训练速度上比RCNN快了将近9倍，比SPPnet快大概3倍；测试速度比RCNN快了213倍，比SPPnet快了10倍。在VOC2012上的mAP在66%左右。
+下面介绍模型训练、测试的具体流程，创新点会在其中讲到。
+三：训练步骤 1.预训练模型 首先用ILSVRC 20XX数据集对VGG-16进行有监督的分类预训练。
+2.Fine-tunning 进行完预训练之后，需要对模型加以修改，然后在PASCAL VOC样本上进行调优训练。下面分步骤进行讲解：
+step1:转化预训练模型 微调前，需要先对有监督预训练后的模型进行3步转化：
+RoI池化层取代有监督预训练后的VGG-16网络最后一层池化层；
+两个并行层取代VGG-16网络的最后一层全连接层和softmax层，并行层之一是新全连接层1&#43;原softmax层1000个分类输出修改为21个分类输出【20种类&#43;背景】，并行层之二是新全连接层2&#43;候选区域窗口回归层；
+上述网络由原来的单输入：一系列图像-----&gt;&gt;双输入：一系列图像和这些图像中的一系列候选区域；
+step2:训练图像的RP搜索与ROI选择 在调优训练时，每个mini-batch包含2张图像，对它们进行SS区域搜索算法后，采样出128个region proposal（或者叫ROI），也就是每张图像有64个ROI。这些ROI中约25%的ROI作为正样本，正样本和ground truth的IOU值都大于0.5。剩下的ROI作为负样本，IOU都小于0.5。
+step3:输入网络中进行调优训练 输入图像是224*224，不满足的先resize。然后经过5个卷积层和2个降采样层（这两个降采样层分别跟在第一和第二个卷积层后面）后，进入ROIPooling层，该层的输入是conv5层的输出和region proposal，region proposal的个数差不多2000。然后再经过两个都是output是4096的全连接层。最后分别经过output个数是21和84的两个全连接层（这两个全连接层是并列的，不是前后关系），前者是分类的输出，代表每个region proposal属于每个类别（21类）的得分，后者是回归的输出，代表每个region proposal的四个坐标。最后是两个损失层，分类的是softmaxWithLoss，输入是label和分类层输出的得分；回归的是SmoothL1Loss，输入是回归层的输出和target坐标及weight。
+下面我对其中的细节部分再进行讲解：
+① RoI池化层 RoI池化层可以说是SPP（spatial pyramid pooling）的简化版，关于SPPnet的总结见我的另一篇文章 https://www.jianshu.com/p/90f9d41c6436。RoI池化层去掉了SPP的多尺度池化，直接用MxN的网格，将每个候选区域均匀分成M×N块，对每个块进行max pooling。从而将特征图上大小不一的候选区域转变为大小统一的特征向量，送入下一层。
+② 损失函数 ③ 采用SVD分解改进全连接层 图像分类任务中，用于卷积层计算的时间比用于全连接层计算的时间多，而在目标检测任务中，selective search算法提取的建议框比较多【约2k】，几乎有一半的前向计算时间被花费于全连接层，就Fast R-CNN而言，RoI池化层后的全连接层需要进行约2k次【每个建议框都要计算】，因此在Fast R-CNN中可以采用SVD分解加速全连接层计算。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/b2c2c8b2eafc4dff9dd10605a42459d6/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-09-08T10:17:17+08:00" />
+<meta property="article:modified_time" content="2022-09-08T10:17:17+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Fast R-CNN讲解</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#_1" rel="nofollow">一：解决的问题</a></li><li><a href="#_8" rel="nofollow">二：模型结构</a></li><li><a href="#_25" rel="nofollow">三：训练步骤</a></li><li><ul><li><a href="#1_26" rel="nofollow">1.预训练模型</a></li><li><a href="#2Finetunning_29" rel="nofollow">2.Fine-tunning</a></li><li><ul><li><ul><li><a href="#step1_31" rel="nofollow">step1:转化预训练模型</a></li><li><a href="#step2RPROI_40" rel="nofollow">step2:训练图像的RP搜索与ROI选择</a></li><li><a href="#step3_43" rel="nofollow">step3:输入网络中进行调优训练</a></li><li><ul><li><a href="#_RoI_47" rel="nofollow">① RoI池化层</a></li><li><a href="#__50" rel="nofollow">② 损失函数</a></li><li><a href="#_SVD_53" rel="nofollow">③ 采用SVD分解改进全连接层</a></li></ul> 
+    </li></ul> 
+   </li></ul> 
+  </li></ul> 
+  </li><li><a href="#_57" rel="nofollow">四：测试步骤</a></li><li><a href="#Fast_RCNN_61" rel="nofollow">五：Fast R-CNN的缺点</a></li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_1"></a>一：解决的问题</h2> 
+<p>Fast R-CNN是基于R-CNN提出的，有关R-CNN的详细介绍请看<a href="https://blog.csdn.net/weixin_43702653/article/details/123973629">R-CNN史上最全讲解</a>。Fast R-CNN主要是为了解决R-CNN的以下几个问题：</p> 
+<ul><li>训练分多步。通过上一篇博文我们知道R-CNN的训练先要fine tuning一个预训练的网络，然后针对每个类别都训练一个SVM分类器，最后还要用regressors对bounding-box进行回归，另外region proposal也要单独用selective search的方式获得，步骤比较繁琐。</li><li>时间和内存消耗比较大。在训练SVM和回归的时候需要用网络训练的特征作为输入，特征保存在磁盘上再读入的时间消耗还是比较大的。</li><li>测试的时候也比较慢，每张图片的每个region proposal都要做卷积，重复操作太多。</li></ul> 
+<h2><a id="_8"></a>二：模型结构</h2> 
+<p><img src="https://images2.imgbox.com/bf/f0/qKNmPwcM_o.png" alt="在这里插入图片描述"><br> 由图可见，Fast R-CNN剔除掉了R-CNN中的SVM分类器和bbox线性回归器，而是将两者都放在一体化网络中。同时，运用了ROI-pooling 层，将大小不一的RP转换成同样的size，因此可以将整张图像进行过SS操作后，直接输入进CNN层，一次性对所有的RP完成分类和bbox回归。</p> 
+<p>总结以下，Fast RCNN主要有3个改进：</p> 
+<p>1、卷积不再是对每个region proposal进行，而是直接对整张图像，这样减少了很多重复计算。原来RCNN是对每个region proposal分别做卷积，因为一张图像中有2000左右的region proposal，肯定相互之间的重叠率很高，因此产生重复计算。</p> 
+<p>2、用ROI pooling进行特征的尺寸变换，因为全连接层的输入要求尺寸大小一样，因此不能直接把region proposal作为输入。</p> 
+<p>3、将regressor放进网络一起训练，每个类别对应一个regressor，同时用softmax代替原来的SVM分类器。</p> 
+<p>因此，Fast R-CNN相对于R-CNN来说，在<strong>训练速度上比RCNN快了将近9倍</strong>，比SPPnet快大概3倍；<strong>测试速度比RCNN快了213倍</strong>，比SPPnet快了10倍。在VOC2012上的<strong>mAP在66%左右</strong>。</p> 
+<p>下面介绍模型训练、测试的具体流程，创新点会在其中讲到。</p> 
+<h2><a id="_25"></a>三：训练步骤</h2> 
+<h3><a id="1_26"></a>1.预训练模型</h3> 
+<p>首先用ILSVRC 20XX数据集对VGG-16进行有监督的分类预训练。</p> 
+<h3><a id="2Finetunning_29"></a>2.Fine-tunning</h3> 
+<p>进行完预训练之后，需要对模型加以修改，然后在PASCAL VOC样本上进行调优训练。下面分步骤进行讲解：</p> 
+<h5><a id="step1_31"></a>step1:转化预训练模型</h5> 
+<p>微调前，需要先对有监督预训练后的模型进行3步转化：</p> 
+<ul><li> <p>RoI池化层取代有监督预训练后的VGG-16网络最后一层池化层；</p> </li><li> <p>两个并行层取代VGG-16网络的最后一层全连接层和softmax层，并行层之一是新全连接层1+原softmax层1000个分类输出修改为21个分类输出【20种类+背景】，并行层之二是新全连接层2+候选区域窗口回归层；</p> </li><li> <p>上述网络由原来的单输入：一系列图像-----&gt;&gt;双输入：一系列图像和这些图像中的一系列候选区域；</p> </li></ul> 
+<h5><a id="step2RPROI_40"></a>step2:训练图像的RP搜索与ROI选择</h5> 
+<p>在调优训练时，每个mini-batch包含2张图像，对它们进行SS区域搜索算法后，采样出128个region proposal（或者叫ROI），也就是每张图像有64个ROI。这些ROI中约25%的ROI作为正样本，正样本和ground truth的IOU值都大于0.5。剩下的ROI作为负样本，IOU都小于0.5。</p> 
+<h5><a id="step3_43"></a>step3:输入网络中进行调优训练</h5> 
+<p>输入图像是224*224，不满足的先resize。然后经过5个卷积层和2个降采样层（这两个降采样层分别跟在第一和第二个卷积层后面）后，进入ROIPooling层，该层的输入是conv5层的输出和region proposal，region proposal的个数差不多2000。然后再经过两个都是output是4096的全连接层。最后分别经过output个数是21和84的两个全连接层（这两个全连接层是并列的，不是前后关系），前者是分类的输出，代表每个region proposal属于每个类别（21类）的得分，后者是回归的输出，代表每个region proposal的四个坐标。最后是两个损失层，分类的是softmaxWithLoss，输入是label和分类层输出的得分；回归的是SmoothL1Loss，输入是回归层的输出和target坐标及weight。</p> 
+<p>下面我对其中的细节部分再进行讲解：</p> 
+<h6><a id="_RoI_47"></a>① RoI池化层</h6> 
+<p>RoI池化层可以说是SPP（spatial pyramid pooling）的简化版，关于SPPnet的总结见我的另一篇文章 https://www.jianshu.com/p/90f9d41c6436。RoI池化层去掉了SPP的多尺度池化，直接用MxN的网格，将每个候选区域均匀分成M×N块，对每个块进行max pooling。从而将特征图上大小不一的候选区域转变为大小统一的特征向量，送入下一层。</p> 
+<h6><a id="__50"></a>② 损失函数</h6> 
+<p><img src="https://images2.imgbox.com/8e/a3/OQOZSsR1_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/59/dd/GzdVKLrZ_o.png" alt="在这里插入图片描述"><img src="https://images2.imgbox.com/7e/f3/Z4jCSYXg_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="_SVD_53"></a>③ 采用SVD分解改进全连接层</h6> 
+<p>图像分类任务中，用于卷积层计算的时间比用于全连接层计算的时间多，而在目标检测任务中，selective search算法提取的建议框比较多【约2k】，几乎有一半的前向计算时间被花费于全连接层，就Fast R-CNN而言，RoI池化层后的全连接层需要进行约2k次【每个建议框都要计算】，因此在Fast R-CNN中可以采用SVD分解加速全连接层计算。<br> <img src="https://images2.imgbox.com/dc/d6/NTAD7fXX_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="_57"></a>四：测试步骤</h2> 
+<p>测试步骤就更加容易了，每个输入图像经过SS后得到2000个候选区域ROI，经过网络后输出每一个ROI的分类结果，根据分类阈值留下有效ROI，并结合bbox回归预测调整预测框。最后再经过NMS，去除重叠现象，留下最终的检测框。如下图所示：<br> <img src="https://images2.imgbox.com/2f/f2/rBnCKwqP_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="Fast_RCNN_61"></a>五：Fast R-CNN的缺点</h2> 
+<p>Fast RCNN的<strong>主要缺点在于region proposal的提取使用selective search</strong>，目标检测时间大多消耗在这上面（提region proposal 2~3s，而提特征分类只需0.32s），这也是后续Faster RCNN的改进方向之一。</p> 
+<hr> 
+<p>  至此我对Fast R-CNN全部流程与细节，进行了深度讲解，希望对大家有所帮助，有不懂的地方或者建议，欢迎大家在下方留言评论。</p> 
+<p>我是努力在CV泥潭中摸爬滚打的江南咸鱼，我们一起努力，不留遗憾！</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/37ac0e9312b337a7303116a96fa29117/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">ubuntu20.04编译imu_tk时所遇问题</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/b3500bab3daf5a50326bce58c7a03be5/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">微信小程序——开篇</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

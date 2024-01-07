@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Weblogic安全漫谈(三) - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Weblogic安全漫谈(三)" />
+<meta property="og:description" content="本篇介绍coherence.jar中的漏洞利用链及后续绕过。
+经历2015到2018的3年迭代后，Weblogic的黑名单逐渐完善，废掉CC反序列化更是釜底抽薪。另一方面也促使研究员去挖掘新组件新利用链，这篇介绍的就是@testbnull在发现Spring写文件链后[1]，继续挖掘出coherence.jar中的漏洞利用链及后续绕过。因为10.3.6默认没有启用coherence，我们用12.2.1.3作为调试环境。
+CVE-2020-2555 CC链的核心是InvokerTransformer#transform方法对Method.invoke的调用，Weblogic几百个lib中有没有类CC链呢？
+1. 查找调用了Method.invoke的方法
+2. 筛出可被序列化的方法所在类
+3. 剔除参数不可控的结果
+注意到com.tangosol.util.extractor.ReflectionExtractor#extract，与transform不说丝毫不差至少也是大同小异。
+同包中也有与ChainedTransformer作用一致的ChainedExtractor，ReflectionExtractor实现了ValueExtractor接口满足类型要求：
+tabby的分析找到了关键的com.tangosol.util.filter.LimitFilter#toString，这样就能链上CC5开头用的BadAttributeValueExpException实现完整利用链。
+更进一步可以找到很多具有套娃能力的类方法：
+除此以外注意到期间出现过的MVEL包，方便地查到也可以com.tangosol.coherence.rest.util.extractor.MvelExtractor#extract作为sink执行MVEL表达式。
+根据关键类方法的变量要求构建利用链就行：
+extract:95, MvelExtractor (com.tangosol.coherence.rest.util.extractor) extract:112, ReflectionExtractor (com.tangosol.util.extractor) extract:83, ChainedExtractor (com.tangosol.util.extractor) // extract:96, MultiExtractor (com.tangosol.util.extractor) toString:581, LimitFilter (com.tangosol.util.filter) readObject:86, BadAttributeValueExpException (javax.management) invoke0:-1, NativeMethodAccessorImpl (sun.reflect) invoke:62, NativeMethodAccessorImpl (sun.reflect) invoke:43, DelegatingMethodAccessorImpl (sun.reflect) invoke:498, Method (java.lang.reflect) invokeReadObject:1170, ObjectStreamClass (java.io) readSerialData:2178, ObjectInputStream (java.io) readOrdinaryObject:2069, ObjectInputStream (java.io) readObject0:1573, ObjectInputStream (java.io) CVE-2020-2883 上文搜索&#34;具有套娃能力的类&#34;时，有一个与很多节点是[ALIAS]关系的抽象基类com.tangosol.util.extractor.AbstractExtractor在compare中调用了extract：
+这样就能链上CC2开头用的PriorityQueue实现完整利用链。
+extract:95, MvelExtractor (com.tangosol.coherence.rest.util.extractor) extract:112, ReflectionExtractor (com.tangosol.util.extractor) extract:83, ChainedExtractor (com." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/0ce0235b666b008fbafcc6a0ea58c6e9/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-01-04T16:50:29+08:00" />
+<meta property="article:modified_time" content="2024-01-04T16:50:29+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Weblogic安全漫谈(三)</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>本篇介绍<span style="color:#be191c;"><code><span style="background-color:#cccccc;">coherence.jar</span></code></span>中的漏洞利用链及后续绕过。</p> 
+<p>经历2015到2018的3年迭代后，Weblogic的黑名单逐渐完善，废掉CC反序列化更是釜底抽薪。另一方面也促使研究员去挖掘新组件新利用链，这篇介绍的就是@testbnull在发现Spring写文件链后[1]，继续挖掘出<span style="color:#be191c;"><code><span style="background-color:#cccccc;">coherence.jar</span></code></span>中的漏洞利用链及后续绕过。因为10.3.6默认没有启用coherence，我们用12.2.1.3作为调试环境。</p> 
+<h3>CVE-2020-2555</h3> 
+<p>CC链的核心是<span style="color:#be191c;"><code><span style="background-color:#cccccc;">InvokerTransformer#transform</span></code></span>方法对<span style="color:#be191c;"><code><span style="background-color:#cccccc;">Method.invoke</span></code></span>的调用，Weblogic几百个lib中有没有类CC链呢？</p> 
+<ol><li> <p>1. 查找调用了<span style="color:#be191c;"><code><span style="background-color:#cccccc;">Method.invoke</span></code></span>的方法</p> </li><li> <p>2. 筛出可被序列化的方法所在类</p> </li><li> <p>3. 剔除参数不可控的结果</p> </li></ol> 
+<p>注意到<span style="color:#be191c;"><code><span style="background-color:#cccccc;">com.tangosol.util.extractor.ReflectionExtractor#extract</span></code></span>，与<span style="color:#be191c;"><code><span style="background-color:#cccccc;">transform</span></code></span>不说丝毫不差至少也是大同小异。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="822" src="https://images2.imgbox.com/48/68/U71BAWKZ_o.png" width="1080"></p> 
+<p>同包中也有与<span style="color:#be191c;"><code><span style="background-color:#cccccc;">ChainedTransformer</span></code></span>作用一致的<span style="color:#be191c;"><code><span style="background-color:#cccccc;">ChainedExtractor</span></code><span style="background-color:#cccccc;">，</span><code><span style="background-color:#cccccc;">ReflectionExtractor</span></code></span>实现了<span style="color:#be191c;"><code><span style="background-color:#cccccc;">ValueExtractor</span></code></span>接口满足类型要求：</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="822" src="https://images2.imgbox.com/a8/65/TfnHfLU6_o.png" width="1080"></p> 
+<p>tabby的分析找到了关键的<span style="color:#be191c;"><code><span style="background-color:#cccccc;">com.tangosol.util.filter.LimitFilter#toString</span></code></span>，这样就能链上CC5开头用的<span style="color:#be191c;"><code><span style="background-color:#cccccc;">BadAttributeValueExpException</span></code></span>实现完整利用链。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="514" src="https://images2.imgbox.com/e2/c0/X8o3yAj9_o.png" width="1080"></p> 
+<p>更进一步可以找到很多具有套娃能力的类方法：</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="514" src="https://images2.imgbox.com/3b/54/dXPx3shO_o.png" width="1080"></p> 
+<p>除此以外注意到期间出现过的MVEL包，方便地查到也可以<span style="color:#be191c;"><code><span style="background-color:#cccccc;">com.tangosol.coherence.rest.util.extractor.MvelExtractor#extract</span></code></span>作为sink执行MVEL表达式。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="514" src="https://images2.imgbox.com/00/d0/LOdSnmLt_o.png" width="1080"></p> 
+<p>根据关键类方法的变量要求构建利用链就行：</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="1048" src="https://images2.imgbox.com/1b/de/eLsPk1DO_o.png" width="1080"></p> 
+<pre><code class="hljs">extract:95, MvelExtractor (com.tangosol.coherence.rest.util.extractor)
+
+extract:112, ReflectionExtractor (com.tangosol.util.extractor)
+extract:83, ChainedExtractor (com.tangosol.util.extractor)
+
+// extract:96, MultiExtractor (com.tangosol.util.extractor)
+
+toString:581, LimitFilter (com.tangosol.util.filter)
+readObject:86, BadAttributeValueExpException (javax.management)
+invoke0:-1, NativeMethodAccessorImpl (sun.reflect)
+invoke:62, NativeMethodAccessorImpl (sun.reflect)
+invoke:43, DelegatingMethodAccessorImpl (sun.reflect)
+invoke:498, Method (java.lang.reflect)
+invokeReadObject:1170, ObjectStreamClass (java.io)
+readSerialData:2178, ObjectInputStream (java.io)
+readOrdinaryObject:2069, ObjectInputStream (java.io)
+readObject0:1573, ObjectInputStream (java.io)</code></pre> 
+<p> </p> 
+<h3>CVE-2020-2883</h3> 
+<p>上文搜索"具有套娃能力的类"时，有一个与很多节点是<span style="color:#be191c;"><code><span style="background-color:#cccccc;">[ALIAS]</span></code></span>关系的抽象基类<span style="color:#be191c;"><code><span style="background-color:#cccccc;">com.tangosol.util.extractor.AbstractExtractor</span></code></span>在<span style="color:#be191c;"><code><span style="background-color:#cccccc;">compare</span></code></span>中调用了<span style="color:#be191c;"><code><span style="background-color:#cccccc;">extract</span></code></span>：</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="556" src="https://images2.imgbox.com/bf/cd/Y4eKYv17_o.png" width="1080"></p> 
+<p>这样就能链上CC2开头用的<span style="color:#be191c;"><code><span style="background-color:#cccccc;">PriorityQueue</span></code></span>实现完整利用链。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="856" src="https://images2.imgbox.com/54/20/c0RCRnQO_o.png" width="1080"></p> 
+<p> </p> 
+<pre><code class="hljs">extract:95, MvelExtractor (com.tangosol.coherence.rest.util.extractor)
+
+extract:112, ReflectionExtractor (com.tangosol.util.extractor)
+extract:83, ChainedExtractor (com.tangosol.util.extractor)
+
+// extract:96, MultiExtractor (com.tangosol.util.extractor)
+
+compare:79, AbstractExtractor (com.tangosol.util.extractor)
+siftDownUsingComparator:722, PriorityQueue (java.util)
+siftDown:688, PriorityQueue (java.util)
+heapify:737, PriorityQueue (java.util)
+readObject:797, PriorityQueue (java.util)
+invoke0:-1, NativeMethodAccessorImpl (sun.reflect)
+invoke:62, NativeMethodAccessorImpl (sun.reflect)
+invoke:43, DelegatingMethodAccessorImpl (sun.reflect)
+invoke:498, Method (java.lang.reflect)
+invokeReadObject:1170, ObjectStreamClass (java.io)
+readSerialData:2178, ObjectInputStream (java.io)
+readOrdinaryObject:2069, ObjectInputStream (java.io)
+readObject0:1573, ObjectInputStream (java.io)</code></pre> 
+<p>Weblogic在后面的补丁将两个sink类加入了黑名单：</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="491" src="https://images2.imgbox.com/2b/48/m2yB4D4V_o.png" width="1080"></p> 
+<h3>CVE-2020-14645</h3> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="541" src="https://images2.imgbox.com/9b/d3/Rzmiwqhm_o.png" width="1080"></p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="541" src="https://images2.imgbox.com/b1/27/KG87VEM0_o.png" width="1080"></p> 
+<p><span style="color:#be191c;"><code><span style="background-color:#cccccc;">UniversalExtractor</span></code></span>看似能调用任意类方法，实际受内部逻辑限制（尤其是<span style="color:#be191c;"><code><span style="background-color:#cccccc;">CanonicalNames#computeValueExtractorCanonicalName</span></code></span>）只能调到任意类的无参<span style="color:#be191c;"><code><span style="background-color:#cccccc;">get</span></code><span style="background-color:#cccccc;">/</span><code><span style="background-color:#cccccc;">is</span></code></span>方法，可以通过一些getter链触发JNDI完成利用。</p> 
+<pre><code class="hljs">extractComplex:432, UniversalExtractor (com.tangosol.util.extractor)
+extract:175, UniversalExtractor (com.tangosol.util.extractor)
+// extract:105, ChainedExtractor (com.tangosol.util.extractor)
+// extract:96, MultiExtractor (com.tangosol.util.extractor)
+compare:143, AbstractExtractor (com.tangosol.util.extractor)
+siftDownUsingComparator:722, PriorityQueue (java.util)
+siftDown:688, PriorityQueue (java.util)
+heapify:737, PriorityQueue (java.util)
+readObject:797, PriorityQueue (java.util)
+invoke0:-1, NativeMethodAccessorImpl (sun.reflect)
+invoke:62, NativeMethodAccessorImpl (sun.reflect)
+invoke:43, DelegatingMethodAccessorImpl (sun.reflect)
+invoke:498, Method (java.lang.reflect)
+invokeReadObject:1170, ObjectStreamClass (java.io)
+readSerialData:2178, ObjectInputStream (java.io)
+readOrdinaryObject:2069, ObjectInputStream (java.io)
+readObject0:1573, ObjectInputStream (java.io)</code></pre> 
+<p> </p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/e2182621ea8483dca611f35010912b06/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">python3基础知识-学习目录</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f3e48c3890675005c77317bc34333d9f/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">爬虫工具（tkinter&#43;scrapy&#43;pyinstaller）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

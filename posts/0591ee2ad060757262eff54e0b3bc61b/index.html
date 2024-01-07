@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>traffic control 之 egress 队列 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="traffic control 之 egress 队列" />
+<meta property="og:description" content="egress队列主要作用于报文出方向，分为两类：无类队列和分类队列。下面分析下源码。
+无类别队列 添加下面这条qdisc时，kernel端代码流程
+tc qdisc add dev eth0 root tbf rate 1024kbit limit 1024kbit burst 1024
+//linux/net/sched/sck_api.c static int tc_modify_qdisc(struct sk_buff *skb, struct nlmsghdr *n) struct net_device *dev; struct Qdisc *q; struct tcmsg *tcm; struct nlattr *tca[TCA_MAX &#43; 1]; //解析出配置的参数，保存到tca中 nlmsg_parse(n, sizeof(*tcm), tca, TCA_MAX, NULL); tcm = nlmsg_data(n); clid = tcm-&gt;tcm_parent; dev = __dev_get_by_index(net, tcm-&gt;tcm_ifindex); q = dev-&gt;qdisc; /* It may be default qdisc, ignore it */ //默认的qdisc，handle为0 if (q &amp;&amp; q-&gt;handle == 0) q = NULL; struct netdev_queue *dev_queue; //a." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/0591ee2ad060757262eff54e0b3bc61b/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-08-19T09:28:00+08:00" />
+<meta property="article:modified_time" content="2023-08-19T09:28:00+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">traffic control 之 egress 队列</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>egress队列主要作用于报文出方向，分为两类：无类队列和分类队列。下面分析下源码。</p> 
+<h4><a id="_1"></a>无类别队列</h4> 
+<p><img src="https://images2.imgbox.com/c9/2f/vo56rypu_o.png" alt="在这里插入图片描述"><br> 添加下面这条qdisc时，kernel端代码流程<br> tc qdisc add dev eth0 root tbf rate 1024kbit limit 1024kbit burst 1024</p> 
+<pre><code class="prism language-c"><span class="token comment">//linux/net/sched/sck_api.c</span>
+<span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">tc_modify_qdisc</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">sk_buff</span> <span class="token operator">*</span>skb<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">nlmsghdr</span> <span class="token operator">*</span>n<span class="token punctuation">)</span>
+    <span class="token keyword">struct</span> <span class="token class-name">net_device</span> <span class="token operator">*</span>dev<span class="token punctuation">;</span>
+    <span class="token keyword">struct</span> <span class="token class-name">Qdisc</span> <span class="token operator">*</span>q<span class="token punctuation">;</span>
+    <span class="token keyword">struct</span> <span class="token class-name">tcmsg</span> <span class="token operator">*</span>tcm<span class="token punctuation">;</span>
+    <span class="token keyword">struct</span> <span class="token class-name">nlattr</span> <span class="token operator">*</span>tca<span class="token punctuation">[</span>TCA_MAX <span class="token operator">+</span> <span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//解析出配置的参数，保存到tca中</span>
+    <span class="token function">nlmsg_parse</span><span class="token punctuation">(</span>n<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token operator">*</span>tcm<span class="token punctuation">)</span><span class="token punctuation">,</span> tca<span class="token punctuation">,</span> TCA_MAX<span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    tcm <span class="token operator">=</span> <span class="token function">nlmsg_data</span><span class="token punctuation">(</span>n<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    clid <span class="token operator">=</span> tcm<span class="token operator">-&gt;</span>tcm_parent<span class="token punctuation">;</span>
+    dev <span class="token operator">=</span> <span class="token function">__dev_get_by_index</span><span class="token punctuation">(</span>net<span class="token punctuation">,</span> tcm<span class="token operator">-&gt;</span>tcm_ifindex<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    q <span class="token operator">=</span> dev<span class="token operator">-&gt;</span>qdisc<span class="token punctuation">;</span>
+    <span class="token comment">/* It may be default qdisc, ignore it */</span>
+    <span class="token comment">//默认的qdisc，handle为0</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>q <span class="token operator">&amp;&amp;</span> q<span class="token operator">-&gt;</span>handle <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span>
+        q <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+    <span class="token keyword">struct</span> <span class="token class-name">netdev_queue</span> <span class="token operator">*</span>dev_queue<span class="token punctuation">;</span>
+    <span class="token comment">//a. 取出一个 tx queue来保存新创建的qdisc</span>
+    dev_queue <span class="token operator">=</span> <span class="token function">netdev_get_tx_queue</span><span class="token punctuation">(</span>dev<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    q <span class="token operator">=</span> <span class="token function">qdisc_create</span><span class="token punctuation">(</span>dev<span class="token punctuation">,</span> dev_queue<span class="token punctuation">,</span> p<span class="token punctuation">,</span>
+                 tcm<span class="token operator">-&gt;</span>tcm_parent<span class="token punctuation">,</span> tcm<span class="token operator">-&gt;</span>tcm_handle<span class="token punctuation">,</span>
+                 tca<span class="token punctuation">,</span> <span class="token operator">&amp;</span>err<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    
+    <span class="token comment">//b. 将新创建的qdisc赋给ingress queue</span>
+    <span class="token function">qdisc_graft</span><span class="token punctuation">(</span>dev<span class="token punctuation">,</span> p<span class="token punctuation">,</span> skb<span class="token punctuation">,</span> n<span class="token punctuation">,</span> clid<span class="token punctuation">,</span> q<span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>a. 创建qdisc</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">struct</span> <span class="token class-name">Qdisc</span> <span class="token operator">*</span> <span class="token function">qdisc_create</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">net_device</span> <span class="token operator">*</span>dev<span class="token punctuation">,</span> <span class="token keyword">struct</span> 
+         <span class="token class-name">netdev_queue</span> <span class="token operator">*</span>dev_queue<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">Qdisc</span> <span class="token operator">*</span>p<span class="token punctuation">,</span> u32 parent<span class="token punctuation">,</span> u32 
+         handle<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">nlattr</span> <span class="token operator">*</span><span class="token operator">*</span>tca<span class="token punctuation">,</span> <span class="token keyword">int</span> <span class="token operator">*</span>errp<span class="token punctuation">)</span>
+    <span class="token comment">//kind为tbf</span>
+    <span class="token keyword">struct</span> <span class="token class-name">nlattr</span> <span class="token operator">*</span>kind <span class="token operator">=</span> tca<span class="token punctuation">[</span>TCA_KIND<span class="token punctuation">]</span><span class="token punctuation">;</span>
+    <span class="token keyword">struct</span> <span class="token class-name">Qdisc</span> <span class="token operator">*</span>sch<span class="token punctuation">;</span>
+    <span class="token keyword">struct</span> <span class="token class-name">Qdisc_ops</span> <span class="token operator">*</span>ops<span class="token punctuation">;</span>
+    <span class="token comment">//根据kind到链表qdisc_base查找是否已经加载，如果没有，则动态加载</span>
+    <span class="token comment">//对于tbf来说，ops为tbf_qdisc_ops</span>
+    ops <span class="token operator">=</span> <span class="token function">qdisc_lookup_ops</span><span class="token punctuation">(</span>kind<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//申请qdisc内存</span>
+    sch <span class="token operator">=</span> <span class="token function">qdisc_alloc</span><span class="token punctuation">(</span>dev_queue<span class="token punctuation">,</span> ops<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//命令行指定了parent为root，所以parent为TC_H_ROOT(0xFFFFFFFFU)</span>
+    sch<span class="token operator">-&gt;</span>parent <span class="token operator">=</span> parent<span class="token punctuation">;</span>
+    <span class="token comment">//如果没有指定handle，则自动分配一个(范围为[8000-FFFF]:0000)</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>handle <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        handle <span class="token operator">=</span> <span class="token function">qdisc_alloc_handle</span><span class="token punctuation">(</span>dev<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        err <span class="token operator">=</span> <span class="token operator">-</span>ENOMEM<span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>handle <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span>
+            <span class="token keyword">goto</span> err_out3<span class="token punctuation">;</span>
+    sch<span class="token operator">-&gt;</span>handle <span class="token operator">=</span> handle<span class="token punctuation">;</span>
+    <span class="token comment">//如果ops提供了init函数，则调用，对于tbf来说，init为tbf_init</span>
+    ops<span class="token operator">-&gt;</span><span class="token function">init</span><span class="token punctuation">(</span>sch<span class="token punctuation">,</span> tca<span class="token punctuation">[</span>TCA_OPTIONS<span class="token punctuation">]</span><span class="token punctuation">)</span>
+   <span class="token comment">//参考下面对于qdisc_list_add的注释，因为parent为root，所以不会执行</span>
+    <span class="token function">qdisc_list_add</span><span class="token punctuation">(</span>sch<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> sch<span class="token punctuation">;</span>
+</code></pre> 
+<p>tbf qdisc初始化函数，解析命令行参数，填充私有数据tbf_sched_data</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">tbf_init</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">Qdisc</span> <span class="token operator">*</span>sch<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">nlattr</span> <span class="token operator">*</span>opt<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">struct</span> <span class="token class-name">tbf_sched_data</span> <span class="token operator">*</span>q <span class="token operator">=</span> <span class="token function">qdisc_priv</span><span class="token punctuation">(</span>sch<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>opt <span class="token operator">==</span> <span class="token constant">NULL</span><span class="token punctuation">)</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span>EINVAL<span class="token punctuation">;</span>
+
+    q<span class="token operator">-&gt;</span>t_c <span class="token operator">=</span> <span class="token function">ktime_get_ns</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">qdisc_watchdog_init</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>q<span class="token operator">-&gt;</span>watchdog<span class="token punctuation">,</span> sch<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    q<span class="token operator">-&gt;</span>qdisc <span class="token operator">=</span> <span class="token operator">&amp;</span>noop_qdisc<span class="token punctuation">;</span>
+    <span class="token keyword">return</span> <span class="token function">tbf_change</span><span class="token punctuation">(</span>sch<span class="token punctuation">,</span> opt<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>b. 将新创建的qdisc赋给tx queue</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">qdisc_graft</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">net_device</span> <span class="token operator">*</span>dev<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">Qdisc</span> <span class="token operator">*</span>parent<span class="token punctuation">,</span>
+               <span class="token keyword">struct</span> <span class="token class-name">sk_buff</span> <span class="token operator">*</span>skb<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">nlmsghdr</span> <span class="token operator">*</span>n<span class="token punctuation">,</span> u32 classid<span class="token punctuation">,</span>
+               <span class="token keyword">struct</span> <span class="token class-name">Qdisc</span> <span class="token operator">*</span>new<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">Qdisc</span> <span class="token operator">*</span>old<span class="token punctuation">)</span>
+    <span class="token comment">//如果parent为NULL，说明是第一次替换默认qdisc</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>parent <span class="token operator">==</span> <span class="token constant">NULL</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        num_q <span class="token operator">=</span> dev<span class="token operator">-&gt;</span>num_tx_queues<span class="token punctuation">;</span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> num_q<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">struct</span> <span class="token class-name">netdev_queue</span> <span class="token operator">*</span>dev_queue <span class="token operator">=</span> <span class="token function">netdev_get_tx_queue</span><span class="token punctuation">(</span>dev<span class="token punctuation">,</span> i<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">//先将new qdisc赋给 dev_queue-&gt;qdisc_sleeping</span>
+            old <span class="token operator">=</span> <span class="token function">dev_graft_qdisc</span><span class="token punctuation">(</span>dev_queue<span class="token punctuation">,</span> new<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        dev<span class="token operator">-&gt;</span>qdisc <span class="token operator">=</span> new <span class="token operator">?</span> <span class="token operator">:</span> <span class="token operator">&amp;</span>noop_qdisc<span class="token punctuation">;</span>
+        <span class="token comment">//如果网卡是up的，才会将dev_queue-&gt;qdisc_sleeping赋给dev_queue-&gt;qdisc，处理报文时，用的也是dev_queue-&gt;qdisc。</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>dev<span class="token operator">-&gt;</span>flags <span class="token operator">&amp;</span> IFF_UP<span class="token punctuation">)</span>
+            <span class="token function">dev_activate</span><span class="token punctuation">(</span>dev<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">//替换之前添加的qdisc</span>
+        <span class="token keyword">const</span> <span class="token keyword">struct</span> <span class="token class-name">Qdisc_class_ops</span> <span class="token operator">*</span>cops <span class="token operator">=</span> parent<span class="token operator">-&gt;</span>ops<span class="token operator">-&gt;</span>cl_ops<span class="token punctuation">;</span>
+        err <span class="token operator">=</span> <span class="token operator">-</span>EOPNOTSUPP<span class="token punctuation">;</span>
+        <span class="token comment">//调用old qdisc的cops-&gt;graft嫁接新的qdisc</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>cops <span class="token operator">&amp;&amp;</span> cops<span class="token operator">-&gt;</span>graft<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">unsigned</span> <span class="token keyword">long</span> cl <span class="token operator">=</span> cops<span class="token operator">-&gt;</span><span class="token function">get</span><span class="token punctuation">(</span>parent<span class="token punctuation">,</span> classid<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>cl<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                err <span class="token operator">=</span> cops<span class="token operator">-&gt;</span><span class="token function">graft</span><span class="token punctuation">(</span>parent<span class="token punctuation">,</span> cl<span class="token punctuation">,</span> new<span class="token punctuation">,</span> <span class="token operator">&amp;</span>old<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                cops<span class="token operator">-&gt;</span><span class="token function">put</span><span class="token punctuation">(</span>parent<span class="token punctuation">,</span> cl<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span> <span class="token keyword">else</span>
+                err <span class="token operator">=</span> <span class="token operator">-</span>ENOENT<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="_110"></a>有类别队列</h4> 
+<p><img src="https://images2.imgbox.com/37/66/oB9i89WA_o.png" alt="在这里插入图片描述"><br> a. 添加根队列<br> tc qdisc add dev eth0 root handle 1: cbq bandwidth 10Mbit avpkt 1000 cell 8 mpu 64</p> 
+<p>除了ops-&gt;init的具体实现，创建qdisc部分和无类别队列基本上一致。对于cbq来说，ops-&gt;init函数为cbq_init</p> 
+<pre><code class="prism language-c">tc_modify_qdisc <span class="token operator">--</span><span class="token operator">&gt;</span> qdisc_create <span class="token operator">--</span><span class="token operator">&gt;</span>ops<span class="token operator">-&gt;</span><span class="token function">init</span><span class="token punctuation">(</span>sch<span class="token punctuation">,</span> tca<span class="token punctuation">[</span>TCA_OPTIONS<span class="token punctuation">]</span><span class="token punctuation">)</span>
+
+<span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">cbq_init</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">Qdisc</span> <span class="token operator">*</span>sch<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">nlattr</span> <span class="token operator">*</span>opt<span class="token punctuation">)</span>
+    <span class="token comment">//cbq_sched_data 是cbq队列的私有数据</span>
+    <span class="token keyword">struct</span> <span class="token class-name">cbq_sched_data</span> <span class="token operator">*</span>q <span class="token operator">=</span> <span class="token function">qdisc_priv</span><span class="token punctuation">(</span>sch<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//clhash是用于存放class的hash链表</span>
+    <span class="token function">qdisc_class_hash_init</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>q<span class="token operator">-&gt;</span>clhash<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//link是struct cbq_class类型的class，为默认值类。</span>
+    q<span class="token operator">-&gt;</span>link<span class="token punctuation">.</span>refcnt <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+    q<span class="token operator">-&gt;</span>link<span class="token punctuation">.</span>sibling <span class="token operator">=</span> <span class="token operator">&amp;</span>q<span class="token operator">-&gt;</span>link<span class="token punctuation">;</span>
+    q<span class="token operator">-&gt;</span>link<span class="token punctuation">.</span>common<span class="token punctuation">.</span>classid <span class="token operator">=</span> sch<span class="token operator">-&gt;</span>handle<span class="token punctuation">;</span> <span class="token comment">//classid为qdisc的handle值</span>
+    q<span class="token operator">-&gt;</span>link<span class="token punctuation">.</span>qdisc <span class="token operator">=</span> sch<span class="token punctuation">;</span>
+
+    <span class="token comment">//在默认class上也要创建默认qdisc pfifo_qdisc_ops</span>
+    q<span class="token operator">-&gt;</span>link<span class="token punctuation">.</span>q <span class="token operator">=</span> <span class="token function">qdisc_create_dflt</span><span class="token punctuation">(</span>sch<span class="token operator">-&gt;</span>dev_queue<span class="token punctuation">,</span> <span class="token operator">&amp;</span>pfifo_qdisc_ops<span class="token punctuation">,</span> sch<span class="token operator">-&gt;</span>handle<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token function">cbq_link_class</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>q<span class="token operator">-&gt;</span>link<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//将默认的class link添加到hash链表</span>
+    <span class="token function">qdisc_class_hash_insert</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>q<span class="token operator">-&gt;</span>clhash<span class="token punctuation">,</span> <span class="token operator">&amp;</span>this<span class="token operator">-&gt;</span>common<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>b. 在根队列上添加class<br> 当通过tc命令行添加class时，内核调用tc_ctl_tclass<br> tc class add dev eth0 parent 1:0 classid 1:1 cbq bandidth 10Mbit</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">tc_ctl_tclass</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">sk_buff</span> <span class="token operator">*</span>skb<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">nlmsghdr</span> <span class="token operator">*</span>n<span class="token punctuation">)</span>
+    portid <span class="token operator">=</span> tcm<span class="token operator">-&gt;</span>tcm_parent<span class="token punctuation">;</span> <span class="token comment">//值为1:0</span>
+    clid <span class="token operator">=</span> tcm<span class="token operator">-&gt;</span>tcm_handle<span class="token punctuation">;</span> <span class="token comment">//值为1:1</span>
+    <span class="token comment">//根据qid查找qdisc，qid就是handle id，即通过主序列号查找qdisc。</span>
+    <span class="token comment">//不管添加几个类，parent是父队列还是父类，只会用冒号前面的主序列号来查找qdisc</span>
+    <span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">TC_H_MAJ_MASK</span> <span class="token expression"><span class="token punctuation">(</span><span class="token number">0xFFFF0000U</span><span class="token punctuation">)</span></span></span>
+    <span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name function">TC_H_MAJ</span><span class="token expression"><span class="token punctuation">(</span>h<span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>h<span class="token punctuation">)</span><span class="token operator">&amp;</span>TC_H_MAJ_MASK<span class="token punctuation">)</span></span></span>
+    qid <span class="token operator">=</span> <span class="token function">TC_H_MAJ</span><span class="token punctuation">(</span>clid<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//获取主序列号</span>
+    q <span class="token operator">=</span> <span class="token function">qdisc_lookup</span><span class="token punctuation">(</span>dev<span class="token punctuation">,</span> qid<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>q<span class="token punctuation">)</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span>ENOENT<span class="token punctuation">;</span>
+    <span class="token comment">//获取 cl_ops cbq_class_ops</span>
+    cops <span class="token operator">=</span> q<span class="token operator">-&gt;</span>ops<span class="token operator">-&gt;</span>cl_ops<span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>cops <span class="token operator">==</span> <span class="token constant">NULL</span><span class="token punctuation">)</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span>EINVAL<span class="token punctuation">;</span>
+    <span class="token comment">//根据class id查找是不是已经存在，对应cbq来说，就是调用cbq_get函数(调用cbq_class_lookup(q, classid)进行查找)</span>
+    cl <span class="token operator">=</span> cops<span class="token operator">-&gt;</span><span class="token function">get</span><span class="token punctuation">(</span>q<span class="token punctuation">,</span> clid<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>cl <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        err <span class="token operator">=</span> <span class="token operator">-</span>ENOENT<span class="token punctuation">;</span>
+    <span class="token comment">//如果不存在，但是命令不是添加新class或者没有create flag，则返回错误</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>n<span class="token operator">-&gt;</span>nlmsg_type <span class="token operator">!=</span> RTM_NEWTCLASS <span class="token operator">||</span>
+         <span class="token operator">!</span><span class="token punctuation">(</span>n<span class="token operator">-&gt;</span>nlmsg_flags <span class="token operator">&amp;</span> NLM_F_CREATE<span class="token punctuation">)</span><span class="token punctuation">)</span>
+        <span class="token keyword">goto</span> out<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">switch</span> <span class="token punctuation">(</span>n<span class="token operator">-&gt;</span>nlmsg_type<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">case</span> RTM_NEWTCLASS<span class="token operator">:</span>
+            <span class="token comment">//如果已经存在，但是flag为NLM_F_EXCL，意思是已存在则返回</span>
+            err <span class="token operator">=</span> <span class="token operator">-</span>EEXIST<span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>n<span class="token operator">-&gt;</span>nlmsg_flags <span class="token operator">&amp;</span> NLM_F_EXCL<span class="token punctuation">)</span>
+                <span class="token keyword">goto</span> out<span class="token punctuation">;</span>
+            <span class="token keyword">break</span><span class="token punctuation">;</span>
+        <span class="token keyword">case</span> RTM_DELTCLASS<span class="token operator">:</span>
+            err <span class="token operator">=</span> <span class="token operator">-</span>EOPNOTSUPP<span class="token punctuation">;</span>
+            <span class="token comment">//删除此class</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>cops<span class="token operator">-&gt;</span>delete<span class="token punctuation">)</span>
+                err <span class="token operator">=</span> cops<span class="token operator">-&gt;</span><span class="token function">delete</span><span class="token punctuation">(</span>q<span class="token punctuation">,</span> cl<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>err <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span>
+                <span class="token function">tclass_notify</span><span class="token punctuation">(</span>net<span class="token punctuation">,</span> skb<span class="token punctuation">,</span> n<span class="token punctuation">,</span> q<span class="token punctuation">,</span> cl<span class="token punctuation">,</span> RTM_DELTCLASS<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">goto</span> out<span class="token punctuation">;</span>
+
+    new_cl <span class="token operator">=</span> cl<span class="token punctuation">;</span>
+    err <span class="token operator">=</span> <span class="token operator">-</span>EOPNOTSUPP<span class="token punctuation">;</span>
+    <span class="token comment">//如果没有提供change函数，则返回EOPNOTSUPP错误，说明不支持class操作</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>cops<span class="token operator">-&gt;</span>change<span class="token punctuation">)</span>
+        <span class="token comment">//调用change函数，对cbq来说就是 cbq_change_class</span>
+        err <span class="token operator">=</span> cops<span class="token operator">-&gt;</span><span class="token function">change</span><span class="token punctuation">(</span>q<span class="token punctuation">,</span> clid<span class="token punctuation">,</span> portid<span class="token punctuation">,</span> tca<span class="token punctuation">,</span> <span class="token operator">&amp;</span>new_cl<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">cbq_change_class</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">Qdisc</span> <span class="token operator">*</span>sch<span class="token punctuation">,</span> u32 classid<span class="token punctuation">,</span> u32 parentid<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">nlattr</span> <span class="token operator">*</span><span class="token operator">*</span>tca<span class="token punctuation">,</span> <span class="token keyword">unsigned</span> <span class="token keyword">long</span> <span class="token operator">*</span>arg<span class="token punctuation">)</span>
+    <span class="token comment">//获取cbq的私有数据</span>
+    <span class="token keyword">struct</span> <span class="token class-name">cbq_sched_data</span> <span class="token operator">*</span>q <span class="token operator">=</span> <span class="token function">qdisc_priv</span><span class="token punctuation">(</span>sch<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//获取默认的class</span>
+    <span class="token keyword">struct</span> <span class="token class-name">cbq_class</span> <span class="token operator">*</span>parent<span class="token punctuation">;</span>
+    parent <span class="token operator">=</span> <span class="token operator">&amp;</span>q<span class="token operator">-&gt;</span>link<span class="token punctuation">;</span>
+    <span class="token comment">//如果指定了parentid，则需要进行查找。</span>
+    <span class="token comment">//查找失败直接返回</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>parentid<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        parent <span class="token operator">=</span> <span class="token function">cbq_class_lookup</span><span class="token punctuation">(</span>q<span class="token punctuation">,</span> parentid<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        err <span class="token operator">=</span> <span class="token operator">-</span>EINVAL<span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>parent <span class="token operator">==</span> <span class="token constant">NULL</span><span class="token punctuation">)</span>
+            <span class="token keyword">goto</span> failure<span class="token punctuation">;</span>
+    <span class="token comment">//分配新class结构体</span>
+    cl <span class="token operator">=</span> <span class="token function">kzalloc</span><span class="token punctuation">(</span><span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token operator">*</span>cl<span class="token punctuation">)</span><span class="token punctuation">,</span> GFP_KERNEL<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//为class分配默认队列</span>
+    cl<span class="token operator">-&gt;</span>q <span class="token operator">=</span> <span class="token function">qdisc_create_dflt</span><span class="token punctuation">(</span>sch<span class="token operator">-&gt;</span>dev_queue<span class="token punctuation">,</span> <span class="token operator">&amp;</span>pfifo_qdisc_ops<span class="token punctuation">,</span> classid<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//保存classid</span>
+    cl<span class="token operator">-&gt;</span>common<span class="token punctuation">.</span>classid <span class="token operator">=</span> classid<span class="token punctuation">;</span>
+    <span class="token comment">//指向父类</span>
+    cl<span class="token operator">-&gt;</span>tparent <span class="token operator">=</span> parent<span class="token punctuation">;</span>
+    <span class="token comment">//保存根队列</span>
+    cl<span class="token operator">-&gt;</span>qdisc <span class="token operator">=</span> sch<span class="token punctuation">;</span>
+    <span class="token comment">//将class添加到cbq队列的clhash链表中</span>
+    <span class="token function">cbq_link_class</span><span class="token punctuation">(</span>cl<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">struct</span> <span class="token class-name">cbq_sched_data</span> <span class="token operator">*</span>q <span class="token operator">=</span> <span class="token function">qdisc_priv</span><span class="token punctuation">(</span>this<span class="token operator">-&gt;</span>qdisc<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">qdisc_class_hash_insert</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>q<span class="token operator">-&gt;</span>clhash<span class="token punctuation">,</span> <span class="token operator">&amp;</span>this<span class="token operator">-&gt;</span>common<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>按照上面的分析，可通过如下命令创建一个根队列1:，再在根队列的命令空间1：下创建四个类1:1, 1:2, 1:3, 1:4</p> 
+<pre><code class="prism language-c">#创建根队列cbq，替换默认的根队列pfifo_qdisc_ops
+#分配默认类，classid为handle id，即<span class="token number">1</span><span class="token operator">:</span><span class="token punctuation">,</span> 并且在类上分配默认队列pfifo_qdisc_ops
+tc qdisc add dev eth0 root handle <span class="token number">1</span><span class="token operator">:</span> cbq bandwidth <span class="token number">10</span>Mbit avpkt <span class="token number">1000</span> cell <span class="token number">8</span> mpu <span class="token number">64</span>
+
+#添加新类<span class="token punctuation">,</span>classid为<span class="token number">1</span><span class="token operator">:</span><span class="token number">1</span><span class="token punctuation">,</span> 父类id为<span class="token number">1</span><span class="token operator">:</span><span class="token number">0</span>
+#并在新类上添加默认队列pfifo_qdisc_ops
+tc class add dev eth0 parent <span class="token number">1</span><span class="token operator">:</span><span class="token number">0</span> classid <span class="token number">1</span><span class="token operator">:</span><span class="token number">1</span> cbq bandidth <span class="token number">10</span>Mbit rate <span class="token number">10</span>Mbit maxburst <span class="token number">20</span> allot <span class="token number">1514</span> prio <span class="token number">8</span> avpkt <span class="token number">1000</span> cell <span class="token number">8</span> weight <span class="token number">1</span>Mbit
+
+#添加新类<span class="token punctuation">,</span>classid为<span class="token number">1</span><span class="token operator">:</span><span class="token number">2</span><span class="token punctuation">,</span> 父类id为<span class="token number">1</span><span class="token operator">:</span><span class="token number">1</span>
+#并在新类上添加默认队列pfifo_qdisc_ops
+tc class add dev eth0 parent <span class="token number">1</span><span class="token operator">:</span><span class="token number">1</span> classid <span class="token number">1</span><span class="token operator">:</span><span class="token number">2</span> cbq bandwidth <span class="token number">10</span>Mbit rate <span class="token number">8</span>Mbit maxburst <span class="token number">20</span> allot <span class="token number">1514</span> prio <span class="token number">2</span> avpkt <span class="token number">1000</span> cell <span class="token number">8</span> weight <span class="token number">800</span>Kbit split <span class="token number">1</span><span class="token operator">:</span><span class="token number">0</span> bounded
+
+#添加新类<span class="token punctuation">,</span>classid为<span class="token number">1</span><span class="token operator">:</span><span class="token number">3</span><span class="token punctuation">,</span> 父类id为<span class="token number">1</span><span class="token operator">:</span><span class="token number">1</span>
+#并在新类上添加默认队列pfifo_qdisc_ops
+tc class add dev eth0 parent <span class="token number">1</span><span class="token operator">:</span><span class="token number">1</span> classid <span class="token number">1</span><span class="token operator">:</span><span class="token number">3</span> cbq bandwidth <span class="token number">10</span>Mbit rate <span class="token number">1</span>Mbit maxburst <span class="token number">20</span> allot <span class="token number">1514</span> prio <span class="token number">1</span> avpkt <span class="token number">1000</span> cell <span class="token number">8</span> weight <span class="token number">100</span>Kbit split <span class="token number">1</span><span class="token operator">:</span><span class="token number">0</span>
+
+#添加新类<span class="token punctuation">,</span>classid为<span class="token number">1</span><span class="token operator">:</span><span class="token number">4</span><span class="token punctuation">,</span> 父类id为<span class="token number">1</span><span class="token operator">:</span><span class="token number">1</span>
+#并在新类上添加默认队列pfifo_qdisc_ops
+tc class add dev eth0 parent <span class="token number">1</span><span class="token operator">:</span><span class="token number">1</span> classid <span class="token number">1</span><span class="token operator">:</span><span class="token number">4</span> cbq bandwidth <span class="token number">10</span> Mbit rate <span class="token number">1</span>Mbit maxburst <span class="token number">20</span> allot <span class="token number">1514</span> prio <span class="token number">6</span> avpkt <span class="token number">1000</span> cell <span class="token number">8</span> weight <span class="token number">100</span>Kbit split <span class="token number">1</span><span class="token operator">:</span><span class="token number">0</span>
+
+至此，根队列上有五个类，即默认类和四个新添加类<span class="token punctuation">,</span> 这五个类都会添加到 cbq_sched_data<span class="token operator">-&gt;</span>clhash 链表中<span class="token punctuation">,</span>并且每个类都会有默认队列pfifo_qdisc_ops。
+默认类<span class="token number">1</span><span class="token operator">:</span><span class="token number">0</span>是<span class="token number">1</span><span class="token operator">:</span><span class="token number">1</span>的父类，<span class="token number">1</span><span class="token operator">:</span><span class="token number">1</span>是<span class="token number">1</span><span class="token operator">:</span><span class="token number">2</span><span class="token punctuation">,</span><span class="token number">1</span><span class="token operator">:</span><span class="token number">3</span>和<span class="token number">1</span><span class="token operator">:</span><span class="token number">4</span>的父类，并且每个类都有默认队列pfifo_qdisc_ops
+
+root <span class="token number">0xffffffff</span>
+<span class="token operator">|</span>
+root qdisc handle <span class="token operator">=</span> <span class="token number">1</span><span class="token operator">:</span><span class="token number">0</span>
+<span class="token operator">|</span>
+<span class="token keyword">default</span> class <span class="token number">1</span><span class="token operator">:</span><span class="token number">0</span> <span class="token operator">-&gt;</span> <span class="token keyword">default</span> qdisc pfifo_qdisc_ops
+<span class="token operator">|</span>
+class <span class="token number">1</span><span class="token operator">:</span><span class="token number">1</span> <span class="token operator">-&gt;</span> <span class="token keyword">default</span> qdisc pfifo_qdisc_ops
+<span class="token operator">|</span>
+class <span class="token number">1</span><span class="token operator">:</span><span class="token number">2</span>    class <span class="token number">1</span><span class="token operator">:</span><span class="token number">3</span>   class <span class="token number">1</span><span class="token operator">:</span><span class="token number">4</span> <span class="token operator">-&gt;</span> <span class="token keyword">default</span> qdisc pfifo_qdisc_ops
+</code></pre> 
+<p>c. 添加filter</p> 
+<pre><code class="prism language-c">应用路由分类器到cbq队列的根，父分类编号为<span class="token number">1</span><span class="token operator">:</span><span class="token number">0</span>；过滤协议为ip，优先级别为<span class="token number">100</span>，过滤器为基于路由表。
+tc filter add dev eth0 parent <span class="token number">1</span><span class="token operator">:</span><span class="token number">0</span> protocol ip prio <span class="token number">100</span> route
+
+建立路由映射分类 <span class="token number">1</span><span class="token operator">:</span><span class="token number">2</span> <span class="token punctuation">,</span> <span class="token number">1</span><span class="token operator">:</span><span class="token number">3</span> <span class="token punctuation">,</span> <span class="token number">1</span><span class="token operator">:</span><span class="token number">4</span>
+tc filter add dev eth0 parent <span class="token number">1</span><span class="token operator">:</span><span class="token number">0</span> protocol ip prio <span class="token number">100</span> route to <span class="token number">2</span> flowid <span class="token number">1</span><span class="token operator">:</span><span class="token number">2</span>
+tc filter add dev eth0 parent <span class="token number">1</span><span class="token operator">:</span><span class="token number">0</span> protocol ip prio <span class="token number">100</span> route to <span class="token number">3</span> flowid <span class="token number">1</span><span class="token operator">:</span><span class="token number">3</span>
+tc filter add dev eth0 parent <span class="token number">1</span><span class="token operator">:</span><span class="token number">0</span> protocol ip prio <span class="token number">100</span> route to <span class="token number">4</span> flowid <span class="token number">1</span><span class="token operator">:</span><span class="token number">4</span>
+</code></pre> 
+<pre><code class="prism language-c">#通过命令行tc 添加filter规则时，kernel调用tc_ctl_tfilter
+<span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">tc_ctl_tfilter</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">sk_buff</span> <span class="token operator">*</span>skb<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">nlmsghdr</span> <span class="token operator">*</span>n<span class="token punctuation">)</span>
+<span class="token comment">//如果没有指定parent，则使用根队列的handle</span>
+    <span class="token comment">/* Find qdisc */</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>parent<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        q <span class="token operator">=</span> dev<span class="token operator">-&gt;</span>qdisc<span class="token punctuation">;</span>
+        parent <span class="token operator">=</span> q<span class="token operator">-&gt;</span>handle<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">//根据主序列号查找qdisc</span>
+        q <span class="token operator">=</span> <span class="token function">qdisc_lookup</span><span class="token punctuation">(</span>dev<span class="token punctuation">,</span> <span class="token function">TC_H_MAJ</span><span class="token punctuation">(</span>t<span class="token operator">-&gt;</span>tcm_parent<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>q <span class="token operator">==</span> <span class="token constant">NULL</span><span class="token punctuation">)</span>
+            <span class="token keyword">return</span> <span class="token operator">-</span>EINVAL<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">//获取cl_ops</span>
+    <span class="token comment">/* Is it classful? */</span>
+    cops <span class="token operator">=</span> q<span class="token operator">-&gt;</span>ops<span class="token operator">-&gt;</span>cl_ops<span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>cops<span class="token punctuation">)</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span>EINVAL<span class="token punctuation">;</span>
+
+    <span class="token comment">//如果cl_ops没有提供tcf_chain函数，则说明不支持filter，返回错误EOPNOTSUPP，</span>
+    <span class="token comment">//对于cbq来说，tcf_chain  就是 cbq_find_tcf</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>cops<span class="token operator">-&gt;</span>tcf_chain <span class="token operator">==</span> <span class="token constant">NULL</span><span class="token punctuation">)</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span>EOPNOTSUPP<span class="token punctuation">;</span>
+
+    <span class="token keyword">unsigned</span> <span class="token keyword">long</span> cl <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token comment">//parent的从序列号不为0，说明指定了class id，否则使用默认类</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">TC_H_MIN</span><span class="token punctuation">(</span>parent<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">//对于cbq来说，cbq_get</span>
+        <span class="token comment">//根据指定的class id，即parent的值查找class</span>
+        cl <span class="token operator">=</span> cops<span class="token operator">-&gt;</span><span class="token function">get</span><span class="token punctuation">(</span>q<span class="token punctuation">,</span> parent<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">struct</span> <span class="token class-name">cbq_sched_data</span> <span class="token operator">*</span>q <span class="token operator">=</span> <span class="token function">qdisc_priv</span><span class="token punctuation">(</span>sch<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">struct</span> <span class="token class-name">cbq_class</span> <span class="token operator">*</span>cl <span class="token operator">=</span> <span class="token function">cbq_class_lookup</span><span class="token punctuation">(</span>q<span class="token punctuation">,</span> classid<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">//到clhash中查找</span>
+            clc <span class="token operator">=</span> <span class="token function">qdisc_class_find</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>q<span class="token operator">-&gt;</span>clhash<span class="token punctuation">,</span> classid<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>cl<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                cl<span class="token operator">-&gt;</span>refcnt<span class="token operator">++</span><span class="token punctuation">;</span>
+                <span class="token keyword">return</span> <span class="token punctuation">(</span><span class="token keyword">unsigned</span> <span class="token keyword">long</span><span class="token punctuation">)</span>cl<span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+            <span class="token comment">//如果查找失败，说明指定的class不存在，返回错误</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>cl <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span>
+                <span class="token keyword">return</span> <span class="token operator">-</span>ENOENT<span class="token punctuation">;</span>
+
+    <span class="token comment">//根据 cl 获取 filter链表，对于cbq来说，就是cbq_find_tcf</span>
+    <span class="token comment">/* And the last stroke */</span>
+    chain <span class="token operator">=</span> cops<span class="token operator">-&gt;</span><span class="token function">tcf_chain</span><span class="token punctuation">(</span>q<span class="token punctuation">,</span> cl<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">struct</span> <span class="token class-name">cbq_sched_data</span> <span class="token operator">*</span>q <span class="token operator">=</span> <span class="token function">qdisc_priv</span><span class="token punctuation">(</span>sch<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">struct</span> <span class="token class-name">cbq_class</span> <span class="token operator">*</span>cl <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">cbq_class</span> <span class="token operator">*</span><span class="token punctuation">)</span>arg<span class="token punctuation">;</span>
+        <span class="token comment">//如果cl为空，则使用默认类q-&gt;link</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>cl <span class="token operator">==</span> <span class="token constant">NULL</span><span class="token punctuation">)</span>
+            cl <span class="token operator">=</span> <span class="token operator">&amp;</span>q<span class="token operator">-&gt;</span>link<span class="token punctuation">;</span>
+        <span class="token comment">//struct tcf_proto __rcu    *filter_list;</span>
+        <span class="token keyword">return</span> <span class="token operator">&amp;</span>cl<span class="token operator">-&gt;</span>filter_list<span class="token punctuation">;</span>
+
+    <span class="token comment">//根据protocol和prio查找要添加的filter是否已经在 filter_list 中</span>
+    <span class="token comment">/* Check the chain for existence of proto-tcf with this priority */</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span>back <span class="token operator">=</span> chain<span class="token punctuation">;</span> <span class="token punctuation">(</span>tp <span class="token operator">=</span> <span class="token function">rtnl_dereference</span><span class="token punctuation">(</span><span class="token operator">*</span>back<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span> back <span class="token operator">=</span> <span class="token operator">&amp;</span>tp<span class="token operator">-&gt;</span>next<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>tp<span class="token operator">-&gt;</span>prio <span class="token operator">&gt;=</span> prio<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>tp<span class="token operator">-&gt;</span>prio <span class="token operator">==</span> prio<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>nprio <span class="token operator">||</span> <span class="token punctuation">(</span>tp<span class="token operator">-&gt;</span>protocol <span class="token operator">!=</span> protocol <span class="token operator">&amp;&amp;</span> protocol<span class="token punctuation">)</span><span class="token punctuation">)</span>
+                    <span class="token keyword">goto</span> errout<span class="token punctuation">;</span>
+            <span class="token punctuation">}</span> <span class="token keyword">else</span>
+                tp <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+            <span class="token keyword">break</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">//如果第一次添加</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>tp <span class="token operator">==</span> <span class="token constant">NULL</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        tp <span class="token operator">=</span> <span class="token function">kzalloc</span><span class="token punctuation">(</span><span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token operator">*</span>tp<span class="token punctuation">)</span><span class="token punctuation">,</span> GFP_KERNEL<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//根据命令行参数 route 查找ops，ops通过     register_tcf_proto_ops 注册</span>
+        tp_ops <span class="token operator">=</span> <span class="token function">tcf_proto_lookup_ops</span><span class="token punctuation">(</span>tca<span class="token punctuation">[</span>TCA_KIND<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        tp<span class="token operator">-&gt;</span>ops <span class="token operator">=</span> tp_ops<span class="token punctuation">;</span>
+           tp<span class="token operator">-&gt;</span>protocol <span class="token operator">=</span> protocol<span class="token punctuation">;</span>
+        tp<span class="token operator">-&gt;</span>classify <span class="token operator">=</span> tp_ops<span class="token operator">-&gt;</span>classify<span class="token punctuation">;</span>
+           tp<span class="token operator">-&gt;</span>classid <span class="token operator">=</span> parent<span class="token punctuation">;</span>
+        <span class="token comment">//调用tp_ops的init函数，对于route来说就是route4_init,此函数为空，什么都不做</span>
+        tp_ops<span class="token operator">-&gt;</span><span class="token function">init</span><span class="token punctuation">(</span>tp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+     <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>tca<span class="token punctuation">[</span>TCA_KIND<span class="token punctuation">]</span> <span class="token operator">&amp;&amp;</span> <span class="token function">nla_strcmp</span><span class="token punctuation">(</span>tca<span class="token punctuation">[</span>TCA_KIND<span class="token punctuation">]</span><span class="token punctuation">,</span> tp<span class="token operator">-&gt;</span>ops<span class="token operator">-&gt;</span>kind<span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token comment">//如果查找到了tp，但是命令行指定的kind和tp中保存的kind不一样，则报错返回。</span>
+    <span class="token comment">//即上次添加filter时，kind为route，则会将bpf保存到tp-&gt;ops-&gt;kind，如果这次添加filter</span>
+    <span class="token comment">//时，kind为u32，则报错</span>
+        <span class="token keyword">goto</span> errout<span class="token punctuation">;</span>
+
+    <span class="token comment">//对于route来说，ops-&gt;get为 route4_get</span>
+    <span class="token comment">//t-&gt;tcm_handle 为命令行指定的 flowid</span>
+        fh <span class="token operator">=</span> tp<span class="token operator">-&gt;</span>ops<span class="token operator">-&gt;</span><span class="token function">get</span><span class="token punctuation">(</span>tp<span class="token punctuation">,</span> t<span class="token operator">-&gt;</span>tcm_handle<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">struct</span> <span class="token class-name">route4_head</span> <span class="token operator">*</span>head <span class="token operator">=</span> <span class="token function">rtnl_dereference</span><span class="token punctuation">(</span>tp<span class="token operator">-&gt;</span>root<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//如果head为空，说明是第一次添加filter</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>head<span class="token punctuation">)</span>
+            <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+        h1 <span class="token operator">=</span> <span class="token function">to_hash</span><span class="token punctuation">(</span>handle<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>h1 <span class="token operator">&gt;</span> <span class="token number">256</span><span class="token punctuation">)</span>
+            <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+        h2 <span class="token operator">=</span> <span class="token function">from_hash</span><span class="token punctuation">(</span>handle <span class="token operator">&gt;&gt;</span> <span class="token number">16</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>h2 <span class="token operator">&gt;</span> <span class="token number">32</span><span class="token punctuation">)</span>
+            <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+        <span class="token comment">//h1指定hash桶，每个桶中是hash链表</span>
+        <span class="token comment">//h2指定hash链表的key，指向链表头</span>
+        b <span class="token operator">=</span> <span class="token function">rtnl_dereference</span><span class="token punctuation">(</span>head<span class="token operator">-&gt;</span>table<span class="token punctuation">[</span>h1<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>b<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">for</span> <span class="token punctuation">(</span>f <span class="token operator">=</span> <span class="token function">rtnl_dereference</span><span class="token punctuation">(</span>b<span class="token operator">-&gt;</span>ht<span class="token punctuation">[</span>h2<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+             f<span class="token punctuation">;</span>
+                 f <span class="token operator">=</span> <span class="token function">rtnl_dereference</span><span class="token punctuation">(</span>f<span class="token operator">-&gt;</span>next<span class="token punctuation">)</span><span class="token punctuation">)</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>f<span class="token operator">-&gt;</span>handle <span class="token operator">==</span> handle<span class="token punctuation">)</span>
+                    <span class="token keyword">return</span> <span class="token punctuation">(</span><span class="token keyword">unsigned</span> <span class="token keyword">long</span><span class="token punctuation">)</span>f<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>fh <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">//没有找到，并且命令行想要删除，则返回报错</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>n<span class="token operator">-&gt;</span>nlmsg_type <span class="token operator">==</span> RTM_DELTFILTER <span class="token operator">&amp;&amp;</span> t<span class="token operator">-&gt;</span>tcm_handle <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">goto</span> errout<span class="token punctuation">;</span>
+    <span class="token comment">//没有找到，但是命令行没有指定创建，则返回报错</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>n<span class="token operator">-&gt;</span>nlmsg_type <span class="token operator">!=</span> RTM_NEWTFILTER <span class="token operator">||</span>
+            <span class="token operator">!</span><span class="token punctuation">(</span>n<span class="token operator">-&gt;</span>nlmsg_flags <span class="token operator">&amp;</span> NLM_F_CREATE<span class="token punctuation">)</span><span class="token punctuation">)</span>
+            <span class="token keyword">goto</span> errout<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">switch</span> <span class="token punctuation">(</span>n<span class="token operator">-&gt;</span>nlmsg_type<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">case</span> RTM_NEWTFILTER<span class="token operator">:</span>
+        <span class="token comment">//命令行指定删除</span>
+        <span class="token keyword">case</span> RTM_DELTFILTER<span class="token operator">:</span>
+        err <span class="token operator">=</span> tp<span class="token operator">-&gt;</span>ops<span class="token operator">-&gt;</span><span class="token function">delete</span><span class="token punctuation">(</span>tp<span class="token punctuation">,</span> fh<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">//添加或者替换filter rule，route4_change</span>
+    tp<span class="token operator">-&gt;</span>ops<span class="token operator">-&gt;</span><span class="token function">change</span><span class="token punctuation">(</span>net<span class="token punctuation">,</span> skb<span class="token punctuation">,</span> tp<span class="token punctuation">,</span> cl<span class="token punctuation">,</span> t<span class="token operator">-&gt;</span>tcm_handle<span class="token punctuation">,</span> tca<span class="token punctuation">,</span> <span class="token operator">&amp;</span>fh<span class="token punctuation">,</span>
+                  n<span class="token operator">-&gt;</span>nlmsg_flags <span class="token operator">&amp;</span> NLM_F_CREATE <span class="token operator">?</span> TCA_ACT_NOREPLACE <span class="token operator">:</span> TCA_ACT_REPLACE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">struct</span> <span class="token class-name">route4_head</span> <span class="token operator">*</span>head <span class="token operator">=</span> <span class="token function">rtnl_dereference</span><span class="token punctuation">(</span>tp<span class="token operator">-&gt;</span>root<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>head <span class="token operator">==</span> <span class="token constant">NULL</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            head <span class="token operator">=</span> <span class="token function">kzalloc</span><span class="token punctuation">(</span><span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">route4_head</span><span class="token punctuation">)</span><span class="token punctuation">,</span> GFP_KERNEL<span class="token punctuation">)</span><span class="token punctuation">;</span>
+             <span class="token function">rcu_assign_pointer</span><span class="token punctuation">(</span>tp<span class="token operator">-&gt;</span>root<span class="token punctuation">,</span> head<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//分配 route filter结构体</span>
+    f <span class="token operator">=</span> <span class="token function">kzalloc</span><span class="token punctuation">(</span><span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">route4_filter</span><span class="token punctuation">)</span><span class="token punctuation">,</span> GFP_KERNEL<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    route4_set_parms
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>tb<span class="token punctuation">[</span>TCA_ROUTE4_TO<span class="token punctuation">]</span><span class="token punctuation">)</span>
+            f<span class="token operator">-&gt;</span>id <span class="token operator">=</span> to<span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>tb<span class="token punctuation">[</span>TCA_ROUTE4_CLASSID<span class="token punctuation">]</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            f<span class="token operator">-&gt;</span>res<span class="token punctuation">.</span>classid <span class="token operator">=</span> <span class="token function">nla_get_u32</span><span class="token punctuation">(</span>tb<span class="token punctuation">[</span>TCA_ROUTE4_CLASSID<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//最后将f添加到 head指定的表中。</span>
+    <span class="token comment">//将tp插入链表，安装优先级，优先级值越大越靠后</span>
+    <span class="token function">RCU_INIT_POINTER</span><span class="token punctuation">(</span>tp<span class="token operator">-&gt;</span>next<span class="token punctuation">,</span> <span class="token function">rtnl_dereference</span><span class="token punctuation">(</span><span class="token operator">*</span>back<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">rcu_assign_pointer</span><span class="token punctuation">(</span><span class="token operator">*</span>back<span class="token punctuation">,</span> tp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>d. 添加route<br> 该路由是与前面所建立的路由映射一一对应。</p> 
+<pre><code class="prism language-c"><span class="token number">1</span><span class="token punctuation">)</span>发往主机<span class="token number">192.168</span><span class="token number">.1</span><span class="token number">.24</span>的数据包通过分类<span class="token number">2</span>转发（分类<span class="token number">2</span>的速率<span class="token number">8</span>Mbit）
+         ip route add <span class="token number">192.168</span><span class="token number">.1</span><span class="token number">.24</span> dev eth0 via <span class="token number">192.168</span><span class="token number">.1</span><span class="token number">.66</span> realm <span class="token number">2</span> 
+<span class="token number">2</span><span class="token punctuation">)</span>发往主机<span class="token number">192.168</span><span class="token number">.1</span><span class="token number">.30</span>的数据包通过分类<span class="token number">3</span>转发（分类<span class="token number">3</span>的速率<span class="token number">1</span>Mbit）
+         ip route add <span class="token number">192.168</span><span class="token number">.1</span><span class="token number">.30</span> dev eth0 via <span class="token number">192.168</span><span class="token number">.1</span><span class="token number">.66</span> realm <span class="token number">3</span>
+<span class="token number">3</span><span class="token punctuation">)</span>发往子网<span class="token number">192.168</span><span class="token number">.1</span><span class="token number">.0</span><span class="token operator">/</span><span class="token number">24</span> 的数据包通过分类<span class="token number">4</span>转发（分类<span class="token number">4</span>的速率<span class="token number">1</span>Mbit）
+         ip route add <span class="token number">192.168</span><span class="token number">.1</span><span class="token number">.0</span><span class="token operator">/</span><span class="token number">24</span> dev eth0 via <span class="token number">192.168</span><span class="token number">.1</span><span class="token number">.66</span> realm <span class="token number">4</span>
+</code></pre> 
+<p>添加realms代码流程</p> 
+<pre><code class="prism language-c">#通过ip route add 添加realms
+<span class="token function">rtnl_register</span><span class="token punctuation">(</span>PF_INET<span class="token punctuation">,</span> RTM_NEWROUTE<span class="token punctuation">,</span> inet_rtm_newroute<span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">inet_rtm_newroute</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">sk_buff</span> <span class="token operator">*</span>skb<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">nlmsghdr</span> <span class="token operator">*</span>nlh<span class="token punctuation">)</span>
+    <span class="token function">rtm_to_fib_config</span><span class="token punctuation">(</span>net<span class="token punctuation">,</span> skb<span class="token punctuation">,</span> nlh<span class="token punctuation">,</span> <span class="token operator">&amp;</span>cfg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">case</span> RTA_FLOW<span class="token operator">:</span>
+            cfg<span class="token operator">-&gt;</span>fc_flow <span class="token operator">=</span> <span class="token function">nla_get_u32</span><span class="token punctuation">(</span>attr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">break</span><span class="token punctuation">;</span>
+    <span class="token function">fib_table_insert</span><span class="token punctuation">(</span>tb<span class="token punctuation">,</span> <span class="token operator">&amp;</span>cfg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">fib_create_info</span><span class="token punctuation">(</span>cfg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            nh<span class="token operator">-&gt;</span>nh_tclassid <span class="token operator">=</span> cfg<span class="token operator">-&gt;</span>fc_flow<span class="token punctuation">;</span>
+
+#查找路由时，将 nh_tclassid 赋给 rt<span class="token operator">-&gt;</span>dst<span class="token punctuation">.</span>tclassid
+__mkroute_input
+__mkroute_output
+    <span class="token function">rt_set_nexthop</span><span class="token punctuation">(</span>rth<span class="token punctuation">,</span> fl4<span class="token operator">-&gt;</span>daddr<span class="token punctuation">,</span> res<span class="token punctuation">,</span> fnhe<span class="token punctuation">,</span> fi<span class="token punctuation">,</span> type<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        rt<span class="token operator">-&gt;</span>dst<span class="token punctuation">.</span>tclassid <span class="token operator">=</span> nh<span class="token operator">-&gt;</span>nh_tclassid<span class="token punctuation">;</span>
+</code></pre> 
+<h4><a id="_439"></a>出方向过滤流程</h4> 
+<p>前面流程已经添加了规则，数据包发送时，如何匹配？<br> 下面已有类队列cbq为例，分析enqueue和dequeue的操作。</p> 
+<pre><code class="prism language-c"><span class="token keyword">int</span> <span class="token function">dev_queue_xmit</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">sk_buff</span> <span class="token operator">*</span>skb<span class="token punctuation">)</span>
+    <span class="token function">__dev_queue_xmit</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        q <span class="token operator">=</span> <span class="token function">rcu_dereference_bh</span><span class="token punctuation">(</span>txq<span class="token operator">-&gt;</span>qdisc<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//提供了enqueue函数的qdisc，比如cbq</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>q<span class="token operator">-&gt;</span>enqueue<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//报文入队或者直接发送</span>
+            <span class="token function">__dev_xmit_skb</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> q<span class="token punctuation">,</span> dev<span class="token punctuation">,</span> txq<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">goto</span> out<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+         <span class="token comment">//lo,macvlan等虚拟接口默认qdisc为noqueue，没提供enqueue函数，会在此处直接发送到网卡</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>dev<span class="token operator">-&gt;</span>flags <span class="token operator">&amp;</span> IFF_UP<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//对数据包做校验，比如添加vlan等</span>
+            skb <span class="token operator">=</span> <span class="token function">validate_xmit_skb</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> dev<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">//调用网卡驱动的函数发送报文</span>
+            skb <span class="token operator">=</span> <span class="token function">dev_hard_start_xmit</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> dev<span class="token punctuation">,</span> txq<span class="token punctuation">,</span> <span class="token operator">&amp;</span>rc<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">//qdisc提供enqueue函数的流程</span>
+<span class="token comment">//走到这个函数也不一定走enqueue流程，也有可能直接发送报文</span>
+<span class="token keyword">static</span> <span class="token keyword">inline</span> <span class="token keyword">int</span> <span class="token function">__dev_xmit_skb</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">sk_buff</span> <span class="token operator">*</span>skb<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">Qdisc</span> <span class="token operator">*</span>q<span class="token punctuation">,</span>
+                 <span class="token keyword">struct</span> <span class="token class-name">net_device</span> <span class="token operator">*</span>dev<span class="token punctuation">,</span>
+                 <span class="token keyword">struct</span> <span class="token class-name">netdev_queue</span> <span class="token operator">*</span>txq<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token comment">//qdisc的状态为__QDISC_STATE_DEACTIVATED时，可能是因为网卡down了，这个时候直接drop报文</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">unlikely</span><span class="token punctuation">(</span><span class="token function">test_bit</span><span class="token punctuation">(</span>__QDISC_STATE_DEACTIVATED<span class="token punctuation">,</span> <span class="token operator">&amp;</span>q<span class="token operator">-&gt;</span>state<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">kfree_skb</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        rc <span class="token operator">=</span> NET_XMIT_DROP<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>q<span class="token operator">-&gt;</span>flags <span class="token operator">&amp;</span> TCQ_F_CAN_BYPASS<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span><span class="token function">qdisc_qlen</span><span class="token punctuation">(</span>q<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span>
+           <span class="token function">qdisc_run_begin</span><span class="token punctuation">(</span>q<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">//满足上面三个条件会走到这个流程</span>
+        <span class="token comment">//a. qdisc支持TCQ_F_CAN_BYPASS，即qdisc允许bypass qdisc的处理，大部分的qdisc都不支持，必须走dqisc流程，</span>
+        <span class="token comment">//对报文进行处理后才能发出去。</span>
+        <span class="token comment">//b. qdisc缓存报文的队列长度为0</span>
+        <span class="token comment">//c. qdisc之前没有running，本次将qdisc设置为running</span>
+        <span class="token comment">/*
+         * This is a work-conserving queue; there are no old skbs
+         * waiting to be sent out; and the qdisc is not running -
+         * xmit the skb directly.
+         */</span>
+
+        <span class="token function">qdisc_bstats_update</span><span class="token punctuation">(</span>q<span class="token punctuation">,</span> skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//sch_direct_xmit 返回值大于0，说明还有报文要发送，调用__qdisc_run继续发送</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">sch_direct_xmit</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> q<span class="token punctuation">,</span> dev<span class="token punctuation">,</span> txq<span class="token punctuation">,</span> root_lock<span class="token punctuation">,</span> true<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">unlikely</span><span class="token punctuation">(</span>contended<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token function">spin_unlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>q<span class="token operator">-&gt;</span>busylock<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                contended <span class="token operator">=</span> false<span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token function">__qdisc_run</span><span class="token punctuation">(</span>q<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span>
+            <span class="token comment">//报文发送完毕，清除标志位 __QDISC___STATE_RUNNING</span>
+            <span class="token comment">//qdisc-&gt;__state &amp;= ~__QDISC___STATE_RUNNING;</span>
+            <span class="token function">qdisc_run_end</span><span class="token punctuation">(</span>q<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        rc <span class="token operator">=</span> NET_XMIT_SUCCESS<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">//对于不支持bypass tx处理的qdisc来说，会在此处将报文入队</span>
+        <span class="token comment">//对于cbq来说，q-&gt;enqueue指向 cbq_enqueue</span>
+        rc <span class="token operator">=</span> q<span class="token operator">-&gt;</span><span class="token function">enqueue</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> q<span class="token punctuation">)</span> <span class="token operator">&amp;</span> NET_XMIT_MASK<span class="token punctuation">;</span>
+        
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">qdisc_run_begin</span><span class="token punctuation">(</span>q<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">unlikely</span><span class="token punctuation">(</span>contended<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token function">spin_unlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>q<span class="token operator">-&gt;</span>busylock<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                contended <span class="token operator">=</span> false<span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token function">__qdisc_run</span><span class="token punctuation">(</span>q<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//调用dequeue循环从队列取包发送。</span>
+<span class="token comment">//但是不能一直发送，满足下面两个条件之一就会停止发送，并启动tx软中断，在软中断中会继续发送报文</span>
+<span class="token comment">//a. 发送数据包个数超过了quota，即weight_p(默认64)</span>
+<span class="token comment">//b. 有其他进程需要占用cpu，即被其他进程抢占了cpu</span>
+<span class="token keyword">void</span> <span class="token function">__qdisc_run</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">Qdisc</span> <span class="token operator">*</span>q<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">int</span> quota <span class="token operator">=</span> weight_p<span class="token punctuation">;</span>
+    <span class="token keyword">int</span> packets<span class="token punctuation">;</span>
+
+    <span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token function">qdisc_restart</span><span class="token punctuation">(</span>q<span class="token punctuation">,</span> <span class="token operator">&amp;</span>packets<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">/*
+         * Ordered by possible occurrence: Postpone processing if
+         * 1. we've exceeded packet quota
+         * 2. another process needs the CPU;
+         */</span>
+        quota <span class="token operator">-=</span> packets<span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>quota <span class="token operator">&lt;=</span> <span class="token number">0</span> <span class="token operator">||</span> <span class="token function">need_resched</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token function">__netif_schedule</span><span class="token punctuation">(</span>q<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token comment">//使能发送软中断，会在软中断处理函数 net_tx_action 中继续发送报文</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">test_and_set_bit</span><span class="token punctuation">(</span>__QDISC_STATE_SCHED<span class="token punctuation">,</span> <span class="token operator">&amp;</span>q<span class="token operator">-&gt;</span>state<span class="token punctuation">)</span><span class="token punctuation">)</span>
+                    <span class="token function">__netif_reschedule</span><span class="token punctuation">(</span>q<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        sd <span class="token operator">=</span> <span class="token function">this_cpu_ptr</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>softnet_data<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        q<span class="token operator">-&gt;</span>next_sched <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+                        <span class="token operator">*</span>sd<span class="token operator">-&gt;</span>output_queue_tailp <span class="token operator">=</span> q<span class="token punctuation">;</span>
+                        sd<span class="token operator">-&gt;</span>output_queue_tailp <span class="token operator">=</span> <span class="token operator">&amp;</span>q<span class="token operator">-&gt;</span>next_sched<span class="token punctuation">;</span>
+                        <span class="token function">raise_softirq_irqoff</span><span class="token punctuation">(</span>NET_TX_SOFTIRQ<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">break</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token function">qdisc_run_end</span><span class="token punctuation">(</span>q<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+<span class="token keyword">static</span> <span class="token keyword">inline</span> <span class="token keyword">int</span> <span class="token function">qdisc_restart</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">Qdisc</span> <span class="token operator">*</span>q<span class="token punctuation">,</span> <span class="token keyword">int</span> <span class="token operator">*</span>packets<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">struct</span> <span class="token class-name">netdev_queue</span> <span class="token operator">*</span>txq<span class="token punctuation">;</span>
+    <span class="token keyword">struct</span> <span class="token class-name">net_device</span> <span class="token operator">*</span>dev<span class="token punctuation">;</span>
+    <span class="token class-name">spinlock_t</span> <span class="token operator">*</span>root_lock<span class="token punctuation">;</span>
+    <span class="token keyword">struct</span> <span class="token class-name">sk_buff</span> <span class="token operator">*</span>skb<span class="token punctuation">;</span>
+    bool validate<span class="token punctuation">;</span>
+
+    <span class="token comment">/* Dequeue packet */</span>
+    skb <span class="token operator">=</span> <span class="token function">dequeue_skb</span><span class="token punctuation">(</span>q<span class="token punctuation">,</span> <span class="token operator">&amp;</span>validate<span class="token punctuation">,</span> packets<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//调用qdisc的dequeue从队列中取出报文，对于cbq来说，就是 cbq_dequeue</span>
+        skb <span class="token operator">=</span> q<span class="token operator">-&gt;</span><span class="token function">dequeue</span><span class="token punctuation">(</span>q<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//skb为空，说明队列已经没有报文，返回0</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">unlikely</span><span class="token punctuation">(</span><span class="token operator">!</span>skb<span class="token punctuation">)</span><span class="token punctuation">)</span>
+        <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+    root_lock <span class="token operator">=</span> <span class="token function">qdisc_lock</span><span class="token punctuation">(</span>q<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    dev <span class="token operator">=</span> <span class="token function">qdisc_dev</span><span class="token punctuation">(</span>q<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    txq <span class="token operator">=</span> <span class="token function">skb_get_tx_queue</span><span class="token punctuation">(</span>dev<span class="token punctuation">,</span> skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//发送报文</span>
+    <span class="token keyword">return</span> <span class="token function">sch_direct_xmit</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> q<span class="token punctuation">,</span> dev<span class="token punctuation">,</span> txq<span class="token punctuation">,</span> root_lock<span class="token punctuation">,</span> validate<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//报文入队</span>
+<span class="token function">cbq_enqueue</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">sk_buff</span> <span class="token operator">*</span>skb<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">Qdisc</span> <span class="token operator">*</span>sch<span class="token punctuation">)</span>
+    <span class="token comment">//找到合适的 class</span>
+    <span class="token keyword">struct</span> <span class="token class-name">cbq_class</span> <span class="token operator">*</span>cl <span class="token operator">=</span> <span class="token function">cbq_classify</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> sch<span class="token punctuation">,</span> <span class="token operator">&amp;</span>ret<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">struct</span> <span class="token class-name">cbq_sched_data</span> <span class="token operator">*</span>q <span class="token operator">=</span> <span class="token function">qdisc_priv</span><span class="token punctuation">(</span>sch<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//取出存放class的链表</span>
+        <span class="token keyword">struct</span> <span class="token class-name">cbq_class</span> <span class="token operator">*</span>head <span class="token operator">=</span> <span class="token operator">&amp;</span>q<span class="token operator">-&gt;</span>link<span class="token punctuation">;</span>
+        u32 prio <span class="token operator">=</span> skb<span class="token operator">-&gt;</span>priority<span class="token punctuation">;</span>
+        <span class="token comment">/*
+         *  Step 1. If skb-&gt;priority points to one of our classes, use it.
+         */</span>
+        <span class="token comment">//首先根据skb的priority作为classid查找类</span>
+        <span class="token comment">//用户程序可以通过套接字选项SO_PRIORITY在skb-&gt;priority设置一个类的classid</span>
+        <span class="token comment">//TC_H_MAJ(prio ^ sch-&gt;handle) == 0 这个是判断classid是否是这个qdisc下的,因为classid的高16位代表这个类</span>
+        <span class="token comment">//所在的qdisc，应该和handle的高16为相同。</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">TC_H_MAJ</span><span class="token punctuation">(</span>prio <span class="token operator">^</span> sch<span class="token operator">-&gt;</span>handle<span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span> <span class="token operator">&amp;&amp;</span>
+            <span class="token punctuation">(</span>cl <span class="token operator">=</span> <span class="token function">cbq_class_lookup</span><span class="token punctuation">(</span>q<span class="token punctuation">,</span> prio<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token constant">NULL</span><span class="token punctuation">)</span>
+            <span class="token keyword">return</span> cl<span class="token punctuation">;</span>
+        <span class="token comment">//遍历所有类的所有filter，找到合适的类并返回</span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token punctuation">;</span><span class="token punctuation">;</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//取出类head的过滤链表</span>
+            fl <span class="token operator">=</span> <span class="token function">rcu_dereference_bh</span><span class="token punctuation">(</span>head<span class="token operator">-&gt;</span>filter_list<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">//遍历过滤链表进行匹配</span>
+            result <span class="token operator">=</span> <span class="token function">tc_classify_compat</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> fl<span class="token punctuation">,</span> <span class="token operator">&amp;</span>res<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">//取出classid</span>
+            cl <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token keyword">void</span> <span class="token operator">*</span><span class="token punctuation">)</span>res<span class="token punctuation">.</span>class<span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>cl<span class="token operator">-&gt;</span>level <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span>
+                <span class="token keyword">return</span> cl<span class="token punctuation">;</span>
+        <span class="token comment">//如果没有找到合适的类，则使用默认类</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">TC_H_MAJ</span><span class="token punctuation">(</span>prio<span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span> <span class="token operator">&amp;&amp;</span>
+            <span class="token operator">!</span><span class="token punctuation">(</span>cl <span class="token operator">=</span> head<span class="token operator">-&gt;</span>defaults<span class="token punctuation">[</span>prio <span class="token operator">&amp;</span> TC_PRIO_MAX<span class="token punctuation">]</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span>
+            <span class="token operator">!</span><span class="token punctuation">(</span>cl <span class="token operator">=</span> head<span class="token operator">-&gt;</span>defaults<span class="token punctuation">[</span>TC_PRIO_BESTEFFORT<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+            <span class="token keyword">return</span> head<span class="token punctuation">;</span>
+
+    <span class="token comment">//将skb放入cl类的队列中，cl-&gt;q 默认为 pfifo_qdisc_ops</span>
+    ret <span class="token operator">=</span> <span class="token function">qdisc_enqueue</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> cl<span class="token operator">-&gt;</span>q<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//sch-&gt;enqueue指向 pfifo_enqueue</span>
+        <span class="token keyword">return</span> sch<span class="token operator">-&gt;</span><span class="token function">enqueue</span><span class="token punctuation">(</span>skb<span class="token punctuation">,</span> sch<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>ret <span class="token operator">==</span> NET_XMIT_SUCCESS<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        sch<span class="token operator">-&gt;</span>q<span class="token punctuation">.</span>qlen<span class="token operator">++</span><span class="token punctuation">;</span>
+        <span class="token function">cbq_mark_toplevel</span><span class="token punctuation">(</span>q<span class="token punctuation">,</span> cl<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>cl<span class="token operator">-&gt;</span>next_alive<span class="token punctuation">)</span>
+            <span class="token comment">//将cl保存到q-&gt;active，并设置q-&gt;activemask，这样在dequeue时，才知道哪个类上有数据</span>
+            <span class="token function">cbq_activate_class</span><span class="token punctuation">(</span>cl<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> ret<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    
+<span class="token comment">//报文出队</span>
+<span class="token keyword">static</span> <span class="token keyword">struct</span> <span class="token class-name">sk_buff</span> <span class="token operator">*</span><span class="token function">cbq_dequeue</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">Qdisc</span> <span class="token operator">*</span>sch<span class="token punctuation">)</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token punctuation">;</span><span class="token punctuation">;</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        q<span class="token operator">-&gt;</span>wd_expires <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+        skb <span class="token operator">=</span> <span class="token function">cbq_dequeue_1</span><span class="token punctuation">(</span>sch<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">struct</span> <span class="token class-name">cbq_sched_data</span> <span class="token operator">*</span>q <span class="token operator">=</span> <span class="token function">qdisc_priv</span><span class="token punctuation">(</span>sch<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">struct</span> <span class="token class-name">sk_buff</span> <span class="token operator">*</span>skb<span class="token punctuation">;</span>
+            <span class="token keyword">unsigned</span> <span class="token keyword">int</span> activemask<span class="token punctuation">;</span>
+            <span class="token comment">//如果activemask不为0，说明类上有报文需要发送</span>
+            activemask <span class="token operator">=</span> q<span class="token operator">-&gt;</span>activemask <span class="token operator">&amp;</span> <span class="token number">0xFF</span><span class="token punctuation">;</span>
+            <span class="token keyword">while</span> <span class="token punctuation">(</span>activemask<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">int</span> prio <span class="token operator">=</span> <span class="token function">ffz</span><span class="token punctuation">(</span><span class="token operator">~</span>activemask<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                activemask <span class="token operator">&amp;=</span> <span class="token operator">~</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token operator">&lt;&lt;</span>prio<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token comment">//取出类，调用类的cl-&gt;q-&gt;dequeue将报文出队，并返回</span>
+                skb <span class="token operator">=</span> <span class="token function">cbq_dequeue_prio</span><span class="token punctuation">(</span>sch<span class="token punctuation">,</span> prio<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    skb <span class="token operator">=</span> cl<span class="token operator">-&gt;</span>q<span class="token operator">-&gt;</span><span class="token function">dequeue</span><span class="token punctuation">(</span>cl<span class="token operator">-&gt;</span>q<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>skb<span class="token punctuation">)</span>
+                    <span class="token keyword">return</span> skb<span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>skb<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token function">qdisc_bstats_update</span><span class="token punctuation">(</span>sch<span class="token punctuation">,</span> skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            sch<span class="token operator">-&gt;</span>q<span class="token punctuation">.</span>qlen<span class="token operator">--</span><span class="token punctuation">;</span>
+            <span class="token function">qdisc_unthrottled</span><span class="token punctuation">(</span>sch<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">return</span> skb<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="_641"></a>参考</h5> 
+<p>https://blog.csdn.net/wdscq1234/article/details/51926808</p> 
+<p>也可参考：https://www.jianshu.com/p/d2371b6b76f7</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/35b12ec9edee9f08a899080bca710aaf/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Kepware 读取16位或32位数据时，结果不是真实数据的问题解决</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/699f3877aa3e3a88aa03b7435d8cc9f4/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">vue3&#43;electron开发桌面软件0基础入门，搭建全网最简单的项目！</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

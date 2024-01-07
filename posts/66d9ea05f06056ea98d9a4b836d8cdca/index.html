@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>第二届“马栏山”杯国际音视频算法大赛音乐节拍检测题参赛总结及分享（Rank7) - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="第二届“马栏山”杯国际音视频算法大赛音乐节拍检测题参赛总结及分享（Rank7)" />
+<meta property="og:description" content="参加第二届“马栏山”杯的音乐节拍检测赛，最后拿了第7名。赛后一定要做好总结，细致的梳理总结才能把有用的知识沉淀下来。
+我这次参赛非常匆忙，赛程中期我才进入，总共用了三个星期时间，由于时间紧，音乐计算领域的很多问题实际上我也没有吃透，好在我直接找到了两篇新上的论文和开源代码，和这个题非常一致，改吧改吧我就直接用上了，没想到最后挤进了前排，运气不错。
+比赛链接：https://challenge.ai.mgtv.com/contest/detail/10
+提到的两篇文献：
+[1]Drum-Aware Ensemble Architecture for Improved Joint Musical Beat and Downbeat Tracking
+[2]Source Separation-based Data Augmentation for Improved Joint Beat and Downbeat Tracking
+文章目录 一、赛题简介二、算法简介三、训练方法四、效果分析五、总结与思考 一、赛题简介 乐曲中强弱有规律的交替叫节拍，我们通常将节拍形容为一段音乐的脉搏，节拍检测是计算音乐学的基础工作，在节拍检测的基础上可以玩出很多新花样。本题要求对给定的音乐片段检测出其中的拍子（beat）和强拍（downbeat）的起始时间点位置。
+赛题提供的数据集一是网上公开的GTZAN数据集：http://marsyas.info/downloads/datasets.html，这个数据集中共有1000首音乐片段，每个片段30s左右。二是芒果TV自制的一个数据集，训练集中有100首，测试集A榜50首，B榜50首。训练集都给出了beat和downbeat时间点的标注。比赛不允许使用其他外部数据集和预训练模型。
+二、算法简介 目前做音乐节拍检测主要都是用神经网络算法，本次参赛据说也有队伍使用机器学习算法，成绩和前排还是有一些差距。我使用的代码是在文献[2]的基础上修改的，也是用神经网络，这个算法可按以下几个环节来理解：
+（1）网络的输入。这个算法的输入不是原始音频数据，是音频数据的频谱以及频谱的一阶差分，因此需要先进行处理。处理使用madmom包，方法参考原开源代码即可。处理后得到的特征是一个二维数组，横轴表示每0.01s间隔的时间，比如30s长的音乐正好生成3000长的特征，纵轴表示各种频谱特征，我共使用了322维。由于如下面（5）部分所说的，网络是采用声源分离的思路把原声又分离出了鼓声分量和无鼓分量，所以还要先把鼓声分量和无鼓分量也分别用madmom包处理成频谱特征输入网络，这两个输入用来和网络的OU子网络的输出计算损失函数以训练OU子网络。所以网络的输入总共又三个，原声的特征，鼓声分量的特征和无鼓分量的特征。
+（2）标签。标签就是把beat和downbeat嵌入到0.01s间隔的一维数组中，比如30s的音乐也对应3000长的标签数组，其中有beat的时间点标为1，有downbeat的点标为2，什么也没有的标为0。当然0是很多的，由于beat和downbeat只是一个点位，它们是稀疏的，通常0，1，2的数量比大约为200：3：1，所以在后面训练的时候给CE损失加上了权重1：67：200。
+（3）输出。网络的输出是一个和标签等长的三列时间序列数组，分别表示无beat，beat，和downbeat，经sigmoid激活后取值在0，1范围内。
+（4）后处理。网络输出的这个激活值还不能直接得出哪里是beat和downbeat，还需要后面再用一个HMM模块进行后处理。这里直接使用了madmom包自带的HMM模块，没有自己写。
+（5）网络结构。我把论文中的图贴出来：
+考虑到有鼓点的音乐节拍很容易检测，而没有鼓点的音乐则不易检测，论文中的方法是把音乐先进行音轨分离，把原音乐分离出鼓点声部分和无鼓部分，这样可以训练网络在有鼓点和无鼓点时各应该怎么检测节拍。音轨分离使用的工具是Spleeter，Spleeter是一个效果非常不错的音乐音轨分离开源代码，有2音轨，4音轨，5音轨这三种模式的预训练权重可供下载。算法中使用Spleeter的4音轨模式，把音乐分离成drums, bass, other, vocals四个音轨，然后再把bass, other, vocals这三个音轨合并成一个音轨叫做nodrum，这样就得到了drum和nodrum两个音轨。由于使用spleeter分离然后再生成特征的方法非常麻烦，在推理阶段尤其比较耗时，所以论文中还提供了一种源分离的子网络，用来学习spleeter的分离结果，并直接生成有鼓和无鼓的频谱特征，这个子网络等于把spleeter功能转录了一下，然后又把spleeter和madmom两个过程合在一起了。
+然后再把原来的音乐（即图中的mixture）以及drum和nodrum这三种数据分别提取特征，然后再分别送入三个节拍检测器Drum Beat tracker, Mixture Beat tracker, NoDrum Beat tracker分别处理，节拍检测器就简单使用了LSTM加一个全链接层，没有使用更复杂的网络结构。三个节拍检测器得到的结果以及全连接层前面的中间特征都合并在一起，作为特征再输入给第四个节拍检测器Fuser Beat tracker做融合处理，最后得到的结果再输出给HMM。训练时四个检测器的输出都同时和标签计算损失，接受标签的监督进行同步优化，但推理时使用的是效果最好的Fuser检测器的输出。
+总结一下，网络首先包含两个声源分离子网络OU，两个网络同结构不共享参数，一个网络DrumOU用来将输入的特征分离成仅鼓点分量的特征x_drum，另一个网络BeatOU将输入特征分离成不包含鼓点分量的特征x_nodrum；网络然后包含了四个Beat和DownBeat联合检测子网络，四个网络同结构不共享参数，前三个网络分别对drum, mixture和nodrum进行处理，最后一个网络融合前三个网络的结果。
+三、训练方法 1 数据增强
+主要是对声音的鼓声部分的强弱进行调整，增加了鼓声弱5dB，弱10dB和无鼓声这三种情况。我也尝试了多种其他的数据增强方式，没有发现别的有效的。
+2 训练步骤
+Step1: 先固定网络四个tracker的参赛，仅训练两个OU子网络；
+Step2: 再固定两个OU子网络，仅在GTZAN数据集上训练四个treaker网络，在芒果TV数据集上验证；
+Step3: 在Step2训练充分后，训练集种加入芒果TV数据集，训练少许步骤。（此时没有独立验证集了，无法准确评估训练是否过拟合，所以不能训练太多。）" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/66d9ea05f06056ea98d9a4b836d8cdca/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-07-29T21:25:46+08:00" />
+<meta property="article:modified_time" content="2021-07-29T21:25:46+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">第二届“马栏山”杯国际音视频算法大赛音乐节拍检测题参赛总结及分享（Rank7)</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atelier-sulphurpool-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>  参加第二届“马栏山”杯的音乐节拍检测赛，最后拿了第7名。赛后一定要做好总结，细致的梳理总结才能把有用的知识沉淀下来。<br>   我这次参赛非常匆忙，赛程中期我才进入，总共用了三个星期时间，由于时间紧，音乐计算领域的很多问题实际上我也没有吃透，好在我直接找到了两篇新上的论文和开源代码，和这个题非常一致，改吧改吧我就直接用上了，没想到最后挤进了前排，运气不错。<br>   比赛链接：<a href="https://challenge.ai.mgtv.com/contest/detail/10" rel="nofollow">https://challenge.ai.mgtv.com/contest/detail/10</a><br>   提到的两篇文献：<br>   [1]<a href="https://arxiv.org/abs/2106.08685" rel="nofollow">Drum-Aware Ensemble Architecture for Improved Joint Musical Beat and Downbeat Tracking</a><br>   [2]<a href="https://arxiv.org/abs/2106.08703" rel="nofollow">Source Separation-based Data Augmentation for Improved Joint Beat and Downbeat Tracking</a></p> 
+<p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#_11" rel="nofollow">一、赛题简介</a></li><li><a href="#_14" rel="nofollow">二、算法简介</a></li><li><a href="#_25" rel="nofollow">三、训练方法</a></li><li><a href="#_35" rel="nofollow">四、效果分析</a></li><li><a href="#_53" rel="nofollow">五、总结与思考</a></li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_11"></a>一、赛题简介</h2> 
+<p>  乐曲中强弱有规律的交替叫节拍，我们通常将节拍形容为一段音乐的脉搏，节拍检测是计算音乐学的基础工作，在节拍检测的基础上可以玩出很多新花样。本题要求对给定的音乐片段检测出其中的拍子（beat）和强拍（downbeat）的起始时间点位置。<br>   赛题提供的数据集一是网上公开的GTZAN数据集：http://marsyas.info/downloads/datasets.html，这个数据集中共有1000首音乐片段，每个片段30s左右。二是芒果TV自制的一个数据集，训练集中有100首，测试集A榜50首，B榜50首。训练集都给出了beat和downbeat时间点的标注。比赛不允许使用其他外部数据集和预训练模型。</p> 
+<h2><a id="_14"></a>二、算法简介</h2> 
+<p>  目前做音乐节拍检测主要都是用神经网络算法，本次参赛据说也有队伍使用机器学习算法，成绩和前排还是有一些差距。我使用的代码是在文献[2]的基础上修改的，也是用神经网络，这个算法可按以下几个环节来理解：<br> （1）网络的输入。这个算法的输入不是原始音频数据，是音频数据的频谱以及频谱的一阶差分，因此需要先进行处理。处理使用madmom包，方法参考原开源代码即可。处理后得到的特征是一个二维数组，横轴表示每0.01s间隔的时间，比如30s长的音乐正好生成3000长的特征，纵轴表示各种频谱特征，我共使用了322维。由于如下面（5）部分所说的，网络是采用声源分离的思路把原声又分离出了鼓声分量和无鼓分量，所以还要先把鼓声分量和无鼓分量也分别用madmom包处理成频谱特征输入网络，这两个输入用来和网络的OU子网络的输出计算损失函数以训练OU子网络。所以网络的输入总共又三个，原声的特征，鼓声分量的特征和无鼓分量的特征。<br> （2）标签。标签就是把beat和downbeat嵌入到0.01s间隔的一维数组中，比如30s的音乐也对应3000长的标签数组，其中有beat的时间点标为1，有downbeat的点标为2，什么也没有的标为0。当然0是很多的，由于beat和downbeat只是一个点位，它们是稀疏的，通常0，1，2的数量比大约为200：3：1，所以在后面训练的时候给CE损失加上了权重1：67：200。<br> （3）输出。网络的输出是一个和标签等长的三列时间序列数组，分别表示无beat，beat，和downbeat，经sigmoid激活后取值在0，1范围内。<br> （4）后处理。网络输出的这个激活值还不能直接得出哪里是beat和downbeat，还需要后面再用一个HMM模块进行后处理。这里直接使用了madmom包自带的HMM模块，没有自己写。<br> （5）网络结构。我把论文中的图贴出来：<br> <img src="https://images2.imgbox.com/1d/33/ZpCQwldi_o.png" alt="在这里插入图片描述"><br>   考虑到有鼓点的音乐节拍很容易检测，而没有鼓点的音乐则不易检测，论文中的方法是把音乐先进行音轨分离，把原音乐分离出鼓点声部分和无鼓部分，这样可以训练网络在有鼓点和无鼓点时各应该怎么检测节拍。音轨分离使用的工具是Spleeter，Spleeter是一个效果非常不错的音乐音轨分离开源代码，有2音轨，4音轨，5音轨这三种模式的预训练权重可供下载。算法中使用Spleeter的4音轨模式，把音乐分离成drums, bass, other, vocals四个音轨，然后再把bass, other, vocals这三个音轨合并成一个音轨叫做nodrum，这样就得到了drum和nodrum两个音轨。由于使用spleeter分离然后再生成特征的方法非常麻烦，在推理阶段尤其比较耗时，所以论文中还提供了一种源分离的子网络，用来学习spleeter的分离结果，并直接生成有鼓和无鼓的频谱特征，这个子网络等于把spleeter功能转录了一下，然后又把spleeter和madmom两个过程合在一起了。<br>   然后再把原来的音乐（即图中的mixture）以及drum和nodrum这三种数据分别提取特征，然后再分别送入三个节拍检测器Drum Beat tracker, Mixture Beat tracker, NoDrum Beat tracker分别处理，节拍检测器就简单使用了LSTM加一个全链接层，没有使用更复杂的网络结构。三个节拍检测器得到的结果以及全连接层前面的中间特征都合并在一起，作为特征再输入给第四个节拍检测器Fuser Beat tracker做融合处理，最后得到的结果再输出给HMM。训练时四个检测器的输出都同时和标签计算损失，接受标签的监督进行同步优化，但推理时使用的是效果最好的Fuser检测器的输出。<br>   总结一下，网络首先包含两个声源分离子网络OU，两个网络同结构不共享参数，一个网络DrumOU用来将输入的特征分离成仅鼓点分量的特征x_drum，另一个网络BeatOU将输入特征分离成不包含鼓点分量的特征x_nodrum；网络然后包含了四个Beat和DownBeat联合检测子网络，四个网络同结构不共享参数，前三个网络分别对drum, mixture和nodrum进行处理，最后一个网络融合前三个网络的结果。</p> 
+<h2><a id="_25"></a>三、训练方法</h2> 
+<p>1 数据增强<br>   主要是对声音的鼓声部分的强弱进行调整，增加了鼓声弱5dB，弱10dB和无鼓声这三种情况。我也尝试了多种其他的数据增强方式，没有发现别的有效的。<br> 2 训练步骤<br>   Step1: 先固定网络四个tracker的参赛，仅训练两个OU子网络；<br>   Step2: 再固定两个OU子网络，仅在GTZAN数据集上训练四个treaker网络，在芒果TV数据集上验证；<br>   Step3: 在Step2训练充分后，训练集种加入芒果TV数据集，训练少许步骤。（此时没有独立验证集了，无法准确评估训练是否过拟合，所以不能训练太多。）<br> 3 HMM调参<br>   使用madmom包中的madmom.features.downbeats.DBNDownBeatTrackingProcessor来执行HMM过程，这个函数有好几个参数，这些参数一定要调，精细调参后，分数能提升3~4个点。</p> 
+<h2><a id="_35"></a>四、效果分析</h2> 
+<p>不知道怎么在csdn上插入音频文件，就只用画图来表示吧：<br> <img src="https://images2.imgbox.com/67/cf/jZp5jWF2_o.png" alt="在这里插入图片描述"></p> 
+<center> 
+ <b><font size="3">图2</font></b> 
+</center> 
+<p>  图2中给出30秒长度音乐的数据，每0.01s间隔一个点，共3000个点，画一行太挤看不清楚，所以从上到下画成三行，每行表示10s长度。蓝色和黄色线是神经网络的输出激活值（即输入给HMM的数据），其中蓝色线是beat维度，黄色线是downbeat维度。下面一排黑点是标注的beat，上面一排黑点是标注的downbeat，红点是我算法计算的beat，绿点是我算法计算的downbeat。点旁边的红色和绿色数字分别表示计算点和标注点之间的时间误差，单位ms。标题上beat和downbeat后面跟的7个数值分别表示：fmeasure, pscore, cemgil, cmlc, cmlt, amlc, amlt这七种常用的节拍评估指标，也是本次比赛用的七种评分指标。下面bs是beat的平均得分，dbs是downbeat的平均得分，total是两者平均后的总分。<br>   图2这首音乐的分析效果还是不错的，beat和downbeat都找的很准，多数曲子都如此，找的还不错。下面再给出几种比较常见的扣分情况。<br> <img src="https://images2.imgbox.com/69/50/CINc0sB9_o.png" alt="在这里插入图片描述"></p> 
+<center> 
+ <b><font size="3">图3</font></b> 
+</center> 
+<p><img src="https://images2.imgbox.com/ed/28/JGb376ps_o.png" alt="在这里插入图片描述"></p> 
+<center> 
+ <b><font size="3">图4</font></b> 
+</center> 
+<p><img src="https://images2.imgbox.com/2d/d4/rLFmRnmE_o.png" alt="在这里插入图片描述"></p> 
+<center> 
+ <b><font size="3">图5</font></b> 
+</center> 
+<p>  图3中beat都找对了，但是downbeat位置找错，这种情况扣分最多。图4是正好漏掉一般，图5则是多出一倍，这两种情况扣分也挺多。</p> 
+<h2><a id="_53"></a>五、总结与思考</h2> 
+<p>  本次比赛我最大的收获主要是了解了计算音乐学这个新领域，掌握了一些音乐、音频处理的工具。这次比赛也认识到了和前面大佬的巨大差距，后来也了解到冠军团队使用了TCN网络和GRU+MLP网络，其中TCN网络我以前都没听说过，我只是能快速调通一个开源，再修改修改，让我自己设计一个网络还是不行，说明我对深度学习的掌握仍很基本，不深刻，并不熟练掌握各种网络结构的性能特点和用法，仍不具备创做一种网络的能力。今后的学习仍需要在基础能力上持续提高。<br>   赛后也有一些思考，我觉得也许可以在以下方面对算法进行改进和提高：<br>   （1）网络的输入部分是否可以直接输入音频原数据而不再是用madmom等库处理后的频谱特征，因为网络应该可以学到直接根据raw_data处理生成特征这个环节，这样就可以做到端到端，速度会更快。<br>   （2）对节拍的检测不用非把全部30s都计算完，因为节拍都是重复的，听一两个小节应该就可以确定节拍位置了，这就可以大大提高速度。<br>   （3）后处理过程使用的这个madmom库的HMM总觉得不是很好，因为它不是根据本数据集训练出来的，也许未必对本数据集是最优的，应该设计一种可训练的某种网络结构来实现，不仅精度提高，也能和前两步结合，真正实现端到端和实时高速。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/bc460effaf3d28999cd327f1894fdb23/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">dubbo (速度)更快,(并发)更高,(性能)更强</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a37ddc1d5924821284475ee1b381c155/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">2021.7 京训钉（自动播放下一章）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

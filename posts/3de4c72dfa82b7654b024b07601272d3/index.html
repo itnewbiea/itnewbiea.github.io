@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【io_uring】使用 io_uring 的高效 IO - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【io_uring】使用 io_uring 的高效 IO" />
+<meta property="og:description" content="翻译自 https://kernel.dk/io_uring.pdf
+This article is intended to serve as an introduction to the newest Linux IO interface, io_uring, and compare it to the existing offerings. We&#39;ll go over the reasons for its existence, inner workings of it, and the user visible interface. The article will not go into details about specific commands and the likes, as that would just be duplicating the information available in the associated man pages. Rather, it will attempt to provide an introduction to io_uring and how it works, with the goal hopefully being that the reader will have gained a deeper understanding of how it all ties together." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/3de4c72dfa82b7654b024b07601272d3/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-06-17T13:19:28+08:00" />
+<meta property="article:modified_time" content="2023-06-17T13:19:28+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【io_uring】使用 io_uring 的高效 IO</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p id="uce4058b3">翻译自 <a href="https://kernel.dk/io_uring.pdf" rel="nofollow" title="https://kernel.dk/io_uring.pdf">https://kernel.dk/io_uring.pdf</a></p> 
+<blockquote> 
+ <p>This article is intended to serve as an introduction to the newest Linux IO interface, io_uring, and compare it to the existing offerings. We'll go over the reasons for its existence, inner workings of it, and the user visible interface. The article will not go into details about specific commands and the likes, as that would just be duplicating the information available in the associated man pages. Rather, it will attempt to provide an introduction to io_uring and how it works, with the goal hopefully being that the reader will have gained a deeper understanding of how it all ties together. That said, there will be some overlap between this article and the man pages. It's impossible to provide a description of io_uring without including some of those details.</p> 
+</blockquote> 
+<p id="u4828a6ed">本文旨在介绍最新的 Linux IO 接口 io_uring，并将其与现有的接口进行比较。我们将回顾它存在的原因、它的内部工作原理以及用户可见的编程接口。本文不会详细介绍特定命令等，因为那样只会重复相关手册页中提供的信息。相反，它将尝试介绍 io_uring 及其工作原理，希望读者能够更深入地了解它是如何联系在一起的。也就是说，本文和手册页之间会有一些重叠。如果不包括其中的一些细节，就不可能提供对 io_uring 的描述。</p> 
+<h2 id="FQRYM">1.0 Introduction</h2> 
+<blockquote> 
+ <p id="u9c94dfd7">There are many ways to do file based IO in Linux. The oldest and most basic are the read(2) and write(2) system calls. These were later augmented with pread(2) and pwrite(2) versions which allow passing in of an offset, and later still we got preadv(2) and pwritev(2) which are vector-based versions of the former. Because that still wasn't quite enough, Linux also has preadv2(2) and pwritev2(2) system calls, which further extend the API to allow modifier flags. The various differences of these system calls aside, they share the common trait that they are synchronous interfaces. This means that the system calls return when the data is ready (or written). For some use cases that is sub-optimal, and an asynchronous interface is desired. POSIX has aio_read(3) and aio_write(3) to satisfy that need, however the implementation of those is most often lackluster and performance is poor.</p> 
+</blockquote> 
+<p id="ub936b7c8">在 Linux 中有很多方法可以进行基于文件的 IO。最古老和最基本的是 read(2) 和 write(2) 系统调用。这些后来增加了允许传入偏移量的 pread(2) 和 pwrite(2) 版本，后来我们仍然得到了 preadv(2) 和 pwritev(2)，它们是前者的基于矢量的版本。由于这还不够，Linux 还具有 preadv2(2) 和 pwritev2(2) 系统调用，它们进一步扩展了 API 以允许修饰符标志。撇开这些系统调用的各种差异不谈，它们具有同步接口的共同特征。这意味着系统调用在数据准备好（或写入）时返回。对于一些次优的用例，需要一个异步接口。 POSIX 具有 aio_read(3) 和 aio_write(3) 来满足该需求，但是这些实现通常乏善可陈，性能也很差。</p> 
+<blockquote> 
+ <p id="ub184491e">Linux does have a native async IO interface, simply dubbed aio. Unfortunately, it suffers from a number of limitations:</p> 
+</blockquote> 
+<p id="u3c045b27">Linux 确实有一个本地异步 IO 接口，简称为 aio。不幸的是，它有许多限制：</p> 
+<blockquote> 
+ <ul><li id="u043bea7a">The biggest limitation is undoubtedly that it only supports async IO for O_DIRECT (or un-buffered) accesses. Due to the restrictions of O_DIRECT (cache bypassing and size/alignment restraints), this makes the native aio interface a no-go for most use cases. For normal (buffered) IO, the interface behaves in a synchronous manner.</li><li id="u5537ff65">Even if you satisfy all the constraints for IO to be async, it's sometimes not. There are a number of ways that the IO submission can end up blocking - if meta data is required to perform IO, the submission will block waiting for that. For storage devices, there are a fixed number of request slots available. If those slots are currently all in use, submission will block waiting for one to become available. These uncertainties mean that applications that rely on submission always being async are still forced to offload that part.</li><li id="u93b57645">The API isn't great. Each IO submission ends up needing to copy 64 + 8 bytes and each completion copies 32 bytes. That's 104 bytes of memory copy, for IO that's supposedly zero copy. Depending on your IO size, this can definitely be noticeable. The exposed completion event ring buffer mostly gets in the way by making completions slower, and is hard (impossible?) to use correctly from an application. IO always requires at least two system calls (submit + wait-for-completion), which in these post spectre/meltdown days is a serious slowdown.</li></ul> 
+</blockquote> 
+<ul><li id="uad9b2296">最大的限制无疑是<span style="color:#f3f3f4;"><span style="background-color:#1c7331;">它只支持 O_DIRECT（或非缓冲）访问的异步 IO</span></span>。由于 O_DIRECT 的限制（<span style="color:#f3f3f4;"><span style="background-color:#1c7331;">绕过缓存和大小/对齐限制</span></span>），这使得本地 aio 接口对于大多数用例来说是行不通的。对于普通（缓冲）IO，接口以同步方式运行。</li><li id="ub0926cd4">即使您满足 IO 异步的所有约束，有时也并非如此。<span style="color:#f3f3f4;"><span style="background-color:#1c7331;">有多种方式可以导致 IO 提交最终阻塞</span></span>——如果执行 IO 需要元数据，则提交将阻塞等待。对于存储设备，有固定数量的可用请求槽。如果这些插槽当前都在使用中，提交将阻塞，等待一个可用的。这些不确定性意味着依赖提交始终是异步的应用程序仍然被迫卸载该部分。</li><li id="u8695fa50">API不是很好。每个IO的提交最终需要复制64+8个字节，每个完成复制32个字节。<span style="color:#f3f3f4;"><span style="background-color:#1c7331;">对于应该是零拷贝的IO，这是104字节的内存复制</span></span>。根据你的IO大小，这肯定是很明显的。暴露出来的完成事件环形缓冲区主要是通过使完成速度变慢来阻碍，并且很难（不可能?）从应用程序中正确使用。<span style="color:#f3f3f4;"><span style="background-color:#be191c;">IO总是需要至少两个系统调用（提交+等待完成），在这些后spectre/meltdown时代，这是一个严重的减速</span></span>。</li></ul> 
+<blockquote> 
+ <p id="u8a4af52b">Over the years there has been various efforts at lifting the first limitation mentioned (I also made a stab at it back in 2010), but nothing succeeded. In terms of efficiency, arrival of devices that are capable of both sub-10usec latencies and very high IOPS, the interface is truly starting to show its age. Slow and non-deterministic submission latencies are very much an issue for these types of devices, as is the lack of performance that you can extract out of a single core. On top of that, because of the aforementioned limitations, it's safe to say that native Linux aio doesn't have a lot of use cases. It's been relegated to a niche corner of applications, with all the issues that come with that (long term undiscovered bugs, etc).</p> 
+</blockquote> 
+<p id="u5b0b1d5a">多年来，已经进行了各种努力来解决提到的第一个限制（我也在2010年尝试过），但没有成功。就效率而言，<span style="color:#f3f3f4;"><span style="background-color:#1c7331;">随着能够实现低于10微秒延迟和非常高的IOPS的设备的出现，这个接口真的开始显得有些过时了</span></span>。对于这些类型的设备来说，缓慢和不确定的提交延迟是一个很大的问题，而且你无法从单个核心中提取出很高的性能。最重要的是，由于上述限制，<span style="color:#f3f3f4;"><span style="background-color:#be191c;">可以肯定地说原生 Linux aio 没有很多用例。它被降级到应用程序的一个小众角落，随之而来的所有问题（长期未发现的错误等）</span></span>。</p> 
+<blockquote> 
+ <p id="u9c318fe4">Furthermore, the fact that "normal" applications have no use for aio means that Linux is still lacking an interface that provides the features that they desire. There is absolutely no reason that applications or libraries continue to need to create private IO offload thread pools to get decent async IO, especially when that can be done more efficiently in the kernel.</p> 
+</blockquote> 
+<p id="u65e651b6">此外，“普通”应用程序无法使用 aio 这一事实意味着，linux 仍然缺乏一个接口来提供它们想要的功能。应用程序或库完全没有理由继续需要创建私有 IO 卸载线程池来获得像样的异步 IO，特别是当这可以在内核中更有效地完成时。</p> 
+<blockquote> 
+ <p>Linux AIO接口的缺点主要包括以下几个方面：</p> 
+ <ol><li> <p>API设计不佳：Linux AIO接口的API设计相对较为复杂，需要开发者掌握较多的底层知识和技术，不够友好。同时，AIO接口的API也较为低级，需要开发者自己处理一些底层细节，这增加了开发和维护的难度。</p> </li><li> <p>内存拷贝开销较大：Linux AIO接口虽然支持零拷贝，但是每个IO请求仍然需要进行一定量的内存拷贝，这会导致一定的性能损失。对于大量的IO请求，内存拷贝的开销可能会非常大，影响系统的整体性能。</p> </li><li> <p>低效的提交延迟：Linux AIO接口的提交延迟相对较高，尤其是在高性能、低延迟的设备上，这会导致性能瓶颈。由于AIO接口需要进行系统调用来提交IO请求，而系统调用本身的开销比较大，因此AIO接口的提交延迟相对较高。</p> </li><li> <p>单核心性能限制：由于Linux AIO接口的设计，无法充分利用多核心处理器的性能，因此在高负载情况下可能会出现性能瓶颈。AIO接口的设计也使得它难以实现并发处理，因此无法充分利用多核心处理器的性能。</p> </li><li> <p>不适用于所有应用场景：由于Linux AIO接口的局限性，它并不适用于所有的应用场景，只能满足某些特定需求的应用程序。例如，对于需要进行大量小文件读写的应用程序，AIO接口可能无法提供足够的性能优势。</p> </li></ol> 
+</blockquote> 
+<p></p> 
+<h2 id="JPDsp">2.0 Improving the status quo</h2> 
+<blockquote> 
+ <p id="u62bac366">Initial efforts were focused on improving the aio interface, and work progressed fairly far down that path before being abandoned. There are multiple reasons why this initial direction was chosen:</p> 
+</blockquote> 
+<p id="uc63b89cf">最初的努力集中在改进 aio 接口，在放弃之前，工作在这条道路上取得了相当大的进展。选择这个初始方向有多种原因：</p> 
+<blockquote> 
+ <ul><li id="u72b2e61d">If you can extend and improve an existing interface, that's preferable to providing a new one. Adoption of new interfaces take time, and getting new interfaces reviewed and approved is a potentially long and arduous task.</li><li id="u988777cd">It's a lot less work in general. As a developer, you're always looking to accomplish the most with the least amount of work. Extending an existing interface gives you many advantages in terms of existing test infrastructure.</li></ul> 
+</blockquote> 
+<ul><li id="ub2eb3c13">如果您可以扩展和改进现有接口，那比提供新接口更可取。采用新接口需要时间，审查和批准新接口可能是一项漫长而艰巨的任务。</li><li id="ubb63a458">一般来说，这要做的工作要少得多。作为开发者，你总是希望用最少的工作来完成最多的任务。扩展现有接口在现有测试基础设施方面有很多优势。</li></ul> 
+<blockquote> 
+ <p id="uc7679851">The existing aio interface is comprised of three main system calls: a system call to setup an aio context (io_setup(2)), one to submit IO (io_submit(2)), and one to reap or wait for completions of IO (io_getevents(2)). Since a change in behavior was required for multiple of these system calls, we needed to add new system calls to pass in this information. This created both multiple entry points to the same code, as well as shortcuts in other places. The end result wasn't very pretty in terms of code complexity and maintainability, and it only ended up fixing one of the highlighted deficiencies from the previous section. On top of that, it actually made one of them worse, since now the API was even more complicated to understand and use.</p> 
+</blockquote> 
+<p id="uf804e087">现有的 aio 接口由三个主要系统调用组成：</p> 
+<ul><li id="u44a14534">设置 aio 上下文的系统调用 (io_setup(2))；</li><li id="ua1815964">提交IO请求的系统调用 (io_submit(2))；</li><li id="ud737465e">等待IO完成的系统调用 (io_getevents (2))；</li></ul> 
+<p id="ub2a7a7fd">由于需要改变这些系统调用的行为，我们需要添加新的系统调用来传递这些信息。这既创建了多个入口点到同一段代码，也在其他地方创建了快捷方式。最终结果在代码复杂性和可维护性方面并不理想，只解决了前面提到的问题中的一个缺陷。此外，它实际上使其中一个问题变得更糟，因为现在API更加复杂，难以理解和使用。</p> 
+<blockquote> 
+ <p id="u42b160da">While it's always hard to abandon a line of work to start from scratch, it was clear that we needed something new entirely. Something that would allow us to deliver on all points. We needed it to be performant and scalable, while still making it easy to use and having the features that existing interfaces were lacking.</p> 
+</blockquote> 
+<p id="u43fffa67">虽然放弃一项工作从头开始总是很难，但很明显我们需要全新的东西。可以让我们实现所有要点的东西。我们需要它具有高性能和可扩展性，同时仍然易于使用并具有现有接口所缺乏的功能。</p> 
+<h2 id="U0lLx">3.0 New interface design goals</h2> 
+<blockquote> 
+ <p id="u86144008">While starting from scratch was not an easy decision to make, it did allow us full artistic freedom in coming up with something new. In rough ascending order of importance, the main design goals were:</p> 
+</blockquote> 
+<p id="u41ad2e4c">虽然从头开始设计并不是一个容易的决定，但它确实允许我们完全自由地设计出全新的东西。按照重要性的递增顺序，主要的设计目标如下：</p> 
+<blockquote> 
+ <ul><li id="u9578865c"><strong>Easy to use, hard to misuse</strong>. Any user/application visible interface should have this as a main goal. The interface should be easy to understand and intuitive to use.</li></ul> 
+ <ul><li id="u94aa6d90"><strong>Extendable</strong>. While my background is mostly storage related, I wanted the interface to be usable for more than just block oriented IO. That meant networking and non-block storage interfaces that may be coming down the line. If you're creating a brand new interface, it should be (or at least attempt to be) future proof in some shape or form.</li></ul> 
+ <ul><li id="u86233a44"><strong>Feature rich</strong>. Linux aio caters to a subset (of a subset) of applications. I did not want to create yet another interface that only covered some of what applications need, or that required applications to reinvent the same functionality over and over again (like IO thread pools).</li></ul> 
+ <ul><li id="u6bebd1e9"><strong>Efficiency</strong>. While storage IO is mostly still block based and hence at least 512b or 4kb in size, efficiency at those sizes is still critical for certain applications. Additionally, some requests may not even be carrying a data payload. It was important that the new interface was efficient in terms of per-request overhead.</li></ul> 
+ <ul><li id="u0e69153f"><strong>Scalability</strong>. While efficiency and low latencies are important, it's also critical to provide the best performance possible at the peak end. For storage in particular, we've worked very hard to deliver a scalable infrastructure. A new interface should allow us to expose that scalability all the way back to applications.</li></ul> 
+</blockquote> 
+<ul><li id="u1280a667"><span style="color:#be191c;"><strong>易于使用，难以滥用</strong></span>。任何用户/应用程序可见接口都应该以此为主要目标。接口应该易于理解和直观使用。</li><li id="ud7bf0109"><span style="color:#be191c;"><strong>可扩展</strong></span>。虽然我的背景主要与存储相关，但我希望该接口不仅仅可用于面向块的 IO。这意味着可能即将推出的网络和非块存储接口。如果您正在创建一个全新的接口，它应该（或至少尝试）以某种 shape 或 form 面向未来。（一般而言，"shape"更强调外部轮廓或外观，"form"则更强调内部结构或组成方式）</li><li id="ud390fc70"><span style="color:#be191c;"><strong>功能丰富</strong></span>。 Linux aio 迎合了应用程序的一个子集（子集的）。我不想再创建另一个接口，它只涵盖应用程序的部分需求，或者需要应用程序一遍又一遍地重新发明相同的功能（如 IO 线程池）。</li><li id="u1cf1c79d"><span style="color:#be191c;"><strong>效率</strong></span>。虽然存储IO大多仍然基于块，因此大小至少为512字节或4KB，但对于某些应用程序来说，在这些大小上的效率仍然非常关键。此外，一些请求甚至可能没有数据负载。因此，新接口在每个请求的开销方面的效率非常重要。。</li><li id="u3c4bfeae"><span style="color:#be191c;"><strong>可扩展性</strong></span>。虽然效率和低延迟非常重要，但在峰值时提供最佳性能也至关重要。特别是对于存储来说，我们非常努力地提供可扩展的基础架构。新的接口应该让我们能够将这种可扩展性一直延伸到应用程序层面。</li></ul> 
+<blockquote> 
+ <p id="u2953f3f4">Some of the above goals may seem mutually exclusive. Interfaces that are efficient and scalable are often hard to use, and more importantly, hard to use correctly. Both feature rich and efficient can also be hard to achieve. Nevertheless, these were the goals we set out with.</p> 
+</blockquote> 
+<p id="u7f384cd8">上述一些目标可能看起来相互排斥。高效且可扩展的接口通常难以使用，更重要的是，难以正确使用。功能丰富和高效也很难实现。然而，这些是我们设定的目标。</p> 
+<h2 id="bWaj1">4.0 Enter io_uring</h2> 
+<blockquote> 
+ <p id="u4727af92">Despite the ranked list of design goals, the initial design was centered around efficiency. Efficiency isn't something that can be an afterthought, it has to be designed in from the start - you can't wring it out of something later on once the interface is fixed. I knew I didn't want any memory copies for either submissions or completion events, and no memory in-directions either. At the end of the previous aio based design, both efficiency and scalability were visibly harmed by the multiple separate copies that aio had to do to handle both sides of the IO.</p> 
+</blockquote> 
+<p id="u8664df30">尽管有设计目标的排序列表，但最初的设计以效率为中心。效率不是可以事后考虑的，必须从一开始就考虑在内 - 一旦接口固定后，就无法再从中获取更高的效率。<span style="color:#f3f3f4;"><span style="background-color:#be191c;">我知道我不想在提交或完成事件中进行任何内存复制，也不想进行任何内存间接寻址</span></span>。在以前基于aio的设计的最后，aio必须执行多个单独的复制来处理IO的两个方面，这导致效率和可扩展性明显受损。</p> 
+<blockquote> 
+ <p id="u34115228">As copies aren't desirable, it's clear that the kernel and the application have to graciously share the structures defining the IO itself, and the completion event. If you're taking the idea of sharing that far, it was a natural extension to have the coordination of shared data also reside in memory shared between the application and the kernel. Once you've made that leap, it also becomes clear that synchronization between the two has to be managed somehow. An application can't share locking with the kernel without invoking system calls, and a system call would surely reduce the rate at which we communicate with the kernel. This was at odds with the efficiency goal. One data structure that would satisfy our needs would be a single producer and single consumer ring buffer. With a shared ring buffer, we could eliminate the need to have shared locking between the application and the kernel, getting away with some clever use of memory ordering and barriers instead.</p> 
+</blockquote> 
+<p id="u8915e0a9">由于不希望使用副本，很明显<span style="color:#f3f3f4;"><span style="background-color:#be191c;">内核和应用程序必须优雅地共享定义IO本身以及完成事件的结构</span></span>。如果你将共享的概念推得更远，<span style="color:#f3f3f4;"><span style="background-color:#be191c;">将共享数据的协调也放在应用程序和内核之间共享的内存中</span></span>就是一个自然的延伸。一旦你跨越了这一步，就会清楚两者之间的同步必须以某种方式进行管理。<span style="color:#f3f3f4;"><span style="background-color:#1c7331;">应用程序不能与内核共享锁定而不涉及系统调用，而系统调用肯定会降低与内核通信的速率</span></span>。这与效率目标相矛盾。<span style="color:#f3f3f4;"><span style="background-color:#be191c;">满足我们需求的一个数据结构是单生产者和单消费者的环形缓冲区。通过使用共享的环形缓冲区，我们可以消除应用程序和内核之间共享锁定的需求，而是巧妙地使用内存排序和屏障</span></span>。</p> 
+<blockquote> 
+ <p id="ub36e7798">There are two fundamental operations associated with an async interface: the act of submitting a request, and the event that is associated with the completion of said request. For submitting IO, the application is the producer and the kernel is the consumer. The opposite is true for completions - here the kernel produces completion events and the application consumes them. Hence, we need a pair of rings to provide an effective communication channel between an application and the kernel. That pair of rings is at the core of the new interface, io_uring. They are suitably named submission queue (SQ), and completion queue (CQ), and form the foundation of the new interface.</p> 
+</blockquote> 
+<p id="ueed6ed39">有两个与异步接口相关的基本操作：<span style="color:#f3f3f4;"><span style="background-color:#be191c;">提交请求的行为，以及与完成所述请求相关联的事件</span></span>。对于提交IO，应用是生产者，内核是消费者。完成情况恰恰相反-这里内核产生完成事件，应用程序使用它们。因此，我们需要一对环来提供应用程序和内核之间的有效通信通道。这对环是新接口 io_uring 的核心。它们被恰当地命名为<span style="color:#be191c;"><strong>提交队列 (SQ)</strong></span> 和<span style="color:#be191c;"><strong>完成队列 (CQ)</strong></span>，并构成了新接口的基础。</p> 
+<p id="u4cdadb08"></p> 
+<h2 id="KcOLc">4.1 DATA STRUCTURES</h2> 
+<blockquote> 
+ <p id="u698beba7">With the communication foundation in place, it was time to look at defining the data structures that would be used to describe the request and completion event. The completion side is straight forward. It needs to carry information pertaining to the result of the operation, as well as some way to link that completion back to the request it originated from. For io_uring, the layout chosen is as follows:</p> 
+</blockquote> 
+<p id="u818adc29">随着通信基础的建立，是时候看看如何定义用于<strong>描述请求</strong>和<strong>完成事件</strong>的数据结构了。</p> 
+<p id="u88811531">对于完成事件是直截了当的，它需要：</p> 
+<ul><li id="ubfef41ad">携带与操作结果有关的信息；</li><li id="ub18f80b6">以及某种方式将该完成事件链接到它所产生的请求；</li></ul> 
+<p id="u1faff622">对于 io_uring，选择的布局如下：</p> 
+<pre><code class="language-cpp">struct io_uring_cqe {
+   u64 user_data;
+   s32 res;
+   __u32 flags;
+};</code></pre> 
+<blockquote> 
+ <p id="uc94923ff">The io_uring name should be recognizable by now, and the _cqe postfix refers to a Completion Queue Event. For the rest of this article, commonly referred to as just a cqe. The cqe contains a user_data field. This field is carried from the initial request submission, and can contain any information that the the application needs to identify said request. One common use case is to have it be the pointer of the original request. The kernel will not touch this field, it's simply carried straight from submission to completion event. res holds the result of the request. Think of it like the return value from a system call. For a normal read/write operation, this will be like the return value from read(2) or write(2). For a successful operation, it will contain the number of bytes transferred. If a failure occurred, it will contain the negative error value. For example, if an I/O error occurred, res will contain -EIO. Lastly, the flags member can carry meta data related to this operation. As of now, this field is unused.</p> 
+</blockquote> 
+<p id="uf3203108">现在应该可以识别 io_uring 名称，_cqe 后缀指的是完成队列事件。 对于本文的其余部分，通常仅称为 cqe。 cqe 包含：</p> 
+<ul><li id="u318eebc6"><code><strong>user_data</strong></code> 字段。 该字段从初始请求提交中携带，可以包含应用程序需要识别所述请求的任何信息。</li></ul> 
+<p id="u2e7d6baa">        一个常见的用例是让它成为原始请求的指针。 内核不会触及这个字段，它只是简单地直接从提交转移到完成事件。</p> 
+<ul><li id="ua4d135bc"><code><strong>res</strong></code>字段。保存请求的结果，把它想象成系统调用的返回值。</li></ul> 
+<p id="ua02dd4df">        对于正常的读/写操作，这类似于 read(2) 或 write(2) 的返回值。 对于成功的操作，它将包含传输的字节数。如果发生故障，它将包含负错误值。 例如，如果发生 I/O 错误，res 将包含 -EIO。</p> 
+<ul><li id="u832c0c18"><code><strong>flags</strong></code> 字段。可以携带与此操作相关的元数据。 截至目前，该字段未被使用。</li></ul> 
+<blockquote> 
+ <p id="ud0116d1f">Definition of a request type is more complicated. Not only does it need to describe a lot more information than a completion event, it was also a design goal for io_uring to be extendable for future request types. What we came up with is as follows:</p> 
+</blockquote> 
+<p id="ub6b27dfa">请求类型的定义更为复杂。 它不仅需要描述比完成事件更多的信息，而且 io_uring 的设计目标是可以针对未来的请求类型进行扩展。 我们得出的结论如下：</p> 
+<pre><code class="language-cpp">struct io_uring_sqe {
+    u8 opcode;   /* type of operation for this sqe */
+    u8 flags;    /* IOSQE_ flags */
+    u16 ioprio;  /* ioprio for the request */
+    s32 fd;      /* file descriptor to do IO on */
+    u64 off;     /* offset into file */
+    u64 addr;    /* pointer to buffer or iovecs */
+    u32 len;     /* buffer size or number of iovecs */
+    union {
+        kernel_rwf_t rw_flags;
+        u32 fsync_flags;
+        u16 poll_events;
+        u32 sync_range_flags;
+        u32 msg_flags;   
+    };
+    u64 user_data;     /* data to be passed back at completion time */
+    union {
+        u16 buf_index; /* index into fixed buffers, if used */
+        u64 pad2[3];
+    };
+};</code></pre> 
+<blockquote> 
+ <p id="ue7d3fc8f">Akin to the completion event, the submission side structure is dubbed the Submission Queue Entry, or sqe for short. It contains an opcode field that describes the operation code (or op-code for short) of this particular request. One such op-code is IORING_OP_READV, which is a vectored read. flags contains modifier flags that are common across command types. We'll get into this a bit later in the advanced use case section. ioprio is the priority of this request. For normal read/writes, this follows the definition as outlined for the ioprio_set(2) system call. fd is the file descriptor associated with the request, and off holds the offset at which the operation should take place. addr contains the address at which the operation should perform IO, if the op-code describes an operation that transfers data. If the operation is a vectored read/write of some sort, this will be a pointer to an struct iovec array, as used by preadv(2), for example. For a non-vectored IO transfer, addr must contain the address directly. This carries into len, which is either a byte count for a non-vectored IO transfer, or a number of vectors described by addr for a vectored IO transfer.</p> 
+</blockquote> 
+<p id="uf862c48a">类似于完成事件，提交端结构被称为提交队列条目，或简称 sqe。 它包含：</p> 
+<ul><li id="u533c3701"><code><strong>opcode</strong></code> 描述了这个特定请求的操作码（或简称操作码）。</li></ul> 
+<p id="u6e0df523">        一个这样的操作码是 IORING_OP_READV，它是一个矢量读取。</p> 
+<ul><li id="u416fea36"><code><strong>flags</strong></code> 包含跨命令类型通用的修饰符标志。 稍后我们将在高级用例部分对此进行介绍。</li><li id="u33962b3c"><code><strong>ioprio</strong></code> 是此请求的优先级。 对于正常的读/写，这遵循 ioprio_set(2) 系统调用概述的定义。</li><li id="ue509c396"><code><strong>fd</strong></code> 是与请求关联的文件描述符。</li><li id="u7bd8d8a9"><code><strong>off</strong></code> 保存操作应该发生的偏移量。</li><li id="u7afd68f9"><code><strong>addr</strong></code> 指向缓冲区或 iovecs 的指针： 
+  <ul><li>如果操作码描述了传输数据的操作，则 addr 包含该操作应该执行 IO 的地址。</li><li>如果操作是某种类型的矢量化读/写，则这将是指向例如 preadv(2) 所使用的 struct iovec 数组的指针。</li><li>对于非矢量化 IO 传输，addr 必须直接包含地址。</li></ul></li><li id="u8c2b029f"><code><strong>len</strong></code>它是非矢量化 IO 传输的字节数，或者是矢量化 IO 传输的 addr 描述的矢量数。</li></ul> 
+<blockquote> 
+ <p>Next follows a union of flags that are specific to the op-code. For example, for the mentioned vectored read (IORING_OP_READV), the flags follow those described for the preadv2(2) system call. user_data is common across opcodes, and is untouched by the kernel. It's simply copied to the completion event, cqe, when a completion event is<br> posted for this request. buf_index will be described in the advanced use cases section. Lastly, there's some padding at the end of the structure. This serves the purpose of ensuring that the sqe is aligned nicely in memory at 64 bytes in size, but also for future use cases that may need to contain more data to describe a request. A few use cases for that<br> comes to mind - one would be a key/value store set of commands, another would be for end-to-end data protection where the application passes in a pre-computed checksum for the data it wants to write.</p> 
+</blockquote> 
+<ul><li id="u649a5977"><code><strong>一组特定于操作码的标志</strong></code>。例如，对于提到的向量读取 (IORING_OP_READV)，标志遵循为 preadv2(2) 系统调用描述的标志；</li><li id="u88fba871"><code><strong>user_data</strong></code>在操作码之间是通用的，并且不受内核影响。 当针对此请求发布完成事件时，它会简单地复制到完成事件 cqe。</li><li id="u9bde1a0f"><code><strong>buf_index</strong></code> 将在高级用例部分进行描述。</li><li id="u53499fc6">在结构的末尾有一些填充，这是为了确保 sqe 在内存中以 64 字节的大小很好地对齐，但也适用于可能需要包含更多数据来描述请求的未来用例。我想到了一些用例： 
+  <ul><li>一个是键/值存储命令集。</li><li>另一个是端到端数据保护，其中应用程序为其要写入的数据传递预先计算的校验和 。</li></ul></li></ul> 
+<h2 id="FeRax">4.2 COMMUNICATION CHANNEL</h2> 
+<blockquote> 
+ <p id="u6d9e4193">With the data structures described, let's go into some detail on how the rings work. Even though there is symmetry in the sense that we have a submission and completion side, the indexing is different between the two. Like in the previous section, let's start with less complicated one, the completion ring.</p> 
+</blockquote> 
+<p id="u6ca075be">随着数据结构的描述，让我们来详细了解一下环的工作原理。尽管在这个意义上存在对称性，即我们有一个提交方和完成方，但两者的索引是不同的。和上一节一样，让我们从不太复杂的环开始，即完成环。</p> 
+<blockquote> 
+ <p id="u2f51d730">The cqes are organized into an array, with the memory backing the array being visible and modifiable by both the kernel and the application. However, since the cqe's are produced by the kernel, only the kernel is actually modifying the cqe entries. The communication is managed by a ring buffer. Whenever a new event is posted by the kernel to the CQ ring, it updates the tail associated with it. When the application consumes an entry, it updates the head. Hence, if the tail is different than the head, the application knows that it has one or more events available for consumption. The ring counters themselves are free flowing 32-bit integers, and rely on natural wrapping when the number of completed events exceed the capacity of the ring. One advantage of this approach is that we can utilize the full size of the ring without having to manage a "ring is full" flag on the side, which would have complicated the management of the ring. With that, it also follows that the ring must be a power of 2 in size.</p> 
+</blockquote> 
+<p id="uceed6112">cqes被组织成一个数组，支持内核和应用程序对其进行内存访问和修改。然而，由于cqes是由内核生成的，因此只有内核实际上修改cqe条目。通信是由一个环形缓冲区管理的。每当内核将新事件发布到CQ环中时，它会更新与之关联的尾指针。当应用程序消耗一个条目时，它会更新头指针。因此，如果尾指针与头指针不同，则应用程序知道它有一个或多个可用于消耗的事件。环形计数器本身是自由流动的32位整数，并在完成的事件数超过环的容量时自然地循环。这种方法的一个优点是我们可以利用环的完整大小，而不必在侧面管理“环已满”的标志，这会使环的管理变得复杂。因此，环的大小必须是2的幂。</p> 
+<blockquote> 
+ <p id="ub702e8f3">To find the index of an event, the application must mask the current tail index with the size mask of the ring. This commonly looks something like the below:</p> 
+</blockquote> 
+<p id="udc2fb0a1">要查找事件的索引，应用程序必须使用环的大小掩码来掩蔽当前的尾部索引。这通常看起来像下面这样：</p> 
+<pre><code class="language-cpp">unsigned head;
+
+head = cqring-&gt;head;
+read_barrier();
+if (head != cqring-&gt;tail) {
+    struct io_uring_cqe *cqe;
+    unsigned index;
+    
+    index = head &amp; (cqring-&gt;mask);
+    cqe = &amp;cqring-&gt;cqes[index];
+    /* process completed cqe here */
+    ...
+    /* we've now consumed this entry */
+    head++;
+}
+
+cqring-&gt;head = head;
+write_barrier();</code></pre> 
+<blockquote> 
+ <p id="ue6fc74c1">ring→cqes[] is the shared array of io_uring_cqe structures. In the next sections, we'll get into the inner details of how this shared memory (and the io_uring instance itself) is setup and managed, and what the magic read and write barrier calls are doing here.</p> 
+</blockquote> 
+<p id="u1e8b9cd9"><code>ring→cqes[]</code> 是 io_uring_cqe 结构的共享数组。在接下来的部分中，我们将深入了解这个共享内存（以及 io_uring 实例本身）是如何设置和管理的，以及神奇的读写屏障调用在这里做了什么。</p> 
+<blockquote> 
+ <p id="uc352c6db">For the submission side, the roles are reversed. The application is the one updating the tail, and the kernel consumes entries (and updates) the head. One important difference is that while the CQ ring is directly indexing the shared array of cqes, the submission side has an indirection array between them. Hence the submission side ring buffer is an index into this array, which in turn contains the index into the sqes. This might initially seem odd and confusing, but there's some reasoning behind it. Some applications may embed request units inside internal data structures, and this allows them the flexibility to do so while retaining the ability to submit multiple sqes in one operation. That in turns allows for easier conversion of said applications to the io_uring interface.</p> 
+</blockquote> 
+<p id="ua56a8ddc">对于提交方，角色是相反的。应用程序更新尾部，而内核消耗条目（并更新）头部。一个重要的区别是，尽管CQ环直接索引cqes的共享数组，但提交方面在它们之间有一个间接数组。因此，提交方的环形缓冲区是这个数组的索引，而这个数组又包含了 sqes 的索引。这最初可能看起来很奇怪和混乱，但这背后有一些原因。一些应用程序可能会将请求单元嵌入到内部数据结构中，这允许它们灵活地这样做，同时保留在一个操作中提交多个 sqes 的能力。这反过来又允许将所述应用程序更容易地转换为 io_uring 接口。</p> 
+<blockquote> 
+ <p id="u17daa4e8">Adding an sqe for consumption by the kernel is basically the opposite operation of reaping an cqe from the kernel. A typical example would look something like this:</p> 
+</blockquote> 
+<p id="u94c0f680">添加一个 sqe 供内核使用，基本上是与从内核获得一个 cqe 相反的操作。一个典型的例子是这样的。</p> 
+<pre><code class="language-cpp">struct io_uring_sqe *sqe;
+unsigned tail, index;
+
+tail = sqring→tail;
+index = tail &amp; (*sqring→ring_mask);
+sqe = &amp;sqring→sqes[index];
+
+/* this call fills in the sqe entries for this IO */
+init_io(sqe);
+
+/* fill the sqe index into the SQ ring array */
+sqring→array[index] = index;
+tail++;
+
+write_barrier();
+sqring→tail = tail;
+write_barrier();</code></pre> 
+<blockquote> 
+ <p id="u939627bd">As with the CQ ring side, the read and write barriers will be explained later. The above is a simplified example, it assumes that the SQ ring is currently empty, or at least that it has room for one more entry.</p> 
+</blockquote> 
+<p id="u151e6687">和 CQ 环端一样，读写 barrier 后面会解释。 上面是一个简化的例子，它假设 SQ 环当前是空的，或者至少它有空间可以再输入一个。</p> 
+<blockquote> 
+ <p id="u37335172">As soon as an sqe is consumed by the kernel, the application is free to reuse that sqe entry. This is true even for cases where the kernel isn't completely done with a given sqe yet. If the kernel does need to access it after the entry has been consumed, it will have made a stable copy of it. Why this can happen isn't necessarily important, but it has an important side effect for the application. Normally an application would ask for a ring of a given size, and the assumption may be that this size corresponds directly to how many requests the application can have pending in the kernel. However, since the sqe lifetime is only that of the actual submission of it, it's possible for the application to drive a higher pending request count than the SQ ring size would indicate. The application must take care not to do so, or it could risk overflowing the CQ ring. By default, the CQ ring is twice the size of the SQ ring. This allows the application some amount of flexibility in managing this aspect, but it doesn't completely remove the need to do so. If the application does violate this restriction, it will be tracked as an overflow condition in the CQ ring. More details on that later.</p> 
+</blockquote> 
+<p id="u8f9f77f3">一旦内核消耗了一个 sqe，应用程序就可以自由地重新使用这个 sqe 条目。即使在内核还没有完全用完一个特定的 sqe 的情况下也是如此。如果内核在该条目被消耗后确实需要访问它，它将对其进行稳定的复制。为什么会发生这种情况并不重要，但它对应用程序有一个重要的副作用。通常，<span style="color:#f3f3f4;"><span style="background-color:#1c7331;">应用程序会请求一个给定大小的环形缓冲区，并且假设这个大小直接对应于应用程序在内核中可以挂起的请求数量</span></span>。然<span style="color:#f3f3f4;"><span style="background-color:#1c7331;">而，由于sqe的寿命只是实际提交的寿命，应用程序有可能驱动一个比 SQ 环大小更高的待定请求数。应用程序必须注意不要这样做，否则会有溢出 CQ 环的风险</span></span>。默认情况下，CQ 环的大小是 SQ 环的两倍。这允许应用程序在管理这方面有一定的灵活性，但它并没有完全消除这样做的必要性。如果应用程序确实违反了这一限制，它将被追踪为 CQ 环中的溢出条件。稍后会有更多关于这个问题的细节。</p> 
+<blockquote> 
+ <p id="u1d346cbc">Completion events may arrive in any order, there is no ordering between the request submission and the association completion. The SQ and CQ ring run independently of each other. However, a completion event will always correspond to a given submission request. Hence, a completion event will always be associated with a specific submission request.</p> 
+</blockquote> 
+<p id="u12b01fcd"><span style="color:#f3f3f4;"><span style="background-color:#be191c;">完成事件可能以任何顺序到达，请求提交和关联完成之间没有顺序</span></span>。 SQ 和 CQ 环相互独立运行。但是，完成事件将始终对应于给定的提交请求。因此，完成事件将始终与特定的提交请求相关联。</p> 
+<h2 id="xwGZV">5.0 io_uring interface</h2> 
+<blockquote> 
+ <p id="u4f3ec01f">Just like aio, io_uring has a number of system calls associated with it that define its operation. The first one is a system call to setup an io_uring instance。</p> 
+</blockquote> 
+<p id="u55315043">就像 aio 一样，io_uring 有许多与之关联的系统调用，这些调用定义了它的操作。第一个是设置 io_uring 实例的系统调用。</p> 
+<pre><code class="language-cpp">int io_uring_setup(unsigned entries, struct io_uring_params *params);</code></pre> 
+<blockquote> 
+ <p id="u80bddfba">The application must provide a desired number of entries for this io_uring instance, and a set of parameters associated with it. entries denotes the number of sqes that will be associated with this io_uring instance. It must be a power of 2, in the range of 1..4096 (both inclusive). The params structure is both read and written by the kernel, it is defined as follows:</p> 
+</blockquote> 
+<p id="u9aa41958">应用程序必须为此 io_uring 实例提供所需数量的条目，以及与之关联的一组参数。 <code>entries</code> 表示将与此 io_uring 实例关联的 sqes 的数量。它必须是 2 的幂，在 1 ... 4096（包括两者）的范围内。 <code>params</code> 结构由内核读写，定义如下：</p> 
+<pre><code class="language-cpp">struct io_uring_params {
+    __u32 sq_entries;
+    __u32 cq_entries;
+    __u32 flags;
+    __u32 sq_thread_cpu;
+    __u32 sq_thread_idle;
+    __u32 resv[5];
+    struct io_sqring_offsets sq_off;
+    struct io_cqring_offsets cq_off;
+};</code></pre> 
+<blockquote> 
+ <p id="u22a0166b">The sq_entries will be filled out by the kernel, letting the application know how many sqe entries this ring supports. Likewise for the cqe entries, the cq_entries member tells the application how big the CQ ring is. Discussion of the rest of this structure is deferred to the advanced use cases section, with the exception of the sq_off and cq_off fields as they are necessary to setup the basic communication through the io_uring.</p> 
+</blockquote> 
+<p id="u522cc6ba"><code>sq_entries</code> 将由内核填充，让应用程序知道这个环支持多少个 sqe 条目。同样对于 cqe 条目，<code>cq_entries</code> 成员告诉应用程序 CQ 环有多大。此结构的其余部分的讨论推迟到高级用例部分，但 sq_off 和 cq_off 字段除外，因为它们是通过 io_uring 设置基本通信所必需的。</p> 
+<blockquote> 
+ <p id="u98c14e54">On a successful call to io_uring_setup(2), the kernel will return a file descriptor that is used to refer to this io_uring instance. This is where the sq_off and cq_off structures come in handy. Given that the sqe and cqe structures are shared by the kernel and the application, the application needs a way to gain access to this memory. This is done through mmap(2)'ing it into the application memory space. The application uses the sq_off member to figure out the offsets of the various ring members. The io_sqring_offsets structure looks as follows:</p> 
+</blockquote> 
+<p id="ucc53aa63">成功调用 io_uring_setup(2) 后，内核将返回一个用于引用此 io_uring 实例的文件描述符。这就是 sq_off 和 cq_off 结构派上用场的地方。鉴于 sqe 和 cqe 结构由内核和应用程序共享，应用程序需要一种方法来访问此内存。这是通过 mmap(2) 将其放入应用程序内存空间来完成的。该应用程序使用 sq_off 成员计算出各个环成员的偏移量。 io_sqring_offsets 结构如下所示：</p> 
+<pre><code class="language-cpp">struct io_sqring_offsets {
+    __u32 head;      /* offset of ring head */
+    __u32 tail;      /* offset of ring tail */
+    __u32 ring_mask; /* ring mask value */
+    __u32 ring_entries; /* entries in ring */
+    __u32 flags;     /* ring flags */
+    __u32 dropped;   /* number of sqes not submitted */
+    __u32 array;     /* sqe index array /
+    __u32 resv1;
+    __u64 resv2;
+};</code></pre> 
+<blockquote> 
+ <p id="u7e9d5402">To access this memory, the application must call mmap(2) using the io_uring file descriptor and the memory offset associated with the SQ ring. The io_uring API defines the following mmap offsets for use by the application:</p> 
+</blockquote> 
+<p id="u38b874d9">要访问此内存，应用程序必须调用 mmap(2)，并使用 io_uring 文件描述符和与 SQ 环关联的内存偏移量。 io_uring API 定义了以下供应用程序使用的 mmap 偏移量：</p> 
+<pre><code class="language-cpp">#define IORING_OFF_SQ_RING 0ULL
+#define IORING_OFF_CQ_RING 0x8000000ULL
+#define IORING_OFF_SQES 0x10000000ULL</code></pre> 
+<blockquote> 
+ <p id="ud45d4715">where IORING_OFF_SQ_RING is used to map the SQ ring into the application memory space, IORING_OFF_CQ_RING for the CQ ring ditto, and finally IORING_OFF_SQES to map the sqe array. For the CQ ring, the array of cqes is a part of the CQ ring itself. Since the SQ ring is an index of values into the sqe array, the sqe array must be mapped separately by the application.</p> 
+</blockquote> 
+<p id="uf0f5deaf">IORING_OFF_SQ_RING 用于将 SQ 环映射到应用程序内存空间，</p> 
+<p id="u2d726f34">IORING_OFF_CQ_RING 用于 CQ 环映射到应用程序内存空间，</p> 
+<p id="ub9314ea6">IORING_OFF_SQES 用于映射 sqe 数组。</p> 
+<p id="u05ebc875">对于 CQ 环，cqes 数组是 CQ 环本身的一部分。由于 SQ 环是 sqe 数组中值的索引，因此 sqe 数组必须由应用程序单独映射。</p> 
+<blockquote> 
+ <p id="u1013f4cd">The application will define its own structure holding these offsets. One example might look like the following:</p> 
+</blockquote> 
+<p id="uc4d242bb">应用程序将定义自己的结构来保存这些偏移量。一个示例可能如下所示：</p> 
+<pre><code class="language-cpp">struct app_sq_ring {
+    unsigned *head;
+    unsigned *tail;
+    unsigned *ring_mask;
+    unsigned *ring_entries;
+    unsigned *flags;
+    unsigned *dropped;
+    unsigned *array;
+};</code></pre> 
+<p id="u385769bd">and a typical setup case will thus look like:</p> 
+<p id="u7d0d3c66">因此，典型的设置案例如下所示：</p> 
+<pre><code class="language-cpp">struct app_sq_ring app_setup_sq_ring(int ring_fd, struct io_uring_params *p)
+{
+    struct app_sq_ring sqring;
+    void *ptr;
+    ptr = mmap(NULL, p-&gt;sq_off.array + p-&gt;sq_entries * sizeof(__u32),
+    			PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE,
+    			ring_fd, IORING_OFF_SQ_RING);
+    sring-&gt;head = ptr + p-&gt;sq_off.head;
+    sring-&gt;tail = ptr + p-&gt;sq_off.tail;
+    sring-&gt;ring_mask = ptr + p-&gt;sq_off.ring_mask;
+    sring-&gt;ring_entries = ptr + p-&gt;sq_off.ring_entries;
+    sring-&gt;flags = ptr + p-&gt;sq_off.flags;
+    sring-&gt;dropped = ptr + p-&gt;sq_off.dropped;
+    sring-&gt;array = ptr + p-&gt;sq_off.array;
+    return sring;
+}</code></pre> 
+<blockquote> 
+ <p id="u63137b9a">The CQ ring is mapped similarly to this, using IORING_OFF_CQ_RING and the offset defined by the io_cqring_offsets cq_off member. Finally, the sqe array is mapped using the IORING_OFF_SQES offset. Since this is mostly boiler plate code that can be reused between applications, the liburing library interface provides a set of helpers to accomplish the setup and memory mapping in a simple manner. See the io_uring library section for details on that. Once all of this is done, the application is ready to communicate through the io_uring instance</p> 
+</blockquote> 
+<p id="uea0b0cd9">CQ 环的映射与此类似，使用 IORING_OFF_CQ_RING 和 io_cqring_offsets cq_off 成员定义的偏移量。</p> 
+<p id="ud385876e">最后，使用 IORING_OFF_SQES 偏移量映射 sqe 数组。由于这主要是可以在应用程序之间重复使用的样板代码，因此 liburing 库接口提供了一组帮助程序来以简单的方式完成设置和内存映射。有关详细信息，请参阅 io_uring 库部分。一旦完成所有这些，应用程序就可以通过 io_uring 实例进行通信了</p> 
+<blockquote> 
+ <p id="u9f162a89">The application also needs a way to tell the kernel that it has now produced requests for it to consume. This is done through another system call:</p> 
+</blockquote> 
+<p id="u1a42fd38">应用程序还需要一种方法来告诉内核它现在已经产生了供其使用的请求。这是通过另一个系统调用完成的：</p> 
+<pre><code class="language-cpp">int io_uring_enter(unsigned int fd, unsigned int to_submit,
+                    unsigned int min_complete, unsigned int flags,
+                    sigset_t sig);</code></pre> 
+<blockquote> 
+ <p id="ue2c98bbb">fd refers to the ring file descriptor, as returned by io_uring_setup(2). to_submit tells the kernel that there are up to that amount of sqes ready to be consumed and submitted, while min_complete asks the kernel to wait for completion of that amount of requests. Having the single call available to both submit and wait for completions means that the application can both submit and wait for request completions with a single system call. flags contains flags that modify the behavior of the call. The most important one being:</p> 
+</blockquote> 
+<p id="ue126bee2">fd 指的是环形文件描述符，由 io_uring_setup(2) 返回。</p> 
+<p id="u004dc6c1">to_submit 告知内核有多达该数量的sqes准备好被消耗和提交。</p> 
+<p id="u56482b57">min_complete 要求内核等待完成该数量的请求。</p> 
+<p id="u127b37f1">通过单个调用既可以提交又可以等待完成，意味着应用程序可以通过一次系统调用同时提交请求和等待请求完成。 flags 包含修改调用行为的标志。最重要的是：</p> 
+<pre><code class="language-cpp">#define IORING_ENTER_GETEVENTS (1U &lt;&lt; 0)</code></pre> 
+<blockquote> 
+ <p id="u355b3363">If IORING_ENTER_GETEVENTS is set in flags, then the kernel will actively wait for min_complete events to be available. The astute reader might be wondering what we need this flag for, if we have min_complete as well. There are cases where the distinction is important, which will be covered later. For now, if you wish to wait for completions, IORING_ENTER_GETEVENTS must be set.</p> 
+</blockquote> 
+<p id="uc920d2d1">如果在标志中设置了 IORING_ENTER_GETEVENTS，那么内核将主动等待 min_complete 事件可用。精明的读者可能想知道如果我们也有 min_complete，我们需要这个标志做什么。在某些情况下，区别很重要，稍后将介绍。现在，如果您希望等待完成，则必须设置 IORING_ENTER_GETEVENTS。</p> 
+<blockquote> 
+ <p id="u81a2d0ca">That essentially covers the basic API of io_uring. io_uring_setup(2) will create an io_uring instance of the given size. With that setup, the application can start filling in sqes and submitting them with io_uring_enter(2). Completions can be waited for with the same call, or they can be done separately at a later time. Unless the application wants to wait for completions to come in, it can also just check the cq ring tail for availability of any events. The kernel will modify CQ ring tail directly, hence completions can be consumed by the application without necessarily having to call io_uring_enter(2) with IORING_ENTER_GETEVENTS set.</p> 
+</blockquote> 
+<p id="u689cc672">这基本上涵盖了 io_uring 的基本 API。 <code>io_uring_setup(2)</code> 将创建一个给定大小的 io_uring 实例。通过该设置，应用程序可以开始填写 sqes 并使用 <code>io_uring_enter(2)</code> 提交它们。完成可以使用同一调用等待，或者可以在以后的时间单独完成。除非应用程序希望等待完成事件到达，否则它也可以只检查cq环尾部以获取任何事件的可用性。内核将直接修改CQ环尾部，因此应用程序可以消耗完成事件，而不必调用设置了IORING_ENTER_GETEVENTS的io_uring_enter(2)。</p> 
+<blockquote> 
+ <p id="uc40b628c">For the types of commands available and how to use them, please see the io_uring_enter(2) man page.</p> 
+</blockquote> 
+<p id="u7a56ba7b">有关可用命令的类型以及如何使用它们，请参阅 <code>io_uring_enter(2)</code> 手册页。</p> 
+<p id="u801c5629"></p> 
+<h2 id="pqTn5">5.1 SQE ORDERING</h2> 
+<blockquote> 
+ <p id="ud4d6eafb">Usually sqes are used independently, meaning that the execution of one does not affect the execution or ordering of subsequent sqe entries in the ring. This allows full flexibility of operations, and enables them to execute and complete in parallel for maximum efficiency and performance. One use case where ordering may be desired is for data integrity writes. A common example of that is a series of writes, followed by an fsync/fdatasync. As long as we can allow the writes to complete in any order, we only care about having the data sync executed when all the writes have completed. Applications often turn that into a write-and-wait operation, and then issue the sync when all the writes have been acknowledged by the underlying storage.</p> 
+</blockquote> 
+<p id="u04fbee8f">通常，sqes是独立使用的，这意味着一个sqe的执行不会影响环中后续sqe条目的执行或顺序。这样可以实现操作的完全灵活性，并使其能够并行执行和完成，以实现最大的效率和性能。一个可能需要顺序的用例是数据完整性写入。一个常见的例子是一系列的写操作，然后是fsync/fdatasync。只要我们允许写操作以任意顺序完成，我们只关心在所有写操作完成后执行数据同步。应用程序通常将其转化为写入并等待操作，然后在所有写入操作得到底层存储的确认后发出同步指令。</p> 
+<blockquote> 
+ <p id="ufc4abbe6">io_uring supports draining the submission side queue until all previous completions have finished. This allows the application queue the above mentioned sync operation and know that it will not start before all previous commands have completed. This is accomplished by setting IOSQE_IO_DRAIN in the sqe flags field. Note that this stalls the entire submission queue. Depending on how io_uring is used for the specific application, this may introduce bigger pipeline bubbles than desired. An application may use an independent io_uring context just for integrity writes to allow better simultaneous performance of unrelated commands, if these kinds of drain operations are a common occurrence.</p> 
+</blockquote> 
+<p id="u08d8f7cd">io_uring 支持排空提交端队列，直到所有先前的完成操作都结束。这允许应用程序对上述同步操作进行排队，并知道它不会在所有先前的命令完成之前启动。这是通过在 sqe 标志字段中设置 IOSQE_IO_DRAIN 来完成的。请注意，这会阻塞整个提交队列。根据 io_uring 用于特定应用程序的方式，这可能会引入比预期更大的流水线停顿。如果这些类型的排空操作是常见的，则应用程序可以仅针对完整性写入使用独立的 io_uring 上下文，以允许更好地同时执行不相关的命令。</p> 
+<h2 id="r5LuE">5.2 LINKED SQES</h2> 
+<blockquote> 
+ <p id="u706e0c34">While IOSQE_IO_DRAIN includes a full pipeline barrier, io_uring also supports more granular sqe sequence control. Linked sqes provide a way to describe dependencies between a sequence of sqes within the greater submission ring, where each sqe execution depends on the successful completion of the previous sqe. Examples of such use cases may include a series of writes that must be executed in order, or perhaps a copy-like operation where a read from one file is followed by a write to another file, with the buffers of the two sqes being shared. To utilize this feature, the application must set IOSQE_IO_LINK in the sqe flags field. If set, the next sqe will not be started before the previous sqe has completed successfully. If the previous sqe does not fully complete, the chain is broken and the linked sqe is canceled with -ECANCELED as the error code. In this context, fully complete refers to the fully successful completion of the request. Any error or potentially short read/write will abort the chain, the request must complete to its full extent.</p> 
+</blockquote> 
+<p id="u369acedd">虽然 IOSQE_IO_DRAIN 包含完整的流水线屏障，但 io_uring 还支持更细粒度的 sqe 顺序控制。链接的 sqes 提供了一种方法来描述更大提交环中一系列 sqes 之间的依赖关系，<span style="color:#f3f3f4;"><span style="background-color:#1c7331;">其中每个 sqe 的执行都取决于前一个 sqe 的成功完成</span></span>。此类用例的示例可能包括一系列必须按顺序执行的写入，或者可能是类似复制的操作，其中从一个文件读取然后写入另一个文件，两个 sqes 的缓冲区是共享的。要利用此功能，<span style="color:#f3f3f4;"><span style="background-color:#1c7331;">应用程序必须在 sqe 标志字段中设置 IOSQE_IO_LINK。如果设置，下一个 sqe 将不会在前一个 sqe 成功完成之前启动</span></span>。如果之前的 sqe 没有完全完成，链将中断，链接的SQE将被取消，错误代码为-ECANCELED。在此上下文中，完全完成是指请求完全成功完成。任何错误或潜在的短读/写都将中止链，请求必须完全完成。</p> 
+<blockquote> 
+ <p id="u4230de18">The chain of linked sqes continue as long as IOSQE_IO_LINK is set in the flags field. Hence the chain is defined as starting with the first sqe that has IOSQE_IO_LINK set, and ends with the first subsequent sqe that does not have it set. Arbitrarily long chains are supported.</p> 
+</blockquote> 
+<p id="u3a4b1f13">只要在标志字段中设置了 IOSQE_IO_LINK ，链接的SQE链就会继续。因此，链被定义为从设置了 IOSQE_IO_LINK 的第一个SQE开始，到没有设置它的第一个后续SQE结束。支持任意长链。</p> 
+<blockquote> 
+ <p id="ue1b129ad">The chains execute independently of other sqes in the submission ring. Chains are independent execution units, and multiple chains can execute and complete in parallel to each other. This includes sqes that are not part of any chain.</p> 
+</blockquote> 
+<p id="u1ec567b6">链独立于提交环中的其他 sqes 执行。链是独立的执行单元，多条链可以相互并行执行和完成。这包括不属于任何链的 sqes。</p> 
+<h2 id="BHpn1">5.3 TIMEOUT COMMANDS</h2> 
+<blockquote> 
+ <p id="ue9033b77">While most of the commands supported by io_uring work on data, either directly such as a read/write operation or indirectly like the fsync style commands, the timeout command is a bit different. Rather than work on data, IORING_OP_TIMEOUT helps manipulate waits on the completion ring. The timeout command supports two distinct trigger types, which may be used together in a single command. One trigger type is a classic timeout, with the caller passing in a (variant of) struct timespec that has a non-zero seconds/nanoseconds value. To retain compatibility between 32 vs 64-bit applications and kernel space, the type used must be of the following format:</p> 
+</blockquote> 
+<p id="u8914cda0">虽然 io_uring 支持的大多数命令都在数据上工作，要么是直接的，如读/写操作，要么是间接的，如 fsync 风格的命令，但超时命令有点不同。 IORING_OP_TIMEOUT 不是处理数据，而是帮助操纵完成环上的等待。超时命令支持两种不同的触发器类型，它们可以在单个命令中一起使用。一种触发器类型是经典超时，调用者传入具有非零秒/纳秒值的结构 timespec（的变体）。为了保持 32 位与 64 位应用程序和内核空间之间的兼容性，使用的类型必须采用以下格式：</p> 
+<pre><code class="language-cpp">struct __kernel_timespec {
+    int64_t tv_sec;
+    long long tv_nsec;
+};</code></pre> 
+<blockquote> 
+ <p id="u454df551">At some point userspace should have a struct timespec64 available that fits this description. Until then, the above type must be used. If timed timeouts is desired, the sqe addr field must point to a structure of this type. The timeout command will complete once the specified amount of time has passed.</p> 
+</blockquote> 
+<p id="u8925d4f0">在某些时候，用户空间应该有一个符合此描述的 struct timespec64 可用。在此之前，必须使用上述类型。如果需要定时超时，则 sqe addr 字段必须指向这种类型的结构。超时命令将在指定的时间过去后完成。</p> 
+<blockquote> 
+ <p id="u334d6f97">The second trigger type is a count of completions. If used, the completion count value should be filled into the offset field of the sqe. The timeout command will complete once the specified number of completions have happened since the timeout command was queued up.</p> 
+</blockquote> 
+<p id="u2d9dc5ce">第二种触发类型是完成计数。如果使用，完成计数值应填入 sqe 的偏移量字段。自超时命令排队后，一旦指定的完成次数发生，超时命令就会完成。</p> 
+<blockquote> 
+ <p id="ua9dd73ad">It’s possible to specify both trigger events in a single timeout command. If a timeout is queued with both, the first condition to trigger will generate the timeout completion event. When a timeout completion event is posted, any waiters of completions will be woken up, regardless of whether the amount of completions they asked for have been met or not.</p> 
+</blockquote> 
+<p id="ua4e976ea">可以在单个超时命令中同时指定两个触发事件。如果使用了同时具有两个条件的超时，将首先满足的条件生成超时完成事件。当发布了超时完成事件时，无论等待的完成数是否满足，所有等待完成的任务都会被唤醒。</p> 
+<h2 id="hTDmg">6.0 Memory ordering</h2> 
+<blockquote> 
+ <p id="u2fc440c9">One important aspect of both safe and efficient communication through an io_uring instance is the proper use of memory ordering primitives. Covering memory ordering of various architectures in detail is beyond the scope of this article. If you're happy using the simplified io_uring API exposed through the liburing library, then you can safely ignore this section and skip to the liburing library section instead. If you have an interest in using the raw interface, understanding this section is important.</p> 
+</blockquote> 
+<p id="u5c660c71">通过 io_uring 实例进行安全高效通信的一个重要方面是正确使用内存排序原语。详细介绍各种体系结构的内存排序超出了本文的范围。如果您乐于使用通过 liburing 库公开的简化 io_uring API，那么您可以安全地忽略此部分并跳至 liburing 库部分。如果您有兴趣使用原始接口，理解本节很重要。</p> 
+<blockquote> 
+ <p id="u77a158be">To keep things simple, we'll reduce it to two simple memory ordering operations. The explanations are somewhat simplified to keep it short.</p> 
+</blockquote> 
+<p id="u384dce84">为了简单起见，我们将其简化为两个简单的内存排序操作。为了简短起见，对解释进行了一些简化。</p> 
+<blockquote> 
+ <p id="u4807fff1"><code>read_barrier(): Ensure previous writes are visible before doing subsequent memory reads.</code></p> 
+</blockquote> 
+<p id="uf56c1433">read_barrier(): 在进行后续内存读取之前，确保先前的写入可见。</p> 
+<blockquote> 
+ <p id="ucb665bd4"><code>write_barrier(): Order this write after previous writes.</code></p> 
+</blockquote> 
+<p id="ub624da2a">write_barrier(): 将本次写入的顺序放在以前的写入之后</p> 
+<blockquote> 
+ <p id="u4df0aef0">Depending on the architecture in question, either one or both of these may be no-ops. While using io_uring, that doesn't matter. What matters is that we'll need them on some architectures, and hence the application writer should understand how to do so. A write_barrier() is needed to ensure ordering of writes. Let's say an application wants to fill in an sqe and inform the kernel that one is available for consumption. This is a two stage process - first the various sqe members are filled in and the sqe index is placed in the SQ ring array, and then the SQ ring tail is updated to show the kernel that a new entry is available. Without any ordering implied, it's perfectly legal for the processor to reorder these writes in any order it deems the most optimal. Let's take a look at the following example, with each number indicating a memory operation:</p> 
+</blockquote> 
+<p id="uc2878ea4">根据所讨论的架构，其中一个或两个可能是空操作。在使用 io_uring 时，这无关紧要。重要的是我们将在某些体系结构上需要它们，因此应用程序编写者应该了解如何这样做。需要 write_barrier() 来确保写入的顺序。假设一个应用程序想要填写一个 sqe 并通知内核一个可以使用。这是一个两阶段过程——首先填充各种 sqe 成员并将 sqe 索引放入 SQ 环数组，然后更新 SQ 环尾以向内核显示新条目可用。在没有暗示任何排序的情况下，处理器以它认为最佳的任何顺序重新排序这些写入是完全合法的。我们来看下面的例子，每个数字代表一次内存操作：</p> 
+<pre><code class="language-cpp">1: sqe-&gt;opcode = IORING_OP_READV;
+2: sqe-&gt;fd = fd;
+3: sqe-&gt;off = 0;
+4: sqe-&gt;addr = &amp;iovec;
+5: sqe-&gt;len = 1;
+6: sqe-&gt;user_data = some_value;
+7: sqring-&gt;tail = sqring-&gt;tail + 1;</code></pre> 
+<blockquote> 
+ <p id="ua9061f9f">There's no guarantee that the write 7, which makes the sqe visible to the kernel, will take place as the last write in the sequence. It's critical that all writes prior to write 7 are visible before write 7 is, otherwise the kernel could be seeing a half written sqe. From the application point of view, before notifying the kernel of the new sqe, you will need a write barrier to ensure proper ordering of the writes. Since it doesn't matter in which order the actual sqe stores happen, as long as they are visible before the tail write, we can get by with an ordering primitive after write 6, and before write 7. Hence the sequence then looks like the following:</p> 
+</blockquote> 
+<p id="u5cba43eb">不能保证使 sqe 对内核可见的写入 7 将作为序列中的最后一个写入发生。重要的是，写入 7 之前的所有写入都在写入 7 之前可见，否则内核可能会看到一半写入的 sqe。从应用程序的角度来看，在通知内核新的 sqe 之前，您需要一个写屏障来确保写入的正确顺序。由于实际 sqe 存储以何种顺序发生并不重要，只要它们在尾部写入之前可见，我们就可以在写入 6 之后和写入 7 之前使用排序原语。因此序列看起来像下列的：</p> 
+<pre><code class="language-cpp">1: sqe-&gt;opcode = IORING_OP_READV;
+2: sqe-&gt;fd = fd;
+3: sqe-&gt;off = 0;
+4: sqe-&gt;addr = &amp;iovec;
+5: sqe-&gt;len = 1;
+6: sqe-&gt;user_data = some_value;
+write_barrier(); /* ensure previous writes are seen before tail write */
+7: sqring-&gt;tail = sqring-&gt;tail + 1;
+write_barrier(); /* ensure tail write is seen */</code></pre> 
+<blockquote> 
+ <p id="u4d53f3c7">The kernel will include a read_barrier() before reading the SQ ring tail, to ensure that the tail write from the application is visible. From the CQ ring side, since the consumer/producer roles are reversed, the application merely needs to issue a read_barrier() before reading the CQ ring tail to ensure it sees any writes made by the kernel.</p> 
+</blockquote> 
+<p id="ude05e174">内核将在读取 SQ 环尾之前包含一个 read_barrier()，以确保从应用程序写入的尾部可见。从 CQ ring 端来看，由于消费者/生产者角色互换，应用程序只需要在读取 CQ ring tail 之前发出 read_barrier() 以确保它看到内核所做的任何写入。</p> 
+<blockquote> 
+ <p id="u4465326a">While the memory ordering types have been condensed to two specific types, the architecture implementation will of course be different depending on what machine the code is being run on. Even if the application is using the io_uring interface directly (and not the liburing helpers), it still needs architecture specific barrier types. The liburing library provides these defines, and it's recommended to use those from the application.</p> 
+</blockquote> 
+<p id="u991c1697">虽然内存排序类型已被压缩为两种特定类型，但架构实现当然会有所不同，具体取决于运行代码的机器。即使应用程序直接使用 io_uring 接口（而不是 liburing helpers），它仍然需要架构特定的屏障类型。 liburing 库提供了这些定义，建议使用来自应用程序的定义。</p> 
+<blockquote> 
+ <p id="uf602e109">With this basic explanation of memory ordering, and with the helpers that liburing provides to manage them, go back and read the previous examples that referenced read_barrier() and write_barrier(). If they didn't fully make sense before, hopefully they do now.</p> 
+</blockquote> 
+<p id="u200a35b7">有了这个内存排序的基本解释，以及 liburing 提供的管理它们的帮助程序，返回并阅读前面引用 read_barrier() 和 write_barrier() 的示例。如果他们以前没有完全理解，希望他们现在能理解。</p> 
+<h2 id="iMJfF">7.0 liburing library</h2> 
+<blockquote> 
+ <p id="uf986cd52">With the inner details of the io_uring out of the way, you'll now be relieved to learn that there's a simpler way to do much of the above. The liburing library serves two purposes:</p> 
+ <ul><li id="uec880016">Remove the need for boiler plate code for setup of an io_uring instance.</li><li id="u1ca6ca65">Provide a simplified API for basic use cases.</li></ul> 
+</blockquote> 
+<p id="u3a74f74c">了解了 io_uring 的内部细节后，您现在可以放心地了解到有一种更简单的方法可以完成上述大部分工作。 liburing 库有两个目的：</p> 
+<ul><li id="u92da3b65">消除设置io_uring实例的样板代码的需要。。</li><li id="ue30b232b">为基本用例提供简化的 API。</li></ul> 
+<blockquote> 
+ <p id="u41f88b3c">The latter ensures that the application doesn't have to worry about memory barriers at all, or do any ring buffer management on its own. This makes the API much simpler to use and understand, and in fact removes the need to understand all the gritty details of how it works. This article could have been much shorter if we had just focused on providing liburing based examples, but it's often beneficial to at least have some understanding of the inner workings to extract the most performance out of an application. Additionally, liburing is currently focused on reducing boiler plate code and providing basic helpers for standard use case. Some of the more advanced features are not yet available through liburing. However, that doesn't mean you can't mix and match the two. Underneath the covers they both operate on the same structures. Applications are generally encouraged to use the setup helpers from liburing, even if they are using the raw interface.</p> 
+</blockquote> 
+<p id="ud1dfc49e">后者确保应用程序根本不必担心内存障碍，或自行进行任何环形缓冲区管理。这使得 API 更易于使用和理解，实际上无需了解其工作原理的所有细节。如果我们只专注于提供基于 liburing 的示例，本文可能会短得多，但至少对内部工作原理有一些了解以从应用程序中提取最大性能通常是有益的。此外，liburing 目前专注于减少样板代码并为标准用例提供基本帮助程序。一些更高级的功能尚不能通过库获得。但是，这并不意味着您不能将两者混合搭配。在幕后，他们都在相同的结构上运作。通常鼓励应用程序使用来自 liburing 的设置助手，即使它们使用的是原始接口。</p> 
+<h2 id="Ttb6D">7.1 LIBURING IO_URING SETUP</h2> 
+<blockquote> 
+ <p id="u57939703">Let's start with an example. Instead of calling io_uring_setup(2) manually and subsequently doing an mmap(2) of the three necessary regions, liburing provides the following basic helper to accomplish the very same task:</p> 
+</blockquote> 
+<p id="u456e5c49">让我们从一个例子开始。 liburing 不是手动调用 io_uring_setup(2) 然后执行三个必要区域的 mmap(2)，而是提供以下基本帮助程序来完成相同的任务：</p> 
+<pre><code class="language-cpp">struct io_uring ring;
+io_uring_queue_init(ENTRIES, &amp;ring, 0);</code></pre> 
+<blockquote> 
+ <p id="u50a90b1e">The io_uring structure holds the information for both the SQ and CQ ring, and the io_uring_queue_init(3) call handles all the setup logic for you. For this particular example, we're passing in 0 for the flags argument. Once an application is done using an io_uring instance, it simply calls:</p> 
+</blockquote> 
+<p id="ub88e0d83">io_uring 结构包含 SQ 和 CQ 环的信息，io_uring_queue_init(3) 调用为您处理所有设置逻辑。对于这个特定的例子，我们为 flags 参数传入 0。一旦应用程序使用 io_uring 实例完成，它只需调用：</p> 
+<pre><code class="language-cpp"> io_uring_queue_exit(&amp;ring);</code></pre> 
+<blockquote> 
+ <p id="uc090b9a5">to tear it down. Similarly to other resources allocated by an application, once the application exits, they are automatically reaped by the kernel. This is also true for any io_uring instances the application may have created.</p> 
+</blockquote> 
+<p id="u2a5a5ac1">拆掉它。与应用程序分配的其他资源类似，一旦应用程序退出，它们就会自动被内核回收。对于应用程序可能创建的任何 io_uring 实例也是如此。</p> 
+<h2 id="ZbHnN">7.2 LIBURING SUBMISSION AND COMPLETION</h2> 
+<blockquote> 
+ <p id="u1f360983">One very basic use case is submitting a request and, later on, waiting for it to complete. With the liburing helpers, this looks something like this:</p> 
+</blockquote> 
+<p>一个非常基本的用例是提交请求，然后等待它完成。使用 liburing helpers，这看起来像这样：</p> 
+<pre><code class="language-cpp">struct io_uring_sqe sqe;
+struct io_uring_cqe cqe;
+
+/* get an sqe and fill in a READV operation */
+sqe = io_uring_get_sqe(&amp;ring);
+io_uring_prep_readv(sqe, fd, &amp;iovec, 1, offset);
+
+/* tell the kernel we have an sqe ready for consumption */
+io_uring_submit(&amp;ring);
+
+/* wait for the sqe to complete */
+io_uring_wait_cqe(&amp;ring, &amp;cqe);
+
+/* read and process cqe event */
+app_handle_cqe(cqe);
+io_uring_cqe_seen(&amp;ring, cqe);</code></pre> 
+<blockquote> 
+ <p id="u6156caef">This should be mostly self explanatory. The last call to io_uring_wait_cqe(3) will return the completion event for the sqe that we just submitted, provided that you have no other sqes in flight. If you do, the completion event could be for another sqe</p> 
+</blockquote> 
+<p id="u55448bf1">这应该主要是不言自明的。最后一次调用 <code>io_uring_wait_cqe(3)</code> 将返回我们刚刚提交的 sqe 的完成事件，前提是您没有其他正在运行的 sqes。如果你这样做，完成事件可能是另一个 sqe。</p> 
+<blockquote> 
+ <p id="u4de6d88b">If the application merely wishes to peek at the completion and not wait for an event to become available, io_uring_peek_cqe(3) does that. For both use cases, the application must call io_uring_cqe_seen(3) once it is done with this completion event. Repeated calls to io_uring_peek_cqe(3) or io_uring_wait_cqe(3) will otherwise keep returning the same event. This split is necessary to avoid the kernel potentially overwriting the existing completion even before the application is done with it. io_uring_cqe_seen(3) increments the CQ ring head, which enables the kernel to fill in a new event at that same slot.</p> 
+</blockquote> 
+<p id="u51829535">如果应用程序只是希望偷看完成度，而不是等待事件的发生，io_uring_peek_cqe(3) 就可以做到。对于这两种用例，应用程序必须在完成此完成事件后调用 io_uring_cqe_seen(3) 。否则重复调用io_uring_peek_cqe(3) 或 io_uring_wait_cqe(3) 将继续返回相同的事件。这种分割是必要的，以避免内核在应用完成之前就可能覆盖现有的完成事件。 io_uring_cqe_seen(3) 增加了 CQ 环头，这使得内核能够在同一槽中填充一个新的事件。</p> 
+<blockquote> 
+ <p id="ud836db63">There are various helpers for filling in an sqe, io_uring_prep_readv(3) is just one example. I would encourage applications to always take advantage of the liburing provided helpers to the extent possible.</p> 
+</blockquote> 
+<p id="ue4c3cd02">有各种用于填写 sqe 的助手，io_uring_prep_readv(3) 只是一个例子。我会鼓励应用程序始终尽可能地利用提供的帮助程序。 </p> 
+<blockquote> 
+ <p id="u11ea0b6e">The liburing library is still in its infancy, and is continually being developed to expand both the supported features and the helpers available.</p> 
+</blockquote> 
+<p id="u0db37323">liburing 库仍处于起步阶段，并且正在不断开发以扩展支持的功能和可用的帮助程序。</p> 
+<h2 id="KGbJz">8.0 Advanced use cases and features</h2> 
+<blockquote> 
+ <p id="uadbdcf17">The above examples and uses cases work for various types of IO, be it O_DIRECT file based IO, buffered IO, socket IO, and so on. No special care needs to be taken to ensure the proper operation, or async nature, of them. However, io_uring does offer a number of features that the application needs to opt in to. The following sub-sections will describe most of those.</p> 
+</blockquote> 
+<p id="ub857149b">上面的示例和用例适用于各种类型的 IO，无论是基于 O_DIRECT 文件的 IO、缓冲 IO、套接字 IO 等等。无需特别注意以确保它们的正确操作或异步性质。但是，io_uring 确实提供了应用程序需要选择加入的许多功能。以下小节将描述其中的大部分内容。</p> 
+<h2 id="np8NV">8.1 FIXED FILES AND BUFFERS</h2> 
+<blockquote> 
+ <p id="ud648745d">Every time a file descriptor is filled into an sqe and submitted to the kernel, the kernel must retrieve a reference to said file. Once IO has completed, the file reference is dropped again. Due to the atomic nature of this file reference, this can be a noticeable slowdown for high IOPS workloads. To alleviate this issue, io_uring offers a way to pre-register a file-set for an io_uring instance. This is done through a third system call:</p> 
+</blockquote> 
+<p id="u72b1cc36">每次将文件描述符填充到 sqe 并提交给内核时，内核都必须检索对该文件的引用。 IO 完成后，文件引用将再次删除。由于此文件引用的原子性质，对于高 IOPS 工作负载，这可能会显着降低速度。为了缓解这个问题，io_uring 提供了一种为 io_uring 实例预注册文件集的方法。这是通过第三个系统调用完成的：</p> 
+<pre><code class="language-cpp">int io_uring_register(unsigned int fd, unsigned int opcode, void *arg, unsigned int nr_args);</code></pre> 
+<blockquote> 
+ <p id="u2aa715f3">fd is the io_uring instance ring file descriptor, and opcode refers to the type of registration that is being done. For registering a file-set, IORING_REGISTER_FILES must be used. arg must then point to an array of file descriptors that the application already has open, and nr_args must contain the size of the array. Once io_uring_register(2) completes successfully for a file-set registration, the application can use these files by assigning the index of the file descriptor in the array (instead of the actual file descriptor) to the sqe→fd field, and marking it as an file-set fd by setting IOSQE_FIXED_FILE in the sqe→flags field. The application is free to continue to use non-registered files even when a file-set is registered by setting sqe→fd to the non-registered fd and not setting IOSQE_FIXED_FILE in the flags. The registered file-set is automatically freed when the io_uring instance is torn down, or it can be done manually by using IORING_UNREGISTER_FILES in the opcode for io_uring_register(2).</p> 
+</blockquote> 
+<p id="u57bdf079">fd 是 io_uring 实例环形文件描述符，opcode 是指正在进行的注册类型。对于注册一个文件集，必须使用 IORING_REGISTER_FILES，然后 arg 必须指向一个应用程序已经打开的文件描述符数组，nr_args 必须包含数组的大小。一旦 io_uring_register(2) 成功完成了一个文件集的注册，应用程序就可以使用这些文件，方法是将数组中的文件描述符的索引（而不是实际的文件描述符）分配给 <code>sqe-&gt;fd</code> 字段，并通过在 <code>sqe-&gt;flags</code> 字段中设置 IOSQE_FIXED_FILE 将其标记为一个文件集 fd。即使当一个文件集被注册时，应用程序可以自由地继续使用非注册的文件，方法是将<code>sqe-&gt;fd</code>设置为非注册的 fd，并且不在flags中设置 IOSQE_FIXED_FILE。当 io_uring 实例被拆毁时，注册的文件集会被自动释放，或者可以通过在 io_uring_register(2) 的操作码中使用 IORING_UNREGISTER_FILES 来手动完成。</p> 
+<blockquote> 
+ <p id="u58205e8a">It's also possible to register a set of fixed IO buffers. When O_DIRECT is used, the kernel must map the application pages into the kernel before it can do IO to them, and subsequently unmap those same pages when IO is done. This can be a costly operation. If an application reuses IO buffers, then it's possible to do the mapping and unmapping once, instead of per IO operation. To register a fixed set of buffers for IO, io_uring_register(2) must be called with an opcode of IORING_REGISTER_BUFFERS. args must then contain an array of struct iovec, which have been filled in with the address and length for each iovec. nr_args must contain the size of the iovec array. Upon successful registration of the buffers, the application can use the IORING_OP_READ_FIXED and IORING_OP_WRITE_FIXED to perform IO to and from these buffers. When using these fixed op-codes, sqe→addr must contain an address that is within one of these buffers, and sqe→len must contain the length (in bytes) of the request. The application may register buffers larger than any given IO operation, it's perfectly legal for a fixed read/write to just be a subset of a single fixed buffer.</p> 
+</blockquote> 
+<p id="u9f7f32f4"><span style="color:#f3f3f4;"><span style="background-color:#be191c;">也可以注册一组固定的 IO 缓冲区。当使用 O_DIRECT 时，内核必须先将应用程序页面映射到内核，然后才能对它们执行 IO，然后在 IO 完成后取消映射这些相同的页面。这可能是一项代价高昂的操作。如果应用程序重用 IO 缓冲区，则可以进行一次映射和取消映射，而不是每次 IO 操作</span></span>。要为 IO 注册一组固定的缓冲区，必须使用操作码 IORING_REGISTER_BUFFERS 调用 io_uring_register(2)。然后 args 必须包含一个 struct iovec 数组，其中已填充了每个 iovec 的地址和长度。 nr_args 必须包含 iovec 数组的大小。成功注册缓冲区后，应用程序可以使用 IORING_OP_READ_FIXED 和 IORING_OP_WRITE_FIXED 执行与这些缓冲区之间的 IO。在使用这些固定操作码时，sqe→addr必须包含在这些缓冲区之一内的地址，而sqe→len必须包含请求的长度（以字节为单位）。应用程序可以注册比任何给定IO操作更大的缓冲区，对于固定的读/写操作，它完全可以只是单个固定缓冲区的子集。</p> 
+<h2 id="L3wrS">8.2 POLLED IO</h2> 
+<blockquote> 
+ <p id="u4bf74e97">For applications chasing the very lowest of latencies, io_uring offers support for polled IO for files. In this context, polling refers to performing IO without relying on hardware interrupts to signal a completion event. When IO is polled, the application will repeatedly ask the hardware driver for status on a submitted IO request. This is different than nonpolled IO, where an application would typically go to sleep waiting for the hardware interrupt as its wakeup source. For very low latency devices, polling can significantly increase the performance. The same is true for very high IOPS applications as well, where high interrupt rates makes a non-polled load have a much higher overhead. The boundary numbers for when polling makes sense, either in terms of latency or overall IOPS rates, vary depending on the application, IO device(s), and capability of the machine.</p> 
+</blockquote> 
+<p id="uf32becd4">对于追求最低延迟的应用程序，io_uring 提供对文件轮询 IO 的支持。在此上下文中，<span style="color:#f3f3f4;"><span style="background-color:#1c7331;">轮询是指在不依赖硬件中断来发出完成事件信号的情况下执行 IO</span></span>。轮询 IO 时，应用程序将反复询问硬件驱动程序有关已提交 IO 请求的状态。这与非轮询 IO 不同，在非轮询 IO 中，应用程序通常会进入睡眠状态，等待硬件中断作为其唤醒源<span style="color:#f3f3f4;"><span style="background-color:#be191c;">。对于非常低延迟的设备，轮询可以显着提高性能。对于非常高的 IOPS 应用程序也是如此，其中高中断率使非轮询负载具有更高的开销</span></span>。<span style="color:#f3f3f4;"><strong><span style="background-color:#be191c;">轮询何时有意义的边界数字，无论是在延迟还是整体 IOPS 速率方面，都因应用程序、IO 设备和机器的能力而异</span></strong></span>。</p> 
+<blockquote> 
+ <p id="ue057446d">To utilize IO polling, IORING_SETUP_IOPOLL must be set in the flags passed in to the io_uring_setup(2) system call, or to the io_uring_queue_init(3) liburing library helper. When polling is utilized, the application can no longer check the CQ ring tail for availability of completions, as there will not be an async hardware side completion event that triggers automatically. Instead the application must actively find and reap these events by calling io_uring_enter(2) with IORING_ENTER_GETEVENTS set and min_complete set to the desired number of events. It is legal to have IORING_ENTER_GETEVENTS set and min_complete set to 0. For polled IO, this asks the kernel to simply check for completion events on the driver side and not continually loop doing so.</p> 
+</blockquote> 
+<p id="u4e6dfe73">要利用 IO 轮询，必须在 io_uring_setup(2) 系统调用或 io_uring_queue_init(3) liburing 库帮助程序中传递的标志中设置 IORING_SETUP_IOPOLL 。当使用轮询时，应用程序不能再检查 CQ 环尾的完成情况，因为不会有一个自动触发的异步硬件端完成事件。相反，应用程序必须通过调用 io_uring_enter(2)，设置 IORING_ENTER_GETEVENTS，并将 min_complete 设置为所需的事件数量，主动寻找和收获这些事件。设置 IORING_ENTER_GETEVENTS 并且 min_complete 设置为 0 是合法的。对于轮询 IO，这要求内核只需在驱动程序端检查完成事件，而不需要持续循环执行此操作。</p> 
+<blockquote> 
+ <p id="ufed8b34d">Only op-codes that makes sense for a polled completion may be used on an io_uring instance that was registered with IORING_SETUP_IOPOLL. These include any of the read/write commands: IORING_OP_READV, IORING_OP_WRITEV, IORING_OP_READ_FIXED, IORING_OP_WRITE_FIXED. It's illegal to issue a non-pollable op-code on an io_uring instance that is registered for polling. Doing so will result in an -EINVAL return from io_uring_enter(2). The reason behind this is that the kernel cannot know if a call to io_uring_enter(2) with IORING_ENTER_GETEVENTS set can safely sleep waiting for events, or if it should be actively polling for them.</p> 
+</blockquote> 
+<p id="u23b1f169">只有对轮询完成有意义的操作码才能用在用 IORING_SETUP_IOPOLL 注册的 io_uring 实例上。这些包括任何读/写命令：IORING_OP_READV、IORING_OP_WRITEV、IORING_OP_READ_FIXED、IORING_OP_WRITE_FIXED。在注册为轮询的 io_uring 实例上发出不可轮询的操作码是非法的。这样做会导致 io_uring_enter(2) 返回 -EINVAL。背后的原因是内核无法确定使用设置了IORING_ENTER_GETEVENTS的io_uring_enter(2)是否可以安全地等待事件，还是应主动轮询这些事件。</p> 
+<h2 id="m4lLA">8.3 KERNEL SIDE POLLING</h2> 
+<blockquote> 
+ <p id="uece33b99">Even though io_uring is generally more efficient in allowing more requests to be both issued and completed through fewer system calls, there are still cases where we can improve the efficiency by further reducing the number of system calls required to perform IO. One such feature is kernel side polling. With that enabled, the application no longer has to call io_uring_enter(2) to submit IO. When the application updates the SQ ring and fills in a new sqe, the kernel side will automatically notice the new entry (or entries) and submit them. This is done through a kernel thread, specific to that io_uring.</p> 
+</blockquote> 
+<p id="u546a4da8">尽管 io_uring 通常更有效地允许通过更少的系统调用发出和完成更多的请求，但在某些情况下，我们仍然可以通过进一步减少执行 IO 所需的系统调用次数来提高效率。 其中一项功能是内核端轮询。 <span style="color:#f3f3f4;"><span style="background-color:#be191c;">启用后，应用程序不再需要调用 io_uring_enter(2) 来提交 IO。 当应用程序更新 SQ 环并填充新的 sqe 时，内核端将自动注意到新的条目（或多个条目）并将其提交。 这是通过特定于该 io_uring 的内核线程完成的</span></span>。 </p> 
+<blockquote> 
+ <p id="uec7c242e">To use this feature, the io_uring instance must be registered with IORING_SETUP_SQPOLL specific for the io_uring_params flags member, or passed in to io_uring_queue_init(3). Additionally, should the application wish to limit this thread to a specific CPU, this can be done by flagging IORING_SETUP_SQ_AFF as well, and also setting the io_uring_params sq_thread_cpu to the desired CPU. Note that setting up an io_uring instance with IORING_SETUP_SQPOLL is a privileged operation. If the user doesn’t have sufficient privileges, io_uring_queue_init(3) will fail with -EPERM.</p> 
+</blockquote> 
+<p id="u2c934dae">要使用此功能，io_uring 实例必须使用特定于 io_uring_params 标志成员的 IORING_SETUP_SQPOLL 进行注册，或传递给 io_uring_queue_init(3)。此外，如果应用程序希望将此线程限制到特定的 CPU，这也可以通过标记 IORING_SETUP_SQ_AFF 并将 io_uring_params sq_thread_cpu 设置为所需的 CPU 来完成。请注意，使用 IORING_SETUP_SQPOLL 设置 io_uring 实例是一项特权操作。如果用户没有足够的权限，io_uring_queue_init(3) 将失败并显示 -EPERM。</p> 
+<blockquote> 
+ <p id="u81087433">To avoid wasting too much CPU while the io_uring instance is inactive, the kernel side thread will automatically go to sleep when it has been idle for a while. When that happens, the thread will set IORING_SQ_NEED_WAKEUP in the SQ ring flags member. When that is set, the application cannot rely on the kernel automatically finding new entries, and it must then call io_uring_enter(2) with IORING_ENTER_SQ_WAKEUP set. The application side logic typically looks something like this:</p> 
+</blockquote> 
+<p id="u0447b803">为了避免在 io_uring 实例处于非活动状态时浪费过多的 CPU，内核端线程会在闲置一段时间后自动进入休眠状态。发生这种情况时，线程将在 SQ 环标志成员中设置 IORING_SQ_NEED_WAKEUP。设置后，应用程序不能依赖内核自动查找新条目，然后它必须调用 io_uring_enter(2) 并设置 IORING_ENTER_SQ_WAKEUP。应用程序端逻辑通常如下所示：</p> 
+<pre><code class="language-cpp">/* fills in new sqe entries */
+ add_more_io();
+
+/*
+* need to call io_uring_enter() to make the kernel notice the new IO
+* if polled and the thread is now sleeping.
+*/
+if ((*sqring-&gt;flags) &amp; IORING_SQ_NEED_WAKEUP)
+    io_uring_enter(ring_fd, to_submit, to_wait, IORING_ENTER_SQ_WAKEUP);</code></pre> 
+<blockquote> 
+ <p id="u2f9210e3">As long as the application keeps driving IO, IORING_SQ_NEED_WAKEUP will never be set, and we can effectively perform IO without performing a single system call. However, it's important to always keep logic similar to the above in the application, in case the thread does go to sleep. The specific grace period before going idle can be configured by setting the io_uring_params sq_thread_idle member. The value is in milliseconds. If this member isn't set, the kernel defaults to one second of idle time before putting the thread to sleep.</p> 
+</blockquote> 
+<p id="u3ba65af5">只要应用程序一直驱动 IO，IORING_SQ_NEED_WAKEUP 就永远不会被设置，我们可以有效地执行 IO 而无需执行单个系统调用。但是，在应用程序中始终保持与上述类似的逻辑非常重要，以防线程进入休眠状态。空闲前的具体宽限期可以通过设置 io_uring_params sq_thread_idle 成员来配置。该值以毫秒为单位。如果未设置此成员，则内核在将线程置于睡眠状态之前默认为一秒的空闲时间。</p> 
+<blockquote> 
+ <p id="u1504220c">For "normal" IRQ driven IO, completion events can be found by looking at the CQ ring directly in the application. If the io_uring instance is setup with IORING_SETUP_IOPOLL, then the kernel thread will take care of reaping completions as well. Hence for both cases, unless the application wants to wait for IO to happen, it can simply peek at the CQ ring to find completion events.</p> 
+</blockquote> 
+<p id="u07557fad">对于“正常的”IRQ 驱动的 IO，可以通过直接查看应用程序中的 CQ 环来找到完成事件。如果使用 IORING_SETUP_IOPOLL 设置了 io_uring 实例，则内核线程也将负责获取完成。因此，对于这两种情况，除非应用程序想要等待 IO 发生，否则它只需查看 CQ 环即可找到完成事件。</p> 
+<h2 id="M0lOw">9.0 Performance</h2> 
+<blockquote> 
+ <p id="u3aaecb24">In the end, io_uring met the design goals that was set out for it. We have a very efficient delivery mechanism between the kernel and the application, in the shape of two distinct rings. While the raw interface takes some care to use correctly in an application, the main complication is really the need for explicit memory ordering primitives. Those are relegated to a few specifics on both the submission and completion side of issuing and handling events, and will generally follow the same pattern across applications. As the liburing interface continues to mature, I expect that most applications will be quite satisfied using the API provided there.</p> 
+</blockquote> 
+<p id="u377794b8">最终，io_uring 达到了为其设定的设计目标。我们在内核和应用程序之间有一个非常有效的交付机制，呈两个不同的环状。虽然原始接口在应用程序中正确使用需要一些注意，但主要的复杂性实际上是需要显式内存排序原语。这些都属于发布和处理事件的提交和完成方面的一些细节，并且通常会在应用程序中遵循相同的模式。随着 liburing 接口的不断成熟，我预计大多数应用程序将对使用那里提供的 API 感到非常满意。</p> 
+<blockquote> 
+ <p id="ufc3849a7">While it's not the intent of this note to go into full details about the achieved performance and scalability of io_uring, this section will briefly touch upon some of the wins observed in this area. For more details, see [1]. Do note that due to further improvements on the block side of the equation, these results are a bit outdated. For example, peak per-core performance with io_uring is now approximately 1700K 4k IOPS, not 1620K, on my test box. Note that these values don't carry a lot of absolute meaning, they are mostly useful in terms of gauging relative improvements. We'll continue finding lower latencies and higher peak performance through using io_uring, now that the communication mechanism between the application and the kernel is no longer the bottleneck.</p> 
+</blockquote> 
+<p id="u8f99424f">虽然本说明的目的不是详细介绍 io_uring 所实现的性能和可扩展性，但本节将简要介绍在该领域观察到的一些成果。有关详细信息，请参阅 [1]。请注意，由于等式块侧的进一步改进，这些结果有点过时了。例如，在我的测试盒上，io_uring 的每核峰值性能现在约为 1700K 4k IOPS，而不是 1620K。请注意，这些值没有太多绝对意义，它们主要用于衡量相对改进。我们将通过使用 io_uring 继续寻找更低的延迟和更高的峰值性能，现在应用程序和内核之间的通信机制不再是瓶颈。</p> 
+<h2 id="j5D2T">9.1 RAW PERFORMANCE</h2> 
+<blockquote> 
+ <p id="u0d5f4e7a">There are many ways to look at the raw performance of the interface. Most testing will involve other parts of the kernel as well. One such example are the numbers in the section above, where we measure performance by randomly reading from the block device or file. For peak performance, io_uring helps us get to 1.7M 4k IOPS with polling. aio reaches a performance cliff much lower than that, at 608K. The comparison here isn't quite fair, since aio doesn't support polled IO. If we disable polling, io_uring is able to drive about 1.2M IOPS for the (otherwise) same test case. The limitations of aio is quite clear at that point, with io_uring driving twice the amount of IOPS for the same workload.</p> 
+</blockquote> 
+<p id="u11d24e97">有很多方法可以查看接口的原始性能。大多数测试也将涉及内核的其他部分。一个这样的例子是上一节中的数字，我们通过随机读取块设备或文件来衡量性能。为了获得最佳性能，io_uring 帮助我们通过轮询达到 1.7M 4k IOPS。 aio 的性能悬崖远低于 608K。这里的比较不太公平，因为 aio 不支持轮询 IO。如果我们禁用轮询，io_uring 能够为（否则）相同的测试用例驱动大约 1.2M IOPS。 aio 的局限性在这一点上非常明显，对于相同的工作负载，io_uring 驱动的 IOPS 数量是原来的两倍。</p> 
+<blockquote> 
+ <p id="ud9f23228">io_uring supports a no-op command as well, which is mainly useful for checking the raw throughput of the interface. Depending on the system used, anywhere from 12M messages per second (my laptop) to 20M messages per second (test box used for the other quoted results) have been observed. The actual results vary a lot based on the specific test case, and are mostly bound by the number of system calls that have to be performed. The raw interface is otherwise memory bound, and with both submission and completion messages being small and linear in memory, the achieved messages per second rate can be very high.</p> 
+</blockquote> 
+<p id="u301ee1ab">io_uring 也支持 no-op 命令，这主要用于检查接口的原始吞吐量。根据所使用的系统，可以观察到从每秒 12M 消息（我的笔记本电脑）到每秒 20M 消息（用于其他引用结果的测试盒）的任何地方。根据具体的测试用例，实际结果会有很大差异，并且主要受必须执行的系统调用数量的限制。原始接口在其他方面受内存限制，并且提交和完成消息在内存中都很小且呈线性，因此每秒消息速率可能非常高。</p> 
+<h2 id="yoShz">9.2 BUFFERED ASYNC PERFORMANCE</h2> 
+<blockquote> 
+ <p id="uc672aa2d">I previously mentioned that an in-kernel buffered aio implementation could be more efficient than one done in userspace. A major reason for that has to do with cached vs un-cached data. When doing buffered IO, the application generally relies heavily on the kernels page cache to get good performance. A userspace application has no way of knowing if the data it is going to ask for next is cached or not. It can query this information, but that requires more system calls and the answer is always going to be racy by nature - what is cached this very instant might not be so a few milliseconds from now. Hence an application with an IO thread pool always has to bounce requests to an async context, resulting in at least two context switches. If the data requested was already in page cache, this causes a dramatic slowdown in performance.</p> 
+</blockquote> 
+<p id="uc7b63c54">我以前提到过，内核内缓冲的aio实现可能比用户空间的实现更有效。一个主要的原因是缓存与非缓存数据的关系。当做缓冲IO的时候，应用程序一般都很依赖内核的页面缓存来获得良好的性能。用户空间的应用程序没有办法知道它接下来要请求的数据是否被缓存了。它可以查询这些信息，但这需要更多的系统调用，而且答案在本质上总是很狡猾的--现在缓存的数据在几毫秒后可能就不是这样了。因此，一个有IO线程池的应用程序总是要把请求弹到一个异步上下文中，导致至少两次上下文切换。如果请求的数据已经在页面缓存中，这将导致性能的急剧下降。</p> 
+<blockquote> 
+ <p id="udbb15049">io_uring handles this condition like it would for other resources that potentially could block the application. More importantly, for operations that will not block, the data is served inline. That makes io_uring just as efficient for IO that is already in the page cache as the regular synchronous interfaces. Once the IO submission call returns, the application will already have a completion event in the CQ ring waiting for it and the data will have already been copied.</p> 
+</blockquote> 
+<p id="ua7bac17a">io_uring 处理这种情况的方式与处理可能会阻止应用程序的其他资源的方式相同。更重要的是，对于不会阻塞的操作，数据是内联的。这使得 io_uring 对于已经在页面缓存中的 IO 与常规同步接口一样高效。一旦 IO 提交调用返回，应用程序在 CQ 环中已经有一个完成事件在等待它，并且数据已经被复制。</p> 
+<h2 id="TZaeo">10.0 Further reading</h2> 
+<blockquote> 
+ <p id="u13a1bc62">Given that this is an entirely new interface, we don't have a lot of adoption yet. As of this writing, a kernel with the interface is in the -rc stages. Even with a fairly complete description of the interface, studying programs utilizing io_uring can be advantageous in fully understanding how best to use it.</p> 
+</blockquote> 
+<p id="udb0debcc">鉴于这是一个全新的接口，我们还没有大量采用。在撰写本文时，具有该接口的内核处于 -rc 阶段。即使对接口进行了相当完整的描述，研究使用 io_uring 的程序也有助于充分理解如何最好地使用它。</p> 
+<blockquote> 
+ <p id="u2e9e11f1">One example is the io_uring engine that ships with fio [2]. It is capable of using all of the described advanced features as well, with the exception of registering a file-set.</p> 
+</blockquote> 
+<p id="ud17f4125">一个例子是 fio [2] 附带的 io_uring 引擎。除了注册文件集外，它还能够使用所有描述的高级功能。</p> 
+<blockquote> 
+ <p id="uca5f1a21">Another example is the t/io_uring.c sample benchmark application that also ships with fio. It simply does random reads to a file or device, with configurable settings that explore the entire feature set of the advanced use cases.</p> 
+</blockquote> 
+<p id="u6a6dbc6d">另一个例子是 fio 附带的 t/io_uring.c 示例基准测试应用程序。它只是随机读取文件或设备，具有探索高级用例的整个功能集的可配置设置。</p> 
+<blockquote> 
+ <p id="u385b05c1">The liburing library [3] has a full set of man pages for the system call interface, which are worth a read. It also comes with a few test programs, both unit tests for issues that were found during development, as well as tech demos.</p> 
+</blockquote> 
+<p id="u5289f7dc">liburing 库 [3] 有一整套系统调用接口的手册页，值得一读。它还附带了一些测试程序，包括针对开发过程中发现的问题的单元测试，以及技术演示。</p> 
+<blockquote> 
+ <p id="u01176cc9">LWN also wrote an excellent article [4] about the earlier stages of io_uring. Note that some changes were made to io_uring after this article was written, hence I'd recommend deferring to this article for cases where there are discrepancies between the two.</p> 
+</blockquote> 
+<p id="u40a5f2ed">LWN 还写了一篇关于 io_uring 早期阶段的优秀文章 [4]。请注意，在撰写本文后对 io_uring 进行了一些更改，因此如果两者之间存在差异，我建议推迟阅读本文。</p> 
+<h2 id="E1Uug">11.0 References</h2> 
+<p id="u3555d1c5">[1]<a href="https://lore.kernel.org/linux-block/20190116175003.17880-1-axboe@kernel.dk/" rel="nofollow" title="[PATCHSET v5] io_uring IO interface - Jens Axboe">[PATCHSET v5] io_uring IO interface - Jens Axboe</a><br> [2] git://git.kernel.dk/fio</p> 
+<p id="u89b05233">[3] git://git.kernel.dk/liburing</p> 
+<p id="u8ae58d9c">[4] <a href="https://lwn.net/Articles/776703/" rel="nofollow" title="Ringing in a new asynchronous I/O API [LWN.net]">Ringing in a new asynchronous I/O API [LWN.net]</a></p> 
+<p id="u0f85e630">Version: 0.4, 2019-10-15</p> 
+<p id="u6a3f2415"></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/9d0bef3dc6559b7bf95ff2ab365e3636/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">浏览器被2345劫持了怎么搞</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/29f54160de3ea04c4333b84edec74f79/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">若依微服务(springcloud)之新增业务模块</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

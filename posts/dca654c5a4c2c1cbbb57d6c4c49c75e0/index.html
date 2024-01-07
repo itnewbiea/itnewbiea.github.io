@@ -1,0 +1,1492 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>YOLO v2 详解 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="YOLO v2 详解" />
+<meta property="og:description" content="YOLO v2 详解 一、Tricks（一）Batch Norm（二）使用高分辨率图像微调分类模型（三）采用先验框（Anchor Boxes）（四）聚类提取先验框尺度（五）约束预测边框的位置（六）passthrough 层检测细粒度特征（七）多尺度图像训练（八）高分辨率图像的对象检测（九）Darknet-19 二、训练过程三、损失函数四、YOLO9000（一）WordTree（二）构建 WordTree（三）类别标签构造（四）标签结果分析（五）联合训练 YOLO9000: Better, Faster, Stronger 论文链接
+YOLO v2 相对于 YOLO v1 主要就是通过一系列的 tricks 对模型进行优化。所以在本篇中我们会逐个介绍这些 tricks，以及这些 tricks 所带来的提升。在论文的最后，作者提出了 YOLO9000，它可以支持实时运行同时检测 9000 多个物体。
+一、Tricks 下图就是 YOLO v2 在 YOLO v1 上做的改进。其中行代表所有的 tricks，列代表当前使用的 tricks（使用的话打上对号）。我们可以看出，经过一系列的 tricks，最终 YOLO v2 在 VOC2007 数据集上能达到 78.6。
+图 1：各个 tricks 以及它们在 VOC2007 数据集上的检测效果
+（一）Batch Norm 批归一化使 mAP 有 2.4 的提升。
+批归一化有助于解决反向传播过程中的梯度消失和梯度爆炸问题，降低对一些超参数（比如学习率、网络参数的大小范围、激活函数的选择）的敏感性，并且每个 batch 分别进行归一化的时候，起到了一定的正则化效果（YOLO2 不再使用 dropout），从而能够获得更好的收敛速度和收敛效果。
+通常，一次训练会输入一批样本（batch）进入神经网络。批规一化在神经网络的每一层，在网络（线性变换）输出后和激活函数（非线性变换）之前增加一个批归一化层（BN），BN 层进行如下变换：
+（1）对该批样本的各特征量（对于中间层来说，就是每一个神经元）分别进行归一化处理，分别使每个特征的数据分布变换为均值 0，方差 1。从而使得每一批训练样本在每一层都有类似的分布。这一变换不需要引入额外的参数。
+（2）对上一步的输出再做一次线性变换，假设上一步的输出为 Z，则 Z1 = γZ &#43; β。这里 γ、β 是可以训练的参数。增加这一变换是因为上一步骤中强制改变了特征数据的分布，可能影响了原有数据的信息表达能力。增加的线性变换使其有机会恢复其原本的信息。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/dca654c5a4c2c1cbbb57d6c4c49c75e0/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-03-30T13:54:47+08:00" />
+<meta property="article:modified_time" content="2020-03-30T13:54:47+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">YOLO v2 详解</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>YOLO v2 详解</h4> 
+ <ul><li><ul><li><a href="#Tricks_14" rel="nofollow">一、Tricks</a></li><li><ul><li><a href="#Batch_Norm_24" rel="nofollow">（一）Batch Norm</a></li><li><a href="#_39" rel="nofollow">（二）使用高分辨率图像微调分类模型</a></li><li><a href="#Anchor_Boxes_51" rel="nofollow">（三）采用先验框（Anchor Boxes）</a></li><li><a href="#_67" rel="nofollow">（四）聚类提取先验框尺度</a></li><li><a href="#_91" rel="nofollow">（五）约束预测边框的位置</a></li><li><a href="#passthrough__126" rel="nofollow">（六）passthrough 层检测细粒度特征</a></li><li><a href="#_150" rel="nofollow">（七）多尺度图像训练</a></li><li><a href="#_162" rel="nofollow">（八）高分辨率图像的对象检测</a></li><li><a href="#Darknet19_170" rel="nofollow">（九）Darknet-19</a></li></ul> 
+   </li><li><a href="#_182" rel="nofollow">二、训练过程</a></li><li><a href="#_210" rel="nofollow">三、损失函数</a></li><li><a href="#YOLO9000_232" rel="nofollow">四、YOLO9000</a></li><li><ul><li><a href="#WordTree_242" rel="nofollow">（一）WordTree</a></li><li><a href="#_WordTree_259" rel="nofollow">（二）构建 WordTree</a></li><li><a href="#_274" rel="nofollow">（三）类别标签构造</a></li><li><a href="#_289" rel="nofollow">（四）标签结果分析</a></li><li><a href="#_306" rel="nofollow">（五）联合训练</a></li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2>YOLO9000: Better, Faster, Stronger</h2> 
+<p><a href="https://arxiv.org/pdf/1612.08242.pdf" rel="nofollow">论文链接</a></p> 
+<hr> 
+<blockquote> 
+ <p>  <font color="red">YOLO v2 相对于 YOLO v1 主要就是通过一系列的 tricks 对模型进行优化。</font>所以在本篇中我们会逐个介绍这些 tricks，以及这些 tricks 所带来的提升。在论文的最后，作者提出了 YOLO9000，它可以支持实时运行同时检测 9000 多个物体。</p> 
+</blockquote> 
+<br> 
+<h3><a id="Tricks_14"></a>一、Tricks</h3> 
+<hr> 
+<p>  下图就是 YOLO v2 在 YOLO v1 上做的改进。其中行代表所有的 tricks，列代表当前使用的 tricks（使用的话打上对号）。我们可以看出，经过一系列的 tricks，最终 YOLO v2 在 VOC2007 数据集上能达到 78.6。</p> 
+<p><img src="https://images2.imgbox.com/c3/78/s2SGfvhw_o.png" alt="图 1"></p> 
+<blockquote> 
+ <p>图 1：各个 tricks 以及它们在 VOC2007 数据集上的检测效果</p> 
+</blockquote> 
+<br> 
+<h4><a id="Batch_Norm_24"></a>（一）Batch Norm</h4> 
+<hr> 
+<p>  批归一化使 mAP 有 2.4 的提升。</p> 
+<p>  批归一化有助于解决反向传播过程中的梯度消失和梯度爆炸问题，降低对一些超参数（比如学习率、网络参数的大小范围、激活函数的选择）的敏感性，并且<font color="red">每个 batch 分别进行归一化的时候，起到了一定的正则化效果</font>（YOLO2 不再使用 dropout），从而能够获得更好的收敛速度和收敛效果。</p> 
+<p>  通常，一次训练会输入一批样本（batch）进入神经网络。批规一化在神经网络的每一层，在网络（线性变换）输出后和激活函数（非线性变换）之前增加一个批归一化层（BN），<strong><font color="#07f">BN 层进行如下变换：</font></strong></p> 
+<p>  <font color="#0bf">（1）对该批样本的各特征量（对于中间层来说，就是每一个神经元）分别进行归一化处理，分别使每个特征的数据分布变换为均值 0，方差 1。从而使得每一批训练样本在每一层都有类似的分布。这一变换不需要引入额外的参数。</font></p> 
+<p>  <font color="#0bf">（2）对上一步的输出再做一次线性变换，假设上一步的输出为 Z，则 Z1 = γZ + β。这里 γ、β 是可以训练的参数。增加这一变换是因为上一步骤中强制改变了特征数据的分布，可能影响了原有数据的信息表达能力。增加的线性变换使其有机会恢复其原本的信息。</font></p> 
+<br> 
+<h4><a id="_39"></a>（二）使用高分辨率图像微调分类模型</h4> 
+<hr> 
+<p>  mAP 提升了 3.7。</p> 
+<p>  图像分类的训练样本很多，而标注了边框的用于训练对象检测的样本相比而言就比较少了，因为标注边框的人工成本比较高。所以对象检测模型通常都先用图像分类样本训练卷积层，提取图像特征。但这引出的另一个问题是，图像分类样本的分辨率不是很高。所以 YOLO v1 使用 ImageNet 的图像分类样本采用 224 * 224 作为输入，来训练 CNN 卷积层。然后在训练对象检测时，检测用的图像样本采用更高分辨率的 448 * 448 的图像作为输入。但这样切换对模型性能有一定影响。</p> 
+<p>  所以 <font color="red">YOLO2 在采用 224 * 224 图像进行分类模型预训练后，再采用 448 * 448 的高分辨率样本对分类模型进行微调（10 个 epoch），使网络特征逐渐适应 448 * 448 的分辨率。</font>然后再使用 448 * 448 的检测样本进行训练，缓解了分辨率突然切换造成的影响。</p> 
+<br> 
+<h4><a id="Anchor_Boxes_51"></a>（三）采用先验框（Anchor Boxes）</h4> 
+<hr> 
+<p>  召回率大幅提升到 88%，同时 mAP 轻微下降了 0.2。</p> 
+<p>  借鉴 Faster RCNN 的做法，YOLO2 也尝试采用先验框（anchor）。<font color="red">在每个 grid 预先设定一组不同大小和宽高比的边框，来覆盖整个图像的不同位置和多种尺度，这些先验框作为预定义的候选区在神经网络中将检测其中是否存在对象，以及微调边框的位置。</font></p> 
+<p>  同时 YOLO2 移除了全连接层。另外去掉了一个池化层，使网络卷积层输出具有更高的分辨率。</p> 
+<p>  之前 YOLO1 并没有采用先验框，并且每个 grid 只预测两个 bounding box，整个图像 98 个。YOLO2 如果每个 grid采用 9 个先验框，总共有 13 * 13 * 9 = 1521 个先验框。所以，相对 YOLO1 的 81% 的召回率，YOLO2 的召回率大幅提升到 88%。同时 mAP 有 0.2% 的轻微下降。</p> 
+<p>  不过 YOLO2 接着进一步对先验框进行了改良。</p> 
+<br> 
+<h4><a id="_67"></a>（四）聚类提取先验框尺度</h4> 
+<hr> 
+<p>  聚类提取先验框尺度，使得 mAP 有 4.8 的提升。</p> 
+<p>  使用（三）的方法生成先验框，我们发现虽然召回率增大了，但是 mAP 值减少。这说明使用 Faster R-CNN 的方法固定生成先验框的效果并不算很好。这样生成的先验框虽然数量多，但是并不能代表物体中大多数的更加合适的大小和长宽比例。那么有没有更好的方法？实际上我们可以利用聚类方法，<font color="red">先对数据集所有的 ground truth 框进行 k-means 聚类。提取出更具有代表性的框的大小和比例。那么我们的网络只用对生成的先验框做很少的微调，就能有很好的效果。</font></p> 
+<p>  聚类算法最重要的是选择如何计算两个边框之间的“距离”，对于常用的欧式距离，大边框会产生更大的误差，但我们关心的是边框的 IOU。所以，YOLO2 在聚类时采用以下公式来计算两个边框之间的“距离”。</p> 
+<p><span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          d 
+         
+        
+          ( 
+         
+        
+          b 
+         
+        
+          o 
+         
+        
+          x 
+         
+        
+          , 
+         
+        
+          c 
+         
+        
+          e 
+         
+        
+          n 
+         
+        
+          t 
+         
+        
+          r 
+         
+        
+          o 
+         
+        
+          i 
+         
+        
+          d 
+         
+        
+          ) 
+         
+        
+          = 
+         
+        
+          1 
+         
+        
+          − 
+         
+        
+          I 
+         
+        
+          O 
+         
+        
+          U 
+         
+        
+          ( 
+         
+        
+          b 
+         
+        
+          o 
+         
+        
+          x 
+         
+        
+          , 
+         
+        
+          c 
+         
+        
+          e 
+         
+        
+          n 
+         
+        
+          t 
+         
+        
+          r 
+         
+        
+          o 
+         
+        
+          i 
+         
+        
+          d 
+         
+        
+          ) 
+         
+        
+       
+         d(box, centroid)=1-IOU(box, centroid) 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault">d</span><span class="mopen">(</span><span class="mord mathdefault">b</span><span class="mord mathdefault">o</span><span class="mord mathdefault">x</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault">c</span><span class="mord mathdefault">e</span><span class="mord mathdefault">n</span><span class="mord mathdefault">t</span><span class="mord mathdefault" style="margin-right: 0.02778em;">r</span><span class="mord mathdefault">o</span><span class="mord mathdefault">i</span><span class="mord mathdefault">d</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.72777em; vertical-align: -0.08333em;"></span><span class="mord">1</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault" style="margin-right: 0.07847em;">I</span><span class="mord mathdefault" style="margin-right: 0.02778em;">O</span><span class="mord mathdefault" style="margin-right: 0.10903em;">U</span><span class="mopen">(</span><span class="mord mathdefault">b</span><span class="mord mathdefault">o</span><span class="mord mathdefault">x</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault">c</span><span class="mord mathdefault">e</span><span class="mord mathdefault">n</span><span class="mord mathdefault">t</span><span class="mord mathdefault" style="margin-right: 0.02778em;">r</span><span class="mord mathdefault">o</span><span class="mord mathdefault">i</span><span class="mord mathdefault">d</span><span class="mclose">)</span></span></span></span></span></span></p> 
+<p>  centroid 是被选做的聚类的中心，box 就是其它边框，d 就是两者间的“距离”。IOU 越大，“距离”越近。YOLO2 给出的聚类分析结果如下图所示：</p> 
+<p><img src="https://images2.imgbox.com/15/82/XJZrQGZH_o.png" alt="图 2"></p> 
+<blockquote> 
+ <p>图 2：（左）使用 k-means 不同的 k 值生成的 centroid 所有边框与 ground truth 的 IOU 的均值（右）在 COCO 数据集和 VOC 数据集上取 k = 5 提取到的先验框的可视化结果。</p> 
+</blockquote> 
+<p>  上图左边是选择不同的聚类 k 值情况下，得到的 k 个 centroid 边框，计算样本中标注的边框与各 centroid 的 Avg IOU。显然，边框数 k 越多，Avg IOU越大。YOLO2 选择 k = 5 作为边框数量与 IOU 的折中。对比手工选择的先验框，使用 5 个聚类框即可达到 61 Avg IOU，相当于 9 个手工设置的先验框 60.9 Avg IOU。</p> 
+<p>  上图右边显示了 5 种聚类得到的先验框，VOC 和 COCO 数据集略有差异，不过都有较多的瘦高形边框。</p> 
+<br> 
+<h4><a id="_91"></a>（五）约束预测边框的位置</h4> 
+<hr> 
+<p>  借鉴于 Faster RCNN 的先验框方法，在训练的早期阶段，其位置预测容易不稳定。其位置预测公式为：</p> 
+<p><span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          x 
+         
+        
+          = 
+         
+        
+          ( 
+         
+         
+         
+           t 
+          
+         
+           x 
+          
+         
+        
+          ∗ 
+         
+         
+         
+           w 
+          
+         
+           a 
+          
+         
+        
+          ) 
+         
+        
+          + 
+         
+         
+         
+           x 
+          
+         
+           a 
+          
+         
+        
+       
+         x=(t_x*w_a)+x_a 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault">x</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mopen">(</span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">x</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">∗</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.02691em;">w</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: -0.02691em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">a</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 0.58056em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">a</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span></span></p> 
+<p><span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          y 
+         
+        
+          = 
+         
+        
+          ( 
+         
+         
+         
+           t 
+          
+         
+           y 
+          
+         
+        
+          ∗ 
+         
+         
+         
+           h 
+          
+         
+           a 
+          
+         
+        
+          ) 
+         
+        
+          + 
+         
+         
+         
+           y 
+          
+         
+           a 
+          
+         
+        
+       
+         y=(t_y*h_a)+y_a 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.625em; vertical-align: -0.19444em;"></span><span class="mord mathdefault" style="margin-right: 0.03588em;">y</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.03611em; vertical-align: -0.286108em;"></span><span class="mopen">(</span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">y</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">∗</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord"><span class="mord mathdefault">h</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">a</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 0.625em; vertical-align: -0.19444em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.03588em;">y</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: -0.03588em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">a</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span></span></p> 
+<p>  其中，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         x 
+        
+       
+      
+        x 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault">x</span></span></span></span></span>，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         y 
+        
+       
+      
+        y 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.625em; vertical-align: -0.19444em;"></span><span class="mord mathdefault" style="margin-right: 0.03588em;">y</span></span></span></span></span> 是预测边框的中心，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+        
+          a 
+         
+        
+       
+      
+        x_a 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.58056em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">a</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          y 
+         
+        
+          a 
+         
+        
+       
+      
+        y_a 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.625em; vertical-align: -0.19444em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.03588em;">y</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: -0.03588em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">a</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 是先验框（anchor）的中心点坐标，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          w 
+         
+        
+          a 
+         
+        
+       
+      
+        w_a 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.58056em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.02691em;">w</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: -0.02691em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">a</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          h 
+         
+        
+          a 
+         
+        
+       
+      
+        h_a 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.84444em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">h</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">a</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 是先验框（anchor）的宽和高，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          t 
+         
+        
+          x 
+         
+        
+       
+      
+        t_x 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.76508em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">x</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          t 
+         
+        
+          y 
+         
+        
+       
+      
+        t_y 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.901188em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">y</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 是要学习的参数。</p> 
+<p>  我们发现，由于 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          t 
+         
+        
+          x 
+         
+        
+       
+      
+        t_x 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.76508em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">x</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          t 
+         
+        
+          y 
+         
+        
+       
+      
+        t_y 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.901188em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">y</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 的取值没有任何约束，因此预测边框的中心可能出现在任何位置，训练早期阶段不容易稳定。<font color="red">YOLO 调整了预测公式，将预测边框的中心约束在特定 gird 网格内。</font>其中公式如下：<br> <span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           b 
+          
+         
+           x 
+          
+         
+        
+          = 
+         
+        
+          σ 
+         
+        
+          ( 
+         
+         
+         
+           t 
+          
+         
+           x 
+          
+         
+        
+          ) 
+         
+        
+          + 
+         
+         
+         
+           c 
+          
+         
+           x 
+          
+         
+        
+       
+         b_x=σ(t_x)+c_x 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.84444em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">b</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">x</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault" style="margin-right: 0.03588em;">σ</span><span class="mopen">(</span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">x</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 0.58056em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">c</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">x</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span></span></p> 
+<p><span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           b 
+          
+         
+           y 
+          
+         
+        
+          = 
+         
+        
+          σ 
+         
+        
+          ( 
+         
+         
+         
+           t 
+          
+         
+           y 
+          
+         
+        
+          ) 
+         
+        
+          + 
+         
+         
+         
+           c 
+          
+         
+           y 
+          
+         
+        
+       
+         b_y=σ(t_y)+c_y 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.980548em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault">b</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">y</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.03611em; vertical-align: -0.286108em;"></span><span class="mord mathdefault" style="margin-right: 0.03588em;">σ</span><span class="mopen">(</span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">y</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 0.716668em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault">c</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">y</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span></span></span></span></span></span></p> 
+<p><span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           b 
+          
+         
+           w 
+          
+         
+        
+          = 
+         
+         
+         
+           p 
+          
+         
+           w 
+          
+         
+         
+         
+           e 
+          
+          
+          
+            t 
+           
+          
+            w 
+           
+          
+         
+        
+       
+         b_w=p_we^{t_w} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.84444em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">b</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.02691em;">w</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.038em; vertical-align: -0.19444em;"></span><span class="mord"><span class="mord mathdefault">p</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.02691em;">w</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mord"><span class="mord mathdefault">e</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.843556em;"><span class="" style="top: -3.113em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight"><span class="mord mathdefault mtight">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.164543em;"><span class="" style="top: -2.357em; margin-left: 0em; margin-right: 0.0714286em;"><span class="pstrut" style="height: 2.5em;"></span><span class="sizing reset-size3 size1 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.02691em;">w</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.143em;"><span class=""></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></p> 
+<p><span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           b 
+          
+         
+           h 
+          
+         
+        
+          = 
+         
+         
+         
+           p 
+          
+         
+           h 
+          
+         
+         
+         
+           e 
+          
+          
+          
+            t 
+           
+          
+            h 
+           
+          
+         
+        
+       
+         b_h=p_he^{t_h} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.84444em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">b</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.336108em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">h</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.038em; vertical-align: -0.19444em;"></span><span class="mord"><span class="mord mathdefault">p</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.336108em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">h</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mord"><span class="mord mathdefault">e</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.843556em;"><span class="" style="top: -3.113em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight"><span class="mord mathdefault mtight">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3448em;"><span class="" style="top: -2.34877em; margin-left: 0em; margin-right: 0.0714286em;"><span class="pstrut" style="height: 2.5em;"></span><span class="sizing reset-size3 size1 mtight"><span class="mord mathdefault mtight">h</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.151229em;"><span class=""></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></p> 
+<p><span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          P 
+         
+        
+          r 
+         
+        
+          ( 
+         
+        
+          o 
+         
+        
+          b 
+         
+        
+          j 
+         
+        
+          e 
+         
+        
+          c 
+         
+        
+          t 
+         
+        
+          ) 
+         
+        
+          ∗ 
+         
+        
+          I 
+         
+        
+          O 
+         
+        
+          U 
+         
+        
+          ( 
+         
+        
+          b 
+         
+        
+          , 
+         
+        
+          o 
+         
+        
+          b 
+         
+        
+          j 
+         
+        
+          e 
+         
+        
+          c 
+         
+        
+          t 
+         
+        
+          ) 
+         
+        
+          = 
+         
+        
+          σ 
+         
+        
+          ( 
+         
+         
+         
+           t 
+          
+         
+           o 
+          
+         
+        
+          ) 
+         
+        
+       
+         Pr(object)∗IOU(b,object)=σ(t_o) 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault" style="margin-right: 0.13889em;">P</span><span class="mord mathdefault" style="margin-right: 0.02778em;">r</span><span class="mopen">(</span><span class="mord mathdefault">o</span><span class="mord mathdefault">b</span><span class="mord mathdefault" style="margin-right: 0.05724em;">j</span><span class="mord mathdefault">e</span><span class="mord mathdefault">c</span><span class="mord mathdefault">t</span><span class="mclose">)</span><span class="mord">∗</span><span class="mord mathdefault" style="margin-right: 0.07847em;">I</span><span class="mord mathdefault" style="margin-right: 0.02778em;">O</span><span class="mord mathdefault" style="margin-right: 0.10903em;">U</span><span class="mopen">(</span><span class="mord mathdefault">b</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault">o</span><span class="mord mathdefault">b</span><span class="mord mathdefault" style="margin-right: 0.05724em;">j</span><span class="mord mathdefault">e</span><span class="mord mathdefault">c</span><span class="mord mathdefault">t</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault" style="margin-right: 0.03588em;">σ</span><span class="mopen">(</span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">o</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span></span></span></span></span></span></p> 
+<p>  其中，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          b 
+         
+        
+          x 
+         
+        
+       
+         , 
+        
+        
+        
+          b 
+         
+        
+          y 
+         
+        
+       
+         , 
+        
+        
+        
+          b 
+         
+        
+          w 
+         
+        
+       
+         , 
+        
+        
+        
+          b 
+         
+        
+          h 
+         
+        
+       
+      
+        b_x,b_y,b_w,b_h 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.980548em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault">b</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">x</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault">b</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">y</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault">b</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.02691em;">w</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault">b</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.336108em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">h</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 是预测边框的中心和宽高。<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         P 
+        
+       
+         r 
+        
+       
+         ( 
+        
+       
+         o 
+        
+       
+         b 
+        
+       
+         j 
+        
+       
+         e 
+        
+       
+         c 
+        
+       
+         t 
+        
+       
+         ) 
+        
+       
+         ∗ 
+        
+       
+         I 
+        
+       
+         O 
+        
+       
+         U 
+        
+       
+         ( 
+        
+       
+         b 
+        
+       
+         , 
+        
+       
+         o 
+        
+       
+         b 
+        
+       
+         j 
+        
+       
+         e 
+        
+       
+         c 
+        
+       
+         t 
+        
+       
+         ) 
+        
+       
+      
+        Pr(object)∗IOU(b,object) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault" style="margin-right: 0.13889em;">P</span><span class="mord mathdefault" style="margin-right: 0.02778em;">r</span><span class="mopen">(</span><span class="mord mathdefault">o</span><span class="mord mathdefault">b</span><span class="mord mathdefault" style="margin-right: 0.05724em;">j</span><span class="mord mathdefault">e</span><span class="mord mathdefault">c</span><span class="mord mathdefault">t</span><span class="mclose">)</span><span class="mord">∗</span><span class="mord mathdefault" style="margin-right: 0.07847em;">I</span><span class="mord mathdefault" style="margin-right: 0.02778em;">O</span><span class="mord mathdefault" style="margin-right: 0.10903em;">U</span><span class="mopen">(</span><span class="mord mathdefault">b</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault">o</span><span class="mord mathdefault">b</span><span class="mord mathdefault" style="margin-right: 0.05724em;">j</span><span class="mord mathdefault">e</span><span class="mord mathdefault">c</span><span class="mord mathdefault">t</span><span class="mclose">)</span></span></span></span></span> 是预测边框的置信度，YOLO1 是直接预测置信度的值，这里对预测参数进行 σ 变换后作为置信度的值。<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          c 
+         
+        
+          x 
+         
+        
+       
+         , 
+        
+        
+        
+          c 
+         
+        
+          y 
+         
+        
+       
+      
+        c_x,c_y 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.716668em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault">c</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">x</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault">c</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">y</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 是当前网格左上角到图像左上角的距离，要先将网格大小归一化，即令一个网格的 宽 = 1，高 = 1。<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          p 
+         
+        
+          w 
+         
+        
+       
+         , 
+        
+        
+        
+          p 
+         
+        
+          y 
+         
+        
+       
+      
+        p_w, p_y 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.716668em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault">p</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.02691em;">w</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault">p</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">y</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 是先验框的宽和高。σ 是 sigmoid 函数。<br> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          t 
+         
+        
+          x 
+         
+        
+       
+         , 
+        
+        
+        
+          t 
+         
+        
+          y 
+         
+        
+       
+         , 
+        
+        
+        
+          t 
+         
+        
+          w 
+         
+        
+       
+         , 
+        
+        
+        
+          t 
+         
+        
+          h 
+         
+        
+       
+         , 
+        
+        
+        
+          t 
+         
+        
+          o 
+         
+        
+       
+      
+        t_x,t_y,t_w,t_h,t_o 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.901188em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">x</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">y</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.02691em;">w</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.336108em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">h</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">o</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 是要学习的参数，分别用于预测边框的中心和宽高，以及置信度。</p> 
+<p><img src="https://images2.imgbox.com/9f/3d/29BguBVM_o.png" alt="图 3"></p> 
+<blockquote> 
+ <p>图 3</p> 
+</blockquote> 
+<p>  参考上图，由于 σ 函数将 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          t 
+         
+        
+          x 
+         
+        
+       
+         , 
+        
+        
+        
+          t 
+         
+        
+          y 
+         
+        
+       
+      
+        t_x,t_y 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.901188em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">x</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">y</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 约束在 (0,1) 范围内，所以根据上面的计算公式，预测边框的蓝色中心点被约束在蓝色背景的网格内。约束边框位置使得模型更容易学习，且预测更为稳定。</p> 
+<br> 
+<h4><a id="passthrough__126"></a>（六）passthrough 层检测细粒度特征</h4> 
+<hr> 
+<p>  passthrough 层检测细粒度特征使 mAP 提升 1。</p> 
+<p>  对象检测面临的一个问题是图像中对象会有大有小，输入图像经过多层网络提取特征，最后输出的特征图中（比如 YOLO2 中输入416 * 416 经过卷积网络下采样最后输出是 13 * 13），较小的对象可能特征已经不明显甚至被忽略掉了。为了更好的检测出一些比较小的对象，最后输出的特征图需要保留一些更细节的信息。</p> 
+<p>  <font color="red">YOLO2 引入一种称为 passthrough 层的方法在特征图中保留一些细节信息。</font>具体来说，就是<font color="red">在最后一个 pooling 之前，特征图的大小是 26 * 26 * 512，将其 1 拆 4，直接传递（passthrough）到 pooling 后（并且又经过一组卷积）的特征图，两者叠加到一起作为输出的特征图。</font>（见图 4）</p> 
+<p><img src="https://images2.imgbox.com/eb/9a/QQYVCPVv_o.png" alt="图 4"></p> 
+<blockquote> 
+ <p>图 4：passthrough 层</p> 
+</blockquote> 
+<br> 
+<p>  需要注意的是，对于 1 拆四不是将 feature map 平均分成 2 * 2 的网格然后拆开，而是按照下图的策略进行拆解。另外，根据 YOLO2 的代码，特征图先用 1 * 1 卷积从 26 * 26 * 512 降维到 26 * 26 * 64，再做 1 拆 4 并 passthrough。图 6 有更详细的网络输入输出结构。</p> 
+<br> 
+<p><img src="https://images2.imgbox.com/93/5c/k7yaZpRh_o.png" alt="图 5"></p> 
+<blockquote> 
+ <p>图 5：一拆 4 图解</p> 
+</blockquote> 
+<br> 
+<h4><a id="_150"></a>（七）多尺度图像训练</h4> 
+<hr> 
+<p>  多尺度图像训练对 mAP 有 1.4 的提升。</p> 
+<p>  因为去掉了全连接层，YOLO2 可以输入任何尺寸的图像。因为整个网络下采样倍数是 32，作者 <font color="red">采用了 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          { 
+         
+        
+          320 
+         
+        
+          , 
+         
+        
+          352 
+         
+        
+          , 
+         
+        
+          . 
+         
+        
+          . 
+         
+        
+          . 
+         
+        
+          , 
+         
+        
+          608 
+         
+        
+          } 
+         
+        
+       
+         \{320,352,...,608\} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mopen">{<!-- --></span><span class="mord">3</span><span class="mord">2</span><span class="mord">0</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord">3</span><span class="mord">5</span><span class="mord">2</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord">.</span><span class="mord">.</span><span class="mord">.</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord">6</span><span class="mord">0</span><span class="mord">8</span><span class="mclose">}</span></span></span></span></span> 等 10 种输入图像的尺寸，这些尺寸的输入图像对应输出的特征图宽和高是 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          { 
+         
+        
+          10 
+         
+        
+          , 
+         
+        
+          11 
+         
+        
+          , 
+         
+        
+          . 
+         
+        
+          . 
+         
+        
+          . 
+         
+        
+          19 
+         
+        
+          } 
+         
+        
+       
+         \{10,11,...19\} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mopen">{<!-- --></span><span class="mord">1</span><span class="mord">0</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord">1</span><span class="mord">1</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord">.</span><span class="mord">.</span><span class="mord">.</span><span class="mord">1</span><span class="mord">9</span><span class="mclose">}</span></span></span></span></span>。训练时每 10 个 batch 就随机更换一种尺寸，使网络能够适应各种大小的对象检测。</font></p> 
+<br> 
+<h4><a id="_162"></a>（八）高分辨率图像的对象检测</h4> 
+<hr> 
+<p>  图1 表格中最后一行有个 hi-res detector，使 mAP 提高了 1.8。因为 YOLO2 调整网络结构后能够支持多种尺寸的输入图像。通常是使用 416 * 416 的输入图像，如果 <font color="red">用较高分辨率的输入图像，比如 544 * 544</font>，则 mAP 可以达到 78.6，有 1.8 的提升。</p> 
+<br> 
+<h4><a id="Darknet19_170"></a>（九）Darknet-19</h4> 
+<hr> 
+<p>  <font color="red">为了进一步提升速度，YOLO2 提出了 Darknet-19</font>（有 19 个卷积层和 5 个 MaxPooling 层）网络结构。DarkNet-19 比 VGG-16 小一些，精度不弱于 VGG-16，但浮点运算量减少到约 1/5，以保证更快的运算速度。</p> 
+<p><img src="https://images2.imgbox.com/1d/43/onOtbgia_o.png" alt="图 6"></p> 
+<blockquote> 
+ <p>图 6：Darknet-19 网络结构</p> 
+</blockquote> 
+<br> 
+<h3><a id="_182"></a>二、训练过程</h3> 
+<hr> 
+<p>  YOLO2 的 <strong><font color="#07f">训练主要包括三个阶段：</font></strong></p> 
+<p>  <font color="#0bf">第一阶段：</font>先在 ImageNet 分类数据集上预训练 Darknet-19，此时模型输入为 224 * 224 ，共训练 160 个 epochs。</p> 
+<p>  <font color="#0bf">第二阶段：</font>将网络的输入调整为 448 * 448（注意在测试的时候使用 416 * 416 大小） ，继续在 ImageNet 数据集上 finetune 分类模型，训练 10 个 epochs，此时分类模型的 top-1 准确度为 76.5%，而 top-5 准确度为 93.3%。</p> 
+<p>  <font color="#0bf">第三阶段：</font>修改 Darknet-19 分类模型为检测模型，移除最后一个卷积层、global avgpooling 层以及 softmax 层，并且新增了三个 3 * 3 * 1024 卷积层，同时增加了一个 passthrough 层，最后使用 1 * 1 卷积层输出预测结果，输出的 channels 数为：num_anchors * (5 + num_classes) ，和训练采用的数据集有关系。由于 anchors 数为 5，对于 VOC 数据集（20 种分类对象）输出的 channels 数就是 125，最终的预测矩阵 T 的 shape 为 (batch_size, 13, 13, 125)，可以先将其 reshape 为 (batch_size, 13, 13, 5, 25) ，其中 T[:, :, :, :, 0:4] 为边界框的位置和大小 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         ( 
+        
+        
+        
+          t 
+         
+        
+          x 
+         
+        
+       
+         , 
+        
+        
+        
+          t 
+         
+        
+          y 
+         
+        
+       
+         , 
+        
+        
+        
+          t 
+         
+        
+          w 
+         
+        
+       
+         , 
+        
+        
+        
+          t 
+         
+        
+          h 
+         
+        
+       
+         ) 
+        
+       
+      
+        (t_x, t_y, t_w, t_h) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.03611em; vertical-align: -0.286108em;"></span><span class="mopen">(</span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">x</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">y</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.02691em;">w</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.336108em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">h</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span></span></span></span></span>，T[:, :, :, :, 4] 为边界框的置信度，而 T[:, :, :, :, 5:] 为类别预测值。</p> 
+<p>  对象检测模型各层的结构如下：</p> 
+<p><img src="https://images2.imgbox.com/d0/2a/70ZnucVw_o.png" alt="图 7"></p> 
+<blockquote> 
+ <p>图 7：YOLO v2 网络结构</p> 
+</blockquote> 
+<p>  看一下 passthrough 层。图中第 25 层 route 16，意思是来自16层的 output，即 26 * 26 * 512，这是 passthrough 层的来源（细粒度特征）。第 26 层 1 * 1 卷积降低通道数，从 512 降低到 64（这一点论文在讨论 passthrough 的时候没有提到），输出 26 * 26 * 64。第 27 层进行拆分（passthrough 层）操作，1 拆 4 分成 13 * 13 * 256。第 28 层叠加 27 层和 24 层的输出，得到 13 * 13 * 1280。后面再经过 3 * 3 卷积和 1 * 1 卷积，最后输出 13 * 13 * 125。</p> 
+<p><img src="https://images2.imgbox.com/24/89/7efSwLCy_o.png" alt="图 8"></p> 
+<blockquote> 
+ <p>图 8：YOLO v2 的网络的输入与输出。</p> 
+</blockquote> 
+<p>  对比 YOLO1 的输出张量，YOLO2 的主要变化就是会输出 5 个先验框，且每个先验框都会尝试预测一个对象。输出的 13 * 13 * 5 * 25 张量中，25 维向量包含 20 个对象的分类概率 + 4 个边框坐标 + 1 个边框置信度。</p> 
+<br> 
+<h3><a id="_210"></a>三、损失函数</h3> 
+<hr> 
+<p><img src="https://images2.imgbox.com/2e/dc/Uy9hNEVa_o.png" alt="图 9"></p> 
+<blockquote> 
+ <p>图 9：YOLO v2 损失函数。</p> 
+</blockquote> 
+<p>  我们可以发现 YOLO v2 的损失函数依然包括：边框位置误差、置信度误差、对象分类误差。</p> 
+<p>公式中：</p> 
+<p>  <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          1 
+         
+         
+         
+           M 
+          
+         
+           a 
+          
+         
+           x 
+          
+         
+           I 
+          
+         
+           O 
+          
+         
+           U 
+          
+         
+           &lt; 
+          
+         
+           T 
+          
+         
+           h 
+          
+         
+           r 
+          
+         
+           e 
+          
+         
+           s 
+          
+         
+           h 
+          
+         
+        
+       
+      
+        1_{Max IOU&lt;Thresh} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.82181em; vertical-align: -0.17737em;"></span><span class="mord"><span class="mord">1</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.336108em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight" style="margin-right: 0.10903em;">M</span><span class="mord mathdefault mtight">a</span><span class="mord mathdefault mtight">x</span><span class="mord mathdefault mtight" style="margin-right: 0.07847em;">I</span><span class="mord mathdefault mtight" style="margin-right: 0.02778em;">O</span><span class="mord mathdefault mtight" style="margin-right: 0.10903em;">U</span><span class="mrel mtight">&lt;</span><span class="mord mathdefault mtight" style="margin-right: 0.13889em;">T</span><span class="mord mathdefault mtight">h</span><span class="mord mathdefault mtight" style="margin-right: 0.02778em;">r</span><span class="mord mathdefault mtight">e</span><span class="mord mathdefault mtight">s</span><span class="mord mathdefault mtight">h</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.17737em;"><span class=""></span></span></span></span></span></span></span></span></span></span> ：预测边框中，与真实对象边框 IOU 最大的那个，其 IOU &lt; 阈值 Thresh，此系数为 1，即计入误差，否则为 0，不计入误差。YOLO2 使用 Thresh = 0.6。</p> 
+<p>  <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          1 
+         
+         
+         
+           t 
+          
+         
+           &lt; 
+          
+         
+           128000 
+          
+         
+        
+       
+      
+        1_{t&lt;128000} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.82181em; vertical-align: -0.17737em;"></span><span class="mord"><span class="mord">1</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.301108em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">t</span><span class="mrel mtight">&lt;</span><span class="mord mtight">1</span><span class="mord mtight">2</span><span class="mord mtight">8</span><span class="mord mtight">0</span><span class="mord mtight">0</span><span class="mord mtight">0</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.17737em;"><span class=""></span></span></span></span></span></span></span></span></span></span> ：意思是前 128000 次迭代计入误差。注意这里是与先验框的误差，而不是与真实对象边框的误差。可能是为了在训练早期使模型更快学会先预测先验框的位置。</p> 
+<p>  <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          1 
+         
+        
+          k 
+         
+         
+         
+           t 
+          
+         
+           r 
+          
+         
+           u 
+          
+         
+           t 
+          
+         
+           h 
+          
+         
+        
+       
+      
+        1_{k}^{truth} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.13222em; vertical-align: -0.283108em;"></span><span class="mord"><span class="mord">1</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.849108em;"><span class="" style="top: -2.41689em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03148em;">k</span></span></span></span><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">t</span><span class="mord mathdefault mtight" style="margin-right: 0.02778em;">r</span><span class="mord mathdefault mtight">u</span><span class="mord mathdefault mtight">t</span><span class="mord mathdefault mtight">h</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.283108em;"><span class=""></span></span></span></span></span></span></span></span></span></span> ：意思是该边框负责预测一个真实对象（边框内有对象）。</p> 
+<p>  各种 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         λ 
+        
+       
+      
+        \lambda 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.69444em; vertical-align: 0em;"></span><span class="mord mathdefault">λ</span></span></span></span></span> 是不同类型误差的调节系数。</p> 
+<br> 
+<h3><a id="YOLO9000_232"></a>四、YOLO9000</h3> 
+<hr> 
+<p>  VOC 数据集可以检测 20 种对象，但实际上对象的种类非常多，只是缺少相应的用于对象检测的训练样本。YOLO2 尝试利用 ImageNet 非常大量的分类样本，联合 COCO 的对象检测数据集一起训练，使得 YOLO2 即使没有学过很多对象的检测样本，也能检测出这些对象。</p> 
+<p>  基本的思路是，<font color="red">如果是检测样本，训练时其 Loss 包括分类误差和定位误差，如果是分类样本，则 Loss 只包括分类误差。</font></p> 
+<br> 
+<h4><a id="WordTree_242"></a>（一）WordTree</h4> 
+<hr> 
+<p>  要检测更多对象，比如从原来的 VOC 的 20 种对象，扩展到 ImageNet 的 9000 种对象。简单来想的话，好像把原来输出 20 维的 softmax 改成 9000 维的 softmax 就可以了，但是，ImageNet 的对象类别与 COCO 的对象类别不是互斥的。比如 COCO 对象类别有“狗”，而 ImageNet 细分成 100 多个品种的狗，狗与 100 多个狗的品种是包含关系，而不是互斥关系。一个 Norfolk terrier 同时也是 dog，这样就不适合用单个 softmax 来做对象分类，而是要采用一种多标签分类模型。</p> 
+<p>  YOLO2 于是根据 WordNet，将 ImageNet 和 COCO 中的名词对象一起构建了一个 WordTree，以 physical object 为根节点，各名词依据相互间的关系构建树枝、树叶，节点间的连接表达了对象概念之间的蕴含关系（上位/下位关系）。</p> 
+<p><img src="https://images2.imgbox.com/cd/eb/E10bh2Z6_o.png" alt="图 10"></p> 
+<blockquote> 
+ <p>图 10：WordTree</p> 
+</blockquote> 
+<p>  整个 WordTree 中的对象之间不是互斥的关系，但对于单个节点，属于它的所有子节点之间是互斥关系。比如 terrier 节点之下的 Norfolk terrier、Yorkshire terrier、Bedlington terrier 等，各品种的 terrier 之间是互斥的，所以计算上可以进行 softmax 操作。上面图 10 只画出了 3 个 softmax 作为示意，实际中每个节点下的所有子节点都会进行 softmax。</p> 
+<br> 
+<h4><a id="_WordTree_259"></a>（二）构建 WordTree</h4> 
+<hr> 
+<p>  构建好的 WordTree 有 9418 个节点（对象类型），包括 ImageNet 的 Top 9000 个对象，COCO 对象，以及 ImageNet 对象检测挑战数据集中的对象，以及为了添加这些对象，从 WordNet 路径中提取出的中间对象。</p> 
+<br> 
+<p>  <strong><font color="#07f">构建 WordTree 的步骤是：</font></strong></p> 
+<p>  <font color="#0bf">（1）检查每一个将用于训练和测试的 ImageNet 和 COCO 对象，在 WordNet 中找到对应的节点，如果该节点到 WordTree 根节点（physical object）的路径只有一条（大部分对象都只有一条路径），就将该路径添加到 WrodTree。</font></p> 
+<p>  <font color="#0bf">（2）经过上面操作后，剩下的是存在多条路径的对象。对每个对象，检查其额外路径长度（将其添加到已有的 WordTree 中所需的路径长度），选择最短的路径添加到 WordTree。这样就构造好了整个 WordTree。</font></p> 
+<br> 
+<h4><a id="_274"></a>（三）类别标签构造</h4> 
+<hr> 
+<p>  训练时，我们需要构建训练数据。那么对于 <strong><font color="#07f">类别的标签，我们如何构造呢？</font></strong> 如何才能体现 WordTree 的关联呢？</p> 
+<p>  之前对象互斥的情况下，用一个 n 维向量（n 是预测对象的类别数）就可以表达一个对象（预测对象的那一维数值接近 1，其它维数值接近 0）。现在变成 WordTree，如果也是 n 维向量（这里 WordTree 有 9418 个节点（对象），即 9418 维向量），使预测的对象那一位为 1，其它维都为 0，这样的形式依然是互斥关系，这样是不合理的。合理的向量应该能够体现对象之间的蕴含关系。</p> 
+<p>  比如一个样本图像，其标签是是"dog"，那么显然 dog 节点的概率应该是 1，然后，dog 属于 mammal，自然 mammal 的概率也是 1，…一直沿路径向上到根节点 physical object，所有经过的节点其概率都是 1。参考上面图 10，红色框内的节点概率都是 1，其它节点概率为 0。另一个样本假如标签是 “Norfolk terrier”，则从 “Norfolk terrier” 直到根节点的所有节点概率为 1（图10 中黄色框内的节点），其它节点概率为 0。</p> 
+<p>  所以，一个 <font color="#0bf">WordTree 对应且仅对应一个对象，不过该对象节点到根节点的所有节点概率都是 1，体现出对象之间的蕴含关系，而其它节点概率是0。</font></p> 
+<br> 
+<h4><a id="_289"></a>（四）标签结果分析</h4> 
+<hr> 
+<p>  <strong><font color="#07f">预测时如何确定一个 WordTree 所对应的对象？</font></strong></p> 
+<p>  上面讲到训练时，有标签的样本对应的 WordTree 中，该对象节点到根节点的所有节点概率都是 1，其它节点概率是 0。那么用于预测时，如何根据 WordTree 各节点的概率值来确定其对应的对象呢？</p> 
+<p>  根据训练标签的设置，其实模型学习的是各节点的条件概率。比如我们看 WordTree（图10）中的一小段。假设一个样本标签是 dog，那么 dog = 1，父节点 mammal = 1，同级节点 cat = 0，即 P(dog | mammal) = 1，P(cat | mammal) = 0。</p> 
+<p>  既然各节点预测的是条件概率，那么一个节点的绝对概率就是它到根节点路径上所有条件概率的乘积。比如 P(Norfolk terrier) = P(Norfolk terrier | terrier) * P(terrier | hunting dog) * P(hunting dog | dog) * … * P(animal | physical object) * P(physical object) 对于分类的计算，P(physical object) = 1。</p> 
+<p>  不过，为了计算简便，实际中并不计算出所有节点的绝对概率。而是采用一种比较贪婪的算法。<font color="#0bf">从根节点开始向下遍历，对每一个节点，在它的所有子节点中，选择概率最大的那个（一个节点下面的所有子节点是互斥的），一直向下遍历直到某个节点的子节点概率低于设定的阈值（意味着很难确定它的下一层对象到底是哪个），或达到叶子节点，那么该节点就是该 WordTree 对应的对象。</font></p> 
+<br> 
+<h4><a id="_306"></a>（五）联合训练</h4> 
+<hr> 
+<p>  由于 ImageNet 样本比 COCO 多得多，所以对 COCO 样本会多做一些采样（oversampling），适当平衡一下样本数量，使两者样本数量比为 4:1。</p> 
+<p>  YOLO9000 依然采用 YOLO2 的网络结构，不过 5 个先验框减少到 3 个先验框，以减少计算量。YOLO2 的输出是 13 * 13 * 5 * (4 + 1 + 20)，现在 YOLO9000 的输出是 13 * 13 * 3 * (4 + 1 + 9418)。假设输入是 416 * 416 * 3。</p> 
+<p>  由于对象分类改成 WordTree 的形式，相应的误差计算也需要一些调整。对一个检测样本，其分类误差只包含该标签节点以及到根节点的所有节点的误差。比如一个样本的标签是 dog，那么 dog 往上标签都是 1，但 dog 往下就不好设置了。因为这个 dog 其实必然也是某种具体的 dog，假设它是一个 Norfolk terrier，那么最符合实际的设置是从 Norfolk terrier 到根节点的标签都是 1。但是因为样本没有告诉我们这是一个 Norfolk terrier，只是说一个 dog，那么从 dog 以下的标签就没法确定了。</p> 
+<p>  对于分类样本，则只计算分类误差。YOLO9000 总共会输出 13 * 13 * 3 = 507 个预测框（预测对象），计算它们对样本标签的预测概率，选择概率最大的那个框负责预测该样本的对象，即计算其 WrodTree 的误差。</p> 
+<p>  另外论文中还有一句话，“We also assume that the predicted box overlaps what would be the ground truth label by at least .3 IOU and we backpropagate objectness loss based on this assumption.”。感觉意思是其它那些边框，选择其中预测置信度&gt;0.3的边框，作为分类的负样本（objectness）。即这些边框不应该有那么高的置信度来预测该样本对象。具体的就要看下代码了。</p> 
+<br> 
+<br> 
+<p><strong>参考链接：</strong><br> <a href="https://arxiv.org/pdf/1612.08242.pdf" rel="nofollow">https://arxiv.org/pdf/1612.08242.pdf</a><br> <a href="https://www.jianshu.com/p/517a1b344a88" rel="nofollow">https://www.jianshu.com/p/517a1b344a88</a></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/710d79216f149be939edf21565981a6d/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">实践|OpenCV4.2使用DNN进行人脸检测一（图片篇）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/0db536056e5405fbf917bc9b109005f4/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Java 包与权限</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

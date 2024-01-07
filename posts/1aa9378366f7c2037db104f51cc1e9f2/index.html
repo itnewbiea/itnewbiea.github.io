@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>之江杯2020零样本目标分割题参赛总结 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="之江杯2020零样本目标分割题参赛总结" />
+<meta property="og:description" content="文章目录 一、赛题简介二、ZS3Net简介三、我的tricks四、总结 比赛链接：https://zhejianglab.aliyun.com/entrance/531816/rankingList。我最终排名第四，这是综合决赛第一轮、第二轮线上成绩和最后答辩成绩的排名，实际上我最后决赛第二轮线上成绩已达到第二。和商业赛不同，之江杯更关注学术问题，这个赛题也比较前沿，报名团队只有三百多个，但看最后的决赛名单就知道，来的多是非常专业的团队。我这次依然是solo参赛，最后居然冲到了前排，真是没想到，实属幸运。
+一、赛题简介 本题属于图像语义分割任务，零样本是指没有提供任何测试集类别的样本，但提供了和测试集相似类别的图像及语义分割标注作为训练集，此外可以使用已训练好的词向量表来连结训练集类别和测试集类别间的语义关系，（词向量可以理解为一种用数字编码表示的词典）。举例：训练集中提供了西瓜的图像分割样本，测试集要求实现哈密瓜的图像分割，好比一个人见过西瓜但从来没有见过哈密瓜，他可以通过查阅西瓜和哈密瓜的词典来推测哈密瓜长什么样子。
+零样本目标分割任务的初衷是为了解决图像语义分割问题标注成本非常高的问题，同时这也是对更为通用的人工智能的一种探索，要求机器不仅能够识别图像，还要把图像名称的语义和图像特征对应起来。本赛题训练集200类（下称已知类，seen），共约80000张图片，是和ImageNet风格类似的实物照片，测试集初赛和决赛都各有不同的50类（下称未知类，unseen），每类约100张图片。
+这个问题比较前沿，相关文献和开源不多，能够查到的按时间顺序排序是SPNet -&gt; ZS3Net -&gt; CaGNet。CaGNet应该是当时的SOTA，这次比赛CaGNet的作者团队也来了，但最后没有获奖，学术和比赛毕竟还是不一样，比赛需要很多trick，就比如孔子参加科举未必能中举因为他不会写八股文，但大师的成就不是区区小赛的成绩所能比的，向他们致敬。这次比赛的冠军团队来自浙江大学，确实非常牛，心服口服，他们的方法已经撰写论文被顶会录用（好像是AAAI?)，应该是新的SOTA了。
+二、ZS3Net简介 由于赛程短，我还是零基础进入，自然是采用本渣一贯的策略：走别人的路，让别人无路可走（囧）。看了一圈文献后，觉得CaGNet较难，估计来不及，所以从ZS3Net下手，ZS3Net是该领域较早期的一个作品。下面简介一下ZS3Net和我的理解。
+原文NIPS2019：https://arxiv.org/abs/1906.00817
+代码：https://github.com/valeoai/ZS3
+先放上论文主图：
+ZS3在经典图像分割网络DeepLabV3&#43;基础上动手术，首先把网络切开，切出末层和除末层之外的前层。网络末层的输出是像素级的分类结果，而末层的输入就是每像素所属类别的语义特征，语义特征是什么？也是词向量。而零样本任务中已知类和未知类的唯一连结就是词向量，这样我们从DeepLabV3&#43;末层的输入入手，就可以把已知类和未知类关联起来。
+然而DeepLabV3&#43;的末层输入的这个词向量和我们从其他文本中训练得到的词向量（我使用的是Glove6B）是不对应的。我们可以想象一下，假设末层输入的语义特征是300维，它可能是按照颜色、纹理、形状…这样的300个属性排列的，但我们从外界得到的词向量可能是物种、材料…、形状、纹理、颜色…等这样的排列，两者有交叉部分，但顺序不同，描述方式也不同，好比是两本词典，你需要一个翻译机制翻译过来。
+ZS3Net创造性的提出用生成器的方式实现这个翻译。这个生成器的输入是外界得到的词向量，比如Glove6B中词向量，输出是刚才提到特征向量（即DeepLabv3&#43;末层的输入，当然它也是前层的输出），使用已知类的Glove6B词向量和DeepLabv3&#43;前层输出特征向量训练这个生成器，训练好的生成器就掌握了这种翻译机制，可以用来根据未知类的Glove6B词向量生成未知类的特征向量。
+得到了未知类的特征向量再用它来训练DeepLabV3&#43;的末层（前层冻结不训练），得到了新的网络权重，就可以直接用于未知类的分割任务了。
+这个问题可能有点绕，我再来捋一遍，其实就是分为3步：
+1，在已知类上把DeepLabV3&#43;训练充分；
+2，使用训练集类别的词向量和训练集图片经DeepLabV3&#43;前层输出的特征向量训练一个生成器；
+3，从Glove6B中得到未知类的词向量，用生成器生成特征向量，用这个特征向量替换训练集图片经DeepLabV3&#43;前层输出的特征向量（注，只替换目标部分，不替换背景），同时也替换训练集标注Label中的已知类类别为未知类类别。然后再冻结前层，重新训练末层。最后把前层权重和末层权重合并起来得到的新的网络权重，就可以直接用于未知类测试集的推理。
+实际ZS3Net原文方法比我讲的要复杂一些，还用了一些技巧，但核心原理就是我刚才讲的三步。
+三、我的tricks 单靠已有开源想在这种比赛中获胜是不可能的，我在仔细分析数据、调试网络之后，进行了以下三点主要的改进，正是这三点改进使得分有了很大提高。
+1、对训练集逐类别加强训练
+由于本题训练集的类别数特别多，高达200类，而且各类差别很大，有的很好训练，而有的很难训练，主要是上帝造的东西都比较好训练一些，人造的东西都难训练。如果全部丢进去一起训练，网络训练进展非常缓慢，而且我卡也有限，只有2080ti，跑两天两夜也只达到mIoU0.25的水平。逼的没办法，我设计了一种逐类别训练的方法，效果不错。具体如下：
+step1: 先把200类全部训练几个epoch，验证每一类的IoU，把IoU达到一定阈值以上的类别称为learned类，表示它们已经训练好了，把剩余的称为unlearn类。
+step2: 然后每epoch从unlearn类中随机挑选10个作为to learn类，从learned类中每类选50张图片以保持记忆性，从to learn中每类选200张图片以加强训练。每轮训练结束再验证，重新划分learned类和unlearn类。
+如此循环往复。我最后达到159类learned，还有41类确实非常难以分类，仍然是unlearn。这样可以达到mIoU0.36，比直接训练法整整提高了11个点！
+2、只使用优质数据训练生成器
+ZS3Net的生成器使用GMMN，它比较简单，参数也少，所以训练它不难，不需要非常大量的数据。但是由于deeplabv3&#43;本身在本题训练集上的成绩并不是很高，mIoU0.36实际上意味着它有很多分割结果仍是错误的，如果我们用这些错误的特征向量和类别对应关系去训练这个生成器，这个生成器的翻译就会不准。
+所以我们应该去掉那些错误数据，只喂给生成器最好的饲料来训练。一个自然的想法是只用learned类来训练它，更进一步还可以深入到每张图片，比如计算每张图片的acc，只用acc高的图片来喂它。这样训练出来的生成器就更加准确。
+3、用一种新颖的方法对结果进行融合
+观察测试集推理结果我发现，网络对很多图片分割也都大致能分割出来，但分类却是错误的，更细致的观察我发现如果网络对某张图片分类错误时它会表现的没有正确时那么“自信”，就是它分割出的面积会小一些，比如缺一块或者中间有孔洞。这样我就想出了采用如下方式进行融合：
+step1:在不同训练条件下得到的各个权重分别对测试集做推理
+step2:对比同一张图片在不同权重下的推理结果，选择目标面积较大的一个作为最终推理结果。
+这个方法也很有效，我在决赛第一轮的时候没有使用融合，只排到第6名，决赛第二轮的时候使用了这个融合，排到第2名。
+四、总结 本次赛制是初赛取前12名进入决赛，决赛前6有奖，我是以初赛第11名进入决赛的，所以我去现场的时候没报希望，心态也非常放松。由于决赛采用了未知类词向量统一提供的方式，而初赛很多团队在词向量方面做了不少工作，所以改这种方式之后很多队伍翻了船，而我自始至终本本分分的做零样本网络方面的工作，没有去琢磨词向量，所以决赛我占优势。另外决赛第二轮我想到了用上面提到的融合方法又提了不少分，说实话第一轮我也想到了，但是当天一直在赶路，而且心态上没抱希望所以没有打起精神来改代码就没用融合。
+这次比赛认识了很多大佬，结识了几位朋友，收获满满。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/1aa9378366f7c2037db104f51cc1e9f2/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-12-29T14:58:48+08:00" />
+<meta property="article:modified_time" content="2020-12-29T14:58:48+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">之江杯2020零样本目标分割题参赛总结</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atelier-sulphurpool-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <font color="#999AAA"> </font> 
+<p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#_16" rel="nofollow">一、赛题简介</a></li><li><a href="#ZS3Net_25" rel="nofollow">二、ZS3Net简介</a></li><li><a href="#tricks_41" rel="nofollow">三、我的tricks</a></li><li><a href="#_60" rel="nofollow">四、总结</a></li></ul> 
+</div> 
+<p></p> 
+<hr color="#000000" size='1"'> 
+<p>  比赛链接：<a href="https://zhejianglab.aliyun.com/entrance/531816/rankingList" rel="nofollow">https://zhejianglab.aliyun.com/entrance/531816/rankingList</a>。我最终排名第四，这是综合决赛第一轮、第二轮线上成绩和最后答辩成绩的排名，实际上我最后决赛第二轮线上成绩已达到第二。和商业赛不同，之江杯更关注学术问题，这个赛题也比较前沿，报名团队只有三百多个，但看最后的决赛名单就知道，来的多是非常专业的团队。我这次依然是solo参赛，最后居然冲到了前排，真是没想到，实属幸运。</p> 
+<hr color="#000000" size='1"'> 
+  
+<h2><a id="_16"></a>一、赛题简介</h2> 
+<p>  本题属于图像语义分割任务，零样本是指没有提供任何测试集类别的样本，但提供了和测试集相似类别的图像及语义分割标注作为训练集，此外可以使用已训练好的词向量表来连结训练集类别和测试集类别间的语义关系，（词向量可以理解为一种用数字编码表示的词典）。举例：训练集中提供了西瓜的图像分割样本，测试集要求实现哈密瓜的图像分割，好比一个人见过西瓜但从来没有见过哈密瓜，他可以通过查阅西瓜和哈密瓜的词典来推测哈密瓜长什么样子。<br>   零样本目标分割任务的初衷是为了解决图像语义分割问题标注成本非常高的问题，同时这也是对更为通用的人工智能的一种探索，要求机器不仅能够识别图像，还要把图像名称的语义和图像特征对应起来。本赛题训练集200类（下称已知类，seen），共约80000张图片，是和ImageNet风格类似的实物照片，测试集初赛和决赛都各有不同的50类（下称未知类，unseen），每类约100张图片。<br>   这个问题比较前沿，相关文献和开源不多，能够查到的按时间顺序排序是SPNet -&gt; ZS3Net -&gt; CaGNet。CaGNet应该是当时的SOTA，这次比赛CaGNet的作者团队也来了，但最后没有获奖，学术和比赛毕竟还是不一样，比赛需要很多trick，就比如孔子参加科举未必能中举因为他不会写八股文，但大师的成就不是区区小赛的成绩所能比的，向他们致敬。这次比赛的冠军团队来自浙江大学，确实非常牛，心服口服，他们的方法已经撰写论文被顶会录用（好像是AAAI?)，应该是新的SOTA了。</p> 
+<h2><a id="ZS3Net_25"></a>二、ZS3Net简介</h2> 
+<p>  由于赛程短，我还是零基础进入，自然是采用本渣一贯的策略：走别人的路，让别人无路可走（囧）。看了一圈文献后，觉得CaGNet较难，估计来不及，所以从ZS3Net下手，ZS3Net是该领域较早期的一个作品。下面简介一下ZS3Net和我的理解。<br>   原文NIPS2019：<a href="https://arxiv.org/abs/1906.00817" rel="nofollow">https://arxiv.org/abs/1906.00817</a><br>   代码：<a href="https://github.com/valeoai/ZS3">https://github.com/valeoai/ZS3</a><br>   先放上论文主图：<br> <img src="https://images2.imgbox.com/a2/55/2JTEqbTo_o.jpg" alt="在这里插入图片描述"><br>   ZS3在经典图像分割网络DeepLabV3+基础上动手术，首先把网络切开，切出末层和除末层之外的前层。网络末层的输出是像素级的分类结果，而末层的输入就是每像素所属类别的语义特征，语义特征是什么？也是词向量。而零样本任务中已知类和未知类的唯一连结就是词向量，这样我们从DeepLabV3+末层的输入入手，就可以把已知类和未知类关联起来。<br>   然而DeepLabV3+的末层输入的这个词向量和我们从其他文本中训练得到的词向量（我使用的是Glove6B）是不对应的。我们可以想象一下，假设末层输入的语义特征是300维，它可能是按照颜色、纹理、形状…这样的300个属性排列的，但我们从外界得到的词向量可能是物种、材料…、形状、纹理、颜色…等这样的排列，两者有交叉部分，但顺序不同，描述方式也不同，好比是两本词典，你需要一个翻译机制翻译过来。<br>   ZS3Net创造性的提出用生成器的方式实现这个翻译。这个生成器的输入是外界得到的词向量，比如Glove6B中词向量，输出是刚才提到特征向量（即DeepLabv3+末层的输入，当然它也是前层的输出），使用已知类的Glove6B词向量和DeepLabv3+前层输出特征向量训练这个生成器，训练好的生成器就掌握了这种翻译机制，可以用来根据未知类的Glove6B词向量生成未知类的特征向量。<br> 得到了未知类的特征向量再用它来训练DeepLabV3+的末层（前层冻结不训练），得到了新的网络权重，就可以直接用于未知类的分割任务了。<br>   这个问题可能有点绕，我再来捋一遍，其实就是分为3步：<br>   1，在已知类上把DeepLabV3+训练充分；<br>   2，使用训练集类别的词向量和训练集图片经DeepLabV3+前层输出的特征向量训练一个生成器；<br>   3，从Glove6B中得到未知类的词向量，用生成器生成特征向量，用这个特征向量替换训练集图片经DeepLabV3+前层输出的特征向量（注，只替换目标部分，不替换背景），同时也替换训练集标注Label中的已知类类别为未知类类别。然后再冻结前层，重新训练末层。最后把前层权重和末层权重合并起来得到的新的网络权重，就可以直接用于未知类测试集的推理。<br>   实际ZS3Net原文方法比我讲的要复杂一些，还用了一些技巧，但核心原理就是我刚才讲的三步。</p> 
+<h2><a id="tricks_41"></a>三、我的tricks</h2> 
+<p>  单靠已有开源想在这种比赛中获胜是不可能的，我在仔细分析数据、调试网络之后，进行了以下三点主要的改进，正是这三点改进使得分有了很大提高。<br> <strong>1、对训练集逐类别加强训练</strong><br>   由于本题训练集的类别数特别多，高达200类，而且各类差别很大，有的很好训练，而有的很难训练，主要是上帝造的东西都比较好训练一些，人造的东西都难训练。如果全部丢进去一起训练，网络训练进展非常缓慢，而且我卡也有限，只有2080ti，跑两天两夜也只达到mIoU0.25的水平。逼的没办法，我设计了一种逐类别训练的方法，效果不错。具体如下：</p> 
+<p><img src="https://images2.imgbox.com/0a/2d/Q6KomiqD_o.png" alt="在这里插入图片描述"><br>   step1: 先把200类全部训练几个epoch，验证每一类的IoU，把IoU达到一定阈值以上的类别称为learned类，表示它们已经训练好了，把剩余的称为unlearn类。<br>   step2: 然后每epoch从unlearn类中随机挑选10个作为to learn类，从learned类中每类选50张图片以保持记忆性，从to learn中每类选200张图片以加强训练。每轮训练结束再验证，重新划分learned类和unlearn类。<br>   如此循环往复。我最后达到159类learned，还有41类确实非常难以分类，仍然是unlearn。这样可以达到mIoU0.36，比直接训练法整整提高了11个点！<br> <strong>2、只使用优质数据训练生成器</strong><br>   ZS3Net的生成器使用GMMN，它比较简单，参数也少，所以训练它不难，不需要非常大量的数据。但是由于deeplabv3+本身在本题训练集上的成绩并不是很高，mIoU0.36实际上意味着它有很多分割结果仍是错误的，如果我们用这些错误的特征向量和类别对应关系去训练这个生成器，这个生成器的翻译就会不准。<br>   所以我们应该去掉那些错误数据，只喂给生成器最好的饲料来训练。一个自然的想法是只用learned类来训练它，更进一步还可以深入到每张图片，比如计算每张图片的acc，只用acc高的图片来喂它。这样训练出来的生成器就更加准确。<br> <strong>3、用一种新颖的方法对结果进行融合</strong><br>   观察测试集推理结果我发现，网络对很多图片分割也都大致能分割出来，但分类却是错误的，更细致的观察我发现如果网络对某张图片分类错误时它会表现的没有正确时那么“自信”，就是它分割出的面积会小一些，比如缺一块或者中间有孔洞。这样我就想出了采用如下方式进行融合：<br>   step1:在不同训练条件下得到的各个权重分别对测试集做推理<br>   step2:对比同一张图片在不同权重下的推理结果，选择目标面积较大的一个作为最终推理结果。<br> 这个方法也很有效，我在决赛第一轮的时候没有使用融合，只排到第6名，决赛第二轮的时候使用了这个融合，排到第2名。</p> 
+<h2><a id="_60"></a>四、总结</h2> 
+<p>  本次赛制是初赛取前12名进入决赛，决赛前6有奖，我是以初赛第11名进入决赛的，所以我去现场的时候没报希望，心态也非常放松。由于决赛采用了未知类词向量统一提供的方式，而初赛很多团队在词向量方面做了不少工作，所以改这种方式之后很多队伍翻了船，而我自始至终本本分分的做零样本网络方面的工作，没有去琢磨词向量，所以决赛我占优势。另外决赛第二轮我想到了用上面提到的融合方法又提了不少分，说实话第一轮我也想到了，但是当天一直在赶路，而且心态上没抱希望所以没有打起精神来改代码就没用融合。<br> 这次比赛认识了很多大佬，结识了几位朋友，收获满满。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/f92aa6e2a22d322f48f02d412c6411a0/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">32个笔画顺序表图片_32个笔画掌握透了，练字真的不难</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/3668ce8eb540d82a914a0b2a184f8917/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">h5页面转发微信好友，qq，微信朋友圈，qq空间踩坑</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

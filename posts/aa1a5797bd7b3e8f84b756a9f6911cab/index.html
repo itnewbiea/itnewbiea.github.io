@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>mediasoup数据转发 源码剖析 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="mediasoup数据转发 源码剖析" />
+<meta property="og:description" content="一. mediasoup重要类说明 Worker：mediasoup 流媒体处理进程
+Router：路由对象，类似于房间的功能，保存了流之间的订阅关系，它接收 Producer 的数据并转发给订阅该 Producer 的 Consumer
+Producer：音视频流生产者，一路音频就算一个单独的生产者，一路视频也算一个单独的生产者
+Consumer：音视频流消费者
+Transport：传输通道，有 WebRtcTransport，PlainRtpTransport 以及 PipeTransport
+上图解释如下：一个 Worker 可以有多个 Router，客户端通过 Transport 与后台进程产生连接，并通过 Transport 发送流数据或者消费流数据。通道有多种类型，有基于 WebRTC 协议的通道，也有普通的 RTP/RTCP 通道，还有不同 Router 间转发数据的 PipeTransport。
+二. 数据路由代码剖析 1. 创建 Router Websocket 监听连接请求并创建媒体层的路由对象。
+2. 创建 Transport 通过 Websocket 信令创建房间路由后，客户端与媒体需要建立通道，客户端可以通过通道把媒体流发送给服务端（生产），也可以通过通道消费其他流的数据（消费）。Transport 有 PlainTransport，WebRtcTransport 等，我们以 WebRtcTransport 为例。
+WebRtcTransport 的构造函数中通过 listenIp, port 创建 UdpSocket，UdpSocket 继承自 UdpSocketHandler，UdpSocketHandler 包含了 uv_udp_t* 对象，它是一个 libuv 的 UDP 事件处理对象，我们通过注册相应的回调函数即可在有事件发生时调用回调函数处理。
+在服务端创建 WebRtcTransport 对象后，还需要通过 connectWebRtcTransport 才能让客户端与该通道对象产生关联，该流程主要是进行 DTLS 认证。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/aa1a5797bd7b3e8f84b756a9f6911cab/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-08-26T21:23:05+08:00" />
+<meta property="article:modified_time" content="2023-08-26T21:23:05+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">mediasoup数据转发 源码剖析</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2>一. mediasoup重要类说明</h2> 
+<p><img alt="" height="850" src="https://images2.imgbox.com/c0/f2/Bdp48PKw_o.png" width="987"></p> 
+<p>Worker：mediasoup 流媒体处理进程</p> 
+<p>Router：路由对象，类似于房间的功能，保存了流之间的订阅关系，它接收 Producer 的数据并转发给订阅该 Producer 的 Consumer</p> 
+<p>Producer：音视频流生产者，一路音频就算一个单独的生产者，一路视频也算一个单独的生产者</p> 
+<p>Consumer：音视频流消费者</p> 
+<p>Transport：传输通道，有 WebRtcTransport，PlainRtpTransport 以及 PipeTransport</p> 
+<p>        上图解释如下：一个 Worker 可以有多个 Router，客户端通过 Transport 与后台进程产生连接，并通过 Transport 发送流数据或者消费流数据。通道有多种类型，有基于 WebRTC 协议的通道，也有普通的 RTP/RTCP 通道，还有不同 Router 间转发数据的 PipeTransport。</p> 
+<p></p> 
+<h2>二. 数据路由代码剖析</h2> 
+<h3>1. 创建 Router</h3> 
+<p>         Websocket 监听连接请求并创建媒体层的路由对象。</p> 
+<p><img alt="" height="728" src="https://images2.imgbox.com/01/35/2LsmAi1K_o.png" width="659"></p> 
+<p><img alt="" height="363" src="https://images2.imgbox.com/1a/82/oTtBiobx_o.png" width="517"></p> 
+<p> <img alt="" height="426" src="https://images2.imgbox.com/5b/6e/zsdAobA0_o.png" width="611"></p> 
+<p> <img alt="" height="445" src="https://images2.imgbox.com/15/f7/58gjOBA9_o.png" width="636"></p> 
+<p></p> 
+<h3>2. 创建 Transport</h3> 
+<p>        通过 Websocket 信令创建房间路由后，客户端与媒体需要建立通道，客户端可以通过通道把媒体流发送给服务端（生产），也可以通过通道消费其他流的数据（消费）。Transport 有 PlainTransport，WebRtcTransport 等，我们以 WebRtcTransport 为例。</p> 
+<p><img alt="" height="629" src="https://images2.imgbox.com/5c/af/WgLNFspp_o.png" width="712"></p> 
+<p><img alt="" height="717" src="https://images2.imgbox.com/f2/e7/Ho2KT6KN_o.png" width="763"></p> 
+<p> <img alt="" height="288" src="https://images2.imgbox.com/a8/9d/JjmPPMif_o.png" width="639"></p> 
+<p>        WebRtcTransport 的构造函数中通过 listenIp, port 创建 UdpSocket，UdpSocket 继承自 UdpSocketHandler，UdpSocketHandler 包含了 uv_udp_t* 对象，它是一个 libuv 的 UDP 事件处理对象，我们通过注册相应的回调函数即可在有事件发生时调用回调函数处理。</p> 
+<p><img alt="" height="237" src="https://images2.imgbox.com/4b/7d/iOzIWtJe_o.png" width="604"></p> 
+<p><img alt="" height="321" src="https://images2.imgbox.com/dc/12/2f40tbV9_o.png" width="712"></p> 
+<p><img alt="" height="164" src="https://images2.imgbox.com/96/fd/vsSpF3yG_o.png" width="818"></p> 
+<p><img alt="" height="503" src="https://images2.imgbox.com/b4/86/y0YOPlkq_o.png" width="731"></p> 
+<p>        在服务端创建 WebRtcTransport 对象后，还需要通过 connectWebRtcTransport 才能让客户端与该通道对象产生关联，该流程主要是进行 DTLS 认证。</p> 
+<p><img alt="" height="269" src="https://images2.imgbox.com/80/a5/CEUWNHYy_o.png" width="601"></p> 
+<p> <img alt="" height="126" src="https://images2.imgbox.com/1c/97/wOFvY1Yq_o.png" width="662"></p> 
+<p></p> 
+<h3>3. 生产流数据 Produce</h3> 
+<p>        创建连接通道后，客户端可以通过该通道发送流媒体数据，每一路流称为一个 Producer。</p> 
+<p><img alt="" height="470" src="https://images2.imgbox.com/1f/89/Y7TojXkz_o.png" width="604"></p> 
+<p><img alt="" height="804" src="https://images2.imgbox.com/ee/ed/cKsz4cUl_o.png" width="879"></p> 
+<p> <img alt="" height="642" src="https://images2.imgbox.com/7d/2c/CFmhTVTA_o.png" width="538"></p> 
+<p>        调用 produce 后，Transport 会回调 Router::OnTransportNewProducer 告知 Router 该路由对象产生了一个新的生产者，Router 会记录 producer_id 与 Producer 对象的映射关系，相当于保存了该路由对象当前有哪些生产者。</p> 
+<p></p> 
+<h3>4. 消费流数据 consume</h3> 
+<p>        Router 有了流数据的生产者，还需要有消费该 Producer 的 Consumer，这样 Router 才会将收到的 Producer 数据转发给 Consumer。</p> 
+<p>        在<a class="link-info" href="https://blog.csdn.net/weixin_38102771/article/details/120927530?spm=1001.2014.3001.5501" title="这篇博客">这篇博客</a>中介绍了信令的交互流程，通过 join 加入房间时，已经为准备加入房间的用户订阅了所有存在于房间的 Producers。</p> 
+<p><img alt="" height="627" src="https://images2.imgbox.com/21/18/QxORrQ2I_o.png" width="625"></p> 
+<p> <img alt="" height="611" src="https://images2.imgbox.com/fb/fd/0Sg1hYVn_o.png" width="608"></p> 
+<p>        C++ Transport 收到 TRANSPORT_CONSUME 请求后，根据 type 创建出相应类型的 Consumer，然后通知 Router::OnTransportNewConsumer，在该函数中最重要的就是存放 Producer 与 Consumers 的映射关系，该结构体对象为：std::unordered_map&lt;RTC::Producer*, std::unordered_set&lt;RTC::Consumer*&gt;&gt; mapProducerConsumers，即将新的 Consumer 加入到Producer 对应的 Consumer 集合中。 </p> 
+<p> <img alt="" height="389" src="https://images2.imgbox.com/7e/05/oek7XFUR_o.png" width="478"></p> 
+<p> <img alt="" height="636" src="https://images2.imgbox.com/9d/d8/13Qb2euf_o.png" width="575"></p> 
+<p></p> 
+<h3>5. 数据转发</h3> 
+<p>        当生产者发送媒体数据后，首先得到通知的是 UDP socket，因为我们使用 libuv 注册了读事件的回调，因此会回调 onRecv，再调用 UdpSocketHandler::OnUvRecv，之后再调用 WebRtcTransport::OnUdpSocketPacketReceived，之后的调用流程如下所示。</p> 
+<p><img alt="" height="506" src="https://images2.imgbox.com/72/6a/b4wEor8O_o.png" width="437"></p> 
+<p> <img alt="" height="228" src="https://images2.imgbox.com/01/d8/fwhkxWxA_o.png" width="535"></p> 
+<p> <img alt="" height="421" src="https://images2.imgbox.com/a0/d8/LjZApIO2_o.png" width="609"></p> 
+<p> <img alt="" height="223" src="https://images2.imgbox.com/ac/21/Veqwf4j6_o.png" width="431"></p> 
+<p> <img alt="" height="102" src="https://images2.imgbox.com/c8/27/mwz3o9Uu_o.png" width="626"></p> 
+<p><img alt="" height="457" src="https://images2.imgbox.com/41/09/Vjskgyn6_o.png" width="516"></p> 
+<p>         最终可以看到 WebRtcTransport::OnRtpDataReceived 处理完再交给父类 RTC::Transport::ReceiveRtpPacket，其根据 Packet 的 ssrc 确认 Producer 源对象后，调用 Produer 的 ReceiveRtpPacket 处理，之后再通知 Transport::OnProducerRtpPacketReceived 处理，Transport 再通知 Router::OnTransportProducerRtpPacketReceived 处理，Router 根据保存的订阅关系，调用 Consumer::SendRtpPacket 将数据包给相应通道的客户端。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/c5b2e25c03d8ccd7d9988d73208350a1/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">WebRTC GCC 拥塞控制算法（REMB-GCC）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/2a95cd4eab65296b6e41380996018f3e/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">MySql005——使用SQL创建数据库和表(创建、选择、删除、插入)</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

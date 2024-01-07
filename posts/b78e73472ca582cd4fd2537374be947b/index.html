@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>使用ClickHouse JDBC官方驱动，踩坑无数 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="使用ClickHouse JDBC官方驱动，踩坑无数" />
+<meta property="og:description" content="前言 最近遇到一个ClickHouse的线上问题：
+Code: 242, e.displayText() = DB::Exception: Table is in readonly mode(zookeeper path:/clickhouse/tables/02/xxx) (version 21.12.4.1) (official build) 这个问题我在网上查原因说是由于Zookeeper压力过大，表变成只读状态，导致ClickHouse插入数据失败。
+具体原因有两个：
+写入数据频率过高。Zookeeper中的集群节点挂掉。 而我们项目出现这个问题的原因是第一个：写入数据频率过高。
+但是在网上搜资料的过程中，我又发现了另外一个问题：我们项目用了JDBC驱动Maven groupId ru.yandex.clickhouse，但ClickHouse官方并不推荐。
+于是我果断的访问了ClickHouse的官网，通过它访问了ClickHouse的GitHub地址：https://github.com/ClickHouse/clickhouse-jdbc。
+证实了官网确实不建议使用ru.yandex.clickhouse驱动：
+而应该改成com.clickhouse驱动，并且推荐使用0.3.2以上的版本：
+于是，后面几天开始了ClickHouse的JDBC驱动升级之旅。踩了不少坑，拿出来跟大家一起分享一下，希望对你会有所帮助。
+1. 第一次升级 ClickHouse官方GitHub上面推荐使用的JDBC驱动是0.3.2以上的版本：
+于是，我果断把项目中的pom.xml文件中的groupId换成了com.clickhouse，版本换成了0.3.2。
+刷新了一下maven，本地启动项目，能够正常运行。
+然后在本地测试了一下业务功能，能够正常从ClickHouse中读取和写入数据。
+心里不禁在想：这次升级实在太容易了。
+2. 第二次升级 后来，项目组的同事建议换成最新版本，说有更多新功能，并且性能有很大提升。
+我听到性能有很大提升这几个字，就决定再升级试试。
+于是，把版本升级成了0.3.2-patch11。
+在本地再次测试，业务功能一切正常。
+然后把项目部署到测试环境了。
+3. 发现问题了 第二天收到了两封sentry的报警邮件，报警级别都是warn。
+第一封邮件中提示异常：This driver is DEPRECATED. Please use [com.clickhouse.jdbc.ClickHouseDriver] instead。
+意思是说ru.yandex.clickhouse的驱动已经被废弃了，请使用com.clickhouse.jdbc.ClickHouseDriver驱动。
+第二封邮件中提示异常：Also everything in package [ru.yandex.clickhouse] will be removed starting from 0.4.0。
+意思是说ru.yandex.clickhouse将被移除。
+看到这两封邮件，我当时有点懵，不就是用的com.clickhouse驱动包吗，ru.yandex.clickhouse是从哪里来的？
+于是全局搜索了一下ru.yandex.clickhouse关键字，并没有搜到任何记录。
+这让我更懵了。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/b78e73472ca582cd4fd2537374be947b/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-11-28T22:15:47+08:00" />
+<meta property="article:modified_time" content="2022-11-28T22:15:47+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">使用ClickHouse JDBC官方驱动，踩坑无数</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h3><a id="_0"></a>前言</h3> 
+<p>最近遇到一个ClickHouse的线上问题：<br> <code>Code: 242, e.displayText() = DB::Exception: Table is in readonly mode(zookeeper path:/clickhouse/tables/02/xxx) (version 21.12.4.1) (official build) </code></p> 
+<p>这个问题我在网上查原因说是由于<code>Zookeeper</code>压力过大，表变成只读状态，导致<code>ClickHouse</code>插入数据失败。</p> 
+<p>具体原因有两个：</p> 
+<ol><li>写入数据频率过高。</li><li>Zookeeper中的集群节点挂掉。</li></ol> 
+<p>而我们项目出现这个问题的原因是第一个：写入数据频率过高。</p> 
+<p>但是在网上搜资料的过程中，我又发现了另外一个问题：我们项目用了<code>JDBC驱动</code>Maven groupId <code>ru.yandex.clickhouse</code>，但<code>ClickHouse</code>官方并不推荐。</p> 
+<p>于是我果断的访问了ClickHouse的官网，通过它访问了ClickHouse的GitHub地址：<code>https://github.com/ClickHouse/clickhouse-jdbc</code>。</p> 
+<p>证实了官网确实不建议使用<code>ru.yandex.clickhouse</code>驱动：<br> <img src="https://images2.imgbox.com/40/39/kIQtx98X_o.png" alt=""><br> 而应该改成<code>com.clickhouse</code>驱动，并且推荐使用<code>0.3.2</code>以上的版本：<br> <img src="https://images2.imgbox.com/cc/9a/GVf3D30I_o.png" alt=""><br> 于是，后面几天开始了<code>ClickHouse</code>的<code>JDBC驱动</code>升级之旅。踩了不少坑，拿出来跟大家一起分享一下，希望对你会有所帮助。</p> 
+<h3><a id="1__24"></a>1. 第一次升级</h3> 
+<p><code>ClickHouse</code>官方GitHub上面推荐使用的JDBC驱动是<code>0.3.2</code>以上的版本：<br> <img src="https://images2.imgbox.com/5b/14/aqMc9d8H_o.png" alt=""><br> 于是，我果断把项目中的<code>pom.xml</code>文件中的<code>groupId</code>换成了<code>com.clickhouse</code>，版本换成了<code>0.3.2</code>。</p> 
+<p>刷新了一下maven，本地启动项目，能够正常运行。</p> 
+<p>然后在本地测试了一下业务功能，能够正常从ClickHouse中读取和写入数据。</p> 
+<p>心里不禁在想：这次升级实在太容易了。</p> 
+<h3><a id="2__35"></a>2. 第二次升级</h3> 
+<p>后来，项目组的同事建议换成最新版本，说有更多新功能，并且性能有很大提升。</p> 
+<p>我听到<code>性能有很大提升</code>这几个字，就决定再升级试试。</p> 
+<p>于是，把版本升级成了<code>0.3.2-patch11</code>。</p> 
+<p>在本地再次测试，业务功能一切正常。</p> 
+<p>然后把项目部署到测试环境了。</p> 
+<h3><a id="3__47"></a>3. 发现问题了</h3> 
+<p>第二天收到了两封<code>sentry</code>的报警邮件，报警级别都是<code>warn</code>。</p> 
+<p>第一封邮件中提示异常：<code>This driver is DEPRECATED. Please use [com.clickhouse.jdbc.ClickHouseDriver] instead</code>。</p> 
+<p>意思是说ru.yandex.clickhouse的驱动已经被废弃了，请使用<code>com.clickhouse.jdbc.ClickHouseDriver</code>驱动。</p> 
+<p>第二封邮件中提示异常：<code>Also everything in package [ru.yandex.clickhouse] will be removed starting from 0.4.0</code>。</p> 
+<p>意思是说ru.yandex.clickhouse将被移除。</p> 
+<p>看到这两封邮件，我当时有点懵，不就是用的<code>com.clickhouse</code>驱动包吗，<code>ru.yandex.clickhouse</code>是从哪里来的？</p> 
+<p>于是全局搜索了一下<code>ru.yandex.clickhouse</code>关键字，并没有搜到任何记录。</p> 
+<p>这让我更懵了。</p> 
+<p>接下来，我打开了clickhouse-jdbc-0.3.2-patch11-all.jar文件，看到了让人意想不到的结果：<br> <img src="https://images2.imgbox.com/ff/a1/qivZmYO5_o.png" alt=""><br> 这个jar包下面竟然有两个目录：<code>com.clickhouse</code>和<code>ru.yandex.clickhouse</code>，也就是说jar包中新驱动和老驱动两种都支持。</p> 
+<p>而且<code>ClickhouseDriver</code>类有两个：<br> <img src="https://images2.imgbox.com/ca/79/te0j4vy1_o.png" alt=""><br> 我此时心里有十万个为什么：为什么不直接把<code>ru.yandex.clickhouse</code>包的代码删除了，却在日志文件中打印一些警告呢？</p> 
+<p>这实在太坑了吧。</p> 
+<p>也就是说升级驱动之后，项目依然用的老驱动的代码，我测试了个寂寞。。。</p> 
+<h3><a id="4__76"></a>4. 如何使用新驱动？</h3> 
+<p>接下来我内心的OS是：既然ClickHouse官方驱动包，新老驱动都支持，必然有个开关控制是使用新的JDBC驱动，还是使用老的JDBC驱动。</p> 
+<p>从目前来看，如果没有调整开关，ClickHouse官方驱动包默认使用的是老的JDBC驱动。</p> 
+<p>接下来，最重要的问题是要搞清楚：如何使用新驱动？</p> 
+<p>很快，我查到通过配置下面的参数：</p> 
+<pre><code class="prism language-java">spring<span class="token punctuation">.</span>datasource<span class="token punctuation">.</span>clickhouse<span class="token punctuation">.</span>drive<span class="token operator">-</span><span class="token keyword">class</span><span class="token operator">-</span>name<span class="token operator">=</span><span class="token class-name"><span class="token namespace">com<span class="token punctuation">.</span>clickhouse<span class="token punctuation">.</span>jdbc<span class="token punctuation">.</span></span>ClickHouseDriver</span>
+</code></pre> 
+<p>就能指定<code>Spring</code>使用的JDBC驱动。</p> 
+<p>果然在<code>application.properties</code>文件中，配置<code>数据源</code>的地方，增加了这样一个配置，重启项目，Spring就是使用了新的ClickHouse JDBC驱动。</p> 
+<p>日志中没有打印邮件中那两个warn了。</p> 
+<p>此时，心里暗自窃喜，终于使用了ClickHouse官方推荐的JDBC驱动。</p> 
+<p>项目已经正常运行起来了，赶紧测试一下业务功能是否正常。</p> 
+<h3><a id="5__98"></a>5. 出现了两个新问题</h3> 
+<p>结果马上被啪啪打脸了。</p> 
+<p>在测试批量insert数据的业务场景时，系统运行日志中出现了两个异常：</p> 
+<p>异常1：<br> <code>Code: 6. DB:Exception: Cannot prse string '2022-11-22 14:42:37.025' as DateTime:syntax error at position 19...</code><br> 从提示的信息看，它表示时间2022-11-22 14:42:37.025不能转换成<code>DateTime</code>类型。</p> 
+<p>异常2：<br> <code>Please consider to use one and only one values expression, for example: use 'values(?)' instead of 'values(?),(?).'</code>从提示的信息看，它表示不支持批量insert数据。</p> 
+<p>我去。。。</p> 
+<p>升级ClickHouse JDBC驱动出问题了。</p> 
+<p>ClickHouse 官方最新的JDBC驱动竟然不支持批量insert数据，这个问题更严重。</p> 
+<p>赶紧搜索一下解决办法。</p> 
+<h3><a id="6__118"></a>6. 回退版本</h3> 
+<p>很快，在clickhouse-jdbc的issues中查到了类似的问题，地址：<code>https://github.com/ClickHouse/clickhouse-jdbc/issues/1106</code>。<br> 问题如下：<br> <img src="https://images2.imgbox.com/e0/d2/hwwJYaUx_o.png" alt=""><br> 下面有人回答：<br> <img src="https://images2.imgbox.com/07/13/uV4I2lbf_o.png" alt=""><br> 使用老版本就没有这个警告。</p> 
+<p>我一下子如梦初醒。</p> 
+<p>不要迷恋最新的版本，clickhouse-jdbc一定要找最合适的版本。</p> 
+<p>于是，我查了dev、st和ga环境的ClickHouse服务器版本，发现dev用的是<code>20.12.8.5</code>，而st和ga用的<code>21.12.4.1</code>。</p> 
+<p>为了兼容dev环境，ClickHouse服务器版本以20+为准，再看看clickhouse-jdbc能用什么版本。</p> 
+<p>很快在releases中查到，clickhouse-jdbc能用0.3.2，最高只能0.3.2-patch1。因为0.3.2-patch2以上，要求ClickHouse服务器是21+的版本。</p> 
+<p>因此，我只能将clickhouse-jdbc的版本回退到：<code>0.3.2-patch1</code>。</p> 
+<p>果然，回退版本之后，不能批量insert的问题解决了。</p> 
+<p>接下来，就是一个问题。</p> 
+<h3><a id="7_DateTime_141"></a>7. DateTime</h3> 
+<p>让我们一起回顾一下那个问题：<br> <code>Code: 6. DB:Exception: Cannot prse string '2022-11-22 14:42:37.025' as DateTime:syntax error at position 19...</code><br> 从提示的信息看，它表示时间2022-11-22 14:42:37.025不能转换成<code>DateTime</code>类型。</p> 
+<p>而DateTime的时间格式是：<code>yyyy-MM-dd HH:mm:ss</code>，这个问题是由于2022-11-22 14:42:37.025包含了<code>毫秒</code>，不能直接转换成2022-11-22 14:42:37导致的。</p> 
+<p>我查了一下代码和表结构，代码中Entity中time字段定义成的<code>Date</code>类型。</p> 
+<p>而表中定义的time字段是<code>DateTime</code>类型。</p> 
+<p>ClickHouse官方驱动无法将Date类型的时间直接转换成DateTime类型。</p> 
+<p>怎么解决这个问题呢？</p> 
+<p>答：修改表中的字段类型不就行了，将<code>DateTime</code>转换成<code>DateTime64</code>，<code>DateTime64</code>是支持<code>毫秒</code>的。</p> 
+<p>我亲测过，使用DateTime64类型接收Java中Date类型的时间，能够正常解析。</p> 
+<p>那张表有三个DateTime类型的字段：create_time、edit_time和time。</p> 
+<p>前面两个字段的字段类型，很容易就修改成功了。</p> 
+<p>但修改time字段时，却报了一个异常：<br> <code>Code: 524,e.displayText() = DB::Exception: Alter of key column time from type DateTime to type DateTime64(3) must be metadata-only (20.12.8.5)</code></p> 
+<p>提示作为key的字段不能被修改。</p> 
+<p>这又是为什么？</p> 
+<h3><a id="8_order_by_171"></a>8. order by</h3> 
+<p>我这一次直接查看了那张表的建表语句：</p> 
+<pre><code class="prism language-sql"><span class="token keyword">show</span> <span class="token keyword">create</span> <span class="token keyword">table</span> test<span class="token punctuation">;</span>
+</code></pre> 
+<p>发现该表处理主键和普通索引之外，还特别加了<code>order by</code>的索引。</p> 
+<p>例如：<code>order by (code, time)</code>。</p> 
+<p>看到这里我迅速明白了，原来time字段是order by的索引字段，难怪不允许随便修改的。</p> 
+<p>于是，找DBA商讨对策。</p> 
+<p>DBA说要修改ClickHouse中表的索引字段的类型，只能重新建表，然后把数据同步过去。</p> 
+<p>很显然这个方案太麻烦了。</p> 
+<p>我在想有没有其他更简单的方案呢？</p> 
+<h3><a id="9_date_time_input_format_190"></a>9. date_time_input_format参数</h3> 
+<p>我此时在思考，不就是时间转换出的问题吗？</p> 
+<p>让ClickHouse在保存数据时，自动转换一个时间格式不就解决问题了吗？</p> 
+<p>我在网上查到一个叫：<code>date_time_input_format</code>的参数。</p> 
+<p>该参数允许选择日期和时间的文本表示的解析器。</p> 
+<p>它可能的值:</p> 
+<ul><li>‘best_effort’ — Enables extended parsing.</li></ul> 
+<p>ClickHouse可以解析基本 YYYY-MM-DD HH:MM:SS 格式和所有 ISO 8601 日期和时间格式。 例如, ‘2018-06-08T01:02:03.000Z’.</p> 
+<ul><li>‘basic’ — Use basic parser.</li></ul> 
+<p>ClickHouse只能解析基本的 YYYY-MM-DD HH:MM:SS 格式。 例如, ‘2019-08-20 10:18:56’.</p> 
+<p>默认值: ‘basic’.</p> 
+<p>原来这个是时间转换失败的根源，如果我们把<code>date_time_input_format</code>的值设置成<code>best_effort</code>，不就解决问题了。</p> 
+<p>为了不影响全局，我想只给那三张表调整date_time_input_format的值。</p> 
+<p>但是在保存设置时，报错了。</p> 
+<p>原来date_time_input_format参数只允许在<code>MergeTree</code>存储引擎上使用，而我们表的存储引擎用的<code>ReplacingMergeTree</code>。</p> 
+<p>晕死了。。。</p> 
+<p>只能想想其他办法了。</p> 
+<h3><a id="10_parseDateTimeBestEffortOrNull_222"></a>10. parseDateTimeBestEffortOrNull</h3> 
+<p>在insert数据的地方，用函数手动转换一下不就OK了吗？</p> 
+<p>当然修改Java的Entity中的Date类型，改成String也是可以的，不过review了一下代码，这种改动有点大，涉及的地方很多。</p> 
+<p>最小的改动是在mapper层处理，因为一个mapper中最多只有一个insert存在。</p> 
+<p>而我review了所有的ClickHouse表，只有3张表用了DateTime类型，其他的表都是DateTime64类型。</p> 
+<p>刚开始，我在ClickHouse的官方文档中查到了formatDateTime函数，测试之后发现该函数不太合适。</p> 
+<p>后来找到了<code>parseDateTimeBestEffort</code>系列函数，决定使用<code>parseDateTimeBestEffortOrNull</code>函数。</p> 
+<p>只需在mapper.xml的insert语句中，使用<code>parseDateTimeBestEffortOrNull(#{item.time})</code>改造一下即可。</p> 
+<p>测试后发现，时间转换问题被解决了。</p> 
+<p>后来，在select语句中又出现了这个异常。</p> 
+<p>我刚开始以为是toDate(time)函数导致的，但后面发现该select的where条件中使用了time字段作为查询条件，才导致了该问题的发生。</p> 
+<p>这时同样使用parseDateTimeBestEffortOrNull函数，解决了问题。</p> 
+<p>至此，ClickHouse的JDBC驱动包升级完成，没有再出现其他的问题。</p> 
+<blockquote> 
+ <p>需要特别注意的是：以后新创建的表或新加的字段，如果有时间类型的字段，务必要定义成DateTime64类型的。</p> 
+</blockquote> 
+<p>其实，我们在使用<code>ClickHouse</code>的过程中，同样也遇到过很多坑，文章开头的那个问题只是其中一个，后面会有一篇专题文章分享给大家，敬请期待。</p> 
+<h4><a id="_252"></a>最后说一句(求关注，别白嫖我)</h4> 
+<p>如果这篇文章对您有所帮助，或者有所启发的话，帮忙扫描下发二维码关注一下，您的支持是我坚持写作最大的动力。<br> 求一键三连：点赞、转发、在看。<br> 关注公众号：【苏三说技术】，在公众号中回复：面试、代码神器、开发手册、时间管理有超赞的粉丝福利，另外回复：加群，可以跟很多BAT大厂的前辈交流和学习。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/b6560066897c961b7661bef40e09f8df/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">算法练习--日更 准备蓝桥杯</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f3ddd84bf01c027bc6b664b8a82bf9a7/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">FastAPI从入门到实战（7）——请求体函数的参数设置</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

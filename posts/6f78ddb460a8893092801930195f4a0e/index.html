@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>消息中间件——RabbitMQ（七）高级特性 1 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="消息中间件——RabbitMQ（七）高级特性 1" />
+<meta property="og:description" content="前言 前面我们介绍了RabbitMQ的安装、各大消息中间件的对比、AMQP核心概念、管控台的使用、快速入门RabbitMQ。本章将介绍RabbitMQ的高级特性。分两篇（上/下）进行介绍。
+消息如何保障100%的投递成功？幂等性概念详解在海量订单产生的业务高峰期，如何避免消息的重复消费的问题？Confirm确认消息、Return返回消息 1 消息如何保障100%的投递成功？ 1.1 什么是生产端的可靠性投递？ 保障消息的成功发出保障MQ节点的成功接收发送端收到MQ节点（Broker）确认应答完善的消息进行补偿机制 前三步不一定能保障消息能够100%投递成功。因此要加上第四步
+BAT/TMD 互联网大厂的解决方案：
+– 消息落库，对消息状态进行打标
+在发送消息的时候，需要将消息持久化到数据库中，并给这个消息设置一个状态（未发送、发送中、到达）。当消息状态发生了变化，需要对消息做一个变更。针对没有到达的消息做一个轮训操作，重新发送。对轮训次数也需要做一个限制3-5次。确保消息能够成功的发送.
+消息的延迟投递,做二次确认,回调检查 具体采用哪种方案,还需要根据业务与消息的并发量而定。
+1.2 第一种方案： 生产端-可靠性投递
+图解：
+蓝色部分表示：生产者负责发送消息发送至Broker端
+Biz DB：订单数据库 MSG DB: 消息数据
+面对小规模的应用可以采用加事务的方式，保证事务的一致性。但在大厂中面对高并发，并没有加事务，事务的性能拼接非常严重，而是做补偿。
+比如：如下发一条订单消息。
+step1：存储订单消息（创建订单），业务数据入库，消息也入库。缺点:需要持久化两次。（status:0）
+step2：在step1成功的前提下，发送消息
+step3：Broker收到消息后，confirm给我们的生产端。Confirm Listener异步监听Broker回送的消息。
+step4：抓取出指定的消息，更新（status=1），表示消息已经投递成功。
+step5：分布式定时任务获取消息状态，如果等于0则抓取数据出来。
+step6：重新发送消息
+step7：重试限制设置3次。如果消息重试了3次还是失败，那么（status=2）,认为这个消息就是失败的。
+查询这些消息为什么失败，可能需要人工去查询。
+假设step2执行成功，step3由于网络闪断。那么confirm将永远收不到消息，那么我们需要设定一个规则：
+例如：在消息入库的时候，设置一个临界值 timeout=5min，当超过5min之后，就将这条数据抓取出来。
+或者写一个定时任务每隔5分钟就将status=0的消息抓取出来。可能存在小问题：消息发送出去，定时任务又正好刚执行，Confirm还未收到，定时任务就会执行，会导致消息执行两次。
+更精细化操作：消息超时容忍限制。confirm在2-3分钟内未收到消息，则重新发送。
+保障MQ我们思考如果第一种可靠性投递，在高并发的场景下是否合适？ 第一种方案对数据有两次入库，一次业务数据入库，一次消息入库。这样对数据的入库是一个瓶颈。
+其实我们只需要对业务进行入库。
+消息的延迟投递，做二次确认，回调检查 这种方式并不一定能保证100%成功，但是也能保证99.99%的消息成功。如果遇到特别极端的情况，那么就只能需要人工去补偿，或者定时任务去做。
+第二种方式主要是为了减少对数据库的操作。
+看下第二种方式：
+图解：
+Upstream service:生产端
+DownStream service:消费端
+Callback service:回调服务
+step1:业务消息入库成功后，第一次消息发送。
+step2:同样在消息入库成功后，发送第二次消息，这两条消息是同时发送的。第二条消息是延迟检查，可以设置2min、5min 延迟发送。
+step3:消费端监听指定队列。
+step4:消费端处理完消息后，内部生成新的消息send confirm。投递到MQ Broker。
+step5: Callback Service 回调服务监听MQ Broker,如果收到Downstream service发送的消息，则可以确定消息发送成功，执行消息存储到MSG DB。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/6f78ddb460a8893092801930195f4a0e/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-11-29T16:58:36+08:00" />
+<meta property="article:modified_time" content="2023-11-29T16:58:36+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">消息中间件——RabbitMQ（七）高级特性 1</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h3><img alt="" height="389" src="https://images2.imgbox.com/5b/d3/cbDPY6go_o.png" width="702"></h3> 
+<h3 id="前言">前言</h3> 
+<p>前面我们介绍了RabbitMQ的安装、各大消息中间件的对比、AMQP核心概念、管控台的使用、快速入门RabbitMQ。本章将介绍RabbitMQ的高级特性。分两篇（上/下）进行介绍。</p> 
+<ul><li>消息如何保障100%的投递成功？</li><li>幂等性概念详解</li><li>在海量订单产生的业务高峰期，如何避免消息的重复消费的问题？</li><li>Confirm确认消息、Return返回消息</li></ul> 
+<h3 id="1-消息如何保障100的投递成功？">1 消息如何保障100%的投递成功？</h3> 
+<h4 id="11-什么是生产端的可靠性投递？">1.1 什么是生产端的可靠性投递？</h4> 
+<ul><li>保障消息的成功发出</li><li>保障MQ节点的成功接收</li><li>发送端收到MQ节点（Broker）确认应答</li><li>完善的消息进行补偿机制</li></ul> 
+<p>前三步不一定能保障消息能够100%投递成功。因此要加上第四步</p> 
+<p>BAT/TMD 互联网大厂的解决方案：<br> – 消息落库，对消息状态进行打标<br> 在发送消息的时候，需要将消息持久化到数据库中，并给这个消息设置一个状态（未发送、发送中、到达）。当消息状态发生了变化，需要对消息做一个变更。针对没有到达的消息做一个轮训操作，重新发送。对轮训次数也需要做一个限制3-5次。确保消息能够成功的发送.</p> 
+<ul><li>消息的延迟投递,做二次确认,回调检查</li></ul> 
+<p>具体采用哪种方案,还需要根据业务与消息的并发量而定。</p> 
+<h4 id="12-第一种方案：">1.2 第一种方案：</h4> 
+<p>生产端-可靠性投递<img alt="" height="360" src="https://images2.imgbox.com/a2/b4/fpNvw61s_o.png" width="731"></p> 
+<p></p> 
+<p>图解：</p> 
+<p>蓝色部分表示：生产者负责发送消息发送至Broker端<br> Biz DB：订单数据库 MSG DB: 消息数据<br> 面对小规模的应用可以采用加事务的方式，保证事务的一致性。但在大厂中面对高并发，并没有加事务，事务的性能拼接非常严重，而是做补偿。</p> 
+<p>比如：如下发一条订单消息。</p> 
+<p>step1：存储订单消息（创建订单），业务数据入库，消息也入库。缺点:需要持久化两次。（status:0）<br> step2：在step1成功的前提下，发送消息<br> step3：Broker收到消息后，confirm给我们的生产端。Confirm Listener异步监听Broker回送的消息。<br> step4：抓取出指定的消息，更新（status=1），表示消息已经投递成功。</p> 
+<p>step5：分布式定时任务获取消息状态，如果等于0则抓取数据出来。<br> step6：重新发送消息<br> step7：重试限制设置3次。如果消息重试了3次还是失败，那么（status=2）,认为这个消息就是失败的。</p> 
+<p>查询这些消息为什么失败，可能需要人工去查询。</p> 
+<p>假设step2执行成功，step3由于网络闪断。那么confirm将永远收不到消息，那么我们需要设定一个规则：<br> 例如：在消息入库的时候，设置一个临界值 timeout=5min，当超过5min之后，就将这条数据抓取出来。<br> 或者写一个定时任务每隔5分钟就将status=0的消息抓取出来。可能存在小问题：消息发送出去，定时任务又正好刚执行，Confirm还未收到，定时任务就会执行，会导致消息执行两次。<br> 更精细化操作：消息超时容忍限制。confirm在2-3分钟内未收到消息，则重新发送。</p> 
+<hr> 
+<ul><li>保障MQ我们思考如果第一种可靠性投递，在高并发的场景下是否合适？</li></ul> 
+<p>第一种方案对数据有两次入库，一次业务数据入库，一次消息入库。这样对数据的入库是一个瓶颈。<br> 其实我们只需要对业务进行入库。</p> 
+<ul><li>消息的延迟投递，做二次确认，回调检查</li></ul> 
+<p>这种方式并不一定能保证100%成功，但是也能保证99.99%的消息成功。如果遇到特别极端的情况，那么就只能需要人工去补偿，或者定时任务去做。<br> 第二种方式主要是为了减少对数据库的操作。</p> 
+<p>看下第二种方式：</p> 
+<p><img alt="" height="434" src="https://images2.imgbox.com/27/fe/g5lSCcOX_o.png" width="735"></p> 
+<p></p> 
+<p>图解：</p> 
+<p>Upstream service:生产端<br> DownStream service:消费端<br> Callback service:回调服务</p> 
+<p>step1:业务消息入库成功后，第一次消息发送。<br> step2:同样在消息入库成功后，发送第二次消息，这两条消息是同时发送的。第二条消息是延迟检查，可以设置2min、5min 延迟发送。<br> step3:消费端监听指定队列。<br> step4:消费端处理完消息后，内部生成新的消息send confirm。投递到MQ Broker。<br> step5: Callback Service 回调服务监听MQ Broker,如果收到Downstream service发送的消息，则可以确定消息发送成功，执行消息存储到MSG DB。<br> step6：Check Detail检查监听step2延迟投递的消息。此时两个监听的队列不是同一个，5分钟后，Callback service收到消息，检查MSG DB。如果发现之前的消息已经投递成功，则不需要做其他事情。如果检查发现失败，则Callback 进行补偿，主动发送RPC 通信。通知上游生产端重新发送消息。</p> 
+<blockquote> 
+ <p>这样做的目的：少做了一次DB存储。关注点并不是百分百的投递成功，而是性能。</p> 
+</blockquote> 
+<h3 id="2-幂等性概念">2. 幂等性概念</h3> 
+<h4 id="21-幂等性是什么？">2.1 幂等性是什么？</h4> 
+<p>幂等（idempotent、idempotence）是一个数学与计算机学概念，常见于抽象代数中，即f(f(x)) = f(x)。简单的来说就是<strong>一个操作多次执行产生的结果与一次执行产生的结果一致</strong>。</p> 
+<ul><li>我们可以借鉴数据库的乐观锁机制：</li><li>比如我们执行一条更新库存的SQL语句：</li><li>UPDATE T_REPS SET COUNT = COUNT – 1,VERSION = VERSION + 1 WHERE VERSION = 1</li></ul> 
+<p>利用加版本号Version的方式来保证幂等性。</p> 
+<h4 id="22-消费端-幂等性保障">2.2 消费端-幂等性保障</h4> 
+<p>在海量订单产生的业务高峰期，如何避免消息的重复消费问题？</p> 
+<p>在高并发的情况下，会有大量的消息到达MQ，消费端需要监听大量的消息。这样的情况下，难免会出现消息的重复投递，网络闪断等等。如果不去做幂等，则会出现消息的重复消费。<br> -消费端实现幂等性，就意味着，我们的消息永远不会被消费多次，即使我们收到了多条一样的消息，也只会执行一次。</p> 
+<p>看下互联网大厂主流的幂等性操作：<br> -唯一ID+指纹吗机制，利用数据库主键去重。<br> -利用Redis的原子性实现<br> -其他的技术实现幂等性</p> 
+<h5 id="221-唯一id指纹码机制">2.2.1 唯一ID+指纹码机制</h5> 
+<ul><li>唯一ID + 指纹吗机制，利用数据库主键去重。<br> 保证唯一性</li><li>SELECT COUNT(1) FROM T_ORDER WHERE ID = 唯一ID + 指纹码<br> 如果查询没有，则添加。有则不需要做任何操作，消费端不需要消费消息。</li><li>好处：实现简单</li><li>坏处：高并发下有数据库写入的性能瓶颈</li><li>解决方案：跟进ID进行分库分表进行算法路由<br> 分摊流量压力。</li></ul> 
+<h5 id="222-redis-原子特性实现">2.2.2 Redis 原子特性实现</h5> 
+<p>最简单使用Redis的自增。</p> 
+<ul><li>使用Redis进行幂等，需要考虑的问题。</li><li>第一：我们是否需要数据落库，如果落库的话，关键解决的问题是数据库和缓存如何做到原子性？<br> 加事务不行，Redis和数据库的事务不是同一个，无法保证同时成功同时失败。大家有什么更好的方案呢？</li><li>第二：如果不进行落库，那么都存储到缓存中，如何设置定时同步的策略？<br> 怎么做到缓存数据的稳定性？</li></ul> 
+<h3 id="3-confirm-确认消息">3. Confirm 确认消息</h3> 
+<p>理解Confirm 消息确认机制：</p> 
+<ul><li>消息的确认，是指生产者投递消息后，如果Broker收到消息，则会给我们生产者一个应答。</li><li>生产者进行接收应答，用来确定这条消息是否正常的发送到Broker，这种方式也是消息的可靠性投递的核心保障！</li></ul> 
+<p><img alt="" height="500" src="https://images2.imgbox.com/bc/6c/hSXnKsUU_o.png" width="911"></p> 
+<p></p> 
+<p>蓝色：producer 生产者 红色：MQ Broker 服务器</p> 
+<p>生产者把消息发送到Broker端，Broker收到消息之后回送给producer。Confirm Listener 监听应答。</p> 
+<p>操作是异步操作，当生产者发送完消息之后，就不需要管了。Confirm Listener 监听MQ Broker的应答。</p> 
+<h4 id="31-如何实现confirm确认消息？">3.1 如何实现Confirm确认消息？</h4> 
+<p>第一步：在channel上开启确认模式：<strong>channel.confirmSelect()</strong><br> 第二步；在chanel上 添加监听：<strong>addConfirmListener</strong>,监听成功和失败的返回结果，根据具体的结果对消息进行重新发送、或记录日志等后续处理！</p> 
+<h4 id="32-代码编写：">3.2 代码编写：</h4> 
+<p>生产者：</p> 
+<pre><code class="language-java">public class Producer {
+    public static void main(String[] args) throws Exception {
+
+        //1 创建ConnectionFactory
+        Connection connection = ConnectionUtils.getConnection();
+
+        //2 通过Connection创建一个新的Channel
+        Channel channel = connection.createChannel();
+
+        //3 指定我们的消息投递模式: 消息的确认模式 
+        channel.confirmSelect();
+
+        String exchangeName = "test_confirm_exchange";
+        String routingKey = "confirm.save";
+
+        //4 发送一条消息
+        String msg = "Hello RabbitMQ Send confirm message!";
+        channel.basicPublish(exchangeName, routingKey, null, msg.getBytes());
+
+        //5 添加一个确认监听  用于发送消息到Broker端之后，回送消息的监听
+        channel.addConfirmListener(new ConfirmListener() {
+            @Override
+            public void handleNack(long deliveryTag, boolean multiple) throws IOException {
+                System.err.println("-------no ack!-----------");
+            }
+
+            @Override
+            public void handleAck(long deliveryTag, boolean multiple) throws IOException {
+                System.err.println("-------ack!-----------");
+            }
+        });
+    }
+}</code></pre> 
+<p>消费者：</p> 
+<pre><code class="language-java">public class Consumer {
+	
+	public static void main(String[] args) throws Exception {		
+		
+		//1 获取一个连接 
+        Connection connection = ConnectionUtils.getConnection();
+		
+		//2通过Connection创建一个新的Channel
+		Channel channel = connection.createChannel();
+		
+		String exchangeName = "test_confirm_exchange";
+		String routingKey = "confirm.#";
+		String queueName = "test_confirm_queue";
+		
+		//3 声明交换机和队列 然后进行绑定设置, 最后制定路由Key
+		channel.exchangeDeclare(exchangeName, "topic", true);
+		channel.queueDeclare(queueName, true, false, false, null);
+		channel.queueBind(queueName, exchangeName, routingKey);
+		
+		//4 创建消费者 
+		QueueingConsumer queueingConsumer = new QueueingConsumer(channel);
+		channel.basicConsume(queueName, true, queueingConsumer);
+		
+		while(true){
+			Delivery delivery = queueingConsumer.nextDelivery();
+			String msg = new String(delivery.getBody());			
+			System.err.println("消费端: " + msg);
+		}
+		
+	}
+}
+
+
+</code></pre> 
+<p>工具类：</p> 
+<pre><code class="language-java">public class ConnectionUtils {
+    public static Connection getConnection() throws IOException, TimeoutException {
+        //定义连接工厂
+        ConnectionFactory factory = new ConnectionFactory();
+        //设置服务地址
+        factory.setHost("127.0.0.1");
+        //端口
+        factory.setPort(5672);//amqp协议 端口 类似与mysql的3306
+        //设置账号信息，用户名、密码、vhost
+        factory.setVirtualHost("/vhost_cp");
+        factory.setUsername("user_cp");
+        factory.setPassword("123456");
+        // 通过工程获取连接
+        Connection connection = factory.newConnection();
+        return connection;
+    }
+}
+
+</code></pre> 
+<p><strong>先启动消费端=》再启动生产端</strong></p> 
+<h4 id="33-查看管控台：">3.3 查看管控台：</h4> 
+<p><img alt="" height="460" src="https://images2.imgbox.com/00/cd/wsv28Mr6_o.png" width="680"><img alt="" height="634" src="https://images2.imgbox.com/49/d9/lw8TfGaC_o.png" width="674"></p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<h4 id="34-打印结果：">3.4 打印结果：</h4> 
+<p><img alt="" height="66" src="https://images2.imgbox.com/11/4a/8Y74qPs9_o.png" width="449"></p> 
+<p><img alt="" height="74" src="https://images2.imgbox.com/72/e3/8jvmBH9p_o.png" width="450"></p> 
+<p></p> 
+<p></p> 
+<p>可以观察到消费端先接收到消息，之后生产端再接收到回调信息。如果出现磁盘已满、RabbitMQ出现异常、queue容量到达上限都可能接收到<strong>no ack</strong></p> 
+<p>如果ack和no ack消息都未接收到，这就是之前所说的。RabbitMQ出现网络闪断，可以采用上面所说的<strong>消息补偿</strong>。</p> 
+<h3 id="4-return消息机制">4. Return消息机制</h3> 
+<ul><li>Return Listener用于处理一些不可路由的消息！</li><li>我们的消息生产者，通过指定一个Exchange和Routingkey，把消息送达到某一个队列中去，然后我们的消费者监听队列，进行消费处理操作！</li><li>但是在某些情况下，如果我们在发送消息的时候，当前的exchange不存在或者指定的路由key路由不到，这个时候如果我们需要监听这种不可达的消息，就要使用Return Listener!</li></ul> 
+<p>在基础API中有一个关键的配置项：</p> 
+<ul><li>Mandatory:如果为true，则监听器会接收到路由不可达的消息，然后进行后续处理，如果为false,那么broker端自动删除该消息！</li></ul> 
+<h4 id="41-return消息机制流程">4.1 Return消息机制流程<img alt="" height="459" src="https://images2.imgbox.com/1c/a3/ETLIU2xd_o.png" width="858"></h4> 
+<p></p> 
+<p>Producer生产端将消息发送到MQ Broker端，但是出现NotFind Exchange,发送的消息的Exchange，在Broker端未能找到。或者找到了，但是路由key路由不到指定的队列。因此是一个错误的消息。<br> 这个时候，生产端应该知道发送的这条消息，并不会被处理。因此MQ Broker提供了这种Return机制，将这些不可达的消息发送给生产端，这时候生产端就需要设置Return Listener去接收这些不可达的消息。然后及时记录日志，去处理这些消息。</p> 
+<h4 id="42-代码演示">4.2 代码演示</h4> 
+<p>生产者：</p> 
+<pre><code class="language-java">public class Producer {
+
+    public static void main(String[] args) throws Exception {
+
+        //1 创建ConnectionFactory
+        Connection connection = ConnectionUtils.getConnection();
+
+        Channel channel = connection.createChannel();
+
+        String exchange = "test_return_exchange";
+        String routingKey = "return.save";
+        String routingKeyError = "abc.save";
+
+        String msg = "Hello RabbitMQ Return Message";
+
+
+        channel.addReturnListener(new ReturnListener() {
+            @Override
+            public void handleReturn(int replyCode, String replyText, String exchange,
+                                     String routingKey, AMQP.BasicProperties properties,     
+                                     byte[] body) throws IOException {
+
+                System.err.println("---------handle  return----------");
+                //响应码
+                System.err.println("replyCode: " + replyCode);
+                //响应文本
+                System.err.println("replyText: " + replyText);
+                System.err.println("exchange: " + exchange);
+                System.err.println("routingKey: " + routingKey);
+                System.err.println("properties: " + properties);
+                System.err.println("body: " + new String(body));
+            }
+        });
+
+        //第三个参数mandatory=true,意味着路由不到的话mq也不会删除消息,false则会自动删除
+        channel.basicPublish(exchange, routingKey, true, null, msg.getBytes());
+        //修改routingkey，测试是否能够收到消息
+        //channel.basicPublish(exchange, routingKeyError, true, null, msg.getBytes());
+    }
+}</code></pre> 
+<p>消费者：</p> 
+<pre><code class="language-java">public class Consumer {
+	
+	public static void main(String[] args) throws Exception {		
+		
+		//1 创建ConnectionFactory
+		Connection connection = ConnectionUtils.getConnection();
+		
+		Channel channel = connection.createChannel();
+		
+		String exchangeName = "test_return_exchange";
+		String routingKey = "return.#";
+		String queueName = "test_return_queue";
+		
+		channel.exchangeDeclare(exchangeName, "topic", true, false, null);
+		channel.queueDeclare(queueName, true, false, false, null);
+		channel.queueBind(queueName, exchangeName, routingKey);
+		
+		QueueingConsumer queueingConsumer = new QueueingConsumer(channel);
+		
+		channel.basicConsume(queueName, true, queueingConsumer);
+		
+		while(true){
+			Delivery delivery = queueingConsumer.nextDelivery();
+			String msg = new String(delivery.getBody());
+			System.err.println("消费者: " + msg);
+		}
+	}
+}
+
+</code></pre> 
+<p>ConnectionUtils 工具代码在上面。</p> 
+<p>启动消费端，并查看管控台。</p> 
+<h4 id="43-查看管控台">4.3 查看管控台</h4> 
+<p><img alt="" height="432" src="https://images2.imgbox.com/79/69/3uRE1Ube_o.png" width="703">4.4 查看打印结果</p> 
+<p></p> 
+<p></p> 
+<p>放开消费端代码：channel.basicPublish(exchange, routingKey, true, null, msg.getBytes());<br> 消费端打印结果：</p> 
+<p><img alt="" height="65" src="https://images2.imgbox.com/fc/f5/d72H9I9h_o.png" width="482"></p> 
+<p></p> 
+<p>可以看到打印结果正常，此时再改代码为：<br> channel.basicPublish(exchange, routingKeyError, true, null, msg.getBytes());</p> 
+<p><img alt="" height="166" src="https://images2.imgbox.com/df/18/FGNByFc7_o.png" width="463"></p> 
+<p>可以看到生产端接收到了不可达的消息。</p> 
+<p></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/074dd699710da0ec1eb45f13b31788e3/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">TensorFlow</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/e4764bacaa62516ba5753c612f2327af/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">消息中间件——RabbitMQ（七）高级特性 2</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

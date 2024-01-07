@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>JVM的四种内存屏障 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="JVM的四种内存屏障" />
+<meta property="og:description" content="文章目录 1、为什么要有内存屏障2、硬件上面的内存屏障3、Java里面的四种内存屏障4、使用内存屏障保存Volatile的有序性4.1 单线程下的指令重排序4.1 多线程下的指令重排序 1、为什么要有内存屏障 为了解决cpu，高速缓存，主内存带来的的指令之间的可见性和重序性问题。
+我们都知道计算机运算任务需要CPU和内存相互配合共同完成，其中CPU负责逻辑计算，内存负责数据存储。CPU要与内存进行交互，如读取运算数据、存储运算结果等。由于内存和CPU的计算速度有几个数量级的差距，为了提高CPU的利用率，现代处理器结构都加入了一层读写速度尽可能接近CPU运算速度的高速缓存来作为内存与CPU之间的缓冲：将运算需要使用的数据复制到缓存中，让CPU运算可以快速进行，计算结束后再将计算结果从缓存同步到主内存中，这样处理器就无须等待缓慢的内存读写了。就像下面这样:
+每个CPU都会有自己的缓存（有的甚至L1,L2,L3），缓存的目的就是为了提高性能，避免每次都要向内存取，但是这样的弊端也很明显：不能实时的和内存发生信息交换，会使得不同CPU执行的不同线程对同一个变量的缓存值不同。用volatile关键字修饰变量可以解决上述问题，那么volatile是如何做到这一点的呢？那就是内存屏障，内存屏障是硬件层的概念，不同的硬件平台实现内存屏障的手段并不是一样，java通过屏蔽这些差异，统一由jvm来生成内存屏障的指令
+volatile的有序性和可见性
+volatile的内存屏障策略非常严格保守，非常悲观且毫无安全感的心态：在每个volatile写操作前插入StoreStore屏障，在写操作后插入StoreLoad屏障；在每个volatile读操作前插入LoadLoad屏障，在读操作后插入LoadStore屏障；由于内存屏障的作用，避免了volatile变量和其它指令重排序、实现了线程之间通信，使得volatile表现出了锁的特性。
+重排序：代码的执行顺序不按照书写的顺序，为了提升运行效率，在不影响结果的前提下，打乱代码运行
+int a=1;
+int b=2;
+int c=a&#43;b;
+int c=5;
+这里的int c=5这个赋值操作可能发生在int a=1这个操作之前
+2、硬件上面的内存屏障 Load屏障，是x86上的”ifence“指令，在其他指令前插入ifence指令，可以让高速缓存中的数据失效，强制当前线程从主内存里面加载数据Store屏障，是x86的”sfence“指令，在其他指令后插入sfence指令，能让当前线程写入高速缓存中的最新数据，写入主内存，让其他线程可见。 3、Java里面的四种内存屏障 LoadLoad屏障：举例语句是Load1; LoadLoad; Load2(这句里面的LoadLoad里面的第一个Load对应Load1加载代码，然后LoadLoad里面的第二个Load对应Load2加载代码)，此时的意思就是，在Load2及后续读取操作从内存读取数据到CPU前，保证Load1从主内存里要读取的数据读取完毕。
+StoreStore屏障：举例语句是 Store1; StoreStore; Store2(这句里面的StoreStore里面的第一个Store对应Store1存储代码，然后StoreStore里面的第二个Store对应Store2存储代码)。此时的意思就是在Store2及后续写入操作执行前，保证Store1的写入操作已经把数据写入到主内存里面，确认Store1的写入操作对其它处理器可见。
+LoadStore屏障：举例语句是 Load1; LoadStore; Store2(这句里面的LoadStore里面的Load对应Load1加载代码，然后LoadStore里面的Store对应Store2存储代码)，此时的意思就是在Store2及后续代码写入操作执行前，保证Load1从主内存里要读取的数据读取完毕。
+StoreLoad屏障：举例语句是Store1; StoreLoad; Load2(这句里面的StoreLoad里面的Store对应Store1存储代码，然后StoreLoad里面的Load对应Load2加载代码)，在Load2及后续读取操作从内存读取数据到CPU前，保证Store1的写入操作已经把数据写入到主内存里，确认Store1的写入操作对其它处理器可见。
+4、使用内存屏障保存Volatile的有序性 volatile关键字是通过内存屏障，禁止被它修饰的变量发生指令重排操作
+4.1 单线程下的指令重排序 处理器为了提高程序运行效率，可能会对输入代码进行优化，使得程序中各个语句的执行顺序同代码中的顺序不一致，但是它会保证程序最终执行结果和代码顺序执行的结果是一致的。比如：
+int i=10;//语句1 int j=10;//语句2 在执行时，有可能对代码进行重排序，比如先执行语句2，再执行语句1。但是如果代码，编程下边这样：
+int i=0; int j=0; j&#43;&#43;;//语句3 i=j&#43;1;//语句4 这时，语句3和语句4并不会进行重排序。因为语句3和4之间有依赖关系，重排序后会影响结果。
+4.1 多线程下的指令重排序 以上说的是单线程的情况，期望结果等于输出结果。下面看多线程的情况，如下代码：
+boolean flag=false; private Context context; //线程1 context=loadContext();//语句1 flag=true;//语句2 //线程2 if(flag){ dowork(context); } 如果线程1执行的时候，语句1和语句2进行了重排序，先执行语句2，在还没有执行语句1时，这时线程2 将要执行if，那么就会进入到if语句块中，而context还是null，所以会出错。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/c75ff29f19348a88d1abcc1eb542ee2f/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-05-02T18:05:51+08:00" />
+<meta property="article:modified_time" content="2021-05-02T18:05:51+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">JVM的四种内存屏障</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-dracula">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><ul><li><a href="#1_1" rel="nofollow">1、为什么要有内存屏障</a></li><li><a href="#2_23" rel="nofollow">2、硬件上面的内存屏障</a></li><li><a href="#3Java_27" rel="nofollow">3、Java里面的四种内存屏障</a></li><li><a href="#4Volatile_36" rel="nofollow">4、使用内存屏障保存Volatile的有序性</a></li><li><ul><li><a href="#41__38" rel="nofollow">4.1 单线程下的指令重排序</a></li><li><a href="#41__53" rel="nofollow">4.1 多线程下的指令重排序</a></li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h3><a id="1_1"></a>1、为什么要有内存屏障</h3> 
+<p><code>为了解决cpu，高速缓存，主内存带来的的指令之间的可见性和重序性问题</code>。</p> 
+<p>我们都知道计算机运算任务需要CPU和内存相互配合共同完成，其中CPU负责逻辑计算，内存负责数据存储。CPU要与内存进行交互，如读取运算数据、存储运算结果等。由于内存和CPU的计算速度有几个数量级的差距，为了提高CPU的利用率，现代处理器结构都加入了一层读写速度尽可能接近CPU运算速度的高速缓存来作为内存与CPU之间的缓冲：将运算需要使用的数据复制到缓存中，让CPU运算可以快速进行，计算结束后再将计算结果从缓存同步到主内存中，这样处理器就无须等待缓慢的内存读写了。就像下面这样:<br> <img src="https://images2.imgbox.com/da/90/FwRx6DAl_o.png" alt="在这里插入图片描述"></p> 
+<p>每个CPU都会有自己的缓存（有的甚至L1,L2,L3），<code>缓存的目的就是为了提高性能，避免每次都要向内存取</code>，<code>但是这样的弊端也很明显：不能实时的和内存发生信息交换，会使得不同CPU执行的不同线程对同一个变量的缓存值不同</code>。用volatile关键字修饰变量可以解决上述问题，那么volatile是如何做到这一点的呢？那就是内存屏障，内存屏障是硬件层的概念，不同的硬件平台实现内存屏障的手段并不是一样，java通过屏蔽这些差异，统一由jvm来生成内存屏障的指令</p> 
+<blockquote> 
+ <p><font color="red">volatile的有序性和可见性</font><br> volatile的内存屏障策略非常严格保守，非常悲观且毫无安全感的心态：在每个volatile写操作前插入StoreStore屏障，在写操作后插入StoreLoad屏障；在每个volatile读操作前插入LoadLoad屏障，在读操作后插入LoadStore屏障；由于内存屏障的作用，避免了volatile变量和其它指令重排序、实现了线程之间通信，使得volatile表现出了锁的特性。</p> 
+ <hr> 
+ <p>重排序：代码的执行顺序不按照书写的顺序，为了提升运行效率，在不影响结果的前提下，打乱代码运行<br> int a=1;<br> int b=2;<br> int c=a+b;<br> int c=5;<br> 这里的int c=5这个赋值操作可能发生在int a=1这个操作之前</p> 
+</blockquote> 
+<h3><a id="2_23"></a>2、硬件上面的内存屏障</h3> 
+<ul><li>Load屏障，是x86上的”ifence“指令，在其他指令前插入ifence指令，<code>可以让高速缓存中的数据失效，强制当前线程从主内存里面加载数据</code></li><li>Store屏障，是x86的”sfence“指令，在其他指令后插入sfence指令，<code>能让当前线程写入高速缓存中的最新数据，写入主内存，让其他线程可见</code>。</li></ul> 
+<h3><a id="3Java_27"></a>3、Java里面的四种内存屏障</h3> 
+<ul><li> <p>LoadLoad屏障：举例语句是<code>Load1; LoadLoad; Load2(这句里面的LoadLoad里面的第一个Load对应Load1加载代码，然后LoadLoad里面的第二个Load对应Load2加载代码)</code>，此时的意思就是，在Load2及后续读取操作从内存读取数据到CPU前，保证Load1从主内存里要读取的数据读取完毕。</p> </li><li> <p>StoreStore屏障：举例语句是 <code>Store1; StoreStore; Store2(这句里面的StoreStore里面的第一个Store对应Store1存储代码，然后StoreStore里面的第二个Store对应Store2存储代码)</code>。此时的意思就是在Store2及后续写入操作执行前，保证Store1的写入操作已经把数据写入到主内存里面，确认Store1的写入操作对其它处理器可见。</p> </li><li> <p>LoadStore屏障：举例语句是 <code>Load1; LoadStore; Store2(这句里面的LoadStore里面的Load对应Load1加载代码，然后LoadStore里面的Store对应Store2存储代码)</code>，此时的意思就是在Store2及后续代码写入操作执行前，保证Load1从主内存里要读取的数据读取完毕。</p> </li><li> <p>StoreLoad屏障：举例语句是<code>Store1; StoreLoad; Load2(这句里面的StoreLoad里面的Store对应Store1存储代码，然后StoreLoad里面的Load对应Load2加载代码)</code>，在Load2及后续读取操作从内存读取数据到CPU前，保证Store1的写入操作已经把数据写入到主内存里，确认Store1的写入操作对其它处理器可见。</p> </li></ul> 
+<h3><a id="4Volatile_36"></a>4、使用内存屏障保存Volatile的有序性</h3> 
+<p><code>volatile关键字是通过内存屏障，禁止被它修饰的变量发生指令重排操作</code></p> 
+<h4><a id="41__38"></a>4.1 单线程下的指令重排序</h4> 
+<p>处理器为了提高程序运行效率，可能会对输入代码进行优化，使得程序中各个语句的执行顺序同代码中的顺序不一致，但是它会保证程序最终执行结果和代码顺序执行的结果是一致的。比如：</p> 
+<pre><code class="prism language-java"><span class="token keyword">int</span> i<span class="token operator">=</span><span class="token number">10</span><span class="token punctuation">;</span><span class="token comment">//语句1</span>
+<span class="token keyword">int</span> j<span class="token operator">=</span><span class="token number">10</span><span class="token punctuation">;</span><span class="token comment">//语句2</span>
+</code></pre> 
+<p>在执行时，有可能对代码进行重排序，比如先执行语句2，再执行语句1。但是如果代码，编程下边这样：</p> 
+<pre><code class="prism language-java"><span class="token keyword">int</span> i<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token keyword">int</span> j<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span>
+j<span class="token operator">++</span><span class="token punctuation">;</span><span class="token comment">//语句3</span>
+i<span class="token operator">=</span>j<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">;</span><span class="token comment">//语句4</span>
+</code></pre> 
+<p>这时，语句3和语句4并不会进行重排序。因为语句3和4之间有依赖关系，重排序后会影响结果。</p> 
+<h4><a id="41__53"></a>4.1 多线程下的指令重排序</h4> 
+<p>以上说的是单线程的情况，期望结果等于输出结果。下面看多线程的情况，如下代码：</p> 
+<pre><code class="prism language-java"><span class="token keyword">boolean</span> flag<span class="token operator">=</span><span class="token boolean">false</span><span class="token punctuation">;</span>
+<span class="token keyword">private</span> Context context<span class="token punctuation">;</span>
+<span class="token comment">//线程1</span>
+context<span class="token operator">=</span><span class="token function">loadContext</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//语句1</span>
+flag<span class="token operator">=</span><span class="token boolean">true</span><span class="token punctuation">;</span><span class="token comment">//语句2</span>
+
+<span class="token comment">//线程2</span>
+<span class="token keyword">if</span><span class="token punctuation">(</span>flag<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	<span class="token function">dowork</span><span class="token punctuation">(</span>context<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>如果线程1执行的时候，语句1和语句2进行了重排序，先执行语句2，在还没有执行语句1时，这时线程2 将要执行if，那么就会进入到if语句块中，而context还是null，所以会出错。</p> 
+<p>参考：https://www.zhihu.com/question/409020190/answer/1360584418<br> 参考：https://www.itqiankun.com/article/1564577564</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/eafe0fd545f92dc92267e83da71399aa/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Python打包程序pyinstaller使用详解</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/6bafa03fd8272f7d362d0ecc19e6eac0/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">linux内核引用FILE指针,探秘linux-文件管理(inode理解)及管道和IO重定向</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

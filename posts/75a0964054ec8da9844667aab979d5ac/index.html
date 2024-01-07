@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>EasyNLP 带你实现中英文机器阅读理解 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="EasyNLP 带你实现中英文机器阅读理解" />
+<meta property="og:description" content="导读 机器阅读理解是自然语言处理（NLP），特别是自然语言理解（NLU）领域最重要的研究方向之一。自1977年首次被提出以来，机器阅读理解已有近50年的发展史，历经“人工规则”、“传统机器学习”、“深度学习”、“大规模预训练模型”等多个发展阶段。
+机器阅读理解旨在帮助人类从大量文本中，快速聚焦相关信息，降低人工信息获取成本，增加信息检索有效性。作为人工智能在自然语言理解方向上的“集大成者”，机器阅读理解任务考察了从 “词” 到 “句” 乃至 “篇章”，每一个语言粒度的理解能力，这使得在人工智能发展的每个阶段，它都是非常困难、也颇为重要的“兵家必争之地”。以SQuAD为代表的阅读理解数据集，见证了深度学习大发展时代里，各大公司刷榜创新方案的你方唱罢我登场，随后又在大规模预训练时代，成为BERT等预训练模型的评测基准。可以说近十年里，机器阅读理解极大促进与见证了自然语言处理领域的繁荣与发展。
+形式化来讲，机器阅读理解任务的输入为一段篇章文本（context），与一个问句（question），通过学习模型，输出预测的答案文本（answer）。根据获取答案方式的不同，当前业界主流将阅读理解任务分为四大类：完型填空式（Cloze tests）、多项选择式（Multi-choice）、片段抽取式（Span extraction）及自由生成式（Free answering）。其中片段抽取式根据问句（question），直接从篇章文本（context）中预测答案文本（answer）的起止位置（start/end positions），从而抽取出答案。由于其与真实场景接近，难度适中，易于评测，且有SQuAD等高质量数据集支撑，因此成为当前的主流阅读理解任务。随着预训练语言模型的发展，近年来片段抽取式阅读理解的效果屡创新高。在英文场景下，传统的BERT、RoBERTa、ALBERT等模型都能取得超越人类的效果；而在中文场景下，MacBERT等模型（Pre-Training with Whole Word Masking for Chinese BERT）通过引入一种纠错型掩码语言模型（Mac）预训练任务，缓解了“预训练-下游任务”不一致的问题，也更好地适配了中文场景，在包括机器阅读理解在内的多种NLP任务上取得了显著的性能提升。因此，我们在EasyNLP框架中集成了MacBERT算法和模型，配合EasyNLP中原有的BERT、RoBERTa等模型，使用户能够方便地使用这些模型进行中英文机器阅读理解任务的训练和预测。
+EasyNLP（https://github.com/alibaba/EasyNLP）是阿⾥云机器学习PAI 团队基于 PyTorch 开发的易⽤且丰富的中⽂NLP算法框架，⽀持常⽤的中⽂预训练模型和⼤模型落地技术，并且提供了从训练到部署的⼀站式 NLP 开发体验。EasyNLP 提供了简洁的接⼝供⽤户开发 NLP 模型，包括NLP应⽤ AppZoo 和预训练 ModelZoo，同时提供技术帮助⽤户⾼效的落地超⼤预训练模型到业务。机器阅读理解作为自然语言理解的集大成者，同时也是文本问答、信息抽取等领域的基础任务，具有较高的研究价值。因此，EasyNLP增加了对中英文机器阅读理解任务的支持，希望能服务更多的NLP/NLU算法开发者和研究者，也希望和社区一起推动NLU相关技术的发展和落地。
+本⽂将提供对MacBERT模型的技术解读，以及如何在EasyNLP框架中使⽤MacBERT及其他预训练语言模型，进行中英文机器阅读理解任务的训练与预测。
+MacBERT模型解读 主流的大规模预训练语言模型（如BERT、RoBERTa等）主要针对英语语言设计，将其直接迁移到中文场景时，会面临中英文语言本身的差异，如：中文词间无空格、无需切分子词、多个单字组成具有完整意义的词语等。例如下图中原始语句“使用语言模型来预测下一个词的概率”，按单字切分后，某些单字由于会组成完整的词语（如：语言模型、预测、概率），此时若只mask掉其中一个字，会影响掩码与语言模型预训练的效果。此外，传统语言模型在预训练时会采用 [MASK] 字符进行mask，而在下游任务文本中却并不存在 [MASK] 标记，这在两阶段中天然引入了gap。为缓解上述问题，MacBERT等模型修改传统MLM任务，引入了一种纠错型掩码语言模型（Mac）预训练任务，包括wwm (whole word masking)、NM（n-gram masking）、相似词替换等mask方案，更好地适配了中文的语言场景，减少了“预训练-下游任务”不一致的问题，提升了预训练模型在多种NLP任务上的效果。另外，由于MacBERT的主要框架与BERT完全一致，可在不修改现有代码的基础上进行无缝过渡，这为开发者的代码迁移带来了很大的便利。
+具体来讲，MacBERT等模型在MLM时，对中文整词中所有单字同时进行mask，并采用n-gram mask策略，从unigram到4-gram对应的mask概率分别为40%-10%。在mask时不再采用 [MASK] token，而改为使用词语的近义词，近义词采用基于word2vec相似度计算的Synonyms toolkit获取，在极少数情况没有近义词时，使用随机词进行替换。模型总体对输入15%的词进行mask，mask时80%的概率替换为近义词、10%的概率替换为随机词、10%的概率保留为原始词。此外，BERT原版的NSP模型长期为研究者们所诟病，MacBERT模型中将NSP修改为SOP (Sentence Order Prediction)，其正例为连续文本，负例为交换原始文本顺序，这样很好提升了模型在多句篇章型任务上的效果。模型的实验结果表明，去除上述MLM中任一改进都会导致平均性能下降，这表明几处掩码修改都有助于语言模型学习；同时去除SOP任务后，在机器阅读理解任务上的效果会明显下降，这也表明句子级预训练任务在篇章学习中的必要性。
+机器阅读理解模型使用教程 以下我们简要介绍，如何在EasyNLP框架中使用MacBERT及其他预训练语言模型，进行机器阅读理解任务的训练及预测。
+安装EasyNLP 用户可以直接参考GitHub（https://github.com/alibaba/EasyNLP）上的说明安装EasyNLP算法框架。
+pipeline接口快速“尝鲜”体验效果 为了方便开发者使用，我们在EasyNLP框架内实现了Inference Pipeline功能。用户可以在不需要自己训练或微调模型的情况下，直接“尝鲜”，使用pipeline接口一步调用finetune好的中英文机器阅读理解模型。只需执行如下命令即可：
+from easynlp.pipelines import pipeline # 输入数据 data = [{ &#34;query&#34;: &#34;杭州什么时候发布了《杭州市亚运城市行动计划纲要》？&#34;, &#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/75a0964054ec8da9844667aab979d5ac/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-09-30T15:36:01+08:00" />
+<meta property="article:modified_time" content="2022-09-30T15:36:01+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">EasyNLP 带你实现中英文机器阅读理解</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h3>导读</h3> 
+<p>机器阅读理解是自然语言处理（NLP），特别是自然语言理解（NLU）领域最重要的研究方向之一。自1977年首次被提出以来，机器阅读理解已有近50年的发展史，历经“人工规则”、“传统机器学习”、“深度学习”、“大规模预训练模型”等多个发展阶段。</p> 
+<p>机器阅读理解旨在帮助人类从大量文本中，快速聚焦相关信息，降低人工信息获取成本，增加信息检索有效性。作为人工智能在自然语言理解方向上的“集大成者”，机器阅读理解任务考察了从 “词” 到 “句” 乃至 “篇章”，每一个语言粒度的理解能力，这使得在人工智能发展的每个阶段，它都是非常困难、也颇为重要的“兵家必争之地”。以SQuAD为代表的阅读理解数据集，见证了深度学习大发展时代里，各大公司刷榜创新方案的你方唱罢我登场，随后又在大规模预训练时代，成为BERT等预训练模型的评测基准。可以说近十年里，机器阅读理解极大促进与见证了自然语言处理领域的繁荣与发展。</p> 
+<p>形式化来讲，机器阅读理解任务的输入为一段篇章文本（context），与一个问句（question），通过学习模型，输出预测的答案文本（answer）。根据获取答案方式的不同，当前业界主流将阅读理解任务分为四大类：完型填空式（Cloze tests）、多项选择式（Multi-choice）、片段抽取式（Span extraction）及自由生成式（Free answering）。其中片段抽取式根据问句（question），直接从篇章文本（context）中预测答案文本（answer）的起止位置（start/end positions），从而抽取出答案。由于其与真实场景接近，难度适中，易于评测，且有SQuAD等高质量数据集支撑，因此成为当前的主流阅读理解任务。随着预训练语言模型的发展，近年来片段抽取式阅读理解的效果屡创新高。在英文场景下，传统的BERT、RoBERTa、ALBERT等模型都能取得超越人类的效果；而在中文场景下，MacBERT等模型（Pre-Training with Whole Word Masking for Chinese BERT）通过引入一种纠错型掩码语言模型（Mac）预训练任务，缓解了“预训练-下游任务”不一致的问题，也更好地适配了中文场景，在包括机器阅读理解在内的多种NLP任务上取得了显著的性能提升。因此，我们在EasyNLP框架中集成了MacBERT算法和模型，配合EasyNLP中原有的BERT、RoBERTa等模型，使用户能够方便地使用这些模型进行中英文机器阅读理解任务的训练和预测。</p> 
+<p>EasyNLP（<a href="https://link.zhihu.com/?target=https%3A//github.com/alibaba/EasyNLP" rel="nofollow" title="https://github.com/alibaba/EasyNLP">https://github.com/alibaba/EasyNLP</a>）是阿⾥云机器学习PAI 团队基于 PyTorch 开发的易⽤且丰富的中⽂NLP算法框架，⽀持常⽤的中⽂预训练模型和⼤模型落地技术，并且提供了从训练到部署的⼀站式 NLP 开发体验。EasyNLP 提供了简洁的接⼝供⽤户开发 NLP 模型，包括NLP应⽤ AppZoo 和预训练 ModelZoo，同时提供技术帮助⽤户⾼效的落地超⼤预训练模型到业务。机器阅读理解作为自然语言理解的集大成者，同时也是文本问答、信息抽取等领域的基础任务，具有较高的研究价值。因此，EasyNLP增加了对中英文机器阅读理解任务的支持，希望能服务更多的NLP/NLU算法开发者和研究者，也希望和社区一起推动NLU相关技术的发展和落地。</p> 
+<p>本⽂将提供对MacBERT模型的技术解读，以及如何在EasyNLP框架中使⽤MacBERT及其他预训练语言模型，进行中英文机器阅读理解任务的训练与预测。</p> 
+<h3>MacBERT模型解读</h3> 
+<p>主流的大规模预训练语言模型（如BERT、RoBERTa等）主要针对英语语言设计，将其直接迁移到中文场景时，会面临中英文语言本身的差异，如：中文词间无空格、无需切分子词、多个单字组成具有完整意义的词语等。例如下图中原始语句“使用语言模型来预测下一个词的概率”，按单字切分后，某些单字由于会组成完整的词语（如：语言模型、预测、概率），此时若只mask掉其中一个字，会影响掩码与语言模型预训练的效果。此外，传统语言模型在预训练时会采用 [MASK] 字符进行mask，而在下游任务文本中却并不存在 [MASK] 标记，这在两阶段中天然引入了gap。为缓解上述问题，MacBERT等模型修改传统MLM任务，引入了一种纠错型掩码语言模型（Mac）预训练任务，包括wwm (whole word masking)、NM（n-gram masking）、相似词替换等mask方案，更好地适配了中文的语言场景，减少了“预训练-下游任务”不一致的问题，提升了预训练模型在多种NLP任务上的效果。另外，由于MacBERT的主要框架与BERT完全一致，可在不修改现有代码的基础上进行无缝过渡，这为开发者的代码迁移带来了很大的便利。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/58/bb/cnnL31bo_o.png"></p> 
+<p>具体来讲，MacBERT等模型在MLM时，对中文整词中所有单字同时进行mask，并采用n-gram mask策略，从unigram到4-gram对应的mask概率分别为40%-10%。在mask时不再采用 [MASK] token，而改为使用词语的近义词，近义词采用基于word2vec相似度计算的Synonyms toolkit获取，在极少数情况没有近义词时，使用随机词进行替换。模型总体对输入15%的词进行mask，mask时80%的概率替换为近义词、10%的概率替换为随机词、10%的概率保留为原始词。此外，BERT原版的NSP模型长期为研究者们所诟病，MacBERT模型中将NSP修改为SOP (Sentence Order Prediction)，其正例为连续文本，负例为交换原始文本顺序，这样很好提升了模型在多句篇章型任务上的效果。模型的实验结果表明，去除上述MLM中任一改进都会导致平均性能下降，这表明几处掩码修改都有助于语言模型学习；同时去除SOP任务后，在机器阅读理解任务上的效果会明显下降，这也表明句子级预训练任务在篇章学习中的必要性。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/fd/3c/wU0DzGSK_o.png"></p> 
+<h3>机器阅读理解模型使用教程</h3> 
+<p>以下我们简要介绍，如何在EasyNLP框架中使用MacBERT及其他预训练语言模型，进行机器阅读理解任务的训练及预测。</p> 
+<h3>安装EasyNLP</h3> 
+<p>用户可以直接参考GitHub（<a href="https://link.zhihu.com/?target=https%3A//github.com/alibaba/EasyNLP" rel="nofollow" title="https://github.com/alibaba/EasyNLP">https://github.com/alibaba/EasyNLP</a>）上的说明安装EasyNLP算法框架。</p> 
+<h3>pipeline接口快速“尝鲜”体验效果</h3> 
+<p>为了方便开发者使用，我们在EasyNLP框架内实现了Inference Pipeline功能。用户可以在不需要自己训练或微调模型的情况下，直接“尝鲜”，使用pipeline接口一步调用finetune好的中英文机器阅读理解模型。只需执行如下命令即可：</p> 
+<pre><code>from easynlp.pipelines import pipeline
+
+# 输入数据
+data = [{
+            "query": "杭州什么时候发布了《杭州市亚运城市行动计划纲要》？",
+            "answer_text": "2020年4月",
+            "context": "新华社杭州9月22日电（记者商意盈 夏亮）竞赛场馆全部竣工并完成赛事功能验收，“迎亚运”城市基础设施建设迈入快车道，亚运场馆提前开放掀起全民健身热潮……23日，延期后的杭州亚运会将迎来倒计时一周年，各项筹备工作也结出累累硕果，“天堂之城”再次蓄势待发。办好一个会，提升一座城。2020年4月，杭州发布了《杭州市亚运城市行动计划纲要》，其中包括基础设施提升、绿水青山守护、数字治理赋能等八项具体行动。随着亚运的脚步日益临近，杭州西站、萧山国际机场三期、合杭高铁湖杭段、机场轨道快线（19号线）等“两点两线”重大项目正式投运。根据杭州市城乡建设委员会发布的信息，预计到今年9月底全市快速路总里程将达到480公里。住在这里的人们正切身体会到悄然发生的变化——交通方便了，道路变美了，城市基础设施也愈发完善。",
+            "qas_id": "CN_01"
+        },
+        {
+            "query": "今年9月底全市快速路总里程将达到多少？",
+            "answer_text": "480公里",
+            "context": "新华社杭州9月22日电（记者商意盈 夏亮）竞赛场馆全部竣工并完成赛事功能验收，“迎亚运”城市基础设施建设迈入快车道，亚运场馆提前开放掀起全民健身热潮……23日，延期后的杭州亚运会将迎来倒计时一周年，各项筹备工作也结出累累硕果，“天堂之城”再次蓄势待发。办好一个会，提升一座城。2020年4月，杭州发布了《杭州市亚运城市行动计划纲要》，其中包括基础设施提升、绿水青山守护、数字治理赋能等八项具体行动。随着亚运的脚步日益临近，杭州西站、萧山国际机场三期、合杭高铁湖杭段、机场轨道快线（19号线）等“两点两线”重大项目正式投运。根据杭州市城乡建设委员会发布的信息，预计到今年9月底全市快速路总里程将达到480公里。住在这里的人们正切身体会到悄然发生的变化——交通方便了，道路变美了，城市基础设施也愈发完善。",
+            "qas_id": "CN_02"
+        }]
+
+# pipeline的参数为finetune好的模型
+# 当前EasyNLP支持中英文机器阅读理解的pipeline快速体验，分别集成了finetune好的中文macbert模型和英文bert模型
+# 如想体验英文阅读理解，只需将模型名改为 'bert-base-rcen' 即可
+generator = pipeline('macbert-base-rczh')
+
+results = generator(data)
+
+for input_dict, result in zip(data, results):
+    context = result["context"]
+    query = result["query"]
+    answer_gold = result["gold_answer"]
+    answer_pred = result["best_answer"]
+    print('\n context: {} \n query: {} \n gold_answer: {} \n pred_answer: {} \n'.format(context, query, answer_gold, answer_pred))</code></pre> 
+<p>如代码中所示，输入的data为一个list，其中每条instance为一个dict，包含其query、answer、context、id信息。pipeline的参数为finetune好的模型，当前EasyNLP支持中英文机器阅读理解的pipeline快速体验，分别集成了finetune好的中文macbert模型和英文bert模型，中文机器阅读理解的模型为 <em>'macbert-base-rczh'</em>，如想体验英文阅读理解，只需将上述代码pipeline参数中的模型名改为 <em>'bert-base-rcen'</em> 即可。</p> 
+<p>以上代码的执行结果如下所示，可以看出，机器准确地理解了文本与问句的含义，并给出了正确的结果。</p> 
+<pre><code> context: 新华社杭州9月22日电（记者商意盈夏亮）竞赛场馆全部竣工并完成赛事功能验收，“迎亚运”城市基础设施建设迈入快车道，亚运场馆提前开放掀起全民健身热潮……23日，延期后的杭州亚运会将迎来倒计时一周年，各项筹备工作也结出累累硕果，“天堂之城”再次蓄势待发。办好一个会，提升一座城。2020年4月，杭州发布了《杭州市亚运城市行动计划纲要》，其中包括基础设施提升、绿水青山守护、数字治理赋能等八项具体行动。随着亚运的脚步日益临近，杭州西站、萧山国际机场三期、合杭高铁湖杭段、机场轨道快线（19号线）等“两点两线”重大项目正式投运。根据杭州市城乡建设委员会发布的信息，预计到今年9月底全市快速路总里程将达到480公里。住在这里的人们正切身体会到悄然发生的变化——交通方便了，道路变美了，城市基础设施也愈发完善。 
+ query: 杭州什么时候发布了《杭州市亚运城市行动计划纲要》？ 
+ gold_answer: 2020年4月 
+ pred_answer: 2020年4月 
+
+ context: 新华社杭州9月22日电（记者商意盈夏亮）竞赛场馆全部竣工并完成赛事功能验收，“迎亚运”城市基础设施建设迈入快车道，亚运场馆提前开放掀起全民健身热潮……23日，延期后的杭州亚运会将迎来倒计时一周年，各项筹备工作也结出累累硕果，“天堂之城”再次蓄势待发。办好一个会，提升一座城。2020年4月，杭州发布了《杭州市亚运城市行动计划纲要》，其中包括基础设施提升、绿水青山守护、数字治理赋能等八项具体行动。随着亚运的脚步日益临近，杭州西站、萧山国际机场三期、合杭高铁湖杭段、机场轨道快线（19号线）等“两点两线”重大项目正式投运。根据杭州市城乡建设委员会发布的信息，预计到今年9月底全市快速路总里程将达到480公里。住在这里的人们正切身体会到悄然发生的变化——交通方便了，道路变美了，城市基础设施也愈发完善。 
+ query: 今年9月底全市快速路总里程将达到多少？ 
+ gold_answer: 480公里 
+ pred_answer: 480公里</code></pre> 
+<p>下面，我们将详细介绍中英文机器阅读理解模型的详细实现过程，从数据准备，到模型的训练、评估、预测，并给出基于EasyNLP的几种方便快捷的一步执行方法。</p> 
+<h3>数据准备</h3> 
+<p>采用预训练好的语言模型，进行机器阅读理解任务的finetune时，需要用户提供任务相关的训练与验证数据，均为tsv格式文件。文件中每行包含以制表符\t分隔的多列，包含阅读理解训练所需的所有信息，从左至右依次为：样例ID、篇章文本（context）、问句（question）、答案文本（answer）、答案文本在篇章文本中的起始位置、篇章题目。样例如下：</p> 
+<pre><code>DEV_125_QUERY_3     乙二醛是一个有机化合物，化学式为OCHCHO，由两个醛基-C相连。它是最简单的二醛，室温下为黄色液体。工业上，乙二醛可由乙二醇在银或铜催化下的气相氧化，或用硝酸溶液氧化乙醛制得。实验室中，乙二醛是通过用亚硒酸氧化乙醛制取。无水乙二醛可由固态水合物与五氧化二磷共热制得。乙二醛的应用有：of通常乙二醛以40%溶液的形式出售。它与其他小分子醛类似，可以形成水合物，而且水合物缩合生成一系列的“寡聚体”，结构尚不清楚。目前出售的至少有以下两种水合物：根据估计，乙二醛水溶液浓度低于1M时，它主要以单体或水合物的形式存在，即OCHCHO、OCHCH(OH)或(HO)CHCH(OH)。浓度大于1M时，主要为二聚体型，可能为缩醛／酮结构，分子式为[(HO)CH]OCHCHO。       工业上乙二醛是怎么制得的？       由乙二醇在银或铜催化下的气相氧化，或用硝酸溶液氧化乙醛制得。      59      乙二醛</code></pre> 
+<p>下列文件为已经完成预处理的中英文机器阅读理解的训练和验证数据，可用于模型训练与测试：</p> 
+<pre><code># 中文机器阅读理解数据
+http://atp-modelzoo-sh.oss-cn-shanghai.aliyuncs.com/release/tutorials/machine_reading_comprehension/train_cmrc2018.tsv
+http://atp-modelzoo-sh.oss-cn-shanghai.aliyuncs.com/release/tutorials/machine_reading_comprehension/dev_cmrc2018.tsv
+
+# 英文机器阅读理解数据
+http://atp-modelzoo-sh.oss-cn-shanghai.aliyuncs.com/release/tutorials/machine_reading_comprehension/train_squad.tsv
+http://atp-modelzoo-sh.oss-cn-shanghai.aliyuncs.com/release/tutorials/machine_reading_comprehension/dev_squad.tsv</code></pre> 
+<h3>中文机器阅读理解</h3> 
+<p>在Python 3.6环境下，我们首先从刚刚安装好的EasyNLP中引入模型运行需要的各种库，并做初始化。我们只需指定 pretrain_model_name_or_path=hfl/macbert-base-zh，即可使用集成好的MacBERT模型。EasyNLP中集成了丰富的预训练模型库，如果想尝试其他预训练模型，如BERT、RoBERTa等，也可以在user_defined_parameters中进行相应修改，具体的模型名称可见<a href="https://link.zhihu.com/?target=https%3A//github.com/alibaba/EasyNLP/tree/master/easynlp/modelzoo" rel="nofollow" title="模型列表">模型列表</a>。EasyNLP当前同时支持中英文的阅读理解，只需要在user_defined_parameters中指定language=zh，即可指定中文文本预处理的相应配置。</p> 
+<pre><code>import torch.cuda
+from easynlp.appzoo import MachineReadingComprehensionDataset
+from easynlp.appzoo import get_application_predictor, get_application_model, get_application_evaluator, get_application_model_for_evaluation
+from easynlp.core import Trainer, PredictorManager
+from easynlp.utils import initialize_easynlp, get_args, get_pretrain_model_path
+from easynlp.utils.global_vars import parse_user_defined_parameters
+
+initialize_easynlp()
+args = get_args()
+user_defined_parameters = parse_user_defined_parameters('pretrain_model_name_or_path=bert-base-uncased language=en qas_id=qas_id answer_name=answer_text start_position_name=start_position_character max_query_length=64 max_answer_length=30 doc_stride=128 n_best_size=10 output_answer_file=dev.ans.csv')</code></pre> 
+<p>载入数据时，可以使用EasyNLP内置的MachineReadingComprehensionDataset。需要注意的是，由于描述文本可能过长，从而可能导致答案片段在超出max_seq_length后被截断的部分中。因此机器阅读理解中通常采用“滑窗法”，当描述文本过长时，使用滑动窗口将完整的描述文本拆成几段，将一个输入case拆成多个case分别处理。使用user_defined_parameters中的doc_stride参数即可控制滑动窗口大小。</p> 
+<pre><code>train_dataset = MachineReadingComprehensionDataset(pretrained_model_name_or_path=get_pretrain_model_path("bert-base-uncased"),
+                                                   data_file="train_squad.tsv",
+                                                   sequence_length=384,
+                                                   input_schema="qas_id:str:1,context_text:str:1,question_text:str:1,answer_text:str:1,start_position_character:str:1,title:str:1",
+                                                   first_sequence="question_text",
+                                                   second_sequence="context_text",
+                                                   user_defined_parameters=user_defined_parameters,
+                                                   is_training=True
+                                                   )</code></pre> 
+<p>模型训练时，使用EasyNLP中封装好的get_application_model函数，并指定app_name="machine_reading_comprehension"，便可进行训练时的模型构建。由于滑动窗口机制的存在，训练时batch_size设置不宜过大，否则容易引起OOM。</p> 
+<pre><code>model = get_application_model(app_name="machine_reading_comprehension",
+                              pretrained_model_name_or_path=get_pretrain_model_path("bert-base-uncased"),
+                              user_defined_parameters=user_defined_parameters
+                              )</code></pre> 
+<p>模型评估与预测时，我们同样可以使用EasyNLP中封装好的get_application_model_for_evaluation和get_application_predictor函数，并分别指定app_name="machine_reading_comprehension"，即可进行模型的评估与预测。</p> 
+<pre><code>evaluator = get_application_evaluator(app_name="machine_reading_comprehension", 
+                                      valid_dataset=valid_dataset,
+                                      eval_batch_size=32, 
+                                      user_defined_parameters=user_defined_parameters
+                                      )</code></pre> 
+<p>模型预测时，结果将输出至指定文件中，文件格式schema可以定制，一般分为\t分隔的4列，依次为：样例ID、答案文本、问句、篇章文本。除了输出的最佳答案之外，模型还会将beam_search后排在top_n的答案结果，也输出到指定文件中，供模型优化时分析比对。通过user_defined_parameters中的n_best_size参数，即可定制top_n值。</p> 
+<pre><code>predictor = get_application_predictor(app_name="machine_reading_comprehension",
+                                      model_dir="./squad_model_dir/", 
+                                      first_sequence="question_text",
+                                      second_sequence="context_text",
+                                      sequence_length=384,
+                                      output_file="dev.pred.csv",
+                                      user_defined_parameters=user_defined_parameters
+                                      )
+
+predictor_manager = PredictorManager(predictor=predictor,
+                                     input_file="dev_squad.tsv",
+                                     input_schema="qas_id:str:1,context_text:str:1,question_text:str:1,answer_text:str:1,start_position_character:str:1,title:str:1",
+                                     output_file="dev.pred.csv",
+                                     output_schema="unique_id,best_answer,query,context",
+                                     append_cols=args.append_cols,
+                                     batch_size=1024
+                                     )</code></pre> 
+<p>当前EasyNLP已经对MacBERT-base/large两种模型进行了集成，在modelzoo中的模型调用名称分别为：hfl/macbert-base-zh 和 hfl/macbert-large-zh，两种模型的结构参数如下表所示。用户可直接在pretrain_model_name_or_path参数中指定名称进行调用。</p> 
+<table><tbody><tr><td>中文</td><td>结构参数</td></tr><tr><td>hfl/macbert-base-zh</td><td>12-layer, 768-hidden, 12-heads, 102M parameters</td></tr><tr><td>hfl/macbert-large-zh</td><td>24-layer, 1024-hidden, 16-heads, 324M parameters</td></tr></tbody></table> 
+<p>我们也使用这两种模型分别在中文机器阅读理解数据上进行了 finetune，效果如下：</p> 
+<table><tbody><tr><td>中文</td><td>EM</td><td>F1</td></tr><tr><td>hfl/macbert-base-zh</td><td>61.35</td><td>78.62</td></tr><tr><td>hfl/macbert-large-zh</td><td>59.15</td><td>79.33</td></tr></tbody></table> 
+<p>上述所有训练/评估/预测代码，都已经被集成在<strong><em>EasyNLP/examples/appzoo_tutorials/machine_reading_comprehension/main.py</em></strong> 中。用户可以通过带参数运行main.py，一步执行上述所有训练/评估/预测操作。</p> 
+<pre><code># 模型训练
+python main.py \
+    --mode train \
+    --app_name=machine_reading_comprehension \
+    --worker_gpu=1 \
+    --tables=train.tsv,dev.tsv \
+    --input_schema=qas_id:str:1,context_text:str:1,question_text:str:1,answer_text:str:1,start_position_character:str:1,title:str:1 \
+    --first_sequence=question_text \
+    --second_sequence=context_text \
+    --sequence_length=384 \
+    --checkpoint_dir=./model_dir \
+    --learning_rate=3.5e-5 \
+    --epoch_num=3 \
+    --random_seed=42 \
+    --save_checkpoint_steps=500 \
+    --train_batch_size=16 \
+    --user_defined_parameters='
+        pretrain_model_name_or_path=hfl/macbert-base-zh
+        language=zh
+        answer_name=answer_text
+        qas_id=qas_id
+        start_position_name=start_position_character
+        doc_stride=128
+        max_query_length=64
+    '</code></pre> 
+<p></p> 
+<pre><code># 模型预测
+python main.py \
+    --mode predict \
+    --app_name=machine_reading_comprehension \
+    --worker_gpu=1 \
+    --tables=dev.tsv \
+    --outputs=dev.pred.csv \
+    --input_schema=qas_id:str:1,context_text:str:1,question_text:str:1,answer_text:str:1,start_position_character:str:1,title:str:1 \
+    --output_schema=unique_id,best_answer,query,context \
+    --first_sequence=question_text \
+    --second_sequence=context_text \
+    --sequence_length=384 \
+    --checkpoint_dir=./model_dir \
+    --micro_batch_size=256 \
+    --user_defined_parameters='
+        pretrain_model_name_or_path=hfl/macbert-base-zh
+        language=zh
+        qas_id=qas_id
+        answer_name=answer_text
+        start_position_name=start_position_character
+        max_query_length=64
+        max_answer_length=30
+        doc_stride=128
+        n_best_size=10
+        output_answer_file=dev.ans.csv
+    '</code></pre> 
+<p>除了main.py一步执行之外，我们同样可以使用命令行执行的方式进行快速训练/预测，命令如下：</p> 
+<pre><code># 模型训练
+easynlp \
+    --mode train \
+    --app_name=machine_reading_comprehension \
+    --worker_gpu=1 \
+    --tables=train.tsv,dev.tsv \
+    --input_schema=qas_id:str:1,context_text:str:1,question_text:str:1,answer_text:str:1,start_position_character:str:1,title:str:1 \
+    --first_sequence=question_text \
+    --second_sequence=context_text \
+    --sequence_length=384 \
+    --checkpoint_dir=./model_dir \
+    --learning_rate=3.5e-5 \
+    --epoch_num=5 \
+    --random_seed=42 \
+    --save_checkpoint_steps=600 \
+    --train_batch_size=16 \
+    --user_defined_parameters='
+        pretrain_model_name_or_path=hfl/macbert-base-zh 
+        language=zh
+        answer_name=answer_text
+        qas_id=qas_id
+        start_position_name=start_position_character
+        doc_stride=128
+        max_query_length=64
+    '</code></pre> 
+<p></p> 
+<pre><code># 模型预测
+easynlp \
+    --mode predict \
+    --app_name=machine_reading_comprehension \
+    --worker_gpu=1 \
+    --tables=dev.tsv \
+    --outputs=dev.pred.csv \
+    --input_schema=qas_id:str:1,context_text:str:1,question_text:str:1,answer_text:str:1,start_position_character:str:1,title:str:1 \
+    --output_schema=unique_id,best_answer,query,context \
+    --first_sequence=question_text \
+    --second_sequence=context_text \
+    --sequence_length=384 \
+    --checkpoint_dir=./model_dir \
+    --micro_batch_size=256 \
+    --user_defined_parameters='
+        pretrain_model_name_or_path=hfl/macbert-base-zh 
+        language=zh
+        qas_id=qas_id
+        answer_name=answer_text
+        start_position_name=start_position_character
+        max_query_length=64
+        max_answer_length=30
+        doc_stride=128
+        n_best_size=10
+        output_answer_file=dev.ans.csv
+    '</code></pre> 
+<p>此外，我们还在EasyNLP/examples/appzoo_tutorials/machine_reading_comprehension/文件夹下封装好了多种可直接执行的bash脚本，用户同样可以通过使用bash文件命令行执行的方式来一步完成模型的训练/评估/预测。bash文件需要传入两个参数，第一个参数为运行程序的GPU编号，一般为0；第二个参数代表模型的训练/评估/预测。</p> 
+<pre><code># 训练
+! bash run_train_eval_predict_user_defined_local_zh.sh 0 train
+
+# 预测
+! bash run_train_eval_predict_user_defined_local_zh.sh 0 predict</code></pre> 
+<p>模型训练好之后，我们可以对任意中文文本进行阅读理解，只要将文本转成符合上述模型输入的格式，添加相应的问题，便可使用模型进行预测并得到答案。以下为新华社最新关于“杭州亚运会倒计时一周年”的新闻稿件，我们以这一稿件作为篇章文本，人工添加了两个问题：“杭州什么时候发布了《杭州市亚运城市行动计划纲要》？” &amp; “今年9月底全市快速路总里程将达到多少？”，通过模型预测，便可得到正确的结果：“2020年4月” &amp; “480公里”。</p> 
+<pre><code>CN_01   2020年4月   杭州什么时候发布了《杭州市亚运城市行动计划纲要》？   新华社杭州9月22日电（记者商意盈夏亮）竞赛场馆全部竣工并完成赛事功能验收，“迎亚运”城市基础设施建设迈入快车道，亚运场馆提前开放掀起全民健身热潮……23日，延期后的杭州亚运会将迎来倒计时一周年，各项筹备工作也结出累累硕果，“天堂之城”再次蓄势待发。办好一个会，提升一座城。2020年4月，杭州发布了《杭州市亚运城市行动计划纲要》，其中包括基础设施提升、绿水青山守护、数字治理赋能等八项具体行动。随着亚运的脚步日益临近，杭州西站、萧山国际机场三期、合杭高铁湖杭段、机场轨道快线（19号线）等“两点两线”重大项目正式投运。根据杭州市城乡建设委员会发布的信息，预计到今年9月底全市快速路总里程将达到480公里。住在这里的人们正切身体会到悄然发生的变化——交通方便了，道路变美了，城市基础设施也愈发完善。
+CN_02   480公里   今年9月底全市快速路总里程将达到多少？   新华社杭州9月22日电（记者商意盈夏亮）竞赛场馆全部竣工并完成赛事功能验收，“迎亚运”城市基础设施建设迈入快车道，亚运场馆提前开放掀起全民健身热潮……23日，延期后的杭州亚运会将迎来倒计时一周年，各项筹备工作也结出累累硕果，“天堂之城”再次蓄势待发。办好一个会，提升一座城。2020年4月，杭州发布了《杭州市亚运城市行动计划纲要》，其中包括基础设施提升、绿水青山守护、数字治理赋能等八项具体行动。随着亚运的脚步日益临近，杭州西站、萧山国际机场三期、合杭高铁湖杭段、机场轨道快线（19号线）等“两点两线”重大项目正式投运。根据杭州市城乡建设委员会发布的信息，预计到今年9月底全市快速路总里程将达到480公里。住在这里的人们正切身体会到悄然发生的变化——交通方便了，道路变美了，城市基础设施也愈发完善。</code></pre> 
+<h3>英文机器阅读理解</h3> 
+<p>EasyNLP同样支持英文机器阅读理解，只需要在user_defined_parameters中指定language=en，即可指定英文文本预处理的相应配置。之后便可选择EasyNLP中已集成好的英文预训练语言模型，如 bert-base-uncased、bert-large-uncased 等，进行机器阅读理解的训练与预测。EasyNLP中集成了丰富的预训练模型库，如果想尝试其他预训练模型，如RoBERTa、ALBERT等，也可以在user_defined_parameters中进行相应修改，具体的模型名称可见<a href="https://link.zhihu.com/?target=https%3A//github.com/alibaba/EasyNLP/tree/master/easynlp/modelzoo" rel="nofollow" title="模型列表">模型列表</a>。</p> 
+<p>模型的数据载入、训练、评估、预测部分代码调用方式与上述中文机器阅读理解中完全一致，EasyNLP已将中英文差异性处理的代码集成在各部分函数中，用户只需简单指定参数language=en/zh，即可自如切换中英文相应配置。</p> 
+<p>我们对 bert-base-uncased 和 bert-large-uncased 两个模型分别在英文机器阅读理解数据上进行了 finetune，模型结果如下：</p> 
+<table><tbody><tr><td>英文</td><td>EM</td><td>F1</td></tr><tr><td>bert-base-uncased</td><td>76.64</td><td>85.33</td></tr><tr><td>bert-large-uncased</td><td>79.59</td><td>87.68</td></tr></tbody></table> 
+<p>与中文机器阅读理解一样，用户可以通过带参数运行main.py（指定language=en和相应的pretrain_model_name_or_path），一步执行所有训练/评估/预测操作。</p> 
+<pre><code># 模型训练
+python main.py \
+    --mode train \
+    --app_name=machine_reading_comprehension \
+    --worker_gpu=1 \
+    --tables=train.tsv,dev.tsv \
+    --input_schema=qas_id:str:1,context_text:str:1,question_text:str:1,answer_text:str:1,start_position_character:str:1,title:str:1 \
+    --first_sequence=question_text \
+    --second_sequence=context_text \
+    --sequence_length=384 \
+    --checkpoint_dir=./model_dir \
+    --learning_rate=3.5e-5 \
+    --epoch_num=3 \
+    --random_seed=42 \
+    --save_checkpoint_steps=500 \
+    --train_batch_size=16 \
+    --user_defined_parameters='
+        pretrain_model_name_or_path=bert-base-uncased
+        language=en
+        answer_name=answer_text
+        qas_id=qas_id
+        start_position_name=start_position_character
+        doc_stride=128
+        max_query_length=64
+    '</code></pre> 
+<p></p> 
+<pre><code># 模型预测
+python main.py \
+    --mode predict \
+    --app_name=machine_reading_comprehension \
+    --worker_gpu=1 \
+    --tables=dev.tsv \
+    --outputs=dev.pred.csv \
+    --input_schema=qas_id:str:1,context_text:str:1,question_text:str:1,answer_text:str:1,start_position_character:str:1,title:str:1 \
+    --output_schema=unique_id,best_answer,query,context \
+    --first_sequence=question_text \
+    --second_sequence=context_text \
+    --sequence_length=384 \
+    --checkpoint_dir=./model_dir \
+    --micro_batch_size=256 \
+    --user_defined_parameters='
+        pretrain_model_name_or_path=bert-base-uncased
+        language=en
+        qas_id=qas_id
+        answer_name=answer_text
+        start_position_name=start_position_character
+        max_query_length=64
+        max_answer_length=30
+        doc_stride=128
+        n_best_size=10
+        output_answer_file=dev.ans.csv
+    '</code></pre> 
+<p>除了main.py一步执行之外，我们同样可以使用命令行执行的方式进行快速训练/预测，命令如下：</p> 
+<pre><code># 模型训练
+easynlp \
+    --mode train \
+    --app_name=machine_reading_comprehension \
+    --worker_gpu=1 \
+    --tables=train.tsv,dev.tsv \
+    --input_schema=qas_id:str:1,context_text:str:1,question_text:str:1,answer_text:str:1,start_position_character:str:1,title:str:1 \
+    --first_sequence=question_text \
+    --second_sequence=context_text \
+    --sequence_length=384 \
+    --checkpoint_dir=./model_dir \
+    --learning_rate=3.5e-5 \
+    --epoch_num=5 \
+    --random_seed=42 \
+    --save_checkpoint_steps=600 \
+    --train_batch_size=16 \
+    --user_defined_parameters='
+        pretrain_model_name_or_path=bert-base-uncased
+        language=en
+        answer_name=answer_text
+        qas_id=qas_id
+        start_position_name=start_position_character
+        doc_stride=128
+        max_query_length=64
+    '</code></pre> 
+<p></p> 
+<pre><code># 模型预测
+easynlp \
+    --mode predict \
+    --app_name=machine_reading_comprehension \
+    --worker_gpu=1 \
+    --tables=dev.tsv \
+    --outputs=dev.pred.csv \
+    --input_schema=qas_id:str:1,context_text:str:1,question_text:str:1,answer_text:str:1,start_position_character:str:1,title:str:1 \
+    --output_schema=unique_id,best_answer,query,context \
+    --first_sequence=question_text \
+    --second_sequence=context_text \
+    --sequence_length=384 \
+    --checkpoint_dir=./model_dir \
+    --micro_batch_size=256 \
+    --user_defined_parameters='
+        pretrain_model_name_or_path=bert-base-uncased
+        language=en
+        qas_id=qas_id
+        answer_name=answer_text
+        start_position_name=start_position_character
+        max_query_length=64
+        max_answer_length=30
+        doc_stride=128
+        n_best_size=10
+        output_answer_file=dev.ans.csv
+    '</code></pre> 
+<p>此外，我们还在EasyNLP/examples/appzoo_tutorials/machine_reading_comprehension/文件夹下封装好了多种可直接执行的bash脚本，用户同样可以通过使用bash文件命令行执行的方式来一步完成模型的训练/评估/预测。bash文件需要传入两个参数，第一个参数为运行程序的GPU编号，一般为0；第二个参数代表模型的训练/评估/预测。</p> 
+<pre><code># 模型训练
+! bash run_train_eval_predict_user_defined_local_en.sh 0 train
+
+# 模型预测
+! bash run_train_eval_predict_user_defined_local_en.sh 0 predict</code></pre> 
+<p>模型训练好之后，我们可以对任意英文文本进行阅读理解，只要将文本转成符合上述模型输入的格式，添加相应的问题，便可使用模型进行预测并得到答案。我们选取近日费德勒退役后，纳达尔为他发表的Twitter作为篇章文本，人工添加两个问题："Where will the Laver Cup take place?" &amp; "Who is he's wife?"，通过模型预测，便可得到正确的结果："London" &amp; "Mirka"。</p> 
+<pre><code>EN_01   London    Where will the Laver Cup take place?    I wish this day had never come. It is a sad day for me personally and for people all over the world who love sports. I told you when we talked and here it is. It has been a pleasure, but also an honor and a privilege to share all these years with you, having so many wonderful moments together, on and off the court. We will still have many moments to share to share together in the future, but there are still many things to do together, we know. For now, I would sincerely wish you the best with your wife Mirka, your children, your family and enjoy for what the future will give you. We will see you in London for the Laver Cup.
+EN_02   Mirka,    Who is he's wife?   I wish this day had never come. It is a sad day for me personally and for people all over the world who love sports. I told you when we talked and here it is. It has been a pleasure, but also an honor and a privilege to share all these years with you, having so many wonderful moments together, on and off the court. We will still have many moments to share to share together in the future, but there are still many things to do together, we know. For now, I would sincerely wish you the best with your wife Mirka, your children, your family and enjoy for what the future will give you. We will see you in London for the Laver Cup.</code></pre> 
+<h3>未来展望</h3> 
+<p>在未来，我们计划在EasyNLP框架中进一步完善NLU相关能力，并在此基础上更进一步，开发白盒化可拆解可迁移复用的多轮智能对话系统，敬请期待。我们也将在EasyNLP框架中集成更多SOTA模型（特别是中⽂模型），来⽀持各种NLP和多模态任务。此外，阿⾥云机器学习PAI团队也在持续推进中文阅读理解、对话系统及中⽂多模态模型的⾃研⼯作，欢迎⽤户持续关注我们，也欢迎加⼊我们的开源社区，共建中⽂NLP和多模态算法库！</p> 
+<p>Github地址：<a href="https://link.zhihu.com/?target=https%3A//github.com/alibaba/EasyNLP" rel="nofollow" title="https://github.com/alibaba/EasyNLP">https://github.com/alibaba/EasyNLP</a></p> 
+<h3>参考文献</h3> 
+<ol><li>Chengyu Wang, et al. EasyNLP: A Comprehensive and Easy-to-use Toolkit for Natural Language Processing. <em>arXiv preprint</em></li><li>Danqi Chen. Neural Reading Comprehension and Beyond. <em>Stanford dissertation.</em></li><li>Shanshan Liu. Neural Machine Reading Comprehension: Methods and Trends. <em>arXiv preprint</em></li><li>Rajpurkar, et al. "SQuAD: 100,000+ Questions for Machine Comprehension of Text." <em>EMNLP 2016</em></li><li>Devlin, Jacob, et al. "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding." <em>NAACL 2019</em></li><li>Yiming Cui, et al. "A Span-Extraction Dataset for Chinese Machine Reading Comprehension" <em>EMNLP 2019</em></li><li>Yiming Cui, et al. "Pre-Training with Whole Word Masking for Chinese BERT." <em>TASLP 2021</em></li></ol> 
+<p><strong>作者：施晨、黄俊</strong></p> 
+<p><strong><strong><a href="https://link.zhihu.com/?target=https%3A//click.aliyun.com/m/1000360658/" rel="nofollow" title="原文链接">原文链接</a></strong></strong></p> 
+<p><strong>本文为阿里云原创内容，未经允许不得转载。</strong></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/cdd4cdcd4067854adda148fe4c1b1330/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">若依 springBoot2.5 &#43;vue2前后端分离，实现图片上传及下载功能。</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/757b58a994d0e3b5a28af835417e53d5/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">windows 安装Docker步骤以及在每一个步骤遇到问题合集</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

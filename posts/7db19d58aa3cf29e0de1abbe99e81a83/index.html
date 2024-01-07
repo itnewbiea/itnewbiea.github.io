@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>zookeeper集群&#43;kafka对接ELK集群 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="zookeeper集群&#43;kafka对接ELK集群" />
+<meta property="og:description" content="目录 一、zookeeper概述1、工作机制2、zookeeper的特点3、Zookeeper选举机制 二、部署Zookeeper1、安装JDK2、安装zookeeper 三、Kafka 概述1、为什么需要消息队列（MQ）？2、使用消息队列的好处3、消息队列的两种模式4、什么是Kafka ？5、Kafka 简介6、Kafka 的特性7、Kafka 系统架构 四、部署kafka1、下载安装包(可以下载官方源和阿里源不过挺慢的还容易出bug)2、安装 Kafka3、Kafka 命令行操作 五、部署 Zookeeper&#43;Kafka 集群1、首先在ELK集群上部署filebeat 六、对接kafka 一、zookeeper概述 zookeepei是一个开源的分布式的，伪分布式框架提供协调服务的Apache项目 1、工作机制 zookeeper:是一个基于观察者模式设计的分布式服务管理框架，她负责存储管理大家的数据，然年接受观察者的注册，一旦这些数据的状态发生变化，zookeeper就将负责通知已经在zookeeper上注册的那些观察者做出相应的反应。也就是说Zookeeper = 文件系统&#43;通知机制 2、zookeeper的特点 (1） Zookeeper:一个领导者（Leader)，多个跟随者（Follower〉组成的集群。(2) Zookeepe集群中只要有半数以上节点存活，Zookeeper集群就能正常服务。所以Zookeeper适合安装奇数台服务器(3）全局数据一致:每个server保存一份相同的数据副本，client无论连接到哪个Server，数据都是一致的。(4）更新请求顺序执行，来自同一个client的更新请求按其发送顺序依次执行，即先进先出。(5)数据更新原子性，一次数据更新要么成功，要么失败。(6）实时性,在一定时间范围内，Client能读到最新数据。 3、Zookeeper选举机制 第一次启动选举机制(假设初始服务器为五台)
+(1)服务器1启动，发起一次选举。服务器1投自己一票。此时服务器1票数一票，不够半数以上（3票)，选举无法完成，服务器1状态保持为LOOKING:(2）服务器2启动，再发起一次选举。服务器1和2分别投自己一票并交换选票信息:此时服务器1发现服务器2的myid比自己目前投票推举的（服务器1)大，更改选票为推举服务器2。此时服务器1票数0票，服务器2票数2票，没有半数以上结果，选举无法完成,服务器1，2状态保持LOOKING(3)服务器3启动，发起一次选举。此时服务器1和2都会更改选票为服务器3。此次投票结果:服务器1为0票，服务器2为0票，服务器3为3票。此时服务器3的票数已经超过半数，服务器3当选Leader。服务器1，2更改状态为FOLOWING，服务器3更改状态为LEADING;(4）服务器4启动，发起一次选举。此时服务器1，2，3已经不是LooKING状态，不会更改选票信息。交换选票信息结果:服务器:为3票，服务器4为1票。此时服务器4服从多数，更改选票信息为服务器3，并更改状态为FOLLOwING(5)服务器5启动，同4一样当小弟。 非第一次启动选举机制
+(1）当ZooKeeper集群中的一台服务器出现以下两种情况之一时，就会开始进入Leader选举: 1)服务器初始化启动。2)服务器运行期间无法和Leader保持连接。 (2）而当一台机器进入Leader选举流程时，当前集群也可能会处于以下两种状态: 1)集群中本来就己经存在一个Leader。
+对于已经存在Leader的情况，机器试图去选举Leader时，会被告知当前服务器的Leader信息，对于该机器来说，仅仅需要和Leader机器建立连接,并进行状态同步即可。2)集群中确实不存在Leader。
+假设ZooKeeper由5台服务器组成，SID分别为1、2、3、4、5，ZXID分别为8、8、8、7、7，并且此时sID为3的服务器是Leader。某一时刻，3和5服务器出现故障，因此开始进行Leader选举。 选举Leader规则:
+1.EPOCH大的直接胜出
+2.EPOCH相同，事务id大的胜出
+3.事务id相同，服务器id大的胜出 SID:服务器ID。用来唯一标识一台ZooKeeper集群中的机器，每台机器不能重复，和myid一致。
+ZXID:事务ID。ZXID是一个事务ID，用来标识一次服务器状态的变更。在某一时刻，集群中的每台机器的ExID值不一定完全一致，这和zooKeeper服务器对于客户端&#34;更新请求&#34;的处理逻辑速度有关。
+Epoch:每个Leader任期的代号。没有Leader时同一轮投票过程中的逻辑时钟值是相同的。每投完一次票这个数据就会增加 二、部署Zookeeper 环境配置
+服务器主机server1192.168.10.100server2192.168.10.18server3192.168.10.19 关闭防火墙
+systemctl stop firewalld systemctl disable firewalld setenforce 0 1、安装JDK 所有主机
+yum install -y java-1.8.0-openjdk java-1.8.O-openjdk-devel #默认Centos系统已经安装好了 java -version 2、安装zookeeper 所有主机
+cd /opt tar -zxvf apache-zookeeper-3." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/7db19d58aa3cf29e0de1abbe99e81a83/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-07-22T03:25:56+08:00" />
+<meta property="article:modified_time" content="2021-07-22T03:25:56+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">zookeeper集群&#43;kafka对接ELK集群</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>目录</h4> 
+ <ul><li><a href="#zookeeper_1" rel="nofollow">一、zookeeper概述</a></li><li><ul><li><a href="#1_3" rel="nofollow">1、工作机制</a></li><li><a href="#2zookeeper_5" rel="nofollow">2、zookeeper的特点</a></li><li><a href="#3Zookeeper_12" rel="nofollow">3、Zookeeper选举机制</a></li></ul> 
+  </li><li><a href="#Zookeeper_37" rel="nofollow">二、部署Zookeeper</a></li><li><ul><li><a href="#1JDK_50" rel="nofollow">1、安装JDK</a></li><li><a href="#2zookeeper_57" rel="nofollow">2、安装zookeeper</a></li></ul> 
+  </li><li><a href="#Kafka__165" rel="nofollow">三、Kafka 概述</a></li><li><ul><li><a href="#1MQ_166" rel="nofollow">1、为什么需要消息队列（MQ）？</a></li><li><a href="#2_171" rel="nofollow">2、使用消息队列的好处</a></li><li><a href="#3_182" rel="nofollow">3、消息队列的两种模式</a></li><li><a href="#4Kafka__188" rel="nofollow">4、什么是Kafka ？</a></li><li><a href="#5Kafka__190" rel="nofollow">5、Kafka 简介</a></li><li><a href="#6Kafka__193" rel="nofollow">6、Kafka 的特性</a></li><li><a href="#7Kafka__204" rel="nofollow">7、Kafka 系统架构</a></li></ul> 
+  </li><li><a href="#kafka_259" rel="nofollow">四、部署kafka</a></li><li><ul><li><a href="#1bug_260" rel="nofollow">1、下载安装包(可以下载官方源和阿里源不过挺慢的还容易出bug)</a></li><li><a href="#2_Kafka_267" rel="nofollow">2、安装 Kafka</a></li><li><a href="#3Kafka__353" rel="nofollow">3、Kafka 命令行操作</a></li></ul> 
+  </li><li><a href="#_ZookeeperKafka__391" rel="nofollow">五、部署 Zookeeper+Kafka 集群</a></li><li><ul><li><a href="#1ELKfilebeat_392" rel="nofollow">1、首先在ELK集群上部署filebeat</a></li></ul> 
+  </li><li><a href="#kafka_451" rel="nofollow">六、对接kafka</a></li></ul> 
+</div> 
+<p></p> 
+<h2><a id="zookeeper_1"></a>一、zookeeper概述</h2> 
+<ul><li>zookeepei是一个开源的分布式的，伪分布式框架提供协调服务的Apache项目</li></ul> 
+<h3><a id="1_3"></a>1、工作机制</h3> 
+<ul><li>zookeeper:是一个基于观察者模式设计的分布式服务管理框架，她负责存储管理大家的数据，然年接受观察者的注册，一旦这些数据的状态发生变化，zookeeper就将负责通知已经在zookeeper上注册的那些观察者做出相应的反应。也就是说Zookeeper = 文件系统+通知机制</li></ul> 
+<h3><a id="2zookeeper_5"></a>2、zookeeper的特点</h3> 
+<ul><li>(1） Zookeeper:一个领导者（Leader)，多个跟随者（Follower〉组成的集群。</li><li>(2) Zookeepe集群中只要有半数以上节点存活，Zookeeper集群就能正常服务。所以Zookeeper适合安装奇数台服务器</li><li>(3）全局数据一致:每个server保存一份相同的数据副本，client无论连接到哪个Server，数据都是一致的。</li><li>(4）更新请求顺序执行，来自同一个client的更新请求按其发送顺序依次执行，即先进先出。</li><li>(5)数据更新原子性，一次数据更新要么成功，要么失败。</li><li>(6）实时性,在一定时间范围内，Client能读到最新数据。</li></ul> 
+<h3><a id="3Zookeeper_12"></a>3、Zookeeper选举机制</h3> 
+<p><img src="https://images2.imgbox.com/b4/ae/T08uXbK3_o.png" alt="在这里插入图片描述"><br> <strong>第一次启动选举机制(假设初始服务器为五台)</strong></p> 
+<ul><li>(1)服务器1启动，发起一次选举。服务器1投自己一票。此时服务器1票数一票，不够半数以上（3票)，选举无法完成，服务器1状态保持为LOOKING:</li><li>(2）服务器2启动，再发起一次选举。服务器1和2分别投自己一票并交换选票信息:此时服务器1发现服务器2的myid比自己目前投票推举的（服务器1)大，更改选票为推举服务器2。此时服务器1票数0票，服务器2票数2票，没有半数以上结果，选举无法完成,服务器1，2状态保持LOOKING</li><li>(3)服务器3启动，发起一次选举。此时服务器1和2都会更改选票为服务器3。此次投票结果:服务器1为0票，服务器2为0票，服务器3为3票。此时服务器3的票数已经超过半数，服务器3当选Leader。服务器1，2更改状态为FOLOWING，服务器3更改状态为LEADING;</li><li>(4）服务器4启动，发起一次选举。此时服务器1，2，3已经不是LooKING状态，不会更改选票信息。交换选票信息结果:服务器:为3票，服务器4为1票。此时服务器4服从多数，更改选票信息为服务器3，并更改状态为FOLLOwING</li><li>(5)服务器5启动，同4一样当小弟。</li></ul> 
+<p><strong>非第一次启动选举机制</strong></p> 
+<ul><li>(1）当ZooKeeper集群中的一台服务器出现以下两种情况之一时，就会开始进入Leader选举: 
+  <ul><li>1)服务器初始化启动。</li><li>2)服务器运行期间无法和Leader保持连接。</li></ul> </li><li>(2）而当一台机器进入Leader选举流程时，当前集群也可能会处于以下两种状态: 
+  <ul><li>1)集群中本来就己经存在一个Leader。<br> 对于已经存在Leader的情况，机器试图去选举Leader时，会被告知当前服务器的Leader信息，对于该机器来说，仅仅需要和Leader机器建立连接,并进行状态同步即可。</li><li>2)集群中确实不存在Leader。<br> 假设ZooKeeper由5台服务器组成，SID分别为1、2、3、4、5，ZXID分别为8、8、8、7、7，并且此时sID为3的服务器是Leader。某一时刻，3和5服务器出现故障，因此开始进行Leader选举。 
+    <ul><li>选举Leader规则:<br> 1.EPOCH大的直接胜出<br> 2.EPOCH相同，事务id大的胜出<br> 3.事务id相同，服务器id大的胜出</li></ul> </li></ul> </li><li>SID:服务器ID。用来唯一标识一台ZooKeeper集群中的机器，每台机器不能重复，和myid一致。<br> ZXID:事务ID。ZXID是一个事务ID，用来标识一次服务器状态的变更。在某一时刻，集群中的每台机器的ExID值不一定完全一致，这和zooKeeper服务器对于客户端"更新请求"的处理逻辑速度有关。<br> Epoch:每个Leader任期的代号。没有Leader时同一轮投票过程中的逻辑时钟值是相同的。每投完一次票这个数据就会增加</li></ul> 
+<h2><a id="Zookeeper_37"></a>二、部署Zookeeper</h2> 
+<p><strong>环境配置</strong></p> 
+<table><thead><tr><th>服务器</th><th>主机</th></tr></thead><tbody><tr><td>server1</td><td>192.168.10.100</td></tr><tr><td>server2</td><td>192.168.10.18</td></tr><tr><td>server3</td><td>192.168.10.19</td></tr></tbody></table> 
+<p>关闭防火墙</p> 
+<pre><code class="prism language-javascript">systemctl stop firewalld
+systemctl disable firewalld
+setenforce <span class="token number">0</span>
+</code></pre> 
+<h3><a id="1JDK_50"></a>1、安装JDK</h3> 
+<p><mark>所有主机</mark></p> 
+<pre><code class="prism language-javascript">yum install <span class="token operator">-</span>y java<span class="token operator">-</span><span class="token number">1.8</span><span class="token number">.0</span><span class="token operator">-</span>openjdk java<span class="token operator">-</span><span class="token number">1.8</span><span class="token punctuation">.</span><span class="token constant">O</span><span class="token operator">-</span>openjdk<span class="token operator">-</span>devel   #默认Centos系统已经安装好了 
+java <span class="token operator">-</span>version 
+</code></pre> 
+<p><img src="https://images2.imgbox.com/6d/d4/Pz9FA9lC_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="2zookeeper_57"></a>2、安装zookeeper</h3> 
+<p><mark>所有主机</mark></p> 
+<pre><code class="prism language-javascript">cd <span class="token operator">/</span>opt
+tar <span class="token operator">-</span>zxvf apache<span class="token operator">-</span>zookeeper<span class="token operator">-</span><span class="token number">3.5</span><span class="token number">.7</span><span class="token operator">-</span>bin<span class="token punctuation">.</span>tar<span class="token punctuation">.</span>gz
+mv apache<span class="token operator">-</span>zookeeper<span class="token operator">-</span><span class="token number">3.5</span><span class="token number">.7</span><span class="token operator">-</span>bin <span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>zookeeper<span class="token operator">-</span><span class="token number">3.5</span><span class="token number">.74</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/e2/91/IOvmFug8_o.png" alt="在这里插入图片描述"><br> <strong>①、修改配置文件</strong><br> <mark>所有服务器</mark></p> 
+<ul><li>这里我就做一台演示一下，一会用scp直接远程复制了</li></ul> 
+<pre><code class="prism language-javascript">cd <span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>zookeeper<span class="token operator">-</span><span class="token number">3.5</span><span class="token number">.7</span><span class="token operator">/</span>conf<span class="token operator">/</span>
+cp zoo_sample<span class="token punctuation">.</span>cfg zoo<span class="token punctuation">.</span>cfg
+
+vim zoo_cfg
+tickTime<span class="token operator">=</span><span class="token number">2000</span>    #通信心跳时间，Zookeeper服务器与客户端心跳时间，单位毫秒
+initLimit<span class="token operator">=</span><span class="token number">10</span>     #<span class="token function">Leader和Follower初始连接时能容忍的最多心跳数</span><span class="token punctuation">(</span>tickTime的数量<span class="token punctuation">)</span>，这里表示为<span class="token number">10</span><span class="token operator">*</span><span class="token number">2</span>s
+syncLimit<span class="token operator">=</span><span class="token number">5</span>    #Leader和Follower之间同步通信的超时时间，这里表示如果超过<span class="token number">5</span><span class="token operator">*</span><span class="token number">2</span>s，Leader认为Follwer死掉，并从服务器列表中删除Follwer
+dataDir<span class="token operator">=</span><span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>zookeeper<span class="token operator">-</span><span class="token number">3.5</span><span class="token number">.7</span><span class="token operator">/</span>data   #修改，指定保存Zookeeper中的数据的目录，目录需要单独创建
+dataLogDir<span class="token operator">=</span><span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>zookeeper<span class="token operator">-</span><span class="token number">3.5</span><span class="token number">.7</span><span class="token operator">/</span>logs  #添加，指定存放日志的目录，目录需要单独创建
+clientPort<span class="token operator">=</span><span class="token number">2181</span>  #客户端连接端口
+#添加集群信息
+server<span class="token punctuation">.</span><span class="token number">1</span><span class="token operator">=</span><span class="token number">192.168</span><span class="token number">.10</span><span class="token number">.100</span><span class="token punctuation">:</span><span class="token number">3188</span><span class="token punctuation">:</span><span class="token number">3288</span>
+server<span class="token punctuation">.</span><span class="token number">2</span><span class="token operator">=</span><span class="token number">192.168</span><span class="token number">.10</span><span class="token number">.18</span><span class="token punctuation">:</span><span class="token number">3188</span><span class="token punctuation">:</span><span class="token number">3288</span>
+server<span class="token punctuation">.</span><span class="token number">3</span><span class="token operator">=</span><span class="token number">192.168</span><span class="token number">.10</span><span class="token number">.19</span><span class="token punctuation">:</span><span class="token number">3188</span><span class="token punctuation">:</span><span class="token number">3288</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/30/ad/AZJc5SVz_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>server.A=B:C:D</li><li>A是一个数字，表示这个是第几号服务器。集群模式下需要在zoo.cfg中dataDir指定的目录下创建一个文件myid，这个文件里面有一个数据就是A的值，Zookeeper启动时读取此文件，拿到里面的数据与zoo.cfg里面的配置信息比较从而判断到底是哪个server1</li><li>B是这个服务器的地址。</li><li>C是这个服务器Follower与集群中的Leader服务器交换信息的端口。</li><li>D是万一集群中的Leader服务器挂了，需要一个端口来重新进行选举，选出一个新的Leader，而这个端口就是用来执行选举时服务器相互通信的端口。</li></ul> 
+<p><strong>拷贝配置好的zookeeper 配置文件到其他机器上</strong><br> <mark>在server1上进行远程复制（你在哪做的就在哪复制）</mark></p> 
+<pre><code class="prism language-javascript">scp <span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>zookeeper<span class="token operator">-</span><span class="token number">3.5</span><span class="token number">.7</span><span class="token operator">/</span>conf<span class="token operator">/</span>zoo<span class="token punctuation">.</span>cfg <span class="token number">192.168</span><span class="token number">.10</span><span class="token number">.18</span><span class="token punctuation">:</span><span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>zookeeper<span class="token operator">-</span><span class="token number">3.5</span><span class="token number">.7</span><span class="token operator">/</span>conf<span class="token operator">/</span>
+scp <span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>zookeeper<span class="token operator">-</span><span class="token number">3.5</span><span class="token number">.7</span><span class="token operator">/</span>conf<span class="token operator">/</span>zoo<span class="token punctuation">.</span>cfg <span class="token number">192.168</span><span class="token number">.10</span><span class="token number">.19</span><span class="token punctuation">:</span><span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>zookeeper<span class="token operator">-</span><span class="token number">3.5</span><span class="token number">.7</span><span class="token operator">/</span>conf<span class="token operator">/</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/d9/b8/bxtjr2iE_o.png" alt="在这里插入图片描述"><br> <strong>在每个节点上创建数据目录和日志目录</strong><br> <mark>所有服务器</mark></p> 
+<pre><code class="prism language-javascript">mkdir <span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>zookeeper<span class="token operator">-</span><span class="token number">3.5</span><span class="token number">.7</span><span class="token operator">/</span>data
+mkdir <span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>zookeeper<span class="token operator">-</span><span class="token number">3.5</span><span class="token number">.7</span><span class="token operator">/</span>logs
+</code></pre> 
+<p><img src="https://images2.imgbox.com/e4/94/BzI6hFZG_o.png" alt="在这里插入图片描述"><br> <strong>在每个节点的dataDir指定的目录下创建一个myid的文件</strong><br> <mark>server1 192.168.10.100</mark><br> <mark>server2 192.168.10.18</mark><br> <mark>server3 192.168.10.19</mark></p> 
+<pre><code class="prism language-javascrip">echo 1 &gt; /usr/local/zookeeper-3.5.7/data/myid  #在server1设置myid 
+echo 2 &gt; /usr/local/zookeeper-3.5.7/data/myid  #在server2设置myid
+echo 3 &gt; /usr/local/zookeeper-3.5.7/data/myid  #在server3设置myid
+</code></pre> 
+<p><img src="https://images2.imgbox.com/c0/5e/OoSp0DfH_o.png" alt="在这里插入图片描述"><br> <strong>配置Zookeeper 启动脚本</strong><br> <mark>所有服务器</mark></p> 
+<pre><code class="prism language-javascript">vim <span class="token operator">/</span>etc<span class="token operator">/</span>init<span class="token punctuation">.</span>d<span class="token operator">/</span>zookeeper
+#<span class="token operator">!</span><span class="token operator">/</span>bin<span class="token operator">/</span>bash
+#chkconfig<span class="token punctuation">:</span><span class="token number">2345</span> <span class="token number">20</span> <span class="token number">90</span>
+#description<span class="token punctuation">:</span>Zookeeper serviceControl  script
+<span class="token constant">ZK_HOME</span><span class="token operator">=</span><span class="token string">'/usr/local/zookeeper-3.5.7'</span>
+<span class="token keyword">case</span> $<span class="token number">1</span> <span class="token keyword">in</span>
+start<span class="token punctuation">)</span>
+        echo <span class="token string">"---------- zookeeper启动------"</span>
+        $<span class="token constant">ZK_HOME</span><span class="token operator">/</span>bin<span class="token operator">/</span>zkServer<span class="token punctuation">.</span>sh start
+<span class="token punctuation">;</span><span class="token punctuation">;</span>
+stop<span class="token punctuation">)</span>
+        echo <span class="token string">"---------- zookeeper 停止 ------------"</span>
+        $<span class="token constant">ZK_HOME</span><span class="token operator">/</span>bin<span class="token operator">/</span>zkServer<span class="token punctuation">.</span>sh stop
+<span class="token punctuation">;</span><span class="token punctuation">;</span>
+restart<span class="token punctuation">)</span>
+        echo <span class="token string">"---------- zookeeper 重启------------"</span>
+        $<span class="token constant">ZK_HOME</span><span class="token operator">/</span>bin<span class="token operator">/</span>zkServer<span class="token punctuation">.</span>sh restart
+<span class="token punctuation">;</span><span class="token punctuation">;</span>
+status<span class="token punctuation">)</span>
+        echo <span class="token string">"---------- zookeeper状态---------"</span>
+        $<span class="token constant">ZK_HOME</span><span class="token operator">/</span>bin<span class="token operator">/</span>zkServer<span class="token punctuation">.</span>sh status
+<span class="token punctuation">;</span><span class="token punctuation">;</span>
+<span class="token operator">*</span><span class="token punctuation">)</span>
+        echo <span class="token string">"Usage: $0 {start|stop|restart|status}"</span>
+esac
+</code></pre> 
+<p><img src="https://images2.imgbox.com/20/7e/4BSBdC6a_o.png" alt="在这里插入图片描述"><br> <strong>设置开机自启</strong><br> <mark>所有服务器</mark></p> 
+<pre><code class="prism language-javascript">chmod <span class="token operator">+</span>x <span class="token operator">/</span>etc<span class="token operator">/</span>init<span class="token punctuation">.</span>d<span class="token operator">/</span>zookeeper
+chkconfig <span class="token operator">--</span>add zookeeper
+</code></pre> 
+<p><img src="https://images2.imgbox.com/43/8e/lWakecAV_o.png" alt="在这里插入图片描述"><br> <strong>分别启动Zookeeper</strong><br> <mark>所有服务器</mark></p> 
+<ul><li>注意：要先启动所有服务器再查看zookeeper的状态</li></ul> 
+<pre><code class="prism language-javascript">service zookeeper start
+</code></pre> 
+<p><img src="https://images2.imgbox.com/8e/ea/rDaRPx5F_o.png" alt="在这里插入图片描述"><br> <strong>查看当前状态</strong><br> <mark>所有服务器</mark></p> 
+<pre><code class="prism language-javascript">service zookeeper status
+</code></pre> 
+<p><img src="https://images2.imgbox.com/13/9f/OFiEgQE7_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="Kafka__165"></a>三、Kafka 概述</h2> 
+<h3><a id="1MQ_166"></a>1、为什么需要消息队列（MQ）？</h3> 
+<ul><li>主要原因是由于在高并发环境下，同步请求来不及处理，请求往往会发生阻塞。比如大量的请求并发访问数据库，导致行锁表锁，最后请求线程会堆积过多，从而触发 too many connection 错误，引发雪崩效应。</li><li>使用消息队列，通过异步处理请求，从而缓解系统的压力。消息队列常应用于异步处理，流量削峰，应用解耦，消息通讯等场景。</li></ul> 
+<p><strong>当前比较常见的 MQ 中间件有 ActiveMQ、RabbitMQ、RocketMQ、Kafka 等。</strong></p> 
+<h3><a id="2_171"></a>2、使用消息队列的好处</h3> 
+<ul><li>（1）解耦<br> 允许你独立的扩展或修改两边的处理过程，只要确保它们遵守同样的接口约束。</li><li>（2）可恢复性<br> 系统的一部分组件失效时，不会影响到整个系统。消息队列降低了进程间的耦合度，所以即使一个处理消息的进程挂掉，加入队列中的消息仍然可以在系统恢复后被处理。</li><li>（3）缓冲<br> 有助于控制和优化数据流经过系统的速度，解决生产消息和消费消息的处理速度不一致的情况。</li><li>（4）灵活性 &amp; 峰值处理能力<br> 在访问量剧增的情况下，应用仍然需要继续发挥作用，但是这样的突发流量并不常见。如果为以能处理这类峰值访问为标准来投入资源随时待命无疑是巨大的浪费。使用消息队列能够使关键组件顶住突发的访问压力，而不会因为突发的超负荷的请求而完全崩溃。</li><li>（5）异步通信<br> 很多时候，用户不想也不需要立即处理消息。消息队列提供了异步处理机制，允许用户把一个消息放入队列，但并不立即处理它。想向队列中放入多少消息就放多少，然后在需要的时候再去处理它们。</li></ul> 
+<h3><a id="3_182"></a>3、消息队列的两种模式</h3> 
+<ul><li>（1）点对点模式（一对一，消费者主动拉取数据，消息收到后消息清除） 
+  <ul><li> <pre><code>消息生产者生产消息发送到消息队列中，然后消息消费者从消息队列中取出并且消费消息。消息被消费以后，消息队列中不再有存储，所以消息消费者不可能消费到已经被消费的消息。消息队列支持存在多个消费者，但是对一个消息而言，只会有一个消费者可以消费。
+</code></pre> </li></ul> </li><li>（2）发布/订阅模式（一对多，又叫观察者模式，消费者消费数据之后不会清除消息） 
+  <ul><li>消息生产者（发布）将消息发布到 topic 中，同时有多个消息消费者（订阅）消费该消息。和点对点方式不同，发布到 topic 的消息会被所有订阅者消费。<br> 发布/订阅模式是定义对象间一种一对多的依赖关系，使得每当一个对象（目标对象）的状态发生改变，则所有依赖于它的对象（观察者对象）都会得到通知并自动更新。</li></ul> </li></ul> 
+<h3><a id="4Kafka__188"></a>4、什么是Kafka ？</h3> 
+<ul><li>Kafka 是一个分布式的基于发布/订阅模式的消息队列（MQ，Message Queue），主要应用于大数据实时处理领域。</li></ul> 
+<h3><a id="5Kafka__190"></a>5、Kafka 简介</h3> 
+<ul><li>Kafka 是最初由 Linkedin 公司开发，是一个分布式、支持分区的（partition）、多副本的（replica），基于 Zookeeper 协调的分布式消息中间件系统，它的最大的特性就是可以实时的处理大量数据以满足各种需求场景，比如基于 hadoop 的批处理系统、低延迟的实时系统、Spark/Flink 流式处理引擎，nginx 访问日志，消息服务等等，用 scala 语言编写。</li><li>Linkedin 于 2010 年贡献给了 Apache 基金会并成为顶级开源项目。</li></ul> 
+<h3><a id="6Kafka__193"></a>6、Kafka 的特性</h3> 
+<ul><li>1、高吞吐量、低延迟 
+  <ul><li>Kafka 每秒可以处理几十万条消息，它的延迟最低只有几毫秒。每个 topic 可以分多个 Partition，Consumer Group 对 Partition 进行消费操作，提高负载均衡能力和消费能力。</li></ul> </li><li>2、可扩展性 
+  <ul><li>kafka 集群支持热扩展</li></ul> </li><li>3、持久性、可靠性 
+  <ul><li>消息被持久化到本地磁盘，并且支持数据备份防止数据丢失</li></ul> </li><li>4、容错性 
+  <ul><li>允许集群中节点失败（多副本情况下，若副本数量为 n，则允许 n-1 个节点失败）</li></ul> </li><li>5、高并发 
+  <ul><li>支持数千个客户端同时读写</li></ul> </li></ul> 
+<h3><a id="7Kafka__204"></a>7、Kafka 系统架构</h3> 
+<ul><li> <p>（1）Broker<br> 一台 kafka 服务器就是一个 broker。一个集群由多个 broker 组成。一个 broker 可以容纳多个 topic。</p> </li><li> <p>（2）Topic<br> 可以理解为一个队列，生产者和消费者面向的都是一个 topic。<br> 类似于数据库的表名或者 ES 的 index<br> 物理上不同 topic 的消息分开存储</p> </li><li> <p>（3）Partition</p> </li><li> <p>为了实现扩展性，一个非常大的 topic 可以分布到多个 broker（即服务器）上，一个 topic 可以分割为一个或多个 partition，每个 partition 是一个有序的队列。Kafka 只保证 partition 内的记录是有序的，而不保证 topic 中不同 partition 的顺序。</p> </li><li> <p>每个 topic 至少有一个 partition，当生产者产生数据的时候，会根据分配策略选择分区，然后将消息追加到指定的分区的队列末尾。</p> 
+  <ul><li>Partation 数据路由规则： 
+    <ul><li>1.指定了 patition，则直接使用；</li><li>2.未指定 patition 但指定 key（相当于消息中某个属性），通过对 key 的 value 进行 hash 取模，选出一个 patition；</li><li>3.patition 和 key 都未指定，使用轮询选出一个 patition。</li></ul> </li></ul> </li><li> <p>每条消息都会有一个自增的编号，用于标识消息的偏移量，标识顺序从 0 开始。</p> </li><li> <p>每个 partition 中的数据使用多个 segment 文件存储。</p> </li><li> <p>如果 topic 有多个 partition，消费数据时就不能保证数据的顺序。严格保证消息的消费顺序的场景下（例如商品秒杀、 抢红包），需要将 partition 数目设为 1。</p> 
+  <ul><li>broker 存储 topic 的数据。如果某 topic 有 N 个 partition，集群有 N 个 broker，那么每个 broker 存储该 topic 的一个 partition。</li><li>如果某 topic 有 N 个 partition，集群有 (N+M) 个 broker，那么其中有 N 个 broker 存储 topic 的一个 partition， 剩下的 M 个 broker 不存储该 topic 的 partition 数据。</li><li>如果某 topic 有 N 个 partition，集群中 broker 数目少于 N 个，那么一个 broker 存储该 topic 的一个或多个 partition。在实际生产环境中，尽量避免这种情况的发生，这种情况容易导致 Kafka 集群数据不均衡。</li></ul> </li><li> <p>分区的原因</p> 
+  <ul><li>方便在集群中扩展，每个Partition可以通过调整以适应它所在的机器，而一个topic又可以有多个Partition组成，因此整个集群就可以适应任意大小的数据了；</li><li>可以提高并发，因为可以以Partition为单位读写了。</li></ul> </li><li> <p>（4）Leader</p> 
+  <ul><li>每个 partition 有多个副本，其中有且仅有一个作为 Leader，Leader 是当前负责数据的读写的 partition。</li></ul> </li><li> <p>（5）Follower</p> 
+  <ul><li>Follower 跟随 Leader，所有写请求都通过 Leader 路由，数据变更会广播给所有 Follower，Follower 与 Leader 保持数据同步。Follower 只负责备份，不负责数据的读写。<br> 如果 Leader 故障，则从 Follower 中选举出一个新的 Leader。<br> 当 Follower 挂掉、卡住或者同步太慢，Leader 会把这个 Follower 从 ISR（Leader 维护的一个和 Leader 保持同步的 Follower 集合） 列表中删除，重新创建一个 Follower。</li></ul> </li><li> <p>（6）Replica</p> 
+  <ul><li>副本，为保证集群中的某个节点发生故障时，该节点上的 partition 数据不丢失，且 kafka 仍然能够继续工作，kafka 提供了副本机制，一个 topic 的每个分区都有若干个副本，一个 leader 和若干个 follower。</li></ul> </li><li> <p>（7）Producer</p> 
+  <ul><li>生产者即数据的发布者，该角色将消息发布到 Kafka 的 topic 中。<br> broker 接收到生产者发送的消息后，broker 将该消息追加到当前用于追加数据的 segment 文件中。<br> 生产者发送的消息，存储到一个 partition 中，生产者也可以指定数据存储的 partition。</li></ul> </li><li> <p>（8）Consumer</p> 
+  <ul><li>消费者可以从 broker 中读取数据。消费者可以消费多个 topic 中的数据。</li></ul> </li><li> <p>（9）Consumer Group（CG）</p> 
+  <ul><li>消费者组，由多个 consumer 组成。<br> 所有的消费者都属于某个消费者组，即消费者组是逻辑上的一个订阅者。可为每个消费者指定组名，若不指定组名则属于默认的组。<br> 将多个消费者集中到一起去处理某一个 Topic 的数据，可以更快的提高数据的消费能力。<br> 消费者组内每个消费者负责消费不同分区的数据，一个分区只能由一个组内消费者消费，防止数据被重复读取。<br> 消费者组之间互不影响。</li></ul> </li><li> <p>（10）offset 偏移量</p> 
+  <ul><li>可以唯一的标识一条消息。<br> 偏移量决定读取数据的位置，不会有线程安全的问题，消费者通过偏移量来决定下次读取的消息（即消费位置）。<br> 消息被消费之后，并不被马上删除，这样多个业务就可以重复使用 Kafka 的消息。<br> 某一个业务也可以通过修改偏移量达到重新读取消息的目的，偏移量由用户控制。<br> 消息最终还是会被删除的，默认生命周期为 1 周（7*24小时）。</li></ul> </li><li> <p>（11）Zookeeper</p> 
+  <ul><li>Kafka 通过 Zookeeper 来存储集群的 meta 信息。</li></ul> </li></ul> 
+<p><strong>由于 consumer 在消费过程中可能会出现断电宕机等故障，consumer 恢复后，需要从故障前的位置的继续消费，所以 consumer 需要实时记录自己消费到了哪个 offset，以便故障恢复后继续消费。<br> Kafka 0.9 版本之前，consumer 默认将 offset 保存在 Zookeeper 中；从 0.9 版本开始，consumer 默认将 offset 保存在 Kafka 一个内置的 topic 中，该 topic 为 __consumer_offsets。</strong></p> 
+<h2><a id="kafka_259"></a>四、部署kafka</h2> 
+<h3><a id="1bug_260"></a>1、下载安装包(可以下载官方源和阿里源不过挺慢的还容易出bug)</h3> 
+<pre><code class="prism language-javascript">官方下载地址：http<span class="token punctuation">:</span><span class="token operator">/</span><span class="token operator">/</span>kafka<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>org<span class="token operator">/</span>downloads<span class="token punctuation">.</span>html
+
+cd <span class="token operator">/</span>opt
+wget https<span class="token punctuation">:</span><span class="token operator">/</span><span class="token operator">/</span>mirrors<span class="token punctuation">.</span>tuna<span class="token punctuation">.</span>tsinghua<span class="token punctuation">.</span>edu<span class="token punctuation">.</span>cn<span class="token operator">/</span>apache<span class="token operator">/</span>kafka<span class="token operator">/</span><span class="token number">2.7</span><span class="token number">.1</span><span class="token operator">/</span>kafka_2<span class="token punctuation">.</span><span class="token number">13</span><span class="token operator">-</span><span class="token number">2.7</span><span class="token number">.1</span><span class="token punctuation">.</span>tgz
+</code></pre> 
+<h3><a id="2_Kafka_267"></a>2、安装 Kafka</h3> 
+<p><mark>所有主机</mark></p> 
+<pre><code class="prism language-javascript">cd <span class="token operator">/</span>opt<span class="token operator">/</span>
+tar zxvf kafka_2<span class="token punctuation">.</span><span class="token number">13</span><span class="token operator">-</span><span class="token number">2.7</span><span class="token number">.1</span><span class="token punctuation">.</span>tgz
+mv kafka_2<span class="token punctuation">.</span><span class="token number">13</span><span class="token operator">-</span><span class="token number">2.7</span><span class="token number">.1</span> <span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>kafka
+</code></pre> 
+<p><img src="https://images2.imgbox.com/25/80/1SwKgqiU_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/73/96/j7YAR5B6_o.png" alt="在这里插入图片描述"><br> <strong>①、修改配置文件</strong></p> 
+<pre><code class="prism language-javascript">cd <span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>kafka<span class="token operator">/</span>config<span class="token operator">/</span>
+cp server<span class="token punctuation">.</span>properties<span class="token punctuation">{<!-- --></span><span class="token punctuation">,</span><span class="token punctuation">.</span>bak<span class="token punctuation">}</span>
+
+vim server<span class="token punctuation">.</span>properties
+broker<span class="token punctuation">.</span>id<span class="token operator">=</span><span class="token number">0</span>                             #<span class="token number">21</span>行，broker的全局唯一编号，每个broker不能重复，因此要在其他机器上配置 broker<span class="token punctuation">.</span>id<span class="token operator">=</span><span class="token number">1</span>、broker<span class="token punctuation">.</span>id<span class="token operator">=</span><span class="token number">2</span>
+listeners<span class="token operator">=</span><span class="token constant">PLAINTEXT</span><span class="token punctuation">:</span><span class="token operator">/</span><span class="token operator">/</span><span class="token number">192.168</span><span class="token number">.10</span><span class="token number">.100</span><span class="token punctuation">:</span><span class="token number">9092</span>    #<span class="token number">31</span>行，指定监听的<span class="token constant">IP</span>和端口，如果修改每个broker的<span class="token constant">IP</span>需区分开来，也可保持默认配置不用修改
+num<span class="token punctuation">.</span>network<span class="token punctuation">.</span>threads<span class="token operator">=</span><span class="token number">3</span>    #<span class="token number">42</span>行，broker 处理网络请求的线程数量，一般情况下不需要去修改
+num<span class="token punctuation">.</span>io<span class="token punctuation">.</span>threads<span class="token operator">=</span><span class="token number">8</span>         #<span class="token number">45</span>行，用来处理磁盘<span class="token constant">IO</span>的线程数量，数值应该大于硬盘数
+socket<span class="token punctuation">.</span>send<span class="token punctuation">.</span>buffer<span class="token punctuation">.</span>bytes<span class="token operator">=</span><span class="token number">102400</span>       #<span class="token number">48</span>行，发送套接字的缓冲区大小
+socket<span class="token punctuation">.</span>receive<span class="token punctuation">.</span>buffer<span class="token punctuation">.</span>bytes<span class="token operator">=</span><span class="token number">102400</span>    #<span class="token number">51</span>行，接收套接字的缓冲区大小
+socket<span class="token punctuation">.</span>request<span class="token punctuation">.</span>max<span class="token punctuation">.</span>bytes<span class="token operator">=</span><span class="token number">104857600</span>    #<span class="token number">54</span>行，请求套接字的缓冲区大小
+log<span class="token punctuation">.</span>dirs<span class="token operator">=</span><span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>kafka<span class="token operator">/</span>logs        #<span class="token number">60</span>行，kafka运行日志存放的路径，也是数据存放的路径
+num<span class="token punctuation">.</span>partitions<span class="token operator">=</span><span class="token number">1</span>    #<span class="token number">65</span>行，topic在当前broker上的默认分区个数，会被topic创建时的指定参数覆盖
+num<span class="token punctuation">.</span>recovery<span class="token punctuation">.</span>threads<span class="token punctuation">.</span>per<span class="token punctuation">.</span>data<span class="token punctuation">.</span>dir<span class="token operator">=</span><span class="token number">1</span>    #<span class="token number">69</span>行，用来恢复和清理data下数据的线程数量
+log<span class="token punctuation">.</span>retention<span class="token punctuation">.</span>hours<span class="token operator">=</span><span class="token number">168</span>    #<span class="token number">103</span>行，segment文件（数据文件）保留的最长时间，单位为小时，默认为<span class="token number">7</span>天，超时将被删除
+log<span class="token punctuation">.</span>segment<span class="token punctuation">.</span>bytes<span class="token operator">=</span><span class="token number">1073741824</span>    #<span class="token number">110</span>行，一个segment文件最大的大小，默认为 <span class="token number">1</span>G，超出将新建一个新的segment文件
+zookeeper<span class="token punctuation">.</span>connect<span class="token operator">=</span><span class="token number">192.168</span><span class="token number">.10</span><span class="token number">.100</span><span class="token punctuation">:</span><span class="token number">2181</span><span class="token punctuation">,</span><span class="token number">192.168</span><span class="token number">.10</span><span class="token number">.18</span><span class="token punctuation">:</span><span class="token number">2181</span><span class="token punctuation">,</span><span class="token number">192.168</span><span class="token number">.10</span><span class="token number">.19</span><span class="token punctuation">:</span><span class="token number">2181</span>    ●<span class="token number">123</span>行，配置连接Zookeeper集群地址
+</code></pre> 
+<p><img src="https://images2.imgbox.com/5a/f6/TERihoip_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/88/be/qbcw6ojS_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/af/ce/wjAWi8RK_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>记得修改其余两个主机的配置文件的ip和broker.id</li></ul> 
+<p><strong>②、修改环境变量</strong></p> 
+<pre><code class="prism language-javascript">vim <span class="token operator">/</span>etc<span class="token operator">/</span>profile
+<span class="token keyword">export</span> <span class="token constant">KAFKA_HOME</span><span class="token operator">=</span><span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>kafka
+<span class="token keyword">export</span> <span class="token constant">PATH</span><span class="token operator">=</span>$<span class="token constant">PATH</span><span class="token punctuation">:</span>$<span class="token constant">KAFKA_HOME</span><span class="token operator">/</span>bin
+
+source <span class="token operator">/</span>etc<span class="token operator">/</span>profile
+</code></pre> 
+<p><img src="https://images2.imgbox.com/46/ea/W8eTYkzv_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/8d/dc/yL8IuYJt_o.png" alt="在这里插入图片描述"><br> <strong>③、配置 Zookeeper 启动脚本</strong></p> 
+<pre><code class="prism language-javascript">vim <span class="token operator">/</span>etc<span class="token operator">/</span>init<span class="token punctuation">.</span>d<span class="token operator">/</span>kafka
+#<span class="token operator">!</span><span class="token operator">/</span>bin<span class="token operator">/</span>bash
+#chkconfig<span class="token punctuation">:</span><span class="token number">2345</span> <span class="token number">22</span> <span class="token number">88</span>
+#description<span class="token punctuation">:</span>Kafka Service Control Script
+<span class="token constant">KAFKA_HOME</span><span class="token operator">=</span><span class="token string">'/usr/local/kafka'</span>
+<span class="token keyword">case</span> $<span class="token number">1</span> <span class="token keyword">in</span>
+start<span class="token punctuation">)</span>
+	echo <span class="token string">"---------- Kafka 启动 ------------"</span>
+	$<span class="token punctuation">{<!-- --></span><span class="token constant">KAFKA_HOME</span><span class="token punctuation">}</span><span class="token operator">/</span>bin<span class="token operator">/</span>kafka<span class="token operator">-</span>server<span class="token operator">-</span>start<span class="token punctuation">.</span>sh <span class="token operator">-</span>daemon $<span class="token punctuation">{<!-- --></span><span class="token constant">KAFKA_HOME</span><span class="token punctuation">}</span><span class="token operator">/</span>config<span class="token operator">/</span>server<span class="token punctuation">.</span>properties
+<span class="token punctuation">;</span><span class="token punctuation">;</span>
+stop<span class="token punctuation">)</span>
+	echo <span class="token string">"---------- Kafka 停止 ------------"</span>
+	$<span class="token punctuation">{<!-- --></span><span class="token constant">KAFKA_HOME</span><span class="token punctuation">}</span><span class="token operator">/</span>bin<span class="token operator">/</span>kafka<span class="token operator">-</span>server<span class="token operator">-</span>stop<span class="token punctuation">.</span>sh
+<span class="token punctuation">;</span><span class="token punctuation">;</span>
+restart<span class="token punctuation">)</span>
+	$<span class="token number">0</span> stop
+	$<span class="token number">0</span> start
+<span class="token punctuation">;</span><span class="token punctuation">;</span>
+status<span class="token punctuation">)</span>
+	echo <span class="token string">"---------- Kafka 状态 ------------"</span>
+	count<span class="token operator">=</span><span class="token function">$</span><span class="token punctuation">(</span>ps <span class="token operator">-</span>ef <span class="token operator">|</span> grep kafka <span class="token operator">|</span> egrep <span class="token operator">-</span>cv <span class="token string">"grep|$$"</span><span class="token punctuation">)</span>
+	<span class="token keyword">if</span> <span class="token punctuation">[</span> <span class="token string">"$count"</span> <span class="token operator">-</span>eq <span class="token number">0</span> <span class="token punctuation">]</span><span class="token punctuation">;</span>then
+        echo <span class="token string">"kafka is not running"</span>
+    <span class="token keyword">else</span>
+        echo <span class="token string">"kafka is running"</span>
+    fi
+<span class="token punctuation">;</span><span class="token punctuation">;</span>
+<span class="token operator">*</span><span class="token punctuation">)</span>
+    echo <span class="token string">"Usage: $0 {start|stop|restart|status}"</span>
+esac
+
+<span class="token comment">//设置开机自启</span>
+chmod <span class="token operator">+</span>x <span class="token operator">/</span>etc<span class="token operator">/</span>init<span class="token punctuation">.</span>d<span class="token operator">/</span>kafka
+chkconfig <span class="token operator">--</span>add kafka
+
+<span class="token comment">//分别启动 Kafka</span>
+service kafka start
+service kafka  status
+</code></pre> 
+<p><img src="https://images2.imgbox.com/10/b2/jH0Sb5Qa_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="3Kafka__353"></a>3、Kafka 命令行操作</h3> 
+<pre><code class="prism language-javascript"><span class="token comment">//创建topic</span>
+kafka<span class="token operator">-</span>topics<span class="token punctuation">.</span>sh <span class="token operator">--</span>create <span class="token operator">--</span>zookeeper <span class="token number">192.168</span><span class="token number">.10</span><span class="token number">.100</span><span class="token punctuation">:</span><span class="token number">2181</span><span class="token punctuation">,</span><span class="token number">192.168</span><span class="token number">.10</span><span class="token number">.18</span><span class="token punctuation">:</span><span class="token number">2181</span><span class="token punctuation">,</span><span class="token number">192.168</span><span class="token number">.10</span><span class="token number">.19</span><span class="token punctuation">:</span><span class="token number">2181</span> <span class="token operator">--</span>replication<span class="token operator">-</span>factor <span class="token number">2</span> <span class="token operator">--</span>partitions <span class="token number">3</span> <span class="token operator">--</span>topic test
+
+<span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">-</span>
+<span class="token operator">--</span>zookeeper：定义 zookeeper 集群服务器地址，如果有多个 <span class="token constant">IP</span> 地址使用逗号分割，一般使用一个 <span class="token constant">IP</span> 即可
+<span class="token operator">--</span>replication<span class="token operator">-</span>factor：定义分区副本数，<span class="token number">1</span> 代表单副本，建议为 <span class="token number">2</span> 
+<span class="token operator">--</span>partitions：定义分区数 
+<span class="token operator">--</span>topic：定义 topic 名称
+<span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">-</span>
+
+<span class="token comment">//查看当前服务器中的单台 topic</span>
+kafka<span class="token operator">-</span>topics<span class="token punctuation">.</span>sh <span class="token operator">--</span>list <span class="token operator">--</span>zookeeper <span class="token number">192.168</span><span class="token number">.10</span><span class="token number">.100</span><span class="token punctuation">:</span><span class="token number">2181</span>
+
+<span class="token comment">//查看某个 topic 的详情</span>
+kafka<span class="token operator">-</span>topics<span class="token punctuation">.</span>sh  <span class="token operator">--</span>describe <span class="token operator">--</span>zookeeper <span class="token number">192.168</span><span class="token number">.10</span><span class="token number">.100</span><span class="token punctuation">:</span><span class="token number">2181</span>
+
+<span class="token comment">//发布消息</span>
+kafka<span class="token operator">-</span>console<span class="token operator">-</span>producer<span class="token punctuation">.</span>sh <span class="token operator">--</span>broker<span class="token operator">-</span>list <span class="token number">192.168</span><span class="token number">.10</span><span class="token number">.100</span><span class="token punctuation">:</span><span class="token number">2181</span><span class="token punctuation">,</span><span class="token number">192.168</span><span class="token number">.10</span><span class="token number">.18</span><span class="token punctuation">:</span><span class="token number">2181</span><span class="token punctuation">,</span><span class="token number">192.168</span><span class="token number">.10</span><span class="token number">.19</span><span class="token punctuation">:</span><span class="token number">9092</span>  <span class="token operator">--</span>topic test
+
+<span class="token comment">//消费消息</span>
+kafka<span class="token operator">-</span>console<span class="token operator">-</span>consumer<span class="token punctuation">.</span>sh <span class="token operator">--</span>bootstrap<span class="token operator">-</span>server <span class="token number">192.168</span><span class="token number">.10</span><span class="token number">.100</span><span class="token punctuation">:</span><span class="token number">2181</span><span class="token punctuation">,</span><span class="token number">192.168</span><span class="token number">.10</span><span class="token number">.18</span><span class="token punctuation">:</span><span class="token number">2181</span><span class="token punctuation">,</span><span class="token number">192.168</span><span class="token number">.10</span><span class="token number">.19</span><span class="token punctuation">:</span><span class="token number">9092</span> <span class="token operator">--</span>topic test <span class="token operator">--</span><span class="token keyword">from</span><span class="token operator">-</span>beginning
+
+<span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">-</span>
+<span class="token operator">--</span><span class="token keyword">from</span><span class="token operator">-</span>beginning：会把主题中以往所有的数据都读取出来
+<span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">-</span>
+
+<span class="token comment">//修改分区数</span>
+kafka<span class="token operator">-</span>topics<span class="token punctuation">.</span>sh <span class="token operator">--</span>zookeeper <span class="token number">192.168</span><span class="token number">.10</span><span class="token number">.100</span><span class="token punctuation">:</span><span class="token number">2181</span><span class="token punctuation">,</span><span class="token number">192.168</span><span class="token number">.10</span><span class="token number">.18</span><span class="token punctuation">:</span><span class="token number">2181</span><span class="token punctuation">,</span><span class="token number">192.168</span><span class="token number">.10</span><span class="token number">.19</span><span class="token punctuation">:</span><span class="token number">2181</span> <span class="token operator">--</span>alter <span class="token operator">--</span>topic test <span class="token operator">--</span>partitions <span class="token number">6</span>
+
+<span class="token comment">//删除 topic</span>
+kafka<span class="token operator">-</span>topics<span class="token punctuation">.</span>sh <span class="token operator">--</span><span class="token keyword">delete</span> <span class="token operator">--</span>zookeeper <span class="token number">192.168</span><span class="token number">.10</span><span class="token number">.100</span><span class="token punctuation">:</span><span class="token number">2181</span><span class="token punctuation">,</span><span class="token number">192.168</span><span class="token number">.10</span><span class="token number">.18</span><span class="token punctuation">:</span><span class="token number">2181</span><span class="token punctuation">,</span><span class="token number">192.168</span><span class="token number">.10</span><span class="token number">.19</span><span class="token punctuation">:</span><span class="token number">2181</span> <span class="token operator">--</span>topic test
+</code></pre> 
+<p><img src="https://images2.imgbox.com/c0/33/9cP4u0pE_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/ee/0e/yrJQlIY8_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/20/25/372vbdNi_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/05/b9/HAkaSoUx_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="_ZookeeperKafka__391"></a>五、部署 Zookeeper+Kafka 集群</h2> 
+<h3><a id="1ELKfilebeat_392"></a>1、首先在ELK集群上部署filebeat</h3> 
+<p><mark>192.168.10.16</mark></p> 
+<pre><code class="prism language-javascript"><span class="token number">1</span>．安装 Filebeat
+#上传软件包 filebeat<span class="token operator">-</span><span class="token number">6.2</span><span class="token number">.4</span><span class="token operator">-</span>linux<span class="token operator">-</span>x86_64<span class="token punctuation">.</span>tar<span class="token punctuation">.</span>gz 到<span class="token operator">/</span>opt目录
+tar zxvf filebeat<span class="token operator">-</span><span class="token number">6.2</span><span class="token number">.4</span><span class="token operator">-</span>linux<span class="token operator">-</span>x86_64<span class="token punctuation">.</span>tar<span class="token punctuation">.</span>gz
+mv filebeat<span class="token operator">-</span><span class="token number">6.2</span><span class="token number">.4</span><span class="token operator">-</span>linux<span class="token operator">-</span>x86_64<span class="token operator">/</span> <span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>filebeat
+
+
+<span class="token number">2</span>．设置 Kibana 的主配置文件
+cd <span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>filebeat
+
+vim filebeat<span class="token punctuation">.</span>yml
+filebeat<span class="token punctuation">.</span>prospectors<span class="token punctuation">:</span>
+<span class="token operator">-</span> type<span class="token punctuation">:</span> log         #指定 log 类型，从日志文件中读取消息
+  enabled<span class="token punctuation">:</span> <span class="token boolean">true</span>
+  paths<span class="token punctuation">:</span>
+    <span class="token operator">-</span> <span class="token operator">/</span><span class="token keyword">var</span><span class="token operator">/</span>log<span class="token operator">/</span>messages       #指定监控的日志文件
+    <span class="token operator">-</span> <span class="token operator">/</span><span class="token keyword">var</span><span class="token operator">/</span>log<span class="token comment">/*.log
+fields:             #可以使用 fields 配置选项设置一些参数字段添加到 output 中
+    service_name: filebeat
+    log_type: log
+    service_id: 192.168.10.16
+
+--------------Elasticsearch output-------------------
+(全部注释掉)
+
+----------------Logstash output---------------------
+output.logstash:
+  hosts: ["192.168.10.15:5044"]      #指定 logstash 的 IP 和端口
+
+#启动 filebeat
+./filebeat -e -c filebeat.yml
+
+
+4．在 Logstash 组件所在节点上新建一个 Logstash 配置文件
+cd /etc/logstash/conf.d
+
+vim logstash.conf
+input {
+    beats {
+        port =&gt; "5044"
+    }
+}
+output {
+    elasticsearch {
+        hosts =&gt; ["192.168.10.15-t:9200"]
+        index =&gt; "%{[fields][service_name]}-%{+YYYY.MM.dd}"
+    }
+    stdout {
+        codec =&gt; rubydebug
+    }
+}
+
+#启动 logstash
+logstash -f logstash.conf
+
+5．浏览器访问 http://192.168.10.15:5601 登录 Kibana，单击“Create Index Pattern”按钮添加索引“filebeat-*”，单击 “create” 按钮创建，单击 “Discover” 按钮可查看图表信息及日志信息。
+</span></code></pre> 
+<h2><a id="kafka_451"></a>六、对接kafka</h2> 
+<pre><code class="prism language-javascript"><span class="token number">1.</span>部署 Zookeeper<span class="token operator">+</span>Kafka 集群
+
+<span class="token number">2.</span>部署 Filebeat 
+cd <span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>filebeat
+
+vim filebeat<span class="token punctuation">.</span>yml
+filebeat<span class="token punctuation">.</span>prospectors<span class="token punctuation">:</span>
+<span class="token operator">-</span> type<span class="token punctuation">:</span> log
+  enabled<span class="token punctuation">:</span> <span class="token boolean">true</span>
+  paths<span class="token punctuation">:</span>
+    <span class="token operator">-</span> <span class="token operator">/</span><span class="token keyword">var</span><span class="token operator">/</span>log<span class="token operator">/</span>messages
+<span class="token operator">...</span><span class="token operator">...</span>
+#添加输出到 Kafka 的配置
+output<span class="token punctuation">.</span>kafka<span class="token punctuation">:</span>
+  enabled<span class="token punctuation">:</span> <span class="token boolean">true</span>
+  hosts<span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token string">"192.168.10.100:9092"</span><span class="token punctuation">,</span><span class="token string">"192.168.10.18:9092"</span><span class="token punctuation">,</span><span class="token string">"192.168.10.19:9092"</span><span class="token punctuation">]</span>    #指定 Kafka 集群配置
+  topic<span class="token punctuation">:</span> <span class="token string">"filebeat_test"</span>    #指定 Kafka 的 topic
+  
+#启动 filebeat
+<span class="token punctuation">.</span><span class="token operator">/</span>filebeat <span class="token operator">-</span>e <span class="token operator">-</span>c filebeat<span class="token punctuation">.</span>yml
+
+
+<span class="token number">3.</span>部署 <span class="token constant">ELK</span>，在 Logstash 组件所在节点上新建一个 Logstash 配置文件
+cd <span class="token operator">/</span>etc<span class="token operator">/</span>logstash<span class="token operator">/</span>conf<span class="token punctuation">.</span>d<span class="token operator">/</span>
+
+vim filebeat<span class="token punctuation">.</span>conf
+input <span class="token punctuation">{<!-- --></span>
+    kafka <span class="token punctuation">{<!-- --></span>
+        bootstrap_servers <span class="token operator">=&gt;</span> <span class="token string">"192.168.10.100:9092"</span><span class="token punctuation">,</span><span class="token string">"192.168.10.18:9092"</span><span class="token punctuation">,</span><span class="token string">"192.168.10.19:9092"</span>
+        topics  <span class="token operator">=&gt;</span> <span class="token string">"filebeat_test"</span>
+        group_id <span class="token operator">=&gt;</span> <span class="token string">"test123"</span>
+        auto_offset_reset <span class="token operator">=&gt;</span> <span class="token string">"earliest"</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+output <span class="token punctuation">{<!-- --></span>
+    elasticsearch <span class="token punctuation">{<!-- --></span>
+        hosts <span class="token operator">=&gt;</span> <span class="token punctuation">[</span><span class="token string">"192.168.10.15:9200"</span><span class="token punctuation">]</span>
+        index <span class="token operator">=&gt;</span> <span class="token string">"filebeat-%{+YYYY.MM.dd}"</span>
+    <span class="token punctuation">}</span>
+    stdout <span class="token punctuation">{<!-- --></span>
+        codec <span class="token operator">=&gt;</span> rubydebug
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+#启动 logstash
+logstash <span class="token operator">-</span>f filebeat<span class="token punctuation">.</span>conf
+
+
+<span class="token number">4.</span>浏览器访问 http<span class="token punctuation">:</span><span class="token operator">/</span><span class="token operator">/</span><span class="token number">192.168</span><span class="token number">.10</span><span class="token number">.15</span><span class="token punctuation">:</span><span class="token number">5601</span> 登录 Kibana，单击“Create Index Pattern”按钮添加索引“filebeat<span class="token operator">-</span><span class="token operator">*</span>”，单击 “create” 按钮创建，单击 “Discover” 按钮可查看图表信息及日志信息。
+</code></pre>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/8e8d87ed04c515ea86f3fcafa0a27c14/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">图像处理算法工程师——必备技能</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/2464643b7063101370bfd779908ecdd0/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">有关颜色敏感度测试的软件是啥,色彩敏感度测试：你是色盲吗？</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

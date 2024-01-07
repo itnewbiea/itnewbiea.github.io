@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Java并发编程之AQS - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Java并发编程之AQS" />
+<meta property="og:description" content="本文内容摘抄自Java并发之AQS详解 - waterystone - 博客园、深入理解Java中的AQS - 夏末秋涼 - 博客园
+目录
+一、概述
+二、框架
+三、源码解析
+3.1、结点状态waitStatus
+3.2、acquire(int)
+3.2.1 tryAcquire(int)
+3.2.2 addWaiter(Node)
+3.2.3 acquireQueued(Node, int)
+3.2.4、小结
+3.3、release(int)
+3.3.1、tryRelease(int)
+3.3.2 unparkSuccessor(Node)
+3.3.3、小结
+3.4、acquireShared(int)
+3.4.1 doAcquireShared(int)
+3.4.2、小结
+3.5、releaseShared()
+3.5.1、doReleaseShared()
+3.6、小结
+一、概述 AbstractQueuedSynchronizer抽象队列同步器简称AQS，它是实现同步器的基础组件，juc下面Lock的实现以及一些并发工具类就是通过AQS来实现的，如常用的ReentrantLock、Semaphore、CountDownLatch...... 这里我们通过AQS的类图先看一下大概，下面我们总结一下AQS的实现原理。
+二、框架 AQS维护了一个volatile int state（代表共享资源）和一个FIFO线程等待队列（多线程争用资源被阻塞时会进入此队列）。 state的访问方式有三种:
+getState()setState()compareAndSetState() AQS定义两种资源共享方式：Exclusive（独占，只有一个线程能执行，如ReentrantLock）和Share（共享，多个线程可同时执行，如Semaphore/CountDownLatch）。
+不同的自定义同步器争用共享资源的方式也不同。自定义同步器在实现时只需要实现共享资源state的获取与释放方式即可，至于具体线程等待队列的维护（如获取资源失败入队/唤醒出队等），AQS已经在顶层实现好了。自定义同步器实现时主要实现以下几种方法：
+isHeldExclusively()：该线程是否正在独占资源。只有用到condition才需要去实现它。tryAcquire(int)：独占方式。尝试获取资源，成功则返回true，失败则返回false。tryRelease(int)：独占方式。尝试释放资源，成功则返回true，失败则返回false。tryAcquireShared(int)：共享方式。尝试获取资源。负数表示失败；0表示成功，但没有剩余可用资源；正数表示成功，且有剩余资源。tryReleaseShared(int)：共享方式。尝试释放资源，如果释放后允许唤醒后续等待结点返回true，否则返回false。 以ReentrantLock为例，state初始化为0，表示未锁定状态。A线程lock()时，会调用tryAcquire()独占该锁并将state&#43;1。此后，其他线程再tryAcquire()时就会失败，直到A线程unlock()到state=0（即释放锁）为止，其它线程才有机会获取该锁。当然，释放锁之前，A线程自己是可以重复获取此锁的（state会累加），这就是可重入的概念。但要注意，获取多少次就要释放多么次，这样才能保证state是能回到零态的。
+再以CountDownLatch以例，任务分为N个子线程去执行，state也初始化为N（注意N要与线程个数一致）。这N个子线程是并行执行的，每个子线程执行完后countDown()一次，state会CAS减1。等到所有子线程都执行完后(即state=0)，会unpark()主调用线程，然后主调用线程就会从await()函数返回，继续后余动作。
+一般来说，自定义同步器要么是独占方法，要么是共享方式，他们也只需实现tryAcquire-tryRelease、tryAcquireShared-tryReleaseShared中的一种即可。但AQS也支持自定义同步器同时实现独占和共享两种方式，如ReentrantReadWriteLock。
+AQS的设计师基于模板方法模式的。使用时候需要继承同步器并重写指定的方法，并且通常将子类推荐为定义同步组件的静态内部类，子类重写这些方法之后，AQS工作时使用的是提供的模板方法，在这些模板方法中调用子类重写的方法。其中子类可以重写的方法：
+//独占式的获取同步状态，实现该方法需要查询当前状态并判断同步状态是否符合预期，然后再进行CAS设置同步状态 protected boolean tryAcquire(int arg) {	throw new UnsupportedOperationException();} //独占式的释放同步状态，等待获取同步状态的线程可以有机会获取同步状态 protected boolean tryRelease(int arg) {	throw new UnsupportedOperationException();} //共享式的获取同步状态 protected int tryAcquireShared(int arg) { throw new UnsupportedOperationException();} //尝试将状态设置为以共享模式释放同步状态。 该方法总是由执行释放的线程调用。 protected int tryReleaseShared(int arg) { throw new UnsupportedOperationException(); } //当前同步器是否在独占模式下被线程占用，一般该方法表示是否被当前线程所独占 protected int isHeldExclusively(int arg) {	throw new UnsupportedOperationException();} 三、源码解析 本节开始讲解AQS的源码实现。依照acquire-release、acquireShared-releaseShared的次序来。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/29f46b076562f9397da6617a377d4541/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-12-03T11:58:47+08:00" />
+<meta property="article:modified_time" content="2021-12-03T11:58:47+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Java并发编程之AQS</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p id="%E6%9C%AC%E6%96%87%E5%86%85%E5%AE%B9%E6%91%98%E6%8A%84%E8%87%AAJava%E5%B9%B6%E5%8F%91%E4%B9%8BAQS%E8%AF%A6%E8%A7%A3%20-%20waterystone%20-%20%E5%8D%9A%E5%AE%A2%E5%9B%AD%E3%80%81%E6%B7%B1%E5%85%A5%E7%90%86%E8%A7%A3Java%E4%B8%AD%E7%9A%84AQS%20-%20%E5%A4%8F%E6%9C%AB%E7%A7%8B%E6%B6%BC%20-%20%E5%8D%9A%E5%AE%A2%E5%9B%AD">本文内容摘抄自<a href="https://www.cnblogs.com/waterystone/p/4920797.html" rel="nofollow" title="Java并发之AQS详解 - waterystone - 博客园">Java并发之AQS详解 - waterystone - 博客园</a>、<a href="https://www.cnblogs.com/fsmly/p/11274572.html" rel="nofollow" title="深入理解Java中的AQS - 夏末秋涼 - 博客园">深入理解Java中的AQS - 夏末秋涼 - 博客园</a></p> 
+<p id="main-toc"><strong>目录</strong></p> 
+<p id="%E4%B8%80%E3%80%81%E6%A6%82%E8%BF%B0-toc" style="margin-left:0px;"><a href="#%E4%B8%80%E3%80%81%E6%A6%82%E8%BF%B0" rel="nofollow" title="一、概述">一、概述</a></p> 
+<p id="%E4%BA%8C%E3%80%81%E6%A1%86%E6%9E%B6-toc" style="margin-left:0px;"><a href="#%E4%BA%8C%E3%80%81%E6%A1%86%E6%9E%B6" rel="nofollow" title="二、框架">二、框架</a></p> 
+<p id="%E4%B8%89%E3%80%81%E6%BA%90%E7%A0%81%E8%A7%A3%E6%9E%90-toc" style="margin-left:0px;"><a href="#%E4%B8%89%E3%80%81%E6%BA%90%E7%A0%81%E8%A7%A3%E6%9E%90" rel="nofollow" title="三、源码解析">三、源码解析</a></p> 
+<p id="3.1%E3%80%81%E7%BB%93%E7%82%B9%E7%8A%B6%E6%80%81waitStatus-toc" style="margin-left:40px;"><a href="#3.1%E3%80%81%E7%BB%93%E7%82%B9%E7%8A%B6%E6%80%81waitStatus" rel="nofollow" title="3.1、结点状态waitStatus">3.1、结点状态waitStatus</a></p> 
+<p id="3.2%E3%80%81acquire(int)-toc" style="margin-left:40px;"><a href="#3.2%E3%80%81acquire%28int%29" rel="nofollow" title="3.2、acquire(int)">3.2、acquire(int)</a></p> 
+<p id="%C2%A03.2.1%20tryAcquire(int)-toc" style="margin-left:80px;"><a href="#%C2%A03.2.1%20tryAcquire%28int%29" rel="nofollow" title=" 3.2.1 tryAcquire(int)"> 3.2.1 tryAcquire(int)</a></p> 
+<p id="3.2.2%20addWaiter(Node)-toc" style="margin-left:80px;"><a href="#3.2.2%20addWaiter%28Node%29" rel="nofollow" title="3.2.2 addWaiter(Node)">3.2.2 addWaiter(Node)</a></p> 
+<p id="3.2.3%C2%A0acquireQueued(Node%2C%20int)-toc" style="margin-left:80px;"><a href="#3.2.3%C2%A0acquireQueued%28Node%2C%20int%29" rel="nofollow" title="3.2.3 acquireQueued(Node, int)">3.2.3 acquireQueued(Node, int)</a></p> 
+<p id="3.2.4%E3%80%81%E5%B0%8F%E7%BB%93-toc" style="margin-left:80px;"><a href="#3.2.4%E3%80%81%E5%B0%8F%E7%BB%93" rel="nofollow" title="3.2.4、小结">3.2.4、小结</a></p> 
+<p id="3.3%E3%80%81release(int)-toc" style="margin-left:40px;"><a href="#3.3%E3%80%81release%28int%29" rel="nofollow" title="3.3、release(int)">3.3、release(int)</a></p> 
+<p id="3.3.1%E3%80%81tryRelease(int)-toc" style="margin-left:40px;"><a href="#3.3.1%E3%80%81tryRelease%28int%29" rel="nofollow" title="3.3.1、tryRelease(int)">3.3.1、tryRelease(int)</a></p> 
+<p id="3.3.2%20unparkSuccessor(Node)-toc" style="margin-left:40px;"><a href="#3.3.2%20unparkSuccessor%28Node%29" rel="nofollow" title="3.3.2 unparkSuccessor(Node)">3.3.2 unparkSuccessor(Node)</a></p> 
+<p id="3.3.3%E3%80%81%E5%B0%8F%E7%BB%93-toc" style="margin-left:40px;"><a href="#3.3.3%E3%80%81%E5%B0%8F%E7%BB%93" rel="nofollow" title="3.3.3、小结">3.3.3、小结</a></p> 
+<p id="3.4%E3%80%81acquireShared(int)-toc" style="margin-left:40px;"><a href="#3.4%E3%80%81acquireShared%28int%29" rel="nofollow" title="3.4、acquireShared(int)">3.4、acquireShared(int)</a></p> 
+<p id="3.4.1%20doAcquireShared(int)-toc" style="margin-left:40px;"><a href="#3.4.1%20doAcquireShared%28int%29" rel="nofollow" title="3.4.1 doAcquireShared(int)">3.4.1 doAcquireShared(int)</a></p> 
+<p id="3.4.2%E3%80%81%E5%B0%8F%E7%BB%93-toc" style="margin-left:80px;"><a href="#3.4.2%E3%80%81%E5%B0%8F%E7%BB%93" rel="nofollow" title="3.4.2、小结">3.4.2、小结</a></p> 
+<p id="3.5%E3%80%81releaseShared()-toc" style="margin-left:40px;"><a href="#3.5%E3%80%81releaseShared%28%29" rel="nofollow" title="3.5、releaseShared()">3.5、releaseShared()</a></p> 
+<p id="3.5.1%E3%80%81doReleaseShared()-toc" style="margin-left:80px;"><a href="#3.5.1%E3%80%81doReleaseShared%28%29" rel="nofollow" title="3.5.1、doReleaseShared()">3.5.1、doReleaseShared()</a></p> 
+<p id="3.6%E3%80%81%E5%B0%8F%E7%BB%93-toc" style="margin-left:40px;"><a href="#3.6%E3%80%81%E5%B0%8F%E7%BB%93" rel="nofollow" title="3.6、小结">3.6、小结</a></p> 
+<hr id="hr-toc"> 
+<h2 id="%E4%B8%80%E3%80%81%E6%A6%82%E8%BF%B0">一、概述</h2> 
+<p>AbstractQueuedSynchronizer抽象队列同步器简称AQS，它是实现同步器的基础组件，juc下面Lock的实现以及一些并发工具类就是通过AQS来实现的，如常用的ReentrantLock、Semaphore、CountDownLatch...... 这里我们通过AQS的类图先看一下大概，下面我们总结一下AQS的实现原理。</p> 
+<h2 id="%E4%BA%8C%E3%80%81%E6%A1%86%E6%9E%B6">二、框架</h2> 
+<p><img alt="" height="682" src="https://images2.imgbox.com/05/94/utwksAyz_o.png" width="910"></p> 
+<p>AQS维护了一个volatile int state（代表共享资源）和一个FIFO线程等待队列（多线程争用资源被阻塞时会进入此队列）。 </p> 
+<p><img alt="" height="401" src="https://images2.imgbox.com/03/4b/94vVxQeI_o.png" width="852"></p> 
+<p>state的访问方式有三种:</p> 
+<ul><li>getState()</li><li>setState()</li><li>compareAndSetState()</li></ul> 
+<p></p> 
+<p>AQS定义两种资源共享方式：Exclusive（独占，只有一个线程能执行，如ReentrantLock）和Share（共享，多个线程可同时执行，如Semaphore/CountDownLatch）。</p> 
+<p>不同的自定义同步器争用共享资源的方式也不同。<strong>自定义同步器在实现时只需要实现共享资源state的获取与释放方式即可</strong>，至于具体线程等待队列的维护（如获取资源失败入队/唤醒出队等），AQS已经在顶层实现好了。自定义同步器实现时主要实现以下几种方法：</p> 
+<ul><li>isHeldExclusively()：该线程是否正在独占资源。只有用到condition才需要去实现它。</li><li>tryAcquire(int)：独占方式。尝试获取资源，成功则返回true，失败则返回false。</li><li>tryRelease(int)：独占方式。尝试释放资源，成功则返回true，失败则返回false。</li><li>tryAcquireShared(int)：共享方式。尝试获取资源。负数表示失败；0表示成功，但没有剩余可用资源；正数表示成功，且有剩余资源。</li><li>tryReleaseShared(int)：共享方式。尝试释放资源，如果释放后允许唤醒后续等待结点返回true，否则返回false。</li></ul> 
+<p>以ReentrantLock为例，state初始化为0，表示未锁定状态。A线程lock()时，会调用tryAcquire()独占该锁并将state+1。此后，其他线程再tryAcquire()时就会失败，直到A线程unlock()到state=0（即释放锁）为止，其它线程才有机会获取该锁。当然，释放锁之前，A线程自己是可以重复获取此锁的（state会累加），这就是可重入的概念。但要注意，获取多少次就要释放多么次，这样才能保证state是能回到零态的。</p> 
+<p>再以CountDownLatch以例，任务分为N个子线程去执行，state也初始化为N（注意N要与线程个数一致）。这N个子线程是并行执行的，每个子线程执行完后countDown()一次，state会CAS减1。等到所有子线程都执行完后(即state=0)，会unpark()主调用线程，然后主调用线程就会从await()函数返回，继续后余动作。</p> 
+<p>一般来说，自定义同步器要么是独占方法，要么是共享方式，他们也只需实现tryAcquire-tryRelease、tryAcquireShared-tryReleaseShared中的一种即可。但AQS也支持自定义同步器同时实现独占和共享两种方式，如ReentrantReadWriteLock。</p> 
+<p>AQS的设计师基于<strong>模板方法</strong>模式的。使用时候需要继承同步器并重写指定的方法，并且通常将子类推荐为定义同步组件的静态内部类，子类重写这些方法之后，AQS工作时使用的是提供的模板方法，在这些模板方法中调用子类重写的方法。其中子类可以重写的方法：</p> 
+<pre><code>//独占式的获取同步状态，实现该方法需要查询当前状态并判断同步状态是否符合预期，然后再进行CAS设置同步状态
+protected boolean tryAcquire(int arg) {	throw new UnsupportedOperationException();}
+//独占式的释放同步状态，等待获取同步状态的线程可以有机会获取同步状态
+protected boolean tryRelease(int arg) {	throw new UnsupportedOperationException();}
+//共享式的获取同步状态
+protected int tryAcquireShared(int arg) { throw new UnsupportedOperationException();}
+//尝试将状态设置为以共享模式释放同步状态。 该方法总是由执行释放的线程调用。 
+protected int tryReleaseShared(int arg) { throw new UnsupportedOperationException(); }
+//当前同步器是否在独占模式下被线程占用，一般该方法表示是否被当前线程所独占
+protected int isHeldExclusively(int arg) {	throw new UnsupportedOperationException();}</code></pre> 
+<h2 id="%E4%B8%89%E3%80%81%E6%BA%90%E7%A0%81%E8%A7%A3%E6%9E%90">三、源码解析</h2> 
+<p>本节开始讲解AQS的源码实现。依照acquire-release、acquireShared-releaseShared的次序来。</p> 
+<h3 id="3.1%E3%80%81%E7%BB%93%E7%82%B9%E7%8A%B6%E6%80%81waitStatus">3.1、结点状态waitStatus</h3> 
+<p>      这里我们说下Node。Node结点是对每一个等待获取资源的线程的封装，其包含了需要同步的线程本身及其等待状态，如是否被阻塞、是否等待唤醒、是否已经被取消等。变量waitStatus则表示当前Node结点的等待状态，共有5种取值CANCELLED、SIGNAL、CONDITION、PROPAGATE、0。</p> 
+<ul><li> <p><strong>CANCELLED</strong>(1)：表示当前结点已取消调度。当timeout或被中断（响应中断的情况下），会触发变更为此状态，进入该状态后的结点将不会再变化。</p> </li><li> <p><strong>SIGNAL</strong>(-1)：表示后继结点在等待当前结点唤醒。后继结点入队时，会将前继结点的状态更新为SIGNAL。</p> </li><li> <p><strong>CONDITION</strong>(-2)：表示结点等待在Condition上，当其他线程调用了Condition的signal()方法后，CONDITION状态的结点将<strong>从等待队列转移到同步队列中</strong>，等待获取同步锁。</p> </li><li> <p><strong>PROPAGATE</strong>(-3)：共享模式下，前继结点不仅会唤醒其后继结点，同时也可能会唤醒后继的后继结点。</p> </li><li> <p><strong>0</strong>：新结点入队时的默认状态。</p> </li></ul> 
+<p>注意，<strong>负值表示结点处于有效等待状态，而正值表示结点已被取消。所以源码中很多地方用&gt;0、&lt;0来判断结点的状态是否正常</strong>。</p> 
+<h3 id="3.2%E3%80%81acquire(int)">3.2、acquire(int)</h3> 
+<p>　　此方法是独占模式下线程获取共享资源的顶层入口。如果获取到资源，线程直接返回，否则进入等待队列，直到获取到资源为止，且整个过程忽略中断的影响。这也正是lock()的语义，当然不仅仅只限于lock()。获取到资源后，线程就可以去执行其临界区代码了。下面是acquire()的源码：</p> 
+<pre><code class="language-java">public final void acquire(int arg) {
+    if (!tryAcquire(arg) &amp;&amp;
+        acquireQueued(addWaiter(Node.EXCLUSIVE), arg))
+        selfInterrupt();
+}</code></pre> 
+<p>函数流程如下：</p> 
+<ol><li>tryAcquire()尝试直接去获取资源，如果成功则直接返回（这里体现了非公平锁，每个线程获取锁时会尝试直接抢占加塞一次，而CLH队列中可能还有别的线程在等待）；</li><li>addWaiter()将该线程加入等待队列的尾部，并标记为独占模式；</li><li>acquireQueued()使线程阻塞在等待队列中获取资源，一直获取到资源后才返回。如果在整个等待过程中被中断过，则返回true，否则返回false。</li><li>如果线程在等待过程中被中断过，它是不响应的。只是获取资源后才再进行自我中断selfInterrupt()，将中断补上。</li></ol> 
+<p>　　这时单凭这4个抽象的函数来看流程还有点朦胧，不要紧，看完接下来的分析后，你就会明白了。就像《大话西游》里唐僧说的：等你明白了舍生取义的道理，你自然会回来和我唱这首歌的。</p> 
+<h4 id="%C2%A03.2.1%20tryAcquire(int)"> 3.2.1 tryAcquire(int)</h4> 
+<p>此方法尝试去获取独占资源。如果获取成功，则直接返回true，否则直接返回false。这也正是tryLock()的语义，还是那句话，当然不仅仅只限于tryLock()。如下是tryAcquire()的源码：</p> 
+<pre><code class="language-java">    protected boolean tryAcquire(int arg) {
+        throw new UnsupportedOperationException();
+    }</code></pre> 
+<p>什么？直接throw异常？说好的功能呢？好吧，<strong>还记得概述里讲的AQS只是一个框架，具体资源的获取/释放方式交由自定义同步器去实现吗？</strong>就是这里了！！！AQS这里只定义了一个接口，具体资源的获取交由自定义同步器去实现了（通过state的get/set/CAS）！！！至于能不能重入，能不能加塞，那就看具体的自定义同步器怎么去设计了！！！当然，自定义同步器在进行资源访问时要考虑线程安全的影响。</p> 
+<p>这里之所以没有定义成abstract，是因为独占模式下只用实现tryAcquire-tryRelease，而共享模式下只用实现tryAcquireShared-tryReleaseShared。如果都定义成abstract，那么每个模式也要去实现另一模式下的接口。说到底，Doug Lea还是站在咱们开发者的角度，尽量减少不必要的工作量。</p> 
+<h4 id="3.2.2%20addWaiter(Node)">3.2.2 addWaiter(Node)</h4> 
+<p>此方法用于将当前线程加入到等待队列的队尾，并返回当前线程所在的结点。还是上源码吧：</p> 
+<pre><code class="language-java">private Node addWaiter(Node mode) {
+    //(1)将当前线程以及阻塞原因(是因为SHARED模式获取state失败还是EXCLUSIVE获取失败)构造为Node结点
+    Node node = new Node(Thread.currentThread(), mode);
+    //(2)这一步是快速将当前线程插入队列尾部
+    Node pred = tail;
+    if (pred != null) {
+        //(2-1)将构造后的node结点的前驱结点设置为tail
+        node.prev = pred;
+        //(2-2)以CAS的方式设置当前的node结点为tail结点
+        if (compareAndSetTail(pred, node)) {
+            //(2-3)CAS设置成功，就将原来的tail的next结点设置为当前的node结点。这样这个双向队
+            //列就更新完成了
+            pred.next = node;
+            return node;
+        }
+    }
+    //(3)执行到这里，说明要么当前队列为null，要么存在多个线程竞争失败都去将自己设置为tail结点，
+    //那么就会有线程在上面（2-2）的CAS设置中失败，就会到这里调用enq方法
+    enq(node);
+    return node;
+}</code></pre> 
+<p>那么总结一下add Waiter方法</p> 
+<p>​ 1、将当前将要去获取锁的线程也就是thread2和独占模式封装为一个node对象。</p> 
+<p>​ 2、尝试快速的将当前线程构造的node结点添加作为tail结点(这里就是直接获取当前tail，然后将node的前驱结点设置为tail)，并且以CAS的方式将node设置为tail结点(CAS成功后将原tail的next设置为node，然后这个队列更新成功)。</p> 
+<p>​ 3、如果2设置失败，就进入enq方法。</p> 
+<p>​ 在刚刚的thread1和thread2的环境下，开始时候线程阻塞队列是空的(因为thread1获取了锁，thread2也是刚刚来请求锁，所以线程阻塞队列里面是空的)。很明显，这个时候队列的尾部tail节点也是null，那么将直接进入到enq方法。所以我们看看enq方法的实现</p> 
+<pre><code class="language-java">private Node enq(final Node node) {
+    for (;;) {
+        //(4)还是先获取当前队列的tail结点
+        Node t = tail;
+        //(5)如果tail为null，表示当前同步队列为null，就必须初始化这个同步队列的head和tail（建
+        //立一个哨兵结点）
+        if (t == null) { 
+            //（5-1）初始情况下，多个线程竞争失败，在检查的时候都发现没有哨兵结点，所以需要CAS的
+            //设置哨兵结点
+            if (compareAndSetHead(new Node()))
+                tail = head;
+        } 
+        //(6)tail不为null
+        else {
+            //(6-1)直接将当前结点的前驱结点设置为tail结点
+            node.prev = t;
+            //(6-2)前驱结点设置完毕之后，还需要以CAS的方式将自己设置为tail结点，如果设置失败，
+            //就会重新进入循环判断一遍
+            if (compareAndSetTail(t, node)) {
+                t.next = node;
+                return t;
+            }
+        }
+    }
+}</code></pre> 
+<p>enq方法内部是一个自旋循环，第一次循环默认情况如下图所示</p> 
+<p>​ 1、首先代码块（4）处将t指向了tail，判断得到t==null，如图(1)所示；</p> 
+<p>​ 2、于是需要新建一个哨兵结点作为整个同步队列的头节点(代码块5-1处执行)</p> 
+<p>​ 3、完了之后如图(2)所示。这样第一次循环执行完毕。</p> 
+<p> <img alt="" height="293" src="https://images2.imgbox.com/f8/86/hPfFHB7l_o.png" width="817"></p> 
+<p>第二次循环整体执行如下图所示。</p> 
+<p>​ 1、还是先获取当前tail结点然后将t指向tail结点。如下图的(3)</p> 
+<p>​ 2、然后判断得到当前t!=null，所以enq方法中进入代码块(6).</p> 
+<p>​ 3、在(6-1)代码块中将node的前驱结点设置为原来队列的tail结点，如下图的(4)所示。</p> 
+<p>​ 4、设置完前驱结点之后，代码块(6-2)会以CAS的方式将当前的node结点设置为tail结点,如果设置成功，就会是下图(5)所示。更新完tail结点之后，需要保证双向队列的，所以将原来的指向哨兵结点的t的next结点指向node结点，如下图(6)所示。最后返回。</p> 
+<p><img alt="" height="585" src="https://images2.imgbox.com/33/dd/INRSadgf_o.png" width="837"></p> 
+<p>总结来说，即使在多线程情况下，enq方法还是能够保证每个线程结点会被安全的添加到同步队列中，因为enq通过CAS方式将结点添加到同步队列之后才会返回，否则就会不断尝试添加(这样实际上就是在并发情况下，把向同步队列添加Node变得串行化了)</p> 
+<h4 id="3.2.3%C2%A0acquireQueued(Node%2C%20int)">3.2.3 acquireQueued(Node, int)</h4> 
+<p>在上面AQS的模板方法中，acquire()方法还有一步acquireQueued，这个方法的主要作用就是在同步队列中嗅探到自己的前驱结点，如果前驱结点是头节点的话就会尝试取获取同步状态，否则会先设置自己的前一个节点的waitStatus为-1，然后调用LockSupport的方法park自己。具体的实现如下面代码所示</p> 
+<pre><code class="language-java">final boolean acquireQueued(final Node node, int arg) {
+    boolean failed = true;
+    try {
+        boolean interrupted = false;
+        //在这样一个循环中尝试tryAcquire同步状态
+        for (;;) {
+            //获取前驱结点
+            final Node p = node.predecessor();
+            //(1)如果前驱结点是头节点，就尝试取获取同步状态，这里的tryAcquire方法相当于还是调
+            //用NofairSync的tryAcquire方法，在上面已经说过
+            if (p == head &amp;&amp; tryAcquire(arg)) {
+                //如果前驱结点是头节点并且tryAcquire返回true，那么就重新设置头节点为node
+                setHead(node);
+                p.next = null; //将原来的头节点的next设置为null，交由GC去回收它
+                failed = false;
+                return interrupted;
+            }
+            //(2)如果不是头节点,或者虽然前驱结点是头节点但是尝试获取同步状态失败就会将node结点
+            //的waitStatus设置为-1(SIGNAL),并且park自己，等待前驱结点的唤醒。至于唤醒的细节
+            //下面会说到
+            if (shouldParkAfterFailedAcquire(p, node) &amp;&amp;
+                parkAndCheckInterrupt())
+                interrupted = true;
+        }
+    } finally {
+        if (failed)
+            cancelAcquire(node);
+    }
+}</code></pre> 
+<p>在上面的代码中我们可以看出，这个方法也是一个自旋循环，按照thread1和thread2这个情况分析。在enq方法执行完之后，同步队列的情况大概如下所示。</p> 
+<p><img alt="" height="424" src="https://images2.imgbox.com/54/c1/Ub23Xp6S_o.png" width="702"></p> 
+<p>当前的node结点的前驱结点为head，所以会调用tryAcquire()方法去获得同步状态。但是由于state被thread1占有，所以tryAcquire失败。这里就是执行acquireQueued方法的代码块(2)了。代码块(2)中首先调用了shouldParkAfterFailedAcquire方法，该方法会将同步队列中node结点的前驱结点的waitStatus为CANCELLED的线程移除，并将当前调用该方法的线程所属结点自己和他的前驱结点的waitStatus设置为-1(SIGNAL)，然后返回。具体方法实现如下所示 </p> 
+<pre><code class="language-java">private static boolean shouldParkAfterFailedAcquire(Node pred, Node node) {
+    //（1）获取前驱结点的waitStatus
+    int ws = pred.waitStatus;
+    //（2）如果前驱结点的waitStatus为SINGNAL，就直接返回true
+    if (ws == Node.SIGNAL)
+        //前驱结点的状态为SIGNAL，那么该结点就能够安全的调用park方法阻塞自己了。
+        return true;
+    if (ws &gt; 0) {
+        //（3）这里就是将所有的前驱结点状态为CANCELLED的都移除
+        /*
+           * 如果前驱放弃了，那就一直往前找，直到找到最近一个正常等待的状态，并排在它的后边。
+           * 注意：那些放弃的结点，由于被自己“加塞”到它们前边，它们相当于形成一个无引用链，稍后就会被保安大叔赶走了(GC回收)！
+        */
+        do {
+            node.prev = pred = pred.prev;
+        } while (pred.waitStatus &gt; 0);
+        pred.next = node;
+    } else {
+        //CAS操作将这个前驱节点设置成SIGHNAL。
+        compareAndSetWaitStatus(pred, ws, Node.SIGNAL);
+    }
+    return false;
+}</code></pre> 
+<p>所以shouldParkAfterFailedAcquire方法执行完毕，现在的同步队列情况大概就是这样子，即哨兵结点的waitStatus值变为-1。</p> 
+<p><img alt="" height="448" src="https://images2.imgbox.com/23/36/NP4Eh5QU_o.png" width="686"></p> 
+<p>上面的执行完毕返回到acquireQueued方法的时候，在acquireQueued方法中就会进行第二次循环了，但是还是获取state失败，而当再次进入shouldParkAfterFailedAcquire方法的时候，当前结点node的前驱结点head的waitStatus已经为-1(SIGNAL)了，就会返回true，然后acquireQueued方法中就会接着执行parkAndCheckInterrupt将自己park阻塞挂起。</p> 
+<pre><code class="language-java">  private final boolean parkAndCheckInterrupt() {
+      LockSupport.park(this);//调用park()使线程进入waiting状态
+      return Thread.interrupted();//如果被唤醒，查看自己是不是被中断的。
+  }</code></pre> 
+<p>park()会让当前线程进入waiting状态。在此状态下，有两种途径可以唤醒该线程：1）被unpark()；2）被interrupt()。（再说一句，如果线程状态转换不熟，可以参考本人写的<a href="http://www.cnblogs.com/waterystone/p/4920007.html" rel="nofollow" id="cb_post_title_url" title="Thread详解">Thread详解</a>）。需要注意的是，Thread.interrupted()会清除当前线程的中断标记位。 </p> 
+<p>小结：</p> 
+<p>看了shouldParkAfterFailedAcquire()和parkAndCheckInterrupt()，现在让我们再回到acquireQueued()，总结下该函数的具体流程：</p> 
+<ol><li>结点进入队尾后，检查状态，找到安全休息点；</li><li>调用park()进入waiting状态，等待unpark()或interrupt()唤醒自己；</li><li>被唤醒后，看自己是不是有资格能拿到号。如果拿到，head指向当前结点，并返回从入队到拿到号的整个过程中是否被中断过；如果没拿到，继续流程1。</li></ol> 
+<h4 id="3.2.4%E3%80%81%E5%B0%8F%E7%BB%93">3.2.4、小结</h4> 
+<p>acquireQueued()分析完之后，我们接下来再回到acquire()！再贴上它的源码吧：</p> 
+<pre><code class="language-java">    public final void acquire(int arg) {
+        if (!tryAcquire(arg) &amp;&amp;
+            acquireQueued(addWaiter(Node.EXCLUSIVE), arg))
+            selfInterrupt();
+    }</code></pre> 
+<p>再来总结下它的流程吧：</p> 
+<ol><li>调用自定义同步器的tryAcquire()尝试直接去获取资源，如果成功则直接返回；</li><li>没成功，则addWaiter()将该线程加入等待队列的尾部，并标记为独占模式；</li><li>acquireQueued()使线程在等待队列中休息，有机会时（轮到自己，会被unpark()）会去尝试获取资源。获取到资源后才返回。如果在整个等待过程中被中断过，则返回true，否则返回false。</li><li>如果线程在等待过程中被中断过，它是不响应的。只是获取资源后才再进行自我中断selfInterrupt()，将中断补上。</li></ol> 
+<p>由于此函数是重中之重，我再用流程图总结一下：</p> 
+<p><img alt="" height="232" src="https://images2.imgbox.com/fc/32/dYZUFpew_o.png" width="1076"></p> 
+<p>至此，acquire()的流程终于算是告一段落了。这也就是ReentrantLock.lock()公平锁的流程，不信你去看其lock()源码吧，整个函数就是一条acquire(1)！！！</p> 
+<h3 id="3.3%E3%80%81release(int)">3.3、release(int)</h3> 
+<p> 　　上一小节已经把acquire()说完了，这一小节就来讲讲它的反操作release()吧。此方法是独占模式下线程释放共享资源的顶层入口。它会释放指定量的资源，如果彻底释放了（即state=0）,它会唤醒等待队列里的其他线程来获取资源。这也正是unlock()的语义，当然不仅仅只限于unlock()。下面是release()的源码：</p> 
+<pre><code class="language-java">public final boolean release(int arg) {
+    if (tryRelease(arg)) {
+        Node h = head;//找到头结点
+        if (h != null &amp;&amp; h.waitStatus != 0)
+            unparkSuccessor(h);//唤醒等待队列里的下一个线程
+        return true;
+    }
+    return false;
+}</code></pre> 
+<p>逻辑并不复杂。它调用tryRelease()来释放资源。有一点需要注意的是，<strong>它是根据tryRelease()的返回值来判断该线程是否已经完成释放掉资源了！所以自定义同步器在设计tryRelease()的时候要明确这一点！！</strong></p> 
+<h3 id="3.3.1%E3%80%81tryRelease(int)">3.3.1、tryRelease(int)</h3> 
+<p>此方法尝试去释放指定量的资源。下面是tryRelease()的源码：</p> 
+<pre><code class="language-java">  protected boolean tryRelease(int arg) {
+      throw new UnsupportedOperationException();
+  }</code></pre> 
+<p>跟tryAcquire()一样，这个方法是需要独占模式的自定义同步器去实现的。正常来说，tryRelease()都会成功的，因为这是独占模式，该线程来释放资源，那么它肯定已经拿到独占资源了，直接减掉相应量的资源即可(state-=arg)，也不需要考虑线程安全的问题。但要注意它的返回值，上面已经提到了，<strong>release()是根据tryRelease()的返回值来判断该线程是否已经完成释放掉资源了！</strong>所以自义定同步器在实现时，如果已经彻底释放资源(state=0)，要返回true，否则返回false。</p> 
+<h3 id="3.3.2%20unparkSuccessor(Node)">3.3.2 unparkSuccessor(Node)</h3> 
+<p>此方法用于唤醒等待队列中下一个线程。下面是源码：</p> 
+<pre><code class="language-java">private void unparkSuccessor(Node node) {
+    //这里，node一般为当前线程所在的结点。
+    int ws = node.waitStatus;
+    if (ws &lt; 0)//置零当前线程所在的结点状态，允许失败。
+        compareAndSetWaitStatus(node, ws, 0);
+
+    Node s = node.next;//找到下一个需要唤醒的结点s
+    if (s == null || s.waitStatus &gt; 0) {//如果为空或已取消
+        s = null;
+        //会从尾部结点开始寻找，找到离head最近的不为null并且node.waitStatus&lt;=0(有效)的结点
+        for (Node t = tail; t != null &amp;&amp; t != node; t = t.prev) // 从后向前找。
+            if (t.waitStatus &lt;= 0)//从这里可以看出，&lt;=0的结点，都是还有效的结点。
+                s = t;
+    }
+    if (s != null)
+        LockSupport.unpark(s.thread);//唤醒
+}</code></pre> 
+<p>从上面的代码实现中可以总结，unparkSuccessor主要做了两件事情:</p> 
+<p>​ ①获取head节点的waitStatus，如果小于0，就通过CAS操作将head节点的waitStatus修改为0</p> 
+<p>​ ②寻找head节点的下一个节点，如果这个节点的waitStatus小于0，就唤醒这个节点，否则遍历下去，找到第一个waitStatus&lt;=0的节点，并唤醒。</p> 
+<p>这个函数并不复杂。一句话概括：<strong>用unpark()唤醒等待队列中最前边的那个未放弃线程</strong>，这里我们也用s来表示吧。此时，再和acquireQueued()联系起来，s被唤醒后，进入if (p == head &amp;&amp; tryAcquire(arg))的判断（即使p!=head也没关系，它会再进入shouldParkAfterFailedAcquire()寻找一个安全点。这里既然s已经是等待队列中最前边的那个未放弃线程了，那么通过shouldParkAfterFailedAcquire()的调整，s也必然会跑到head的next结点，下一次自旋p==head就成立啦），然后s把自己设置成head标杆结点，表示自己已经获取到资源了，acquire()也返回了！！And then, DO what you WANT!</p> 
+<h3 id="3.3.3%E3%80%81%E5%B0%8F%E7%BB%93">3.3.3、小结</h3> 
+<p>release()是独占模式下线程释放共享资源的顶层入口。它会释放指定量的资源，如果彻底释放了（即state=0）,它会唤醒等待队列里的其他线程来获取资源。</p> 
+<blockquote> 
+ <p>如果获取锁的线程在release时异常了，没有unpark队列中的其他结点，这时队列中的其他结点会怎么办？是不是没法再被唤醒了？</p> 
+ <p>      答案是<strong>YES</strong>！！！这时，队列中等待锁的线程将永远处于park状态，无法再被唤醒！！！但是我们再回头想想，获取锁的线程在什么情形下会release抛出异常呢？？</p> 
+ <ol><li>线程突然死掉了？可以通过thread.stop来停止线程的执行，但该函数的执行条件要严苛的多，而且函数注明是非线程安全的，已经标明Deprecated；</li><li>线程被interupt了？线程在运行态是不响应中断的，所以也不会抛出异常；</li><li>release代码有bug，抛出异常了？目前来看，Doug Lea的release方法还是比较健壮的，没有看出能引发异常的情形（如果有，恐怕早被用户吐槽了）。<strong>除非自己写的tryRelease()有bug，那就没啥说的，自己写的bug只能自己含着泪去承受了</strong>。</li></ol> 
+</blockquote> 
+<h3 id="3.4%E3%80%81acquireShared(int)">3.4、acquireShared(int)</h3> 
+<p>此方法是共享模式下线程获取共享资源的顶层入口。它会获取指定量的资源，获取成功则直接返回，获取失败则进入等待队列，直到获取到资源为止，整个过程忽略中断。下面是acquireShared()的源码：</p> 
+<pre><code class="language-java">  public final void acquireShared(int arg) {
+      if (tryAcquireShared(arg) &lt; 0)
+          doAcquireShared(arg);
+  }</code></pre> 
+<p>这里tryAcquireShared()依然需要自定义同步器去实现。但是AQS已经把其返回值的语义定义好了：负值代表获取失败；0代表获取成功，但没有剩余资源；正数表示获取成功，还有剩余资源，其他线程还可以去获取。所以这里acquireShared()的流程就是：</p> 
+<ol><li>tryAcquireShared()尝试获取资源，成功则直接返回；</li><li>失败则通过doAcquireShared()进入等待队列，直到获取到资源为止才返回。</li></ol> 
+<h3 id="3.4.1%20doAcquireShared(int)">3.4.1 doAcquireShared(int)</h3> 
+<p>此方法用于将当前线程加入等待队列尾部休息，直到其他线程释放资源唤醒自己，自己成功拿到相应量的资源后才返回。下面是doAcquireShared()的源码：</p> 
+<pre><code class="language-java">private void doAcquireShared(int arg) {
+    final Node node = addWaiter(Node.SHARED);//加入队列尾部
+    boolean failed = true;//是否成功标志
+    try {
+        boolean interrupted = false;//等待过程中是否被中断过的标志
+        for (;;) {
+            final Node p = node.predecessor();//前驱
+            if (p == head) {//如果到head的下一个，因为head是拿到资源的线程，此时node被唤醒，很可能是head用完资源来唤醒自己的
+                int r = tryAcquireShared(arg);//尝试获取资源
+                if (r &gt;= 0) {//成功
+                    setHeadAndPropagate(node, r);//将head指向自己，还有剩余资源可以再唤醒之后的线程
+                    p.next = null; // help GC
+                    if (interrupted)//如果等待过程中被打断过，此时将中断补上。
+                        selfInterrupt();
+                    failed = false;
+                    return;
+                }
+            }
+
+            //判断状态，寻找安全点，进入waiting状态，等着被unpark()或interrupt()
+            if (shouldParkAfterFailedAcquire(p, node) &amp;&amp;
+                parkAndCheckInterrupt())
+                interrupted = true;
+        }
+    } finally {
+        if (failed)
+            cancelAcquire(node);
+    }
+}</code></pre> 
+<p>有木有觉得跟acquireQueued()很相似？对，其实流程并没有太大区别。只不过这里将补中断的selfInterrupt()放到doAcquireShared()里了，而独占模式是放到acquireQueued()之外，其实都一样，不知道Doug Lea是怎么想的。</p> 
+<p>跟独占模式比，还有一点需要注意的是，这里只有线程是head.next时（“老二”），才会去尝试获取资源，有剩余的话还会唤醒之后的队友。那么问题就来了，假如老大用完后释放了5个资源，而老二需要6个，老三需要1个，老四需要2个。老大先唤醒老二，老二一看资源不够，他是把资源让给老三呢，还是不让？答案是否定的！老二会继续park()等待其他线程释放资源，也更不会去唤醒老三和老四了。独占模式，同一时刻只有一个线程去执行，这样做未尝不可；但共享模式下，多个线程是可以同时执行的，现在因为老二的资源需求量大，而把后面量小的老三和老四也都卡住了。当然，这并不是问题，只是AQS保证严格按照入队顺序唤醒罢了（保证公平，但降低了并发）。</p> 
+<p>3.4.1.1 setHeadAndPropagate(Node, int)</p> 
+<pre><code class="language-java">private void setHeadAndPropagate(Node node, int propagate) {
+    Node h = head;
+    setHead(node);//head指向自己
+     //如果还有剩余量，继续唤醒下一个邻居线程
+    if (propagate &gt; 0 || h == null || h.waitStatus &lt; 0) {
+        Node s = node.next;
+        if (s == null || s.isShared())
+            doReleaseShared();
+    }
+}</code></pre> 
+<p>此方法在setHead()的基础上多了一步，就是自己苏醒的同时，如果条件符合（比如还有剩余资源），还会去唤醒后继结点，毕竟是共享模式！</p> 
+<p>doReleaseShared()我们留着下一小节的releaseShared()里来讲。</p> 
+<h4 id="3.4.2%E3%80%81%E5%B0%8F%E7%BB%93">3.4.2、小结</h4> 
+<p>至此，acquireShared()也要告一段落了。让我们再梳理一下它的流程：</p> 
+<ol><li>tryAcquireShared()尝试获取资源，成功则直接返回；</li><li>失败则通过doAcquireShared()进入等待队列park()，直到被unpark()/interrupt()并成功获取到资源才返回。整个等待过程也是忽略中断的。</li></ol> 
+<p>其实跟acquire()的流程大同小异，只不过多了个<strong>自己拿到资源后，还会去唤醒后继队友的操作（这才是共享嘛）</strong>。</p> 
+<h3 id="3.5%E3%80%81releaseShared()">3.5、releaseShared()</h3> 
+<p>上一小节已经把acquireShared()说完了，这一小节就来讲讲它的反操作releaseShared()吧。此方法是共享模式下线程释放共享资源的顶层入口。它会释放指定量的资源，如果成功释放且允许唤醒等待线程，它会唤醒等待队列里的其他线程来获取资源。下面是releaseShared()的源码：</p> 
+<pre><code class="language-java">public final boolean releaseShared(int arg) {
+    if (tryReleaseShared(arg)) {//尝试释放资源
+        doReleaseShared();//唤醒后继结点
+        return true;
+    }
+    return false;
+}</code></pre> 
+<p>此方法的流程也比较简单，一句话：释放掉资源后，唤醒后继。跟独占模式下的release()相似，但有一点稍微需要注意：独占模式下的tryRelease()在完全释放掉资源（state=0）后，才会返回true去唤醒其他线程，这主要是基于独占下可重入的考量；而共享模式下的releaseShared()则没有这种要求，共享模式实质就是控制一定量的线程并发执行，那么拥有资源的线程在释放掉部分资源时就可以唤醒后继等待结点。例如，资源总量是13，A（5）和B（7）分别获取到资源并发运行，C（4）来时只剩1个资源就需要等待。A在运行过程中释放掉2个资源量，然后tryReleaseShared(2)返回true唤醒C，C一看只有3个仍不够继续等待；随后B又释放2个，tryReleaseShared(2)返回true唤醒C，C一看有5个够自己用了，然后C就可以跟A和B一起运行。而ReentrantReadWriteLock读锁的tryReleaseShared()只有在完全释放掉资源（state=0）才返回true，所以自定义同步器可以根据需要决定tryReleaseShared()的返回值。</p> 
+<h4 id="3.5.1%E3%80%81doReleaseShared()">3.5.1、doReleaseShared()</h4> 
+<p>此方法主要用于唤醒后继。下面是它的源码：</p> 
+<pre><code class="language-java">private void doReleaseShared() {
+    for (;;) {
+        Node h = head;
+        if (h != null &amp;&amp; h != tail) {
+            int ws = h.waitStatus;
+            if (ws == Node.SIGNAL) {
+                if (!compareAndSetWaitStatus(h, Node.SIGNAL, 0))
+                    continue;
+                unparkSuccessor(h);//唤醒后继
+            }
+            else if (ws == 0 &amp;&amp;
+                     !compareAndSetWaitStatus(h, 0, Node.PROPAGATE))
+                continue;
+        }
+        if (h == head)// head发生变化
+            break;
+    }
+}</code></pre> 
+<h3 id="3.6%E3%80%81%E5%B0%8F%E7%BB%93">3.6、小结</h3> 
+<p>　　本节我们详解了独占和共享两种模式下获取-释放资源(acquire-release、acquireShared-releaseShared)的源码，相信大家都有一定认识了。值得注意的是，acquire()和acquireShared()两种方法下，线程在等待队列中都是忽略中断的。AQS也支持响应中断的，acquireInterruptibly()/acquireSharedInterruptibly()即是，相应的源码跟acquire()和acquireShared()差不多，这里就不再详解了。</p> 
+<p></p> 
+<p>参考：<a href="https://www.cnblogs.com/waterystone/p/4920797.html" rel="nofollow" title="Java并发之AQS详解 - waterystone - 博客园">Java并发之AQS详解 - waterystone - 博客园</a>；</p> 
+<p>           <a href="https://www.cnblogs.com/fsmly/p/11274572.html" rel="nofollow" title="深入理解Java中的AQS - 夏末秋涼 - 博客园">深入理解Java中的AQS - 夏末秋涼 - 博客园</a>；</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/e76b08929eff0de0478d563aaea8920c/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">关于matlab runtime的配置,及runtime error</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/d78be56eb00ef6cc3e7222dedaab2948/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">数字图像学习——双线性插值方法部分的讨论【个人详细推导】</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

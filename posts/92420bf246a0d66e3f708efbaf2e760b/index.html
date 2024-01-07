@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Swin-Transformer详解 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Swin-Transformer详解" />
+<meta property="og:description" content=" 在传统的CNN网络中，存在一些缺陷，当堆叠的卷积核太少时候，网络的感受野会比较小，不能表达全局信息，Attebtion能够让我们去关注前景忽略背景，Swin-Transformer的提出最早是为了减小运算量，适应图像分割等问题，在论文中，有patch和token两个概念，我认为当特征存在H和W维度的时候，他就是patch，当H和W相乘时候就是token，当然，他们都是指的的同一组特征，所以很多地方把他们通用。以上为Swin-Transformer的总体流程，下面本文将对网络中每一个结构做详尽介绍：
+1.Patch Partition（图像块分割）&#43;Linear Embeding（线性嵌入） 两个过程的实现为使用一个二维卷积（Conv2d），输入通道数：3，输出通道数：C=96（在这里不是48=3*4*4，因为在代码中Patch Partition和Linear Embeding通过一个二维卷积实现，在这里是使用了96个卷积核，根据网络大小不同还可以128、192），卷积核大小和步长都为4。然后进行了归一化（Layer Norm）
+2.Patch Merging（图像块合并） 图来源
+上图为Patch Merging的一个样例，取一个通道的特征进行讲解，用一个2×2的窗口在特征图上步长为2滑动，每个窗口会被分成四个区域，根据区域不同把一张特征图分为四份，然后在通道深度方向进行拼接，拼接后在通道方向进行归一化（LayerNorm），然后使用全连接使深度变为2。与原图相比高和宽变为原来一半，深度变为原来的二倍。全连接如下：
+nn.Linear(4 * dim, 2 * dim, bias=False) 为了提高模型的表征能力，随着网络的加深，通过Patch Merging来减少token（Patch）的数量
+3.W-MSA &amp; SW-MSA 上图中，左面是一个MSA模块，其中有多个patch，每一个patch都会与其他的patch进行沟通（q,k)计算，在右面，是swin-Transformer中的W-SMA他会把特征图分割为多个window（窗口），窗口中的每个patch只会和窗口内的patch进行self-attention计算。 目的：减少计算量
+缺点：窗口之间无法进行信息交流
+为了解决上面窗口之间无法进行信息交流的缺点，通过cyclic shift 把窗口进行移动，这样就可以聚合不同窗口之间的信息。
+Shift Window的使用可以实现不同Window之间的信息交互。
+Shift Window的过程指的是将window窗口向右和向下移动一定的距离，一般是两个patch的距离，移动之后，特征图的边缘会存在一些多余的突出特征和一些空白的部分，我们把突出特征补充到空白处，可以生成可被窗口分割的特征图，但是补充而来的特征图会与其周围特征形成一个新的窗口，窗口之间的patch会进行self-attention计算，这是我们不想看到的，所有我们使用一个masked MSA（蒙版），防止拼接window不同区域之间的计算。
+如图，区域5和区域3两个区域拼接到了一个window里，我们在进行QK相乘，然后除每个Head的维度(dim)开方，再加上mask蒙版(nw, Mn*Mw, Mn*Mw)中的值，给我们不想看到的数据加上一个-100，这样就会在让这个值在进行softmax之后的值为0，进而和V的乘积也会是零
+4. Window Attention " />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/92420bf246a0d66e3f708efbaf2e760b/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-12-04T11:23:29+08:00" />
+<meta property="article:modified_time" content="2022-12-04T11:23:29+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Swin-Transformer详解</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p></p> 
+<p class="img-center"><img alt="" height="182" src="https://images2.imgbox.com/d5/49/uTvZv6iz_o.png" width="650"></p> 
+<p>在传统的CNN网络中，存在一些缺陷，当堆叠的卷积核太少时候，网络的感受野会比较小，不能表达全局信息，Attebtion能够让我们去关注前景忽略背景，Swin-Transformer的提出最早是为了减小运算量，适应图像分割等问题，在论文中，有patch和token两个概念，我认为当特征存在H和W维度的时候，他就是patch，当H和W相乘时候就是token，当然，他们都是指的的同一组特征，所以很多地方把他们通用。以上为Swin-Transformer的总体流程，下面本文将对网络中每一个结构做详尽介绍：</p> 
+<h3> 1.Patch Partition（图像块分割）+Linear Embeding（线性嵌入）</h3> 
+<p class="img-center"><img alt="" height="166" src="https://images2.imgbox.com/2c/04/0DSESuqz_o.png" width="650"></p> 
+<p>两个过程的实现为使用一个二维卷积（Conv2d），输入通道数：3，输出通道数：C=96（在这里不是48=3*4*4，因为在代码中Patch Partition和Linear Embeding通过一个二维卷积实现，在这里是使用了96个卷积核，根据网络大小不同还可以128、192），卷积核大小和步长都为4。然后进行了归一化（Layer Norm）</p> 
+<h4> 2.Patch Merging（图像块合并）<img alt="" height="777" src="https://images2.imgbox.com/93/d4/0ZlHDnS0_o.png" width="1200"></h4> 
+<p><a class="link-info" href="https://www.bilibili.com/video/BV1pL4y1v7jC/?spm_id_from=333.999.0.0&amp;vd_source=4172f7763209fc0eb9bc3bb18a3f40e6" rel="nofollow" title=" 图来源"> 图来源</a></p> 
+<p> 上图为Patch Merging的一个样例，取一个通道的特征进行讲解，用一个2×2的窗口在特征图上步长为2滑动，每个窗口会被分成四个区域，根据区域不同把一张特征图分为四份，然后在通道深度方向进行拼接，拼接后在通道方向进行归一化（LayerNorm），然后使用全连接使深度变为2。与原图相比高和宽变为原来一半，深度变为原来的二倍。全连接如下：</p> 
+<pre>nn.Linear(4 * dim, 2 * dim, bias=False)
+</pre> 
+<p> 为了提高模型的表征能力，随着网络的加深，通过Patch Merging来减少token（Patch）的数量</p> 
+<h4>3.W-MSA &amp; <span style="color:#000000;">SW-MSA</span></h4> 
+<p><img alt="" height="303" src="https://images2.imgbox.com/65/18/6hs6gHjE_o.png" width="650"></p> 
+<p></p> 
+<p>上图中，左面是一个MSA模块，其中有多个patch，每一个patch都会与其他的patch进行沟通（q,k)计算，在右面，是swin-Transformer中的W-SMA他会把特征图分割为多个window（窗口），窗口中的每个patch只会和窗口内的patch进行self-attention计算。 </p> 
+<p>目的：减少计算量</p> 
+<p>缺点：窗口之间无法进行信息交流</p> 
+<p></p> 
+<p>为了解决上面窗口之间无法进行信息交流的缺点，通过<span style="color:#000000;">cyclic shift</span> 把窗口进行移动，这样就可以聚合不同窗口之间的信息。</p> 
+<p class="img-center"><img alt="" height="248" src="https://images2.imgbox.com/f6/80/31bHZgzY_o.png" width="650"></p> 
+<p><img alt="" height="183" src="https://images2.imgbox.com/c3/f9/WnEXRDmC_o.png" width="671"></p> 
+<p>Shift Window的使用可以实现不同Window之间的信息交互。</p> 
+<p>Shift Window的过程指的是将window窗口向右和向下移动一定的距离，一般是两个patch的距离，移动之后，特征图的边缘会存在一些多余的突出特征和一些空白的部分，我们把突出特征补充到空白处，可以生成可被窗口分割的特征图，但是补充而来的特征图会与其周围特征形成一个新的窗口，窗口之间的patch会进行self-attention计算，这是我们不想看到的，所有我们使用一个masked MSA（蒙版），防止拼接window不同区域之间的计算。</p> 
+<p><img alt="" height="589" src="https://images2.imgbox.com/e0/f5/GgjnwBpl_o.png" width="1200"></p> 
+<p> 如图，区域5和区域3两个区域拼接到了一个window里，我们在进行QK相乘，然后除每个Head的维度(dim)开方，再加上mask蒙版(nw, Mn*Mw, Mn*Mw)中的值，给我们不想看到的数据加上一个-100，这样就会在让这个值在进行softmax之后的值为0，进而和V的乘积也会是零</p> 
+<h4>4. Window Attention</h4> 
+<p><img alt="" height="382" src="https://images2.imgbox.com/06/4a/acXyN193_o.png" width="1200"></p> 
+<p> <img alt="" height="800" src="https://images2.imgbox.com/f8/23/14hjRbtd_o.png" width="1200"></p> 
+<p></p> 
+<p></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/b724a9830c8597942b35802a9b315fbb/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">weixin小程序和公众号抓包方法分享</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/38b17f4b88ec7b238beb9fa5c4394b36/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">查看Tomcat目录</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

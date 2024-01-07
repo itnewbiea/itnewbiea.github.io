@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>SPARK SHUFFLE中 ShuffleId BlockManagerId 以及 与ESS（External Shuffle Server）交互 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="SPARK SHUFFLE中 ShuffleId BlockManagerId 以及 与ESS（External Shuffle Server）交互" />
+<meta property="og:description" content="背景 本文基于SPARK 3.2.1
+用来更好的理解spark shuffle中的点点滴滴
+分析 我们直接从SortShuffleManager着手，因为这是个shuffle的纽带： override def registerShuffle[K, V, C]( shuffleId: Int, dependency: ShuffleDependency[K, V, C]): ShuffleHandle { ... override def getReader[K, C]( handle: ShuffleHandle, startMapIndex: Int, endMapIndex: Int, startPartition: Int, endPartition: Int, context: TaskContext, metrics: ShuffleReadMetricsReporter): ShuffleReader[K, C] = { ... override def getWriter[K, V]( handle: ShuffleHandle, mapId: Long, context: TaskContext, metrics: ShuffleWriteMetricsReporter): ShuffleWriter[K, V] = { ... 跟shuffle紧密关联的是这三个方法，
+其中registerShuffle方法是在ShuffleDependency实例构建出来的时候机会被调用: val shuffleId: Int = _rdd.context.newShuffleId() val shuffleHandle: ShuffleHandle = _rdd." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/84e285f29782fcd896ac5a55570dd982/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-03-31T09:27:40+08:00" />
+<meta property="article:modified_time" content="2022-03-31T09:27:40+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">SPARK SHUFFLE中 ShuffleId BlockManagerId 以及 与ESS（External Shuffle Server）交互</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h3><a id="_1"></a>背景</h3> 
+<p>本文基于SPARK 3.2.1<br> 用来更好的理解spark shuffle中的点点滴滴</p> 
+<h3><a id="_5"></a>分析</h3> 
+<ol><li>我们直接从SortShuffleManager着手，因为这是个shuffle的纽带：</li></ol> 
+<pre><code>override def registerShuffle[K, V, C](
+     shuffleId: Int,
+      dependency: ShuffleDependency[K, V, C]): ShuffleHandle {
+...
+
+ override def getReader[K, C](
+      handle: ShuffleHandle,
+      startMapIndex: Int,
+      endMapIndex: Int,
+      startPartition: Int,
+      endPartition: Int,
+      context: TaskContext,
+      metrics: ShuffleReadMetricsReporter): ShuffleReader[K, C] = {
+    ...
+
+ override def getWriter[K, V](
+      handle: ShuffleHandle,
+      mapId: Long,
+      context: TaskContext,
+      metrics: ShuffleWriteMetricsReporter): ShuffleWriter[K, V] = {
+...
+</code></pre> 
+<p>跟shuffle紧密关联的是这三个方法，</p> 
+<ul><li>其中<code>registerShuffle</code>方法是在ShuffleDependency实例构建出来的时候机会被调用:</li></ul> 
+<pre><code> val shuffleId: Int = _rdd.context.newShuffleId()
+
+  val shuffleHandle: ShuffleHandle = _rdd.context.env.shuffleManager.registerShuffle(
+    shuffleId, this)
+
+</code></pre> 
+<p>其中shuffleId 是全局单调递增的，（其实这是为了一次shuffle的标示，是下游task获取上游task数据的label）</p> 
+<ul><li><code>getWriter</code>方法是ShuffleMapTask RunTask中被调用的：</li></ul> 
+<pre><code>ShuffleMapTask.runTask
+     ||
+     \/
+dep.shuffleWriterProcessor.write
+     ||
+     \/
+writer = manager.getWriter[Any, Any](
+      handle: ShuffleHandle,
+
+</code></pre> 
+<p>这里会根据已经注册好的shuffleHandle来获取对应的writer</p> 
+<ul><li><code>getReader</code>方法下游task读取shuffle数的时候被调用的:</li></ul> 
+<pre><code>ShuffledRowRDD.compure
+      ||
+      \/
+SparkEnv.get.shuffleManager.getReader(
+    dependency.shuffleHandle,..)
+     ||
+     \/
+val address = SparkEnv.get.mapOutputTracker.getMapSizesByExecutorId(
+          handle.shuffleId, startMapIndex, endMapIndex, startPartition, endPartition)
+</code></pre> 
+<p>这里会根据已经注册好的shuffleHandle来获取对应的reader，这里会调用getMapSizesByExecutorId最终根据shuffleId来获取（Array[MapStatus], Array[MergeStatus]）<br> 这里包括了所有的MapStatus和MergeStatus,这样reader就能根据策略来向不同的blockManager发送shuffle fetch请求，以保证远程Executor负载均衡。<br> 具体的写操作和读操作细节，读者可以去自己细看代码，我们这里只说一些总体的数据流思路。</p> 
+<ol start="2"><li>再来看BlockManager，BlockManager是每个Executor都会有的，在SparkEnv创建的时候就会创建，用来管理数据块的存储的，<br> 其中shuffle 数据的读取和写入都是和他有关联的。<br> 分析一下BlockManager的跟shuffle有关的重要方法：</li></ol> 
+<pre><code>  private[spark] val blockStoreClient = externalBlockStoreClient.getOrElse(blockTransferService)
+
+   
+  
+   def initialize(appId: String): Unit = {
+        ...
+     val id =
+      BlockManagerId(executorId, blockTransferService.hostName, blockTransferService.port, None)
+         blockManagerId = if (idFromMaster != null) idFromMaster else id
+      shuffleServerId = if (externalShuffleServiceEnabled) {
+      logInfo(s"external shuffle service port = $externalShuffleServicePort")
+      BlockManagerId(executorId, blockTransferService.hostName, externalShuffleServicePort)
+    } else {
+      blockManagerId
+    }
+     if (externalShuffleServiceEnabled &amp;&amp; !blockManagerId.isDriver) {
+      registerWithExternalShuffleServer()
+      ...
+    }
+    ...
+   }
+</code></pre> 
+<ul><li> <p><code>blockStoreClient</code> 变量,用来读取其他Executor的Blocks文件的，也就是shuffle数据真正去读数的组件，<br> 这在创建BlockManager的时候，如果开启ESS的话就会创建的：</p> <pre><code>val externalShuffleClient = if (conf.get(config.SHUFFLE_SERVICE_ENABLED)) {
+    ...
+</code></pre> <p>如果没开启ESS的话，就用自带的BlockTransferService。</p> </li><li> <p><code>shuffleServerId</code>也就是blockManagerId，会在Executor创建的时候初始化，<br> 如果开启ESS，端口就是<code>spark.shuffle.service.port</code>,默认7337，否则就是<code>spark.blockManager.port</code>，默认是随机端口：</p> </li></ul> 
+<pre><code>Executor中env.blockManager.initialize(conf.getAppId)
+      ||
+      \/
+registerWithExternalShuffleServer()
+</code></pre> 
+<p><code>registerWithExternalShuffleServer</code>这个方法是用来注册ESS的（如果开启ESS的情况下）：</p> 
+<pre><code>val shuffleConfig = new ExecutorShuffleInfo(
+      diskBlockManager.localDirsString,
+      diskBlockManager.subDirsPerLocalDir,
+      shuffleManagerMeta)
+
+// Synchronous and will throw an exception if we cannot connect.
+ blockStoreClient.asInstanceOf[ExternalBlockStoreClient].registerWithShuffleServer(
+    shuffleServerId.host, shuffleServerId.port, shuffleServerId.executorId, shuffleConfig)
+</code></pre> 
+<p>注册的信息包括block本地磁盘的位置，以及shuffleManagerMeta信息，注意如果这里开启push-based shuffle Server的话，就返回的是merge的路径，<br> 否则返回sortShuffleManager的类名。<br> 至于具体向哪个shuffle server实例注册，就是从shuffleServerId中获取的。 之后向对应的ESS发送RegisterExecutor消息<br> 再来看<code>YarnShuffleService</code>对RegisterExecutor消息的回应（实际上是<code>ExternalBlockHandler</code>来处理的）：</p> 
+<pre><code> else if (msgObj instanceof RegisterExecutor) {
+      final Timer.Context responseDelayContext =
+        metrics.registerExecutorRequestLatencyMillis.time();
+      try {
+        RegisterExecutor msg = (RegisterExecutor) msgObj;
+        checkAuth(client, msg.appId);
+        blockManager.registerExecutor(msg.appId, msg.execId, msg.executorInfo);
+        mergeManager.registerExecutor(msg.appId, msg.executorInfo);
+        callback.onSuccess(ByteBuffer.wrap(new byte[0]));
+      } finally {
+        responseDelayContext.stop();
+      }
+
+</code></pre> 
+<p>其中<code>blockManager</code>是把逻辑shuffle block转换为实际物理存储的组件，这里的注册就是blockManager对物理文件（LocalDirs等）做映射关系<br> <code>mergeManager</code>就是push based shuffle Manager进行文件merge的组件，也就就是把merge的路径以及物理文件（LocalDirs等给注册上去，便于后续获取shuffle文件。</p> 
+<p><em>注意</em>：<br> <code>blockStoreClient</code>是Executor 存在的的时候才会有的组件，因为是去拉取shuffle数据；<br> 而通过registerWithExternalShuffleServer注册的ESS组件是，可以在Executor不存在的时候提供服务的。这两者是有区别的。</p> 
+<p>至此SPARK SHUFFLE简单的流程就是这样了。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/4ef0d62aca21a8019ff1f792ce420816/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Python打印2018年的日历（【问题描述】 打印2018年的日历 【输入形式】 【输出形式】 【样例输入】 【样例输出】）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/e0de13a7a934c51fcc6de86ef7d25024/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Dockerfile 构建 Vue 镜像踩坑记</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

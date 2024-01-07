@@ -1,0 +1,1051 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>mybatis数据加密脱敏 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="mybatis数据加密脱敏" />
+<meta property="og:description" content="在研发过程中某些业务场景是不允许存储明文的，例银行卡 身份证类。怎么实现自动加密解密呢？可以利用mybatis Interceptor 做处理，输入明文参数通过拦截器自动加密。查询出结果集自动解密。在web层展示可以对敏感字段加*处理。
+支持mybatis-generator 生成的代码，考虑到可能重新生成会覆盖。支持配置指定字段加密解密，就不用担心代码丢失。自定义对象建议使用注解方式
+直接上代码
+/** * * @author one.xu */ @Target({ElementType.TYPE,ElementType.METHOD}) @Retention(RetentionPolicy.RUNTIME) @Inherited public @interface EnableEncrypt { } @Target({ElementType.FIELD, ElementType.PARAMETER}) @Retention(RetentionPolicy.RUNTIME) @Documented @Inherited public @interface EncryptField { String value() default &#34;&#34;; /** * 参数为map逗号连接需要加密的key * @return */ String keys() default &#34;&#34;; } /** * @author one.xu */ @Slf4j @Intercepts({ @Signature(type = Executor.class, method = &#34;query&#34;, args = {MappedStatement.class, Object.class, RowBounds.class, ResultHandler.class}), @Signature(type = Executor.class, method = &#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/ddc799489bd4406eb41c0dd63b83113e/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-11-22T11:29:02+08:00" />
+<meta property="article:modified_time" content="2023-11-22T11:29:02+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">mybatis数据加密脱敏</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>在研发过程中某些业务场景是不允许存储明文的，例银行卡 身份证类。怎么实现自动加密解密呢？可以利用mybatis Interceptor 做处理，输入明文参数通过拦截器自动加密。查询出结果集自动解密。在web层展示可以对敏感字段加*处理。</p> 
+<p>支持mybatis-generator 生成的代码，考虑到可能重新生成会覆盖。支持配置指定字段加密解密，就不用担心代码丢失。自定义对象建议使用注解方式</p> 
+<p>直接上代码</p> 
+<pre><code class="language-java">/**
+ * 
+ * @author one.xu
+ */
+@Target({ElementType.TYPE,ElementType.METHOD})
+@Retention(RetentionPolicy.RUNTIME)
+@Inherited
+public @interface EnableEncrypt {
+}
+</code></pre> 
+<pre><code class="language-java">@Target({ElementType.FIELD, ElementType.PARAMETER})
+@Retention(RetentionPolicy.RUNTIME)
+@Documented
+@Inherited
+public @interface EncryptField {
+    String value() default "";
+
+    /**
+     * 参数为map逗号连接需要加密的key
+     * @return
+     */
+    String keys() default "";
+}
+</code></pre> 
+<pre><code class="language-java">
+/**
+ * @author one.xu
+ */
+@Slf4j
+@Intercepts({
+        @Signature(type = Executor.class, method = "query", args = {MappedStatement.class, Object.class, RowBounds.class, ResultHandler.class}),
+        @Signature(type = Executor.class, method = "query", args = {MappedStatement.class, Object.class, RowBounds.class, ResultHandler.class, CacheKey.class, BoundSql.class}),
+        @Signature(type = Executor.class, method = "queryCursor", args = {MappedStatement.class, Object.class, RowBounds.class}),
+        @Signature(type = Executor.class, method = "update", args = {MappedStatement.class, Object.class})})
+public class DataSecurityInterceptor implements Interceptor {
+    private EncryptHelper encryptHelper;
+    /**
+     * {"examples":{"com.xx.BusinessInfoExample":["app_id"]},
+     * "resluts":{"com.xx.BusinessInfo":["appId"]}}
+     */
+    private Map&lt;String, Set&lt;String&gt;&gt; exampleClassConfigMap;
+    private ConcurrentHashMap&lt;String, Class&gt; mapperClassMap = new ConcurrentHashMap&lt;&gt;();
+
+    @Override
+    public Object intercept(Invocation invocation) throws Throwable {
+        invocation.getArgs()[1] = parameterHand(invocation, true);
+        Boolean hasCache = invocation.getArgs().length &gt; 2 ? hasCache(invocation) : false;
+
+        Object result = invocation.proceed();
+        invocation.getArgs()[1] = parameterHand(invocation, false);
+        if (hasCache) {
+            return result;
+        }
+        return resultDecrypt(result, invocation);
+    }
+
+    /**
+     * 只有 query,queryCursor 进入
+     *
+     * @param invocation
+     * @return
+     */
+    boolean hasCache(Invocation invocation) {
+        Object[] args = invocation.getArgs();
+        MappedStatement ms = (MappedStatement) args[0];
+        Object parameter = args[1];
+        RowBounds rowBounds = (RowBounds) args[2];
+//        ResultHandler resultHandler = (ResultHandler) args[3];
+        Executor executor = (Executor) invocation.getTarget();
+        CacheKey cacheKey;
+        BoundSql boundSql;
+        //由于逻辑关系，只会进入一次
+        if (args.length &lt;= 4) {
+            //4 个参数时
+            boundSql = ms.getBoundSql(parameter);
+            cacheKey = executor.createCacheKey(ms, parameter, rowBounds, boundSql);
+        } else {
+            //6 个参数时
+            cacheKey = (CacheKey) args[4];
+            boundSql = (BoundSql) args[5];
+        }
+        return executor.isCached(ms, cacheKey);
+    }
+
+
+    @Override
+    public Object plugin(Object target) {
+        return Plugin.wrap(target, this);
+    }
+
+
+    @SneakyThrows
+    @Override
+    public void setProperties(Properties properties) {
+        String encryptKey = properties.getProperty("encryptKey", "N2Y1ZjA0MjhhNjI2ZGNhOQ==");
+        if (encryptKey.startsWith("${") &amp;&amp; encryptKey.endsWith("}")) {
+            encryptKey = SpringContextUtil.getApplicationContext().getEnvironment().getProperty(encryptKey.replace("${", "").replace("}", ""));
+        }
+        String encryptionService = properties.getProperty("encryptionService", DefaultEncryptionService.class.getName());
+        Class&lt;?&gt; cls = Class.forName(encryptionService);
+        if (!IEncryptionService.class.isAssignableFrom(cls)) {
+            throw new RuntimeException("encryptionService 没有实现IEncryptionService接口");
+        }
+        this.encryptHelper = new EncryptHelper((IEncryptionService) cls.newInstance(), encryptKey);
+
+
+        //解析example配置
+        this.exampleClassConfigMap = new HashMap&lt;&gt;(16);
+        String exampleClass = properties.getProperty("exampleClassConfig");
+        if (StringUtils.isBlank(exampleClass)) {
+            return;
+        }
+        JSONObject exampleClassConfigObject = JSON.parseObject(exampleClass);
+        for (Map.Entry&lt;String, Object&gt; m1 : exampleClassConfigObject.entrySet()) {
+            JSONObject tmp = exampleClassConfigObject.getJSONObject(m1.getKey());
+            for (Map.Entry&lt;String, Object&gt; m2 : tmp.entrySet()) {
+
+                String newKey = buildConfigKey(m2.getKey(), "examples".equals(m1.getKey()));
+                Set&lt;String&gt; fields = exampleClassConfigMap.get(newKey);
+                if (fields == null) {
+                    fields = new HashSet&lt;&gt;();
+                }
+                fields.addAll(tmp.getJSONArray(m2.getKey()).toJavaList(String.class));
+                this.exampleClassConfigMap.put(newKey, fields);
+            }
+        }
+
+    }
+
+    private String buildConfigKey(String key, boolean isExamples) {
+        String newKey = isExamples ? "examples" : "resluts";
+        return newKey + "#" + key;
+    }
+
+    private Object resultDecrypt(Object resultObject, Invocation invocation) throws Throwable {
+        if (Objects.isNull(resultObject)) {
+            return null;
+        }
+//        log.info("resultObject:{}",JSONObject.toJSONString(resultObject));
+        if (resultObject instanceof List) {
+            List&lt;Object&gt; resultList = (List&lt;Object&gt;) resultObject;
+            if (CollectionUtils.isEmpty(resultList)) {
+                return resultList;
+            }
+        }
+        Set&lt;String&gt; decryptFields = getDecryptFields(resultObject);
+        MappedStatement mappedStatement = (MappedStatement) invocation.getArgs()[0];
+        Method method = getMapperMethod(mappedStatement);
+        EnableEncrypt enableEncrypt = null;
+        if (method != null &amp;&amp; method.getAnnotation(EnableEncrypt.class) != null) {
+            enableEncrypt = method.getAnnotation(EnableEncrypt.class);
+        }
+        if (enableEncrypt != null &amp;&amp; StringUtils.isNotBlank(enableEncrypt.keys())) {
+            decryptFields.addAll(Arrays.asList(enableEncrypt.keys().split(",")));
+        }
+
+        this.encryptHelper.execute(resultObject, decryptFields, false);
+        return resultObject;
+    }
+
+    private Set&lt;String&gt; getDecryptFields(Object resultObject) {
+        if (resultObject == null) {
+            return new HashSet&lt;&gt;();
+        }
+        boolean isList = resultObject instanceof List;
+        Object reallySingleObj = resultObject;
+        if (isList) {
+            List&lt;Object&gt; resultList = (List&lt;Object&gt;) resultObject;
+            if (CollectionUtils.isEmpty(resultList)) {
+                return new HashSet&lt;&gt;();
+            }
+            reallySingleObj = resultList.get(0);
+        }
+        //提取注解字段
+        Set&lt;String&gt; decryptFields = this.encryptHelper.getEncryptField(reallySingleObj);
+        //针对继承类处理
+        Class tmpClass = reallySingleObj.getClass();
+        while (!tmpClass.getName().equals(Object.class.getName())) {
+            Set&lt;String&gt; fields = this.exampleClassConfigMap.get(buildConfigKey(tmpClass.getName(), false));
+            if (fields != null) {
+                decryptFields.addAll(fields);
+            }
+            tmpClass = tmpClass.getSuperclass();
+        }
+        return decryptFields;
+    }
+
+    private Object parameterHand(Invocation invocation, boolean isEncrypt) throws Throwable {
+        Object parameter = invocation.getArgs()[1];
+        MappedStatement mappedStatement = (MappedStatement) invocation.getArgs()[0];
+        Method method = getMapperMethod(mappedStatement);
+        if (parameter == null || method == null) {
+            return parameter;
+        }
+        Object newParameter = parameter;
+        //没有EnableEncrypt注解 且 Example,Result没有加密字段
+        if (method.getAnnotation(EnableEncrypt.class) == null &amp;&amp; !hasExampleOrResult(newParameter)) {
+            return parameter;
+        }
+        log.debug("开始修改方法:{}入参", mappedStatement.getId());
+        //扫描方法入参注解
+        Map&lt;String, Set&lt;String&gt;&gt; paramAnnotation = searchParamAnnotation(method);
+        //多个参数场景
+        if (newParameter instanceof MapperMethod.ParamMap) {
+            Map&lt;String, Object&gt; map = ((Map&lt;String, Object&gt;) newParameter);
+            for (Map.Entry&lt;String, Object&gt; e : map.entrySet()) {
+                Object value = e.getValue();
+                if (value == null) {
+                    continue;
+                }
+                //没有注解，且无Example Result
+                if (!paramAnnotation.containsKey(e.getKey()) &amp;&amp; !hasExampleOrResult(value)) {
+                    continue;
+                }
+                if (value instanceof Map) {
+                    encryptHelper.execute(value, paramAnnotation.get(e.getKey()), isEncrypt);
+                } else if (value instanceof List) {
+                    List list = (List) value;
+                    if (CollectionUtils.isEmpty(list)) {
+                        continue;
+                    }
+                    boolean isMap = list.get(0) instanceof Map;
+                    if (isMap &amp;&amp; !CollectionUtils.isEmpty(list)) {
+                        encryptHelper.execute(value, paramAnnotation.get(e.getKey()), isEncrypt);
+                    } else if (list.get(0).getClass().getClassLoader() != null) {
+                        Set&lt;String&gt; encryptFields = getDecryptFields(list.get(0));
+                        encryptHelper.execute(list, encryptFields, isEncrypt);
+                    } else {
+                        int i = 0;
+                        for (Object o : list) {
+                            list.set(i, encryptHelper.encrypt(String.valueOf(o)));
+                            i = i + 1;
+                        }
+                    }
+                } else if (hasExample(value)) {
+                    handExample(value, isEncrypt);
+                } else if (value.getClass().getClassLoader() != null) {
+                    this.encryptHelper.execute(value, getDecryptFields(value), isEncrypt);
+                } else {
+                    map.put(e.getKey(), isEncrypt ? encryptHelper.encrypt(String.valueOf(value)) : encryptHelper.decrypt(String.valueOf(value)));
+                }
+            }
+        } else if (newParameter instanceof Map) {
+            Set&lt;String&gt; encryptFields = Sets.newHashSet();
+            for (Set&lt;String&gt; s : paramAnnotation.values()) {
+                encryptFields.addAll(s);
+            }
+            encryptHelper.execute(newParameter, encryptFields, isEncrypt);
+        } else if (hasExample(newParameter)) {
+            handExample(newParameter, isEncrypt);
+        } else if (newParameter.getClass().getClassLoader() == null &amp;&amp; paramAnnotation.size() == 1) {
+            newParameter = isEncrypt ? encryptHelper.encrypt(String.valueOf(newParameter)) : encryptHelper.decrypt(String.valueOf(newParameter));
+        } else {
+            this.encryptHelper.execute(newParameter, getDecryptFields(newParameter), isEncrypt);
+        }
+
+        return newParameter;
+    }
+
+    private boolean hasExampleOrResult(Object parameterObject) {
+        boolean isParamMap = parameterObject instanceof MapperMethod.ParamMap;
+        if (!isParamMap) {
+            return hasExample(parameterObject) || hasResult(parameterObject);
+        }
+        Map&lt;String, Object&gt; map = ((Map&lt;String, Object&gt;) parameterObject);
+        for (Map.Entry&lt;String, Object&gt; e : map.entrySet()) {
+            if (hasExample(e.getValue()) || hasResult(e.getValue())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean hasExample(Object parameterObject) {
+        if(parameterObject==null){
+            return false;
+        }
+        return !CollectionUtils.isEmpty(exampleClassConfigMap.get(buildConfigKey(parameterObject.getClass().getName(), true)));
+    }
+
+    private boolean hasResult(Object parameterObject) {
+        if (parameterObject == null) {
+            return false;
+        }
+        return !CollectionUtils.isEmpty(getDecryptFields(parameterObject));
+    }
+
+    private boolean handExample(Object parameterObject, boolean isEncrypt) throws Exception {
+        Set&lt;String&gt; fields = null;
+        if (!(parameterObject instanceof MapperMethod.ParamMap)) {
+            fields = exampleClassConfigMap.get(buildConfigKey(parameterObject.getClass().getName(), true));
+            return handExampleParam(parameterObject, isEncrypt, fields);
+        }
+        Map&lt;String, Object&gt; map = ((Map&lt;String, Object&gt;) parameterObject);
+        for (Map.Entry&lt;String, Object&gt; e : map.entrySet()) {
+            fields = exampleClassConfigMap.get(buildConfigKey(e.getValue().getClass().getName(), true));
+            if (fields != null) {
+                return handExampleParam(e.getValue(), isEncrypt, fields);
+            }
+        }
+        return false;
+    }
+
+    private boolean handExampleParam(Object parameterObject, boolean isEncrypt, Set&lt;String&gt; fields) throws Exception {
+
+        if (fields == null) {
+            return false;
+        }
+        Method method = parameterObject.getClass().getMethod("getOredCriteria");
+        List oredCriterias = (List) method.invoke(parameterObject);
+        if (CollectionUtils.isEmpty(oredCriterias)) {
+            return false;
+        }
+        boolean result = false;
+        for (Object oj : oredCriterias) {
+            method = oj.getClass().getMethod("getCriteria");
+            for (Object o : (List) method.invoke(oj)) {
+                Field f = o.getClass().getDeclaredField("condition");
+                f.setAccessible(true);
+                Object v = f.get(o);
+                aa:
+                for (String f1 : fields) {
+                    if (!v.toString().toUpperCase().replace("`", "").startsWith((f1 + " ").toUpperCase())) {
+                        continue;
+                    }
+                    for (String dd : "value,secondValue".split(",")) {
+                        f = o.getClass().getDeclaredField(dd);
+                        f.setAccessible(true);
+                        v = f.get(o);
+                        if (v == null) {
+                            break aa;
+                        }
+                        if (v instanceof List) {
+                            List tList = (List) v;
+                            for (int i = 0; i &lt; tList.size(); i++) {
+                                tList.set(i, isEncrypt ? encryptHelper.encrypt(tList.get(i).toString()) : encryptHelper.decrypt(tList.get(i).toString()));
+                            }
+                            v = tList;
+                        } else {
+                            v = isEncrypt ? encryptHelper.encrypt(v.toString()) : encryptHelper.decrypt(v.toString());
+                        }
+                        f.set(o, v);
+                        if (!result) {
+                            result = true;
+                        }
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
+     * key-属性名
+     * value-map类型时加密字段key
+     *
+     * @param method
+     * @return
+     */
+    private Map&lt;String, Set&lt;String&gt;&gt; searchParamAnnotation(Method method) {
+
+        Map&lt;String, Set&lt;String&gt;&gt; paramNames = Maps.newHashMap();
+        if (method == null) {
+            return paramNames;
+        }
+        Annotation[][] pa = method.getParameterAnnotations();
+        Parameter[] parameters = method.getParameters();
+        for (int i = 0; i &lt; pa.length; i++) {
+            for (Annotation annotation : pa[i]) {
+                Parameter p = parameters[i];
+                if (annotation instanceof EncryptField) {
+                    EncryptField encryptField = (EncryptField) annotation;
+                    Set&lt;String&gt; ff = null;
+                    if (Map.class.isAssignableFrom(p.getType()) &amp;&amp; StringUtils.isNotBlank(encryptField.keys())) {
+                        ff = new HashSet&lt;&gt;(Arrays.asList(encryptField.keys().split(",")));
+                    }
+                    Param param = p.getAnnotation(Param.class);
+                    String paramName = param == null ? p.getName() : param.value();
+                    paramNames.put(paramName, ff);
+                }
+            }
+        }
+        return paramNames;
+    }
+
+    private Method getMapperMethod(MappedStatement mappedStatement) {
+        Class&lt;?&gt; mapperClass = getMapperClass(mappedStatement);
+        String methodName = mappedStatement.getId();
+        methodName = methodName.substring(methodName.lastIndexOf('.') + 1);
+        Method[] methods = mapperClass.getDeclaredMethods();
+        Method method = null;
+        for (Method m : methods) {
+            if (m.getName().equals(methodName)) {
+                method = m;
+                break;
+            }
+        }
+        return method;
+    }
+
+    @SneakyThrows
+    private Class&lt;?&gt; getMapperClass(MappedStatement mappedStatement) {
+        String mapperClassKey = mappedStatement.getId().substring(0, mappedStatement.getId().lastIndexOf('.'));
+        Class&lt;?&gt; mapperClass = mapperClassMap.get(mapperClassKey);
+        if (mapperClass == null) {
+            mapperClassMap.putIfAbsent(mapperClassKey, Class.forName(mapperClassKey));
+            mapperClass = mapperClassMap.get(mapperClassKey);
+        }
+        return mapperClass;
+    }
+}</code></pre> 
+<pre><code class="language-java">/**
+ * @author one.xu
+ */
+public interface IEncryptionService {
+    String encrypt(String content, String password);
+
+    String decrypt(String content, String password);
+}</code></pre> 
+<pre><code class="language-java">/**
+ * @author one.xu
+ */
+public class DefaultEncryptionService implements IEncryptionService {
+    @Override
+    public String encrypt(String content, String password) {
+        return AesUtil.encrypt(content, password);
+    }
+
+    @Override
+    public String decrypt(String content, String password) {
+        return AesUtil.decrypt(content, password);
+    }
+}</code></pre> 
+<pre><code class="language-java">@Data
+public class EncryptHelper {
+    public EncryptHelper(IEncryptionService encryptionService, String encryptKey) {
+        this.encryptionService = encryptionService;
+        this.encryptKey = encryptKey;
+    }
+
+    private IEncryptionService encryptionService;
+    private String encryptKey;
+
+    public Set&lt;String&gt; getEncryptField(Object param) {
+        Set&lt;String&gt; encryptFieldSet = Sets.newHashSet();
+        Object object = param;
+        boolean isList = object instanceof List;
+        if (isList) {
+            List&lt;Object&gt; resultList = (List&lt;Object&gt;) object;
+            if (CollectionUtils.isEmpty(resultList)) {
+                return encryptFieldSet;
+            }
+            object = resultList.get(0);
+        }
+        Class&lt;?&gt; objectClass = object.getClass();
+        EnableEncrypt enableEncrypt = AnnotationUtils.findAnnotation(objectClass, EnableEncrypt.class);
+        if (enableEncrypt == null) {
+            return encryptFieldSet;
+        }
+        for (Field[] fields : getFields(objectClass)) {
+            for (Field field : fields) {
+                EncryptField encryptField = field.getAnnotation(EncryptField.class);
+                if (encryptField == null) {
+                    continue;
+                }
+                encryptFieldSet.add(field.getName());
+            }
+        }
+        return encryptFieldSet;
+    }
+
+    private List&lt;Field[]&gt; getFields(Class&lt;?&gt; clazz) {
+        List&lt;Field[]&gt; fieldsList = Lists.newArrayList();
+        Class&lt;?&gt; resultClass = clazz;
+        while (resultClass != null) {
+            fieldsList.add(resultClass.getDeclaredFields());
+            resultClass = resultClass.getSuperclass();
+        }
+        return fieldsList;
+    }
+
+    public &lt;T&gt; T execute(T result, Set&lt;String&gt; encryptFields, boolean isEncrypt) throws IllegalAccessException {
+        if (result == null || CollectionUtils.isEmpty(encryptFields)) {
+            return result;
+        }
+        boolean isList = result instanceof List;
+        if (!isList) {
+            return executeSingle(result, encryptFields, isEncrypt);
+        }
+        List&lt;Object&gt; resultList = (List&lt;Object&gt;) result;
+        for (Object obj : resultList) {
+            executeSingle(obj, encryptFields, isEncrypt);
+        }
+        return result;
+    }
+
+    private &lt;T&gt; T executeSingle(T result, Set&lt;String&gt; encryptFields, boolean isEncrypt) throws IllegalAccessException {
+        if (result == null || CollectionUtils.isEmpty(encryptFields)) {
+            return result;
+        }
+        if (result instanceof Map) {
+            Map&lt;String, Object&gt; map = ((Map&lt;String, Object&gt;) result);
+            for (String f : encryptFields) {
+                Object o = map.get(f);
+                if (o == null) {
+                    continue;
+                }
+                if (o instanceof List) {
+                    List tmpList = (List) o;
+                    if (CollectionUtils.isEmpty(tmpList)) {
+                        continue;
+                    }
+                    Set&lt;String&gt; encryptFields2 = getEncryptField(tmpList.get(0));
+                    if (CollectionUtils.isEmpty(encryptFields2)) {
+                        continue;
+                    }
+                    for (Object o1 : tmpList) {
+                        executeSingle(o1, encryptFields2, isEncrypt);
+                    }
+                } else if (o.getClass().getClassLoader() != null) {
+                    executeSingle(o, getEncryptField(o), isEncrypt);
+                } else {
+                    String value = String.valueOf(o);
+                    value = isEncrypt ? encrypt(value) : decrypt(value);
+                    map.put(f, value);
+                }
+            }
+            return result;
+        }
+
+        if (result.getClass().getClassLoader() == null) {
+            result = (T) (isEncrypt ? encrypt(String.valueOf(result)) : decrypt(String.valueOf(result)));
+            return result;
+        }
+        //自定义对象
+        for (Field[] fields : getFields(result.getClass())) {
+            for (Field field : fields) {
+                if (!encryptFields.contains(field.getName())) {
+                    continue;
+                }
+                field.setAccessible(true);
+                Object o = field.get(result);
+                if (o == null) {
+                    continue;
+                }
+                if (o instanceof List) {
+                    List tmpList = (List) o;
+                    if (CollectionUtils.isEmpty(tmpList)) {
+                        continue;
+                    }
+                    Set&lt;String&gt; encryptFields2 = getEncryptField(tmpList.get(0));
+                    if (CollectionUtils.isEmpty(encryptFields2)) {
+                        continue;
+                    }
+                    for (Object o1 : tmpList) {
+                        executeSingle(o1, encryptFields2, isEncrypt);
+                    }
+                } else if (o.getClass().getClassLoader() != null) {
+                    executeSingle(o, getEncryptField(o), isEncrypt);
+                } else {
+                    String value = String.valueOf(o);
+                    value = isEncrypt ? encrypt(value) : decrypt(value);
+                    field.set(result, value);
+                }
+            }
+        }
+        return result;
+    }
+
+    public String encrypt(String value) {
+        return encryptionService.encrypt(value, this.getEncryptKey());
+    }
+
+    public String decrypt(String value) {
+        return encryptionService.decrypt(value, this.getEncryptKey());
+    }
+}
+</code></pre> 
+<pre><code class="language-java">public class AesUtil {
+    private AesUtil() {
+
+    }
+
+    private static final String KEY_ALGORITHM = "AES";
+    private static final String DEFAULT_CIPHER_ALGORITHM = "AES/ECB/PKCS5Padding";
+    private static final String KEY_SECURE_RANDOM_ALGORITHM = "SHA1PRNG";
+    private static final String CHARSET = "utf-8";
+
+    /**
+     * 加密
+     *
+     * @param content  加密正文
+     * @param password 加密密码
+     * @return
+     */
+    public static String encrypt(String content, String password) {
+        try {
+            // 创建密码器
+            Cipher cipher = Cipher.getInstance(DEFAULT_CIPHER_ALGORITHM);
+
+            byte[] byteContent = content.getBytes(CHARSET);
+
+            // 初始化为加密模式的密码器
+            cipher.init(Cipher.ENCRYPT_MODE, getSecretKey(password));
+
+            // 加密
+            byte[] result = cipher.doFinal(byteContent);
+
+            //通过Base64转码返回
+            return Base64.getEncoder().encodeToString(result);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /**
+     * 解密
+     *
+     * @param content  加密字符串
+     * @param password 解密密码
+     * @return
+     */
+    public static String decrypt(String content, String password) {
+        try {
+            //实例化
+            Cipher cipher = Cipher.getInstance(DEFAULT_CIPHER_ALGORITHM);
+
+            //使用密钥初始化，设置为解密模式
+            cipher.init(Cipher.DECRYPT_MODE, getSecretKey(password));
+
+            //执行操作
+            byte[] result = cipher.doFinal(Base64.getDecoder().decode(content));
+
+            return new String(result, CHARSET);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private static Key getSecretKey(String password) throws NoSuchAlgorithmException {
+        KeyGenerator kg = KeyGenerator.getInstance(KEY_ALGORITHM);
+
+        SecureRandom random = SecureRandom.getInstance(KEY_SECURE_RANDOM_ALGORITHM);
+        random.setSeed(password.getBytes());
+        //AES 要求密钥长度为 128
+        kg.init(128, random);
+        //生成一个密钥
+        SecretKey secretKey = kg.generateKey();
+        // 转换为AES专用密钥
+        return new SecretKeySpec(secretKey.getEncoded(), KEY_ALGORITHM);
+    }
+
+    public static void main(String[] args) {
+        String url = "https://www.baidu.com";
+        String password = "kZNJcCWedTon45KfNyiH";
+        System.out.println("原始链接:"+url);
+        String encrypt = encrypt(url, password);
+        System.out.println("加密:"+encrypt);
+        String decrypt = decrypt(encrypt, password);
+        System.out.println("解密:"+decrypt);
+    }
+}</code></pre> 
+<p>配置拦截器</p> 
+<p><img alt="" height="485" src="https://images2.imgbox.com/fb/84/qOuAYtyr_o.png" width="1200"></p> 
+<p> 使用</p> 
+<p><img alt="" height="340" src="https://images2.imgbox.com/3e/f3/2rbSqFAZ_o.png" width="1126"></p> 
+<p> 至此mybatis层加密解密搞定，web层代码如下</p> 
+<p></p> 
+<pre><code class="language-java">/**
+ * @author one.xu
+ */
+@AllArgsConstructor
+@Getter
+public enum DesensitionTypeEnum {
+    NIK(3, 4),
+    EMAIL(1, null),
+    OTHER(0,0),
+    ;
+    /**
+     * 前多少位
+     */
+    private Integer front;
+    /**
+     * 后多少位
+     */
+    private Integer end;
+
+}</code></pre> 
+<pre><code class="language-java">@Target({ElementType.FIELD})
+@Retention(RetentionPolicy.RUNTIME)
+@Documented
+@Inherited
+public @interface Desensitization {
+    /**
+     * 脱敏策略
+     *
+     * @return
+     */
+    DesensitionTypeEnum  type();
+
+    /**
+     * 替换字符串
+     *
+     * @return
+     */
+    String replaceStr() default "*";
+
+    /**
+     * type为OTHER生效
+     * 扩展脱敏策略类型名
+     * @return
+     */
+    String ext() default "";
+}
+</code></pre> 
+<pre><code class="language-java">
+/**
+ * @author one.xu
+ */
+@Target({ElementType.TYPE})
+@Retention(RetentionPolicy.RUNTIME)
+@Inherited
+public @interface SensitiveObject {
+}
+</code></pre> 
+<pre><code class="language-java">/**
+ * @author one.xu
+ */
+@Configuration
+@ConditionalOnProperty(value = "xuyw.desensitization.enabled", havingValue = "true")
+public class DesensitizationConfig {
+    @Bean
+    public DefaultDesensitionService defaultDesensitionService() {
+        return new DefaultDesensitionService();
+    }
+
+    @Bean
+    public EmailDesensitionService emailDesensitionService() {
+        return new EmailDesensitionService();
+    }
+
+    @Bean
+    public DesensitizationHelper desensitizationHelper(@Autowired List&lt;IDesensitionService&gt; list) {
+        return new DesensitizationHelper(list);
+    }
+
+    @Bean("desensitizeValueFilter")
+    public DesensitizeValueFilter desensitizeValueFilter(@Autowired DesensitizationHelper desensitizationHelper) {
+        return new DesensitizeValueFilter(desensitizationHelper);
+    }
+
+    @Bean("fastJsonBeanPostProcessor")
+    public FastJsonBeanPostProcessor fastJsonBeanPostProcessor(@Autowired DesensitizeValueFilter desensitizeValueFilter) {
+        return new FastJsonBeanPostProcessor(desensitizeValueFilter);
+    }
+}
+</code></pre> 
+<p>本系统使用fastjson为序列化框架，写个过滤器对敏感对象进行脱敏操作</p> 
+<pre><code class="language-java">/**
+ * @author one.xu
+ */
+public class DesensitizeValueFilter implements ValueFilter {
+    public DesensitizeValueFilter(DesensitizationHelper desensitizationHelper) {
+        this.desensitizationHelper = desensitizationHelper;
+    }
+
+    private DesensitizationHelper desensitizationHelper;
+
+    @SneakyThrows
+    @Override
+    public Object process(Object object, String name, Object value) {
+        if (null == value || !(value instanceof String) || ((String) value).length() == 0) {
+            return value;
+        }
+        if (object.getClass().getAnnotation(SensitiveObject.class) == null) {
+            return value;
+        }
+        Desensitization annotation;
+        //获取字段
+        Field field = object.getClass().getDeclaredField(name);
+        if (String.class != field.getType() || (annotation = field.getAnnotation(Desensitization.class)) == null) {
+            return value;
+        }
+        return desensitizationHelper.execute(annotation, value.toString());
+    }
+}</code></pre> 
+<pre><code class="language-java">/**
+ * 在项目架构中已经统一处理了HttpMessageConverters ,为了不入侵原先代码
+ * 在bean初始化之后添加过滤器，如果没有配置HttpMessageConverters 则需要手动配置
+ * 
+ * @author one.xu
+ */
+@Slf4j
+public class FastJsonBeanPostProcessor implements BeanPostProcessor {
+
+    public FastJsonBeanPostProcessor(DesensitizeValueFilter desensitizeValueFilter) {
+        this.desensitizeValueFilter = desensitizeValueFilter;
+    }
+
+    private DesensitizeValueFilter desensitizeValueFilter;
+
+    @Override
+    public Object postProcessAfterInitialization(Object bean, String beanName) {
+        if (!(bean instanceof HttpMessageConverters)) {
+            return bean;
+        }
+        HttpMessageConverters httpMessageConverters = (HttpMessageConverters) bean;
+        for (HttpMessageConverter&lt;?&gt; httpMessageConverter : httpMessageConverters.getConverters()) {
+            if (!(httpMessageConverter instanceof FastJsonHttpMessageConverter)) {
+                continue;
+            }
+            FastJsonHttpMessageConverter fastJsonHttpMessageConverter = (FastJsonHttpMessageConverter) httpMessageConverter;
+            SerializeFilter[] serializeFilters = fastJsonHttpMessageConverter.getFastJsonConfig().getSerializeFilters();
+            if (containsDesensitizeValueFilter(serializeFilters)) {
+                continue;
+            }
+            serializeFilters = ArrayUtils.addAll(serializeFilters, desensitizeValueFilter);
+            fastJsonHttpMessageConverter.getFastJsonConfig().setSerializeFilters(serializeFilters);
+            log.info("设置fastJson敏感过滤成功:{}",DesensitizeValueFilter.class.getName());
+        }
+        return bean;
+    }
+
+    private boolean containsDesensitizeValueFilter(SerializeFilter[] serializeFiltersr) {
+        for (SerializeFilter s : serializeFiltersr) {
+            if (s instanceof DesensitizeValueFilter) {
+                return true;
+            }
+        }
+        return false;
+    }
+}
+</code></pre> 
+<pre><code class="language-java">/**
+ * @author one.xu
+ */
+public interface IDesensitionService {
+
+    String type();
+
+    String execute(Desensitization desensitization, String value);
+}
+</code></pre> 
+<pre><code class="language-java">@Data
+public class DefaultDesensitionService implements IDesensitionService {
+    public static final String SERVICE_NAME = "DEFAULT";
+
+    @Override
+    public String type() {
+        return SERVICE_NAME;
+    }
+
+    @Override
+    public String execute(Desensitization desensitization, String value) {
+        if (StringUtils.isBlank(value)) {
+            return value;
+        }
+        DesensitionTypeEnum desensitionTypeEnum = desensitization.type();
+        Integer front = desensitionTypeEnum.getFront();
+        if (front == null || front &lt; 0) {
+            front = 0;
+        }
+        Integer end = desensitionTypeEnum.getEnd();
+        if (end == null || end &lt; 0) {
+            end = 0;
+        }
+
+        if ((front + end) &gt; value.length()) {
+            return value;
+        }
+        end = value.length() - end;
+        StringBuilder replaceStr = new StringBuilder();
+        int i = 0;
+        for (char c : value.toCharArray()) {
+            replaceStr.append((i &gt;= front &amp;&amp; i &lt; end) ? desensitization.replaceStr() : c);
+            i = i + 1;
+        }
+        return replaceStr.toString();
+    }
+}
+</code></pre> 
+<pre><code class="language-java">public class EmailDesensitionService implements IDesensitionService {
+    @Override
+    public String type() {
+        return DesensitionTypeEnum.EMAIL.name();
+    }
+
+    @Override
+    public String execute(Desensitization desensitization, String value) {
+        if (StringUtils.isBlank(value)) {
+            return value;
+        }
+        DesensitionTypeEnum desensitionTypeEnum = desensitization.type();
+        Integer front = desensitionTypeEnum.getFront();
+        if (front == null || front &lt; 0) {
+            front = 0;
+        }
+        Integer end = value.lastIndexOf("@");
+        if (end == null || end &lt; 0) {
+            end = 0;
+        }
+        if ((front + end) &gt; value.length()) {
+            return value;
+        }
+        end = value.length() - end;
+        StringBuilder replaceStr = new StringBuilder();
+        int i = 0;
+        for (char c : value.toCharArray()) {
+            replaceStr.append((i &gt;= front &amp;&amp; i &lt; end) ? desensitization.replaceStr() : c);
+            i = i + 1;
+        }
+        return replaceStr.toString();
+    }
+}
+</code></pre> 
+<pre><code class="language-java">
+/**
+ * @author one.xu
+ */
+public class DesensitizationHelper {
+    private Map&lt;String, IDesensitionService&gt; desensitionServiceMap;
+
+    public DesensitizationHelper(List&lt;IDesensitionService&gt; desensitionServiceList) {
+        desensitionServiceMap = new HashMap&lt;&gt;();
+        for (IDesensitionService service : desensitionServiceList) {
+            if (desensitionServiceMap.containsKey(service.type())) {
+                throw new RuntimeException("已存在脱敏策略:" + service.type());
+            }
+            desensitionServiceMap.put(service.type(), service);
+        }
+    }
+
+    public String execute(Desensitization desensitization, String value) {
+        String key = DesensitionTypeEnum.OTHER == desensitization.type() ? desensitization.ext() : desensitization.type().name();
+        IDesensitionService desensitionService = desensitionServiceMap.get(key);
+        if (desensitionService == null) {
+            desensitionService = desensitionServiceMap.get(DefaultDesensitionService.SERVICE_NAME);
+        }
+        return desensitionService.execute(desensitization, value);
+    }
+}</code></pre> 
+<p>使用</p> 
+<pre>xuyw.desensitization.enabled=true</pre> 
+<p><img alt="" height="274" src="https://images2.imgbox.com/32/df/PE9fon9L_o.png" width="645"></p> 
+<p></p> 
+<p>效果</p> 
+<p></p> 
+<p><img alt="" height="194" src="https://images2.imgbox.com/7f/e0/KXidSeOX_o.png" width="493"></p> 
+<p></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/e48f80fae0f59adbbed3d2298ec6e505/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【解决ubuntu外接显示器不显示的问题】(遇到的问题及解决）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/54129c425fb8a9f52181194f4e60307f/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">微信公众号上怎么做微信助力活动</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>WebRTC GCC 拥塞控制算法（REMB-GCC） - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="WebRTC GCC 拥塞控制算法（REMB-GCC）" />
+<meta property="og:description" content="目录
+一. 前言
+二. REMB-GCC算法原理
+1. 接收端基于延时梯度的带宽预估
+（1）Arrival-time filter
+（2）Overuse Detector
+（3）Adaptive threshold
+（4）Remote Rate Controller
+（5）Remb Processing
+2. 发送端基于丢包的带宽预估
+三. 参考资料
+一. 前言 在网络传输中，所有应用程序都需要拥塞控制以避免网络出现拥塞的情况，对于音视频传输也是如此，假设发送方以某个码率值发送数据，但是网络出现拥塞，此时发送方应该降低发送码率，当网络拥塞情况好转，发送方又可以提升发送码率。
+GCC 算法是出自 Google 的一种结合延时梯度和丢包率的拥塞控制算法，WebRTC 默认使用该算法。
+该算法有两个版本，版本一是由接收端对延时梯度进行估计，计算预估带宽后通过 RTCP REMB 报文反馈给发送端，发送端基于丢包率也进行带宽评估，最终的发送码率选用二者的较小值，这个版本称为 REMB-GCC。
+版本二是将使用延时梯度以及丢包率进行估算的逻辑都放在发送端，接收端仅定时向发送端反馈收包情况，这个版本称为 TFB-GCC。
+本文主要讲解 REMB-GCC，关于 TFB-GCC 也会在后续文章进行讲解。
+二. REMB-GCC算法原理 如上是 REMB-GCC 的架构图，左边是发送端部分，右边是接收端部分。
+接收端负责收包并计算延时梯度，根据延时梯度评估网络当前处于 overuse/normal/underuse 状态，并评估接收端最大码率，这部分主要分为 Arrival filter，Overuse Detector，Adaptive threshold，Remote Rate Controller 以及 Remb Processing 模块。
+发送端使用丢包率进行带宽预估，最终结合接收端反馈的带宽以及基于丢包率预估的带宽选择较小值作为最终带宽，这个最终带宽会通知给 Encoder，Pacer 和 FEC 模块以供模块内部做一些调整。
+1. 接收端基于延时梯度的带宽预估 如上所示，发送端在 T(i-1) 和 T(i) 发送了两个数据包，接收端分别在 t(i-1) 和 t(i) 接收到了这两个数据包，那么延时梯度 d(t(i)) = [t(i) - t(i-1)] - [T(i) - T(i-1)]。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/c5b2e25c03d8ccd7d9988d73208350a1/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-08-26T21:16:18+08:00" />
+<meta property="article:modified_time" content="2023-08-26T21:16:18+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">WebRTC GCC 拥塞控制算法（REMB-GCC）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p id="main-toc"><strong>目录</strong></p> 
+<p id="%E4%B8%80.%20%E5%89%8D%E8%A8%80-toc" style="margin-left:0px;"><a href="#%E4%B8%80.%20%E5%89%8D%E8%A8%80" rel="nofollow">一. 前言</a></p> 
+<p id="%E4%BA%8C.%20REMB-GCC%E7%AE%97%E6%B3%95%E5%8E%9F%E7%90%86-toc" style="margin-left:0px;"><a href="#%E4%BA%8C.%20REMB-GCC%E7%AE%97%E6%B3%95%E5%8E%9F%E7%90%86" rel="nofollow">二. REMB-GCC算法原理</a></p> 
+<p id="1.%20%E6%8E%A5%E6%94%B6%E7%AB%AF%E5%9F%BA%E4%BA%8E%E5%BB%B6%E6%97%B6%E6%A2%AF%E5%BA%A6%E7%9A%84%E5%B8%A6%E5%AE%BD%E9%A2%84%E4%BC%B0-toc" style="margin-left:40px;"><a href="#1.%20%E6%8E%A5%E6%94%B6%E7%AB%AF%E5%9F%BA%E4%BA%8E%E5%BB%B6%E6%97%B6%E6%A2%AF%E5%BA%A6%E7%9A%84%E5%B8%A6%E5%AE%BD%E9%A2%84%E4%BC%B0" rel="nofollow">1. 接收端基于延时梯度的带宽预估</a></p> 
+<p id="%EF%BC%881%EF%BC%89Arrival-time%20filter-toc" style="margin-left:80px;"><a href="#%EF%BC%881%EF%BC%89Arrival-time%20filter" rel="nofollow">（1）Arrival-time filter</a></p> 
+<p id="%EF%BC%882%EF%BC%89Overuse%20Detector-toc" style="margin-left:80px;"><a href="#%EF%BC%882%EF%BC%89Overuse%20Detector" rel="nofollow">（2）Overuse Detector</a></p> 
+<p id="%EF%BC%883%EF%BC%89Adaptive%20threshold-toc" style="margin-left:80px;"><a href="#%EF%BC%883%EF%BC%89Adaptive%20threshold" rel="nofollow">（3）Adaptive threshold</a></p> 
+<p id="%EF%BC%884%EF%BC%89Remote%20Rate%20Controller-toc" style="margin-left:80px;"><a href="#%EF%BC%884%EF%BC%89Remote%20Rate%20Controller" rel="nofollow">（4）Remote Rate Controller</a></p> 
+<p id="%EF%BC%885%EF%BC%89Remb%20Processing-toc" style="margin-left:80px;"><a href="#%EF%BC%885%EF%BC%89Remb%20Processing" rel="nofollow">（5）Remb Processing</a></p> 
+<p id="2.%20%E5%8F%91%E9%80%81%E7%AB%AF%E5%9F%BA%E4%BA%8E%E4%B8%A2%E5%8C%85%E7%9A%84%E5%B8%A6%E5%AE%BD%E9%A2%84%E4%BC%B0-toc" style="margin-left:40px;"><a href="#2.%20%E5%8F%91%E9%80%81%E7%AB%AF%E5%9F%BA%E4%BA%8E%E4%B8%A2%E5%8C%85%E7%9A%84%E5%B8%A6%E5%AE%BD%E9%A2%84%E4%BC%B0" rel="nofollow">2. 发送端基于丢包的带宽预估</a></p> 
+<p id="%E5%9B%9B.%20%E5%8F%82%E8%80%83%E8%B5%84%E6%96%99-toc" style="margin-left:0px;"><a href="#%E5%9B%9B.%20%E5%8F%82%E8%80%83%E8%B5%84%E6%96%99" rel="nofollow">三. 参考资料</a></p> 
+<hr id="hr-toc"> 
+<p></p> 
+<h2 id="%E4%B8%80.%20%E5%89%8D%E8%A8%80">一. 前言</h2> 
+<p>        在网络传输中，所有应用程序都需要拥塞控制以避免网络出现拥塞的情况，对于音视频传输也是如此，假设发送方以某个码率值发送数据，但是网络出现拥塞，此时发送方应该降低发送码率，当网络拥塞情况好转，发送方又可以提升发送码率。</p> 
+<p>        GCC 算法是出自 Google 的一种结合延时梯度和丢包率的拥塞控制算法，WebRTC 默认使用该算法。</p> 
+<p>        该算法有两个版本，版本一是由接收端对延时梯度进行估计，计算预估带宽后通过 RTCP REMB 报文反馈给发送端，发送端基于丢包率也进行带宽评估，最终的发送码率选用二者的较小值，这个版本称为 REMB-GCC。</p> 
+<p>        版本二是将使用延时梯度以及丢包率进行估算的逻辑都放在发送端，接收端仅定时向发送端反馈收包情况，这个版本称为 TFB-GCC。</p> 
+<p>        本文主要讲解 REMB-GCC，关于 TFB-GCC 也会在后续文章进行讲解。</p> 
+<p></p> 
+<h2 id="%E4%BA%8C.%20REMB-GCC%E7%AE%97%E6%B3%95%E5%8E%9F%E7%90%86">二. REMB-GCC算法原理</h2> 
+<p><img alt="" height="300" src="https://images2.imgbox.com/f2/99/s8rLQutg_o.png" width="740"></p> 
+<p>        如上是 REMB-GCC 的架构图，左边是发送端部分，右边是接收端部分。</p> 
+<p>        接收端负责收包并计算延时梯度，根据延时梯度评估网络当前处于 overuse/normal/underuse 状态，并评估接收端最大码率，这部分主要分为 Arrival filter，Overuse Detector，Adaptive threshold，Remote Rate Controller 以及 Remb Processing 模块。</p> 
+<p>        发送端使用丢包率进行带宽预估，最终结合接收端反馈的带宽以及基于丢包率预估的带宽选择较小值作为最终带宽，这个最终带宽会通知给 Encoder，Pacer 和 FEC 模块以供模块内部做一些调整。</p> 
+<p></p> 
+<h3 id="1.%20%E6%8E%A5%E6%94%B6%E7%AB%AF%E5%9F%BA%E4%BA%8E%E5%BB%B6%E6%97%B6%E6%A2%AF%E5%BA%A6%E7%9A%84%E5%B8%A6%E5%AE%BD%E9%A2%84%E4%BC%B0">1. 接收端基于延时梯度的带宽预估</h3> 
+<p><img alt="" height="272" src="https://images2.imgbox.com/8d/04/gpSnEPDv_o.png" width="535"></p> 
+<p>        如上所示，发送端在 T(i-1) 和 T(i) 发送了两个数据包，接收端分别在 t(i-1) 和 t(i) 接收到了这两个数据包，那么<span style="color:#fe2c24;">延时梯度 d(t(i)) = [t(i) - t(i-1)] - [T(i) - T(i-1)]</span>。</p> 
+<p>        在理想状态下的网络传输，d(t(i)) 应该为 0，如果网络发生拥塞，T(i) 时刻发出来的包被接收端接收需要更长的时间，此时 d(t(i)) 大于 0，如果 d(t(i)) 大于 0 且越来越大，说明网络拥塞更严重，如果 d(t(i)) 大于 0 但是越来越小，说明网络拥塞状况处于好转状态。</p> 
+<p></p> 
+<h4 id="%EF%BC%881%EF%BC%89Arrival-time%20filter">（1）Arrival-time filter</h4> 
+<p>        WebRTC 中计算延时梯度并不是以单个包为单位的，而是以一组包为单位。</p> 
+<p>        为了得到发送端两组包的时间差，发送端在发送每个 RTP 包都需要携带一个 RTP 扩展字段：abs-send-time，这个扩展记录了这个包发送时的时间信息，它的数据长度是 24bit，高 6 bit 表示秒数的整数部分，低 18 bit 表示剩余的秒数部分，这意味着它是每 64s 环绕一次并且单位精度为 3.8us，Absolute Send Time 的字段解释请看<a class="link-info" href="https://webrtc.googlesource.com/src/+/refs/heads/main/docs/native-code/rtp-hdrext/abs-send-time" rel="nofollow" title="这里">这里</a>。</p> 
+<p>        下面是 WebRTC 计算延时梯度的代码。</p> 
+<pre><code class="language-cpp">bool InterArrival::ComputeDeltas(uint32_t timestamp,
+                                 int64_t arrival_time_ms,
+                                 int64_t system_time_ms,
+                                 size_t packet_size,
+                                 uint32_t* timestamp_delta,
+                                 int64_t* arrival_time_delta_ms,
+                                 int* packet_size_delta) {
+  assert(timestamp_delta != NULL);
+  assert(arrival_time_delta_ms != NULL);
+  assert(packet_size_delta != NULL);
+  bool calculated_deltas = false;
+  if (current_timestamp_group_.IsFirstPacket()) {
+    // We don't have enough data to update the filter, so we store it until we
+    // have two frames of data to process.
+    current_timestamp_group_.timestamp = timestamp;
+    current_timestamp_group_.first_timestamp = timestamp;
+    current_timestamp_group_.first_arrival_ms = arrival_time_ms;
+  } else if (!PacketInOrder(timestamp)) {
+    return false;
+  } else if (NewTimestampGroup(arrival_time_ms, timestamp)) {
+    // First packet of a later frame, the previous frame sample is ready.
+    if (prev_timestamp_group_.complete_time_ms &gt;= 0) {
+      *timestamp_delta =
+          current_timestamp_group_.timestamp - prev_timestamp_group_.timestamp;
+      *arrival_time_delta_ms = current_timestamp_group_.complete_time_ms -
+                               prev_timestamp_group_.complete_time_ms;
+      // Check system time differences to see if we have an unproportional jump
+      // in arrival time. In that case reset the inter-arrival computations.
+      int64_t system_time_delta_ms =
+          current_timestamp_group_.last_system_time_ms -
+          prev_timestamp_group_.last_system_time_ms;
+      if (*arrival_time_delta_ms - system_time_delta_ms &gt;=
+          kArrivalTimeOffsetThresholdMs) {
+        RTC_LOG(LS_WARNING)
+            &lt;&lt; "The arrival time clock offset has changed (diff = "
+            &lt;&lt; *arrival_time_delta_ms - system_time_delta_ms
+            &lt;&lt; " ms), resetting.";
+        Reset();
+        return false;
+      }
+      if (*arrival_time_delta_ms &lt; 0) {
+        // The group of packets has been reordered since receiving its local
+        // arrival timestamp.
+        ++num_consecutive_reordered_packets_;
+        if (num_consecutive_reordered_packets_ &gt;= kReorderedResetThreshold) {
+          RTC_LOG(LS_WARNING)
+              &lt;&lt; "Packets are being reordered on the path from the "
+                 "socket to the bandwidth estimator. Ignoring this "
+                 "packet for bandwidth estimation, resetting.";
+          Reset();
+        }
+        return false;
+      } else {
+        num_consecutive_reordered_packets_ = 0;
+      }
+      assert(*arrival_time_delta_ms &gt;= 0);
+      *packet_size_delta = static_cast&lt;int&gt;(current_timestamp_group_.size) -
+                           static_cast&lt;int&gt;(prev_timestamp_group_.size);
+      calculated_deltas = true;
+    }
+    prev_timestamp_group_ = current_timestamp_group_;
+    // The new timestamp is now the current frame.
+    current_timestamp_group_.first_timestamp = timestamp;
+    current_timestamp_group_.timestamp = timestamp;
+    current_timestamp_group_.first_arrival_ms = arrival_time_ms;
+    current_timestamp_group_.size = 0;
+  } else {
+    current_timestamp_group_.timestamp =
+        LatestTimestamp(current_timestamp_group_.timestamp, timestamp);
+  }
+  // Accumulate the frame size.
+  current_timestamp_group_.size += packet_size;
+  current_timestamp_group_.complete_time_ms = arrival_time_ms;
+  current_timestamp_group_.last_system_time_ms = system_time_ms;
+
+  return calculated_deltas;
+}</code></pre> 
+<p>        current_timestamp_group_ 是当前收包的这组包的信息，prev_timestamp_group_ 为上一组收齐的包的信息，它们的类型为 TimestampGroup，字段含义解释如下。</p> 
+<p><img alt="" height="355" src="https://images2.imgbox.com/68/9a/MQipDlIC_o.png" width="665"></p> 
+<p>        首先如果是这组包的第一个包，先记录 first_timestamp，first_arrival_ms 等信息，并更新这组包的 size，timetamp，complete_time_ms，last_system_time_ms，之后再收到包会先判断该包的发送时间戳是否大于这组包首包的发送时间戳，如果是则会统计到这组包中，更新 timestamp，size，complete_time_ms 和 last_system_time_ms 信息，否则忽略该包。</p> 
+<p>        如果判断到 NewTimestampGroup(arrival_time_ms, timestamp)，说明该包已经是新的一组包了，此时计算 current_timestamp_group_ 与 prev_timestamp_group_ 的接收时间差（arrival_time_delta_ms），发送时间差（timestamp_delta）以及组包间的包大小差值（packet_size_delta），之后送入 OveruseEstimator 判断当前<strong>延时梯度</strong>。</p> 
+<p><img alt="" height="201" src="https://images2.imgbox.com/3c/ab/2EUOQdqh_o.png" width="676"></p> 
+<p>备注：包属于新的一组包的判断逻辑是当前包的发送时间戳与这组包首包发送时间戳绝对时间大于 5ms，之所以这样判断是因为 WebRTC 发送端有个平滑发送模块，它的发送时间间隔是 5ms 发送一批包。</p> 
+<p><img alt="" height="304" src="https://images2.imgbox.com/ea/c4/GrdA0Krf_o.png" width="596"></p> 
+<p>        OveruseEstimator::Update 函数用于估计延时梯度，它并不是直接使用上一次计算得到的延时梯度值，而是将延时梯度传入该函数，通过卡尔曼滤波算法后得到延时梯度值，本文不讲解卡尔曼滤波算法细节，后续文章会单独说明该算法实现。</p> 
+<pre><code class="language-cpp">void OveruseEstimator::Update(int64_t t_delta,
+                              double ts_delta,
+                              int size_delta,
+                              BandwidthUsage current_hypothesis,
+                              int64_t now_ms) {
+    // 代码省略，详见 src/modules/remote_bitrate_estimator/overuse_estimator.cc
+}</code></pre> 
+<p></p> 
+<h4 id="%EF%BC%882%EF%BC%89Overuse%20Detector">（2）Overuse Detector</h4> 
+<p>        OveruseDetector::Detect 函数会判断当前带宽的使用状态，它根据延时梯度 T 与动态阈值的大小关系判断当前处于链路带宽处于 overuse/normal/underuse 状态，动态阈值 threshold_ 将在下一小节 Adaptive threshold 中讲解。</p> 
+<p>a. 如果 T &gt; threshold_，说明网络网络拥塞队列在增大，目前处于拥塞状态，如果拥塞持续时间大于 overusing_time_threshold_，并且延时梯度比上一次延时梯度大，判断处于 overuse 状态，注意不是一旦大于阈值就判断处于 overuse，需要持续一段时间并且延时梯度在变大才判断处于 overuse</p> 
+<p>b. 如果 T &lt; -threshold_，说明网络拥塞队列在变小，拥塞情况在改善，判断处于 underuse 状态</p> 
+<p>c. 如果 -threshold_ &lt;= T &lt;= threshold_，判断处于 normal 状态</p> 
+<p><img alt="" height="830" src="https://images2.imgbox.com/e3/e0/OLw6NxjK_o.png" width="683"></p> 
+<p></p> 
+<h4 id="%EF%BC%883%EF%BC%89Adaptive%20threshold">（3）Adaptive threshold</h4> 
+<p>        如上所述，过载检测器通过比较延时梯度与阈值的大小关系判断当前的带宽使用状况，理想网络情况下延时梯度为 0，但是即便正常的带宽占用情况下，延时梯度也可能在 0 上下波动，因此阈值的设置很重要，如果阈值是固定值，设置太大可能检测不到网络拥塞，设置太小可能又太过敏感，因此 WebRTC 使用了一种自适应动态阈值的方式。</p> 
+<p><span style="color:#fe2c24;">计算方式：threshold(t(i)) = threshold(t(i-1)) + k * [t(i) - t(i-1)] * ( | d(t(i)) | - threshold(t(i-1)) )</span></p> 
+<p>其中 k 表示变化率，当 | d(t(i)) | &lt; threshold(t(i-1)) 时，k 值为 0.00018，否则 k 值为 0.01，</p> 
+<p>threshold(t(i)) 表示当我们计算第 i 组包后需要新确定的阈值，threshold(t(i-1)) 表示计算第 i-1 组包后确定的阈值，t(i) - t(i-1) 表示两组包计算延时梯度的时间差，d(t(i)) 表示当前算出的延时梯度。</p> 
+<p>        从计算方式可以看到，当处于 normal 状态时，阈值会以一个较小的变化率减小，当处于 overuse/underuse 时，阈值会以一个相对大一点的变化率增大。</p> 
+<p><img alt="" height="776" src="https://images2.imgbox.com/25/e3/yXSyjdeh_o.png" width="1190"></p> 
+<p></p> 
+<h4 id="%EF%BC%884%EF%BC%89Remote%20Rate%20Controller">（4）Remote Rate Controller</h4> 
+<p>通过 Overuse Detector 确定当前处于 overuse/normal/underuse 状态后，需要根据当前状态对最大码率值做出调整，如下图所示。</p> 
+<p>当处于 overuse 状态，对应处于 Decr 状态，此时应该降低最大码率值，降低为过去 500ms 时间窗内最大 acked_bitrate 的 0.85 倍，acked_bitrate 可以通过 RTCP 反馈报文的包接收情况并结合本地维护的发送列表得到</p> 
+<p>当处于 underuse 状态，对应 Hold 状态，此时应该维持当前最大码率不变</p> 
+<p>当处于 normal 状态，对应 Incr，此时可以适当增大码率，增大为原来最大码率值的 1.08 倍</p> 
+<p><img alt="" height="470" src="https://images2.imgbox.com/46/83/ENMQ6aW8_o.png" width="1200"></p> 
+<p><img alt="" height="145" src="https://images2.imgbox.com/9e/29/10sYsf2f_o.png" width="464"></p> 
+<p>WebRTC 对应的 Rate Controller 调整最大码率的代码如下。</p> 
+<pre><code class="language-cpp">void AimdRateControl::ChangeBitrate(const RateControlInput&amp; input,
+                                    Timestamp at_time) {
+  absl::optional&lt;DataRate&gt; new_bitrate;
+  DataRate estimated_throughput =
+      input.estimated_throughput.value_or(latest_estimated_throughput_);
+  if (input.estimated_throughput)
+    latest_estimated_throughput_ = *input.estimated_throughput;
+
+  // An over-use should always trigger us to reduce the bitrate, even though
+  // we have not yet established our first estimate. By acting on the over-use,
+  // we will end up with a valid estimate.
+  if (!bitrate_is_initialized_ &amp;&amp;
+      input.bw_state != BandwidthUsage::kBwOverusing)
+    return;
+
+  ChangeState(input, at_time);
+
+  // We limit the new bitrate based on the troughput to avoid unlimited bitrate
+  // increases. We allow a bit more lag at very low rates to not too easily get
+  // stuck if the encoder produces uneven outputs.
+  const DataRate troughput_based_limit =
+      1.5 * estimated_throughput + DataRate::KilobitsPerSec(10);
+
+  switch (rate_control_state_) {
+    case kRcHold:
+      break;
+
+    case kRcIncrease:
+      if (estimated_throughput &gt; link_capacity_.UpperBound())
+        link_capacity_.Reset();
+
+      // Do not increase the delay based estimate in alr since the estimator
+      // will not be able to get transport feedback necessary to detect if
+      // the new estimate is correct.
+      // If we have previously increased above the limit (for instance due to
+      // probing), we don't allow further changes.
+      if (current_bitrate_ &lt; troughput_based_limit &amp;&amp;
+          !(send_side_ &amp;&amp; in_alr_ &amp;&amp; no_bitrate_increase_in_alr_)) {
+        DataRate increased_bitrate = DataRate::MinusInfinity();
+        if (link_capacity_.has_estimate()) {
+          // The link_capacity estimate is reset if the measured throughput
+          // is too far from the estimate. We can therefore assume that our
+          // target rate is reasonably close to link capacity and use additive
+          // increase.
+          DataRate additive_increase =
+              AdditiveRateIncrease(at_time, time_last_bitrate_change_);
+          increased_bitrate = current_bitrate_ + additive_increase;
+        } else {
+          // If we don't have an estimate of the link capacity, use faster ramp
+          // up to discover the capacity.
+          DataRate multiplicative_increase = MultiplicativeRateIncrease(
+              at_time, time_last_bitrate_change_, current_bitrate_);
+          increased_bitrate = current_bitrate_ + multiplicative_increase;
+        }
+        new_bitrate = std::min(increased_bitrate, troughput_based_limit);
+      }
+
+      time_last_bitrate_change_ = at_time;
+      break;
+
+    case kRcDecrease: {
+      DataRate decreased_bitrate = DataRate::PlusInfinity();
+
+      // Set bit rate to something slightly lower than the measured throughput
+      // to get rid of any self-induced delay.
+      decreased_bitrate = estimated_throughput * beta_;
+      if (decreased_bitrate &gt; current_bitrate_ &amp;&amp; !link_capacity_fix_) {
+        // TODO(terelius): The link_capacity estimate may be based on old
+        // throughput measurements. Relying on them may lead to unnecessary
+        // BWE drops.
+        if (link_capacity_.has_estimate()) {
+          decreased_bitrate = beta_ * link_capacity_.estimate();
+        }
+      }
+      if (estimate_bounded_backoff_ &amp;&amp; network_estimate_) {
+        decreased_bitrate = std::max(
+            decreased_bitrate, network_estimate_-&gt;link_capacity_lower * beta_);
+      }
+
+      // Avoid increasing the rate when over-using.
+      if (decreased_bitrate &lt; current_bitrate_) {
+        new_bitrate = decreased_bitrate;
+      }
+
+      if (bitrate_is_initialized_ &amp;&amp; estimated_throughput &lt; current_bitrate_) {
+        if (!new_bitrate.has_value()) {
+          last_decrease_ = DataRate::Zero();
+        } else {
+          last_decrease_ = current_bitrate_ - *new_bitrate;
+        }
+      }
+      if (estimated_throughput &lt; link_capacity_.LowerBound()) {
+        // The current throughput is far from the estimated link capacity. Clear
+        // the estimate to allow an immediate update in OnOveruseDetected.
+        link_capacity_.Reset();
+      }
+
+      bitrate_is_initialized_ = true;
+      link_capacity_.OnOveruseDetected(estimated_throughput);
+      // Stay on hold until the pipes are cleared.
+      rate_control_state_ = kRcHold;
+      time_last_bitrate_change_ = at_time;
+      time_last_bitrate_decrease_ = at_time;
+      break;
+    }
+    default:
+      assert(false);
+  }
+
+  current_bitrate_ = ClampBitrate(new_bitrate.value_or(current_bitrate_));
+}</code></pre> 
+<p></p> 
+<h4 id="%EF%BC%885%EF%BC%89Remb%20Processing">（5）Remb Processing</h4> 
+<p>        接收端根据 Remote Rate Controller 确定好新的最大接收码率值后需要通过 RTCP REMB 报文反馈给发送端。</p> 
+<p>        REMB 报文使用的是 PT=206，FMT=15 的 RTCP 报文，具体格式如下。</p> 
+<p><img alt="" height="548" src="https://images2.imgbox.com/36/df/pyM5F1t1_o.png" width="1088"></p> 
+<p>SSRC of packet sender：接收端反馈该报文时，该值可以填为 0</p> 
+<p>SSRC of media source：一般都为 0</p> 
+<p>Unique identifier：REMB 报文的特殊标识，固定为 0x52454D42</p> 
+<p>Num SSRC：SSRC feedback 字段中 SSRC 的个数</p> 
+<p>BR Exp，BR Mantissa：二者共同表示反馈的最大码率值，Exp 表示指数部分，Mantissa 表示尾数部分</p> 
+<p>SSRC feedback：发送端发送的流的 SSRC 列表</p> 
+<p>        WebRTC 中 RTCP REMB 报文一般是每 200ms 反馈一次，但是当检测到可用带宽小于上次预估的 97% 时则会立刻反馈。</p> 
+<p><img alt="" height="1200" src="https://images2.imgbox.com/9c/39/wGi1u4j9_o.png" width="1200"></p> 
+<p></p> 
+<h3 id="2.%20%E5%8F%91%E9%80%81%E7%AB%AF%E5%9F%BA%E4%BA%8E%E4%B8%A2%E5%8C%85%E7%9A%84%E5%B8%A6%E5%AE%BD%E9%A2%84%E4%BC%B0">2. 发送端基于丢包的带宽预估</h3> 
+<p>        发送端基于丢包的带宽预估思想主要是根据丢包率来判断是否拥塞。</p> 
+<p>        当丢包率大于 10% 时认为拥塞，此时应该主动降低发送码率减少拥塞；当丢包率小于 2% 时认为网络状况较好，可以适当提高发送码率，探测是否有更多的可用带宽；当丢包率介于 2% ~ 10% 时认为网络状况一般，此时保持与上一次相同的发送码率即可。</p> 
+<p>        对于丢包率的获取，发送端通过 RTCP RR 报文的 fraction lost 来判断，它描述了从上一次 RR 报文发送后到本次 RR 报文期间的丢包率。</p> 
+<p><img alt="" height="1200" src="https://images2.imgbox.com/4d/9e/OzdEqOxM_o.png" width="1200"></p> 
+<p>         对于目标码率的调整方式，WebRTC 处理代码如下所示。 </p> 
+<p><img alt="" height="1200" src="https://images2.imgbox.com/2f/b5/y0Vl2tfB_o.png" width="1200"></p> 
+<p>        至此 REMB-GCC 接收端和发送端预估码率并确定最终码率的逻辑已经讲解完成，目前 Google 已经放弃维护 REMB-GCC 算法，因为其预估逻辑分布在发送端和接收端，Google 推出了 TFB-GCC 以取代 REMB-GCC，TFB-GCC 接收端仅需要定期反馈收包的状况，不需要进行带宽预估。预估带宽的逻辑都放在发送端计算，带宽预估的原理基本类似，TFB-GCC 介绍请参考<a class="link-info" href="https://blog.csdn.net/weixin_38102771/article/details/128218672" title="这篇文章">这篇文章</a>。</p> 
+<p></p> 
+<h2 id="%E5%9B%9B.%20%E5%8F%82%E8%80%83%E8%B5%84%E6%96%99">三. 参考资料</h2> 
+<p><a href="https://datatracker.ietf.org/doc/html/draft-ietf-rmcat-gcc-02" rel="nofollow" title="A Google Congestion Control Algorithm for Real-Time Communication">A Google Congestion Control Algorithm for Real-Time Communication</a></p> 
+<p><a href="https://datatracker.ietf.org/doc/html/draft-alvestrand-rmcat-remb-03" rel="nofollow" title="RTCP message for Receiver Estimated Maximum Bitrate">RTCP message for Receiver Estimated Maximum Bitrate</a></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/848dbbcbdea4586a9646ed3e92cf4f80/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">mediasoup Transport端口策略</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/aa1a5797bd7b3e8f84b756a9f6911cab/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">mediasoup数据转发 源码剖析</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

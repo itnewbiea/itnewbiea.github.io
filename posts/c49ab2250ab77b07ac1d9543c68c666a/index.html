@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>STM32 定时器实现红外遥控数据接收 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="STM32 定时器实现红外遥控数据接收" />
+<meta property="og:description" content="一、原理 1、红外发射协议 红外通信的协议有很多种。这个实验使用的是NEC协议。这个协议采用PWM的方法进行调制，利用脉冲宽度来表示 0 和 1 。
+NEC 遥控指令的数据格式为：同步码头、地址码、地址反码、控制码、控制反码。同步码由一个 9ms 的低电平和一个 4.5ms 的高电平组成，地址码、地址反码、控制码、控制反码均是 8 位数据格式。按照低位在前，高位在后的顺序发送。采用反码是为了增加传输的可靠性。因此，每帧的数据为 32 位，包括地址码，地址反码，控制码，控制反码。反码可用于解码时进行校验比对。
+NEC码的位定义：一个脉冲对应 560us 的连续载波，一个逻辑 1 传输需要 2.25ms（560us 脉冲&#43;1680us 低电平），一个逻辑 0 的传输需要 1.125ms（560us 脉冲&#43;560us 低电平）。而遥控接收头在收到脉冲的时候为低电平，在没有脉冲的时候为高电平，这样，在接收头端收到的信号为：逻辑 1 应该是 560us 低&#43;1680us 高，逻辑 0 应该是 560us 低&#43;560us 高。
+​
+红外数据的波形如下图：包括一个同步头和 32 帧数据。 下图可看出，同步头为 9ms 低电平加上 4.5ms 高电平，控制码为 8 个 0，控制反码为 8 个 1。 2、定时器计数 定时器就是按照一个特定的频率对计数值进行加一或减一操作，当数值溢出时则产生一个标志或中断。这里是用定时器计数产生一个周期性的中断。 3、实现方法 利用定时器记录两个下降沿之间的时间，通过该时间判断是否是同步头信息、数据 1 或者数据 0。当检测到同步头，开始记录 32 个数据的时间值。 二、实现 1、配置 GPIO 口下降沿触发中断 示例代码中使用 PA7 管脚，配置为上拉输入模式。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/c49ab2250ab77b07ac1d9543c68c666a/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2017-08-08T23:11:06+08:00" />
+<meta property="article:modified_time" content="2017-08-08T23:11:06+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">STM32 定时器实现红外遥控数据接收</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2 id="一原理">一、原理</h2> 
+<h3 id="1红外发射协议">1、红外发射协议</h3> 
+<ul><li><p>红外通信的协议有很多种。这个实验使用的是NEC协议。这个协议采用PWM的方法进行调制，利用脉冲宽度来表示 0 和 1 。</p></li><li><p>NEC 遥控指令的数据格式为：同步码头、地址码、地址反码、控制码、控制反码。同步码由一个 9ms 的低电平和一个 4.5ms 的高电平组成，地址码、地址反码、控制码、控制反码均是 8 位数据格式。按照低位在前，高位在后的顺序发送。采用反码是为了增加传输的可靠性。因此，每帧的数据为 32 位，包括地址码，地址反码，控制码，控制反码。反码可用于解码时进行校验比对。</p></li><li><p>NEC码的位定义：一个脉冲对应 560us 的连续载波，一个逻辑 1 传输需要 2.25ms（560us 脉冲+1680us 低电平），一个逻辑 0 的传输需要 1.125ms（560us 脉冲+560us 低电平）。而遥控接收头在收到脉冲的时候为低电平，在没有脉冲的时候为高电平，这样，<strong>在接收头端收到的信号为：逻辑 1 应该是 560us 低+1680us 高，逻辑 0 应该是 560us 低+560us 高。</strong></p> <p>​</p></li><li><p>红外数据的波形如下图：包括一个同步头和 32 帧数据。 <br> <img src="https://images2.imgbox.com/37/81/jWGzY0UI_o.jpg" alt="这里写图片描述" title=""></p></li><li><p>下图可看出，同步头为 9ms 低电平加上 4.5ms 高电平，控制码为 8 个 0，控制反码为 8 个 1。 <br> <img src="https://images2.imgbox.com/3d/46/P8Bb8ZZg_o.jpg" alt="这里写图片描述" title=""></p></li></ul> 
+<h3 id="2定时器计数">2、定时器计数</h3> 
+<ul><li>定时器就是按照一个特定的频率对计数值进行加一或减一操作，当数值溢出时则产生一个标志或中断。这里是用定时器计数产生一个周期性的中断。</li></ul> 
+<h3 id="3实现方法">3、实现方法</h3> 
+<ul><li>利用定时器记录两个下降沿之间的时间，通过该时间判断是否是同步头信息、数据 1 或者数据 0。当检测到同步头，开始记录 32 个数据的时间值。 <br> <img src="https://images2.imgbox.com/97/15/5WO7lw6d_o.jpg" alt="这里写图片描述" title=""></li></ul> 
+<h2 id="二实现">二、实现</h2> 
+<h3 id="1配置-gpio-口下降沿触发中断">1、配置 GPIO 口下降沿触发中断</h3> 
+<ul><li><p>示例代码中使用 PA7 管脚，配置为上拉输入模式。</p></li><li><p>选择下降沿触发，是因为红外接收管默认情况下保持高电平，接收到数据时从高电平转变为低电平。</p></li><li><p>中断源选择为 <code>EXTI_Line7</code> ，在库函数中对该中断源定义的服务函数为 <code>EXTI9_5_IRQHandler()</code>，也就是说外部中断 5 到 9 是 共用一个中断服务函数的。</p></li><li><p>配置代码如下:</p> <pre class="prettyprint"><code class="language-c hljs "><span class="hljs-keyword">void</span> IR_Pin_init()
+{
+  GPIO_InitTypeDef GPIO_InitStructure;
+  EXTI_InitTypeDef EXTI_InitStructure;
+  NVIC_InitTypeDef NVIC_InitStructure;
+  RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA|RCC_APB2Periph_AFIO,ENABLE);
+
+  GPIO_InitStructure.GPIO_Pin=GPIO_Pin_7;
+  GPIO_InitStructure.GPIO_Mode=GPIO_Mode_IPU;
+  GPIO_Init(GPIOA,&amp;GPIO_InitStructure);
+
+  EXTI_ClearITPendingBit(EXTI_Line7);
+  GPIO_EXTILineConfig(GPIO_PortSourceGPIOA, GPIO_PinSource7); 
+  EXTI_InitStructure.EXTI_Line=EXTI_Line7;
+  EXTI_InitStructure.EXTI_Mode=EXTI_Mode_Interrupt;
+  EXTI_InitStructure.EXTI_Trigger=EXTI_Trigger_Falling;
+  EXTI_InitStructure.EXTI_LineCmd=ENABLE;
+  EXTI_Init(&amp;EXTI_InitStructure); 
+
+  NVIC_PriorityGroupConfig(NVIC_PriorityGroup_1); 
+  NVIC_InitStructure.NVIC_IRQChannel = EXTI9_5_IRQn; 
+  NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = <span class="hljs-number">0</span>; 
+  NVIC_InitStructure.NVIC_IRQChannelSubPriority = <span class="hljs-number">1</span>;     
+  NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;  
+  NVIC_Init(&amp;NVIC_InitStructure);
+}</code></pre></li></ul> 
+<h3 id="2配置定时器计数值">2、配置定时器计数值</h3> 
+<ul><li><p>定时器使用的是 TIM2 通用定时器，模式为向上计数。在该模式中，计数器从 0 计数到自动加载值 (TIMx_ARR计数器的内容) ，然后重新从 0 开始计数并且产生一个计数器溢出事件。 </p></li><li><p>示例函数接收两个参数，分别为预分频器的值和自动加载值。通过调整这两个参数，可以灵活地改变定时器的计数周期。例如在 TIM2 的默认时钟源 PCLK1 为96MHz时，使用语句 <code>Tim2_UPCount_Init(SystemCoreClock/1000000-1,100-1); //0.1ms</code> 进行初始化，可以每 0.1ms 产生一次中断。</p></li><li><p>示例代码如下：</p> <pre class="prettyprint"><code class="language-c hljs "><span class="hljs-keyword">void</span> Tim2_UPCount_Init(u16 Prescaler,u16 Period)
+{
+  TIM_TimeBaseInitTypeDef TIM_StructInit;
+  NVIC_InitTypeDef NVIC_StructInit;
+
+  RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM2, ENABLE);
+
+  TIM_StructInit.TIM_Period=Period;
+  TIM_StructInit.TIM_Prescaler=Prescaler;
+  TIM_StructInit.TIM_ClockDivision=TIM_CKD_DIV1;
+  TIM_StructInit.TIM_CounterMode=TIM_CounterMode_Up;
+  TIM_StructInit.TIM_RepetitionCounter=<span class="hljs-number">0</span>;
+  TIM_TimeBaseInit(TIM2, &amp;TIM_StructInit);
+
+  TIM_ITConfig(TIM2, TIM_IT_Update, ENABLE);
+  TIM_Cmd(TIM2, ENABLE);    
+  TIM_ClearFlag(TIM2, TIM_FLAG_Update);
+
+  NVIC_StructInit.NVIC_IRQChannel=TIM2_IRQn;
+  NVIC_StructInit.NVIC_IRQChannelCmd=ENABLE;
+  NVIC_StructInit.NVIC_IRQChannelPreemptionPriority=<span class="hljs-number">0</span>;
+  NVIC_StructInit.NVIC_IRQChannelSubPriority=<span class="hljs-number">1</span>;
+  NVIC_Init(&amp;NVIC_StructInit);
+}</code></pre></li></ul> 
+<h3 id="3定时器中断函数统计时间">3、定时器中断函数统计时间</h3> 
+<ul><li><p>如上所说，定时器每 0.1ms 计数完成，产生中断，在中断函数中对标志位 <code>ucTim2Flag</code> 加 1，意味着时间过去了 0.1ms。</p></li><li><p>时间标志位原型为 <code>uint16_t ucTim2Flag;</code> 。</p></li><li><p>示例代码如下：</p> <pre class="prettyprint"><code class="language-c hljs "><span class="hljs-keyword">void</span> TIM2_IRQHandler(<span class="hljs-keyword">void</span>)
+{
+  TIM_ClearITPendingBit(TIM2, TIM_IT_Update);
+  ucTim2Flag++;
+}</code></pre></li></ul> 
+<h3 id="4gpio-中断函数中接收-32-位数据">4、GPIO 中断函数中接收 32 位数据</h3> 
+<ul><li><p>在下降沿触发的 IO 口中断函数中，需要实现统计两个下降沿之间的时间，并将其记录在数组中。</p></li><li><p>下降沿第一次触发时，清除当前定时器中的计数值，以便统计时间。之后每一次下降沿触发就记录下当前计数值，然后再对其清零。如果该时间在同步头的时间区间内，对索引进行清零，表示重新开始接收数据。</p></li><li><p>完整接收同步头和 32 个数据之后，表示接收完成。</p></li><li><p>示例代码如下：</p> <pre class="prettyprint"><code class="language-c hljs ">uint8_t irdata[<span class="hljs-number">33</span>];   <span class="hljs-comment">//用于记录两个下降沿之间的时间</span>
+<span class="hljs-keyword">bool</span> receiveComplete; <span class="hljs-comment">//接收完成标志位</span>
+uint8_t idx;          <span class="hljs-comment">//用于索引接收到的数值</span>
+<span class="hljs-keyword">bool</span> startflag;       <span class="hljs-comment">//表示开始接收</span>
+
+<span class="hljs-keyword">void</span> EXTI9_5_IRQHandler(<span class="hljs-keyword">void</span>)
+{
+  uint16_t ir_time;
+  <span class="hljs-keyword">if</span>(startflag)
+  {
+      ir_time = ucTim2Flag; 
+      <span class="hljs-keyword">if</span>(ucTim2Flag &lt; <span class="hljs-number">150</span> &amp;&amp; ucTim2Flag &gt;= <span class="hljs-number">50</span> ) <span class="hljs-comment">// 接收到同步头</span>
+      {
+          idx=<span class="hljs-number">0</span>;  <span class="hljs-comment">// 数组下标清零</span>
+      }
+
+      irdata[idx] = ucTim2Flag;  <span class="hljs-comment">// 获取计数时间</span>
+      ucTim2Flag = <span class="hljs-number">0</span>;            <span class="hljs-comment">// 清零计数时间，以便下次统计</span>
+      idx++;                     <span class="hljs-comment">// 接收到一个数据，索引加1</span>
+
+      <span class="hljs-keyword">if</span>(idx==<span class="hljs-number">33</span>)       <span class="hljs-comment">// 如果接收到33个数据，包括32位数和以一个同步头</span>
+      {
+          idx=<span class="hljs-number">0</span>;
+          ucTim2Flag = <span class="hljs-number">0</span>;
+          receiveComplete = TRUE;
+      }
+  }
+  <span class="hljs-keyword">else</span>   <span class="hljs-comment">// 下降沿第一次触发</span>
+  {
+      idx = <span class="hljs-number">0</span>;
+      ucTim2Flag = <span class="hljs-number">0</span>;
+      startflag = TRUE;
+  }
+
+EXTI_ClearITPendingBit(EXTI_Line7);  <span class="hljs-comment">// 清除中断标志</span>
+}</code></pre> <p>​</p></li></ul> 
+<h3 id="5判断控制码值">5、判断控制码值</h3> 
+<ul><li><p>由于中断函数中接收并记录下的数据是两个下降沿之间的时间，并不是红外所发送的数据。因此需要根据红外协议，对 32 个时间进行判断，从而获得红外真正发送的数据。</p></li><li><p>下面这个函数需要在红外完整接收数据后执行，可通过判断接收完成标志位 <code>receiveComplete</code> 来实现。</p></li><li><p>示例代码如下：</p> <pre class="prettyprint"><code class="language-c hljs ">uint8_t Ir_Server()
+{
+  uint8_t i,j,idx=<span class="hljs-number">1</span>; <span class="hljs-comment">//idx 从1 开始表示对同步头的时间不处理</span>
+  uint8_t temp;
+  <span class="hljs-keyword">for</span>(i=<span class="hljs-number">0</span>; i&lt;<span class="hljs-number">4</span>; i++)
+  {
+      <span class="hljs-keyword">for</span>(j=<span class="hljs-number">0</span>; j&lt;<span class="hljs-number">8</span>; j++)
+      {
+          <span class="hljs-keyword">if</span>(irdata[idx] &gt;=<span class="hljs-number">8</span> &amp;&amp; irdata[idx] &lt; <span class="hljs-number">15</span>)   <span class="hljs-comment">//表示 0</span>
+          {
+              temp = <span class="hljs-number">0</span>;
+          }
+          <span class="hljs-keyword">else</span> <span class="hljs-keyword">if</span>(irdata[idx] &gt;=<span class="hljs-number">18</span> &amp;&amp; irdata[idx]&lt;<span class="hljs-number">25</span>) <span class="hljs-comment">//表示 1</span>
+          {
+              temp = <span class="hljs-number">1</span>;
+          }
+          remote_code[i] &lt;&lt;= <span class="hljs-number">1</span>;
+          remote_code[i] |= temp;
+          idx++;
+      }
+  }
+
+  <span class="hljs-keyword">return</span> remote_code[<span class="hljs-number">2</span>];  <span class="hljs-comment">// 该数组中记录的是控制码，每个按键不一样</span>
+  <span class="hljs-comment">//for(idx=0; idx&lt;4; idx++)</span>
+  <span class="hljs-comment">//{<!-- --></span>
+  <span class="hljs-comment">//    printf("remote_code[%d] = %#x\n",idx,remote_code[idx]);</span>
+  <span class="hljs-comment">//}</span>
+}</code></pre> <p>​</p></li></ul> 
+<h3 id="6主函数">6、主函数</h3> 
+<ul><li><p>在 main 函数中，对 IO 口和 定时器进行初始化。</p></li><li><p>主循环中，通过判断接收完成标志位，对接收完成的按键控制码进行打印。</p></li><li><p>示例代码如下：</p> <pre class="prettyprint"><code class="language-c hljs "><span class="hljs-keyword">void</span> main()
+{
+  ...
+
+  IR_Pin_init();
+  Tim2_UPCount_Init(SystemCoreClock/<span class="hljs-number">1000000</span>-<span class="hljs-number">1</span>,<span class="hljs-number">100</span>-<span class="hljs-number">1</span>);
+
+  <span class="hljs-keyword">while</span>(<span class="hljs-number">1</span>)
+  {
+      <span class="hljs-keyword">if</span>(repeatEnable)
+      {
+          repeatEnable = FALSE;
+          Ir_Server();
+          <span class="hljs-built_in">printf</span>(<span class="hljs-string">"key_code = %#x\n"</span>,remote_code[<span class="hljs-number">2</span>]);
+      }
+  }
+
+}</code></pre> <p>​</p></li></ul> 
+<h2 id="三演示">三、演示</h2> 
+<p>如下图为串口打印出接收的红外按键值信息： <br> <img src="https://images2.imgbox.com/d4/3b/ECq5ZdOa_o.png" alt="这里写图片描述" title=""></p> 
+<p>说明1：这只是实现红外接收的其中一种方法，网上还有一种比较常见的方法是利用下降沿触发，在中断中进行延迟，判断高电平持续时间以此来判断信号类别。个人感觉这不是一种很好的方法，因为在中断中进行延时会导致主函数得不到及时的处理。</p> 
+<p>说明2：在调试时，不要在中断处理中加入过多无关语句，例如打印语句，这会导致结果出错。</p> 
+<blockquote> 
+ <p>本文档基于 STM32 F1 系列 MCU，固件库版本 3.5。其他 MCU 及固件库仅需要对库函数略作修改。</p> 
+ <p><a href="http://cyang.tech/2016/07/19/STM32%20%E7%BA%A2%E5%A4%96%E7%BA%BF%E5%AE%9E%E9%AA%8C/" rel="nofollow noopener noreferrer" target="_blank">参考链接：STM32 红外线实验</a></p> 
+ <p><a href="http://cyang.tech/tags/STM32/" rel="nofollow noopener noreferrer" target="_blank">更多关于 STM32 的文章</a></p> 
+</blockquote>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/286a953de338adfce15176627cce0376/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">我已经搬家啦</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/27f037ae73548ce3c75abb3f0ab278a3/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">就 3 点，提升工作效率</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

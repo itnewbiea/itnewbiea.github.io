@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Unity URP延迟渲染流程简单分析（Deferred Rendering） - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Unity URP延迟渲染流程简单分析（Deferred Rendering）" />
+<meta property="og:description" content="前言 大概两个月前的某个Unity项目里选择使用了URP延迟渲染管线（其实没必要，主要是因为自己想用一用、学一学，因为后续自己的项目中需要使用延迟渲染），但在写Shader实现物体表面着色时却一直有个疑惑：
+延迟渲染应该是先一个Pass将信息存储在GBuffer中，然后再一个Pass进行实际的着色，而且通常来说使用的都是同一套着色模型，而自己在前向渲染中编写使用的自定义着色的Shader挪到延迟渲染中却看起来没有什么问题。这让我不禁怀疑起自己，又或者Unity有着强大的延迟渲染管线中的Shader扩展支持。但因为延迟渲染是准备之后仔细研究的，所以疑惑一直留到了前几天。
+就在前两天因为五一假期所以在做自己的项目，于是决定研究一下上边的问题。这时突然想起来之前有看到过Unity的延迟渲染其实是混合了前向渲染的，主要是为了支持透明物体的渲染。拿多个光源照一下物体发现有光源数量限制，又翻了一下Frame Debug，果然自己写的Shader其实走的是延迟渲染后的前向渲染（Render GBuffer里当然也没有对应的信息），问题还没开始就结束了：
+然后大概看了看，发现如果想自己自定义着色效果而且走延迟渲染，可能还得改一改URP的代码（不过写个Shader在GBuffer Pass里动动手脚大概也能不改管线实现点效果，但感觉限制比较大），而在改之前就先要了解一下URP中的延迟渲染到底是个什么流程。
+这篇文章原本是打算学习使用一段时间后再整理一下，但最近可能要去忙其他事情，这里先写一部分，后续再补充。对Unity渲染管线了解不多，以下内容是对假期时学习的总结，仅整理大致流程方便翻找代码，可能有误，仅供参考。
+GBuffer 首先来看一下GBuffer的准备部分。
+从Universal Render Pipeline/Lit（也就是默认使用的Lit.shader）入手，在项目Project窗口Packages/Universal RP/Shaders下可以找到(右键-&gt;Show in Explorer可以看到文件的实际位置)，而在这个Shader中我们能看到这么一个Pass：
+Name &#34;GBuffer&#34; Tags{&#34;LightMode&#34; = &#34;UniversalGBuffer&#34;} 也就是在这里，ps将所需的数据写入了GBuffer，但这个Shader里并没有具体的vs或ps的实现，而是被包装在了LitGBufferPass.hlsl中：
+#pragma vertex LitGBufferPassVertex #pragma fragment LitGBufferPassFragment #include &#34;Packages/com.unity.render-pipelines.universal/Shaders/LitInput.hlsl&#34; #include &#34;Packages/com.unity.render-pipelines.universal/Shaders/LitGBufferPass.hlsl&#34; 在Shaders/LitGBufferPass.hlsl中，我们主要关注ps阶段，其中主要的部分就是通过InitializeStandardLitSurfaceData()获取了物体表面的材质信息，中间InitializeBRDFData()将其转为了BRDF参数（感觉起来这两者主要是对输入的参数进行打包、整理等），然后获取了全局光照，最后BRDFDataToGbuffer()即输出的Gbuffer数据（数据类型为FragmentOutput）。
+SurfaceData surfaceData; InitializeStandardLitSurfaceData(input.uv, surfaceData); InputData inputData; InitializeInputData(input, surfaceData.normalTS, inputData); SETUP_DEBUG_TEXTURE_DATA(inputData, input.uv, _BaseMap); #ifdef _DBUFFER ApplyDecalToSurfaceData(input.positionCS, surfaceData, inputData); #endif // Stripped down version of UniversalFragmentPBR(). // in LitForwardPass GlobalIllumination (and temporarily LightingPhysicallyBased) are called inside UniversalFragmentPBR // in Deferred rendering we store the sum of these values (and of emission as well) in the GBuffer BRDFData brdfData; InitializeBRDFData(surfaceData." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/99c96916debc9dd2692ef76536ca878b/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-05-22T18:17:15+08:00" />
+<meta property="article:modified_time" content="2023-05-22T18:17:15+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Unity URP延迟渲染流程简单分析（Deferred Rendering）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h3><a id="_0"></a>前言</h3> 
+<p>  大概两个月前的某个Unity项目里选择使用了URP延迟渲染管线（其实没必要，主要是因为自己想用一用、学一学，因为后续自己的项目中需要使用延迟渲染），但在写Shader实现物体表面着色时却一直有个疑惑：</p> 
+<p>  延迟渲染应该是先一个Pass将信息存储在GBuffer中，然后再一个Pass进行实际的着色，而且通常来说使用的都是同一套着色模型，而自己在前向渲染中编写使用的自定义着色的Shader挪到延迟渲染中却看起来没有什么问题。这让我不禁怀疑起自己，又或者Unity有着强大的延迟渲染管线中的Shader扩展支持。但因为延迟渲染是准备之后仔细研究的，所以疑惑一直留到了前几天。</p> 
+<p>  就在前两天因为五一假期所以在做自己的项目，于是决定研究一下上边的问题。这时突然想起来之前有看到过Unity的延迟渲染其实是混合了前向渲染的，主要是为了支持透明物体的渲染。拿多个光源照一下物体发现有光源数量限制，又翻了一下Frame Debug，果然自己写的Shader其实走的是延迟渲染后的前向渲染（Render GBuffer里当然也没有对应的信息），问题还没开始就结束了：<br> <img src="https://images2.imgbox.com/a7/5b/SnVuZ95u_o.png" alt="" height="350"><br> <img src="https://images2.imgbox.com/d5/8e/Dp2Imx8z_o.png" alt="在这里插入图片描述" height="350"></p> 
+<p>  然后大概看了看，发现如果想自己自定义着色效果而且走延迟渲染，可能还得改一改URP的代码（不过写个Shader在GBuffer Pass里动动手脚大概也能不改管线实现点效果，但感觉限制比较大），而在改之前就先要了解一下URP中的延迟渲染到底是个什么流程。</p> 
+<p>  这篇文章原本是打算学习使用一段时间后再整理一下，但最近可能要去忙其他事情，这里先写一部分，后续再补充。对Unity渲染管线了解不多，以下内容是对假期时学习的总结，仅整理大致流程方便翻找代码，可能有误，仅供参考。</p> 
+<h3><a id="GBuffer_12"></a>GBuffer</h3> 
+<p>  首先来看一下GBuffer的准备部分。<br>   从Universal Render Pipeline/Lit（也就是默认使用的Lit.shader）入手，在项目Project窗口Packages/Universal RP/Shaders下可以找到(右键-&gt;Show in Explorer可以看到文件的实际位置)，而在这个Shader中我们能看到这么一个Pass：</p> 
+<pre><code class="prism language-cpp">	Name <span class="token string">"GBuffer"</span>
+    Tags<span class="token punctuation">{<!-- --></span><span class="token string">"LightMode"</span> <span class="token operator">=</span> <span class="token string">"UniversalGBuffer"</span><span class="token punctuation">}</span>
+</code></pre> 
+<p>  也就是在这里，ps将所需的数据写入了GBuffer，但这个Shader里并没有具体的vs或ps的实现，而是被包装在了LitGBufferPass.hlsl中：</p> 
+<pre><code class="prism language-cpp">	<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">pragma</span> <span class="token expression">vertex LitGBufferPassVertex</span></span>
+    <span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">pragma</span> <span class="token expression">fragment LitGBufferPassFragment</span></span>
+
+    <span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"Packages/com.unity.render-pipelines.universal/Shaders/LitInput.hlsl"</span></span>
+    <span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"Packages/com.unity.render-pipelines.universal/Shaders/LitGBufferPass.hlsl"</span></span>
+</code></pre> 
+<p>  在Shaders/LitGBufferPass.hlsl中，我们主要关注ps阶段，其中主要的部分就是通过<code>InitializeStandardLitSurfaceData()</code>获取了物体表面的材质信息，中间<code>InitializeBRDFData()</code>将其转为了BRDF参数（感觉起来这两者主要是对输入的参数进行打包、整理等），然后获取了全局光照，最后<code>BRDFDataToGbuffer()</code>即输出的Gbuffer数据（数据类型为<code>FragmentOutput</code>）。</p> 
+<pre><code class="prism language-cpp">    SurfaceData surfaceData<span class="token punctuation">;</span>
+    <span class="token function">InitializeStandardLitSurfaceData</span><span class="token punctuation">(</span>input<span class="token punctuation">.</span>uv<span class="token punctuation">,</span> surfaceData<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    InputData inputData<span class="token punctuation">;</span>
+    <span class="token function">InitializeInputData</span><span class="token punctuation">(</span>input<span class="token punctuation">,</span> surfaceData<span class="token punctuation">.</span>normalTS<span class="token punctuation">,</span> inputData<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">SETUP_DEBUG_TEXTURE_DATA</span><span class="token punctuation">(</span>inputData<span class="token punctuation">,</span> input<span class="token punctuation">.</span>uv<span class="token punctuation">,</span> _BaseMap<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">_DBUFFER</span></span>
+    <span class="token function">ApplyDecalToSurfaceData</span><span class="token punctuation">(</span>input<span class="token punctuation">.</span>positionCS<span class="token punctuation">,</span> surfaceData<span class="token punctuation">,</span> inputData<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+    <span class="token comment">// Stripped down version of UniversalFragmentPBR().</span>
+
+    <span class="token comment">// in LitForwardPass GlobalIllumination (and temporarily LightingPhysicallyBased) are called inside UniversalFragmentPBR</span>
+    <span class="token comment">// in Deferred rendering we store the sum of these values (and of emission as well) in the GBuffer</span>
+    BRDFData brdfData<span class="token punctuation">;</span>
+    <span class="token function">InitializeBRDFData</span><span class="token punctuation">(</span>surfaceData<span class="token punctuation">.</span>albedo<span class="token punctuation">,</span> surfaceData<span class="token punctuation">.</span>metallic<span class="token punctuation">,</span> surfaceData<span class="token punctuation">.</span>specular<span class="token punctuation">,</span> surfaceData<span class="token punctuation">.</span>smoothness<span class="token punctuation">,</span> surfaceData<span class="token punctuation">.</span>alpha<span class="token punctuation">,</span> brdfData<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    Light mainLight <span class="token operator">=</span> <span class="token function">GetMainLight</span><span class="token punctuation">(</span>inputData<span class="token punctuation">.</span>shadowCoord<span class="token punctuation">,</span> inputData<span class="token punctuation">.</span>positionWS<span class="token punctuation">,</span> inputData<span class="token punctuation">.</span>shadowMask<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">MixRealtimeAndBakedGI</span><span class="token punctuation">(</span>mainLight<span class="token punctuation">,</span> inputData<span class="token punctuation">.</span>normalWS<span class="token punctuation">,</span> inputData<span class="token punctuation">.</span>bakedGI<span class="token punctuation">,</span> inputData<span class="token punctuation">.</span>shadowMask<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    half3 color <span class="token operator">=</span> <span class="token function">GlobalIllumination</span><span class="token punctuation">(</span>brdfData<span class="token punctuation">,</span> inputData<span class="token punctuation">.</span>bakedGI<span class="token punctuation">,</span> surfaceData<span class="token punctuation">.</span>occlusion<span class="token punctuation">,</span> inputData<span class="token punctuation">.</span>positionWS<span class="token punctuation">,</span> inputData<span class="token punctuation">.</span>normalWS<span class="token punctuation">,</span> inputData<span class="token punctuation">.</span>viewDirectionWS<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> <span class="token function">BRDFDataToGbuffer</span><span class="token punctuation">(</span>brdfData<span class="token punctuation">,</span> inputData<span class="token punctuation">,</span> surfaceData<span class="token punctuation">.</span>smoothness<span class="token punctuation">,</span> surfaceData<span class="token punctuation">.</span>emission <span class="token operator">+</span> color<span class="token punctuation">,</span> surfaceData<span class="token punctuation">.</span>occlusion<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>  其中<code>InitializeStandardLitSurfaceData()</code>在Shaders/LitInput.shader中定义，而其输出的<code>SurfaceData</code>结构则定义在ShaderLibrary/SurfaceData.hlsl中；<code>InitializeBRDFData()</code>及其输出的结构定义在ShaderLibrary/BRDF.hlsl中；<code>BRDFDataToGbuffer()</code>部分（也是我们比较关心的部分）定义在ShaderLibrary/UnityGBuffer.hlsl中。<br>   在ShaderLibrary/UnityGBuffer.hlsl中，我们可以看到<code>FragmentOutput</code>的定义：</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">struct</span> <span class="token class-name">FragmentOutput</span>
+<span class="token punctuation">{<!-- --></span>
+    half4 GBuffer0 <span class="token operator">:</span> SV_Target0<span class="token punctuation">;</span>
+    half4 GBuffer1 <span class="token operator">:</span> SV_Target1<span class="token punctuation">;</span>
+    half4 GBuffer2 <span class="token operator">:</span> SV_Target2<span class="token punctuation">;</span>
+    half4 GBuffer3 <span class="token operator">:</span> SV_Target3<span class="token punctuation">;</span> <span class="token comment">// Camera color attachment</span>
+
+    <span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">GBUFFER_OPTIONAL_SLOT_1</span></span>
+    GBUFFER_OPTIONAL_SLOT_1_TYPE GBuffer4 <span class="token operator">:</span> SV_Target4<span class="token punctuation">;</span>
+    <span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+    <span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">GBUFFER_OPTIONAL_SLOT_2</span></span>
+    half4 GBuffer5 <span class="token operator">:</span> SV_Target5<span class="token punctuation">;</span>
+    <span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+    <span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">GBUFFER_OPTIONAL_SLOT_3</span></span>
+    half4 GBuffer6 <span class="token operator">:</span> SV_Target6<span class="token punctuation">;</span>
+    <span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>可以看到也是使用了MRT。然后找到<code>BRDFDataToGbuffer()</code>函数，代码以及注释写出了对GBuffer的分配情况：</p> 
+<pre><code class="prism language-cpp">	FragmentOutput output<span class="token punctuation">;</span>
+    output<span class="token punctuation">.</span>GBuffer0 <span class="token operator">=</span> <span class="token function">half4</span><span class="token punctuation">(</span>brdfData<span class="token punctuation">.</span>albedo<span class="token punctuation">.</span>rgb<span class="token punctuation">,</span> <span class="token function">PackMaterialFlags</span><span class="token punctuation">(</span>materialFlags<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">// diffuse           diffuse         diffuse         materialFlags   (sRGB rendertarget)</span>
+    output<span class="token punctuation">.</span>GBuffer1 <span class="token operator">=</span> <span class="token function">half4</span><span class="token punctuation">(</span>packedSpecular<span class="token punctuation">,</span> occlusion<span class="token punctuation">)</span><span class="token punctuation">;</span>                              <span class="token comment">// metallic/specular specular        specular        occlusion</span>
+    output<span class="token punctuation">.</span>GBuffer2 <span class="token operator">=</span> <span class="token function">half4</span><span class="token punctuation">(</span>packedNormalWS<span class="token punctuation">,</span> smoothness<span class="token punctuation">)</span><span class="token punctuation">;</span>                             <span class="token comment">// encoded-normal    encoded-normal  encoded-normal  smoothness</span>
+    output<span class="token punctuation">.</span>GBuffer3 <span class="token operator">=</span> <span class="token function">half4</span><span class="token punctuation">(</span>globalIllumination<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>                                  <span class="token comment">// GI                GI              GI              [optional: see OutputAlpha()] (lighting buffer)</span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+
+	<span class="token keyword">return</span> output<span class="token punctuation">;</span>
+</code></pre> 
+<p>到此，GBuffer的信息被写入。</p> 
+<h3><a id="Lighting_92"></a>Lighting</h3> 
+<p>  Gbuffer有了，那么使用GBuffer进行实际画面渲染的部分在哪？在Runtime/UniversalRenderer.cs的构造函数中我们可以看到这么一段代码，包括Material的赋值、new DeferredLights、new DeferredPass：</p> 
+<pre><code class="prism language-csharp">	<span class="token keyword">public</span> <span class="token function">UniversalRenderer</span><span class="token punctuation">(</span><span class="token class-name">UniversalRendererData</span> data<span class="token punctuation">)</span> <span class="token punctuation">:</span> <span class="token keyword">base</span><span class="token punctuation">(</span>data<span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token range operator">..</span><span class="token punctuation">.</span>
+	    <span class="token comment">//m_TileDeferredMaterial = CoreUtils.CreateEngineMaterial(data.shaders.tileDeferredPS);</span>
+	    m_StencilDeferredMaterial <span class="token operator">=</span> CoreUtils<span class="token punctuation">.</span><span class="token function">CreateEngineMaterial</span><span class="token punctuation">(</span>data<span class="token punctuation">.</span>shaders<span class="token punctuation">.</span>stencilDeferredPS<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+		<span class="token range operator">..</span><span class="token punctuation">.</span>
+		
+	    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>renderingMode <span class="token operator">==</span> RenderingMode<span class="token punctuation">.</span>Deferred<span class="token punctuation">)</span>
+	    <span class="token punctuation">{<!-- --></span>
+	        <span class="token class-name"><span class="token keyword">var</span></span> deferredInitParams <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token constructor-invocation class-name">DeferredLights<span class="token punctuation">.</span>InitParams</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	        <span class="token range operator">..</span><span class="token punctuation">.</span>
+	        deferredInitParams<span class="token punctuation">.</span>tileDeferredMaterial <span class="token operator">=</span> m_TileDeferredMaterial<span class="token punctuation">;</span>
+	        deferredInitParams<span class="token punctuation">.</span>stencilDeferredMaterial <span class="token operator">=</span> m_StencilDeferredMaterial<span class="token punctuation">;</span>
+	        <span class="token range operator">..</span><span class="token punctuation">.</span>
+	        m_DeferredLights <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token constructor-invocation class-name">DeferredLights</span><span class="token punctuation">(</span>deferredInitParams<span class="token punctuation">,</span> useRenderPassEnabled<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	        <span class="token range operator">..</span><span class="token punctuation">.</span>
+	        m_DeferredLights<span class="token punctuation">.</span>TiledDeferredShading <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+	        
+	        <span class="token range operator">..</span><span class="token punctuation">.</span>
+	        
+	        m_DeferredPass <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token constructor-invocation class-name">DeferredPass</span><span class="token punctuation">(</span>RenderPassEvent<span class="token punctuation">.</span>BeforeRenderingDeferredLights<span class="token punctuation">,</span> m_DeferredLights<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	        <span class="token range operator">..</span><span class="token punctuation">.</span>
+	    <span class="token punctuation">}</span>
+	
+	    <span class="token range operator">..</span><span class="token punctuation">.</span>
+	    
+	<span class="token punctuation">}</span>
+</code></pre> 
+<p>  从后往前看，DeferredPass（Runtime/Passes/DeferredPass.cs）就是一个ScriptableRenderPass，在Execute中执行了<code>DeferredLights.ExecuteDeferredPass()</code>。而DeferredLights（Runtime/DeferredLights.cs）中ExecuteDeferredPass部分如下：</p> 
+<pre><code class="prism language-csharp">	<span class="token keyword">internal</span> <span class="token return-type class-name"><span class="token keyword">void</span></span> <span class="token function">ExecuteDeferredPass</span><span class="token punctuation">(</span><span class="token class-name">ScriptableRenderContext</span> context<span class="token punctuation">,</span> <span class="token keyword">ref</span> <span class="token class-name">RenderingData</span> renderingData<span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+	    <span class="token range operator">..</span><span class="token punctuation">.</span>
+	
+	    <span class="token class-name">CommandBuffer</span> cmd <span class="token operator">=</span> CommandBufferPool<span class="token punctuation">.</span><span class="token function">Get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	    <span class="token keyword">using</span> <span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token constructor-invocation class-name">ProfilingScope</span><span class="token punctuation">(</span>cmd<span class="token punctuation">,</span> m_ProfilingDeferredPass<span class="token punctuation">)</span><span class="token punctuation">)</span>
+	    <span class="token punctuation">{<!-- --></span>
+	        <span class="token range operator">..</span><span class="token punctuation">.</span>
+	        
+	        <span class="token function">RenderStencilLights</span><span class="token punctuation">(</span>context<span class="token punctuation">,</span> cmd<span class="token punctuation">,</span> <span class="token keyword">ref</span> renderingData<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	        <span class="token function">RenderTileLights</span><span class="token punctuation">(</span>context<span class="token punctuation">,</span> cmd<span class="token punctuation">,</span> <span class="token keyword">ref</span> renderingData<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	        <span class="token range operator">..</span><span class="token punctuation">.</span>
+	    <span class="token punctuation">}</span>
+	
+	    <span class="token range operator">..</span><span class="token punctuation">.</span>
+	
+	    context<span class="token punctuation">.</span><span class="token function">ExecuteCommandBuffer</span><span class="token punctuation">(</span>cmd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	    CommandBufferPool<span class="token punctuation">.</span><span class="token function">Release</span><span class="token punctuation">(</span>cmd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+</code></pre> 
+<p>  执行了两个RenderXXX函数，但<code>RenderTileLights()</code>并没有实际执行，注意之前所说的UniversalRenderer的构造函数中，tileDeferredMaterial被赋了空值，TiledDeferredShading也被置为false。而<code>RenderStencilLights()</code>中便是我们想找到的东西：</p> 
+<pre><code class="prism language-csharp">	<span class="token return-type class-name"><span class="token keyword">void</span></span> <span class="token function">RenderStencilLights</span><span class="token punctuation">(</span><span class="token class-name">ScriptableRenderContext</span> context<span class="token punctuation">,</span> <span class="token class-name">CommandBuffer</span> cmd<span class="token punctuation">,</span> <span class="token keyword">ref</span> <span class="token class-name">RenderingData</span> renderingData<span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+	    <span class="token range operator">..</span><span class="token punctuation">.</span>
+	    
+	    <span class="token keyword">using</span> <span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token constructor-invocation class-name">ProfilingScope</span><span class="token punctuation">(</span>cmd<span class="token punctuation">,</span> m_ProfilingSamplerDeferredStencilPass<span class="token punctuation">)</span><span class="token punctuation">)</span>
+	    <span class="token punctuation">{<!-- --></span>
+	        <span class="token range operator">..</span><span class="token punctuation">.</span>
+	
+	        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">HasStencilLightsOfType</span><span class="token punctuation">(</span>LightType<span class="token punctuation">.</span>Directional<span class="token punctuation">)</span><span class="token punctuation">)</span>
+	            <span class="token function">RenderStencilDirectionalLights</span><span class="token punctuation">(</span>cmd<span class="token punctuation">,</span> <span class="token keyword">ref</span> renderingData<span class="token punctuation">,</span> visibleLights<span class="token punctuation">,</span> renderingData<span class="token punctuation">.</span>lightData<span class="token punctuation">.</span>mainLightIndex<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">HasStencilLightsOfType</span><span class="token punctuation">(</span>LightType<span class="token punctuation">.</span>Point<span class="token punctuation">)</span><span class="token punctuation">)</span>
+	            <span class="token function">RenderStencilPointLights</span><span class="token punctuation">(</span>cmd<span class="token punctuation">,</span> <span class="token keyword">ref</span> renderingData<span class="token punctuation">,</span> visibleLights<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">HasStencilLightsOfType</span><span class="token punctuation">(</span>LightType<span class="token punctuation">.</span>Spot<span class="token punctuation">)</span><span class="token punctuation">)</span>
+	            <span class="token function">RenderStencilSpotLights</span><span class="token punctuation">(</span>cmd<span class="token punctuation">,</span> <span class="token keyword">ref</span> renderingData<span class="token punctuation">,</span> visibleLights<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	    <span class="token punctuation">}</span>
+	
+	    <span class="token range operator">..</span><span class="token punctuation">.</span>
+	<span class="token punctuation">}</span>
+	
+	<span class="token return-type class-name"><span class="token keyword">void</span></span> <span class="token function">RenderStencilPointLights</span><span class="token punctuation">(</span><span class="token class-name">CommandBuffer</span> cmd<span class="token punctuation">,</span> <span class="token keyword">ref</span> <span class="token class-name">RenderingData</span> renderingData<span class="token punctuation">,</span> <span class="token class-name">NativeArray<span class="token punctuation">&lt;</span>VisibleLight<span class="token punctuation">&gt;</span></span> visibleLights<span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+	    <span class="token range operator">..</span><span class="token punctuation">.</span>
+	
+	    <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token class-name"><span class="token keyword">int</span></span> soffset <span class="token operator">=</span> m_stencilVisLightOffsets<span class="token punctuation">[</span><span class="token punctuation">(</span><span class="token keyword">int</span><span class="token punctuation">)</span>LightType<span class="token punctuation">.</span>Point<span class="token punctuation">]</span><span class="token punctuation">;</span> soffset <span class="token operator">&lt;</span> m_stencilVisLights<span class="token punctuation">.</span>Length<span class="token punctuation">;</span> <span class="token operator">++</span>soffset<span class="token punctuation">)</span>
+	    <span class="token punctuation">{<!-- --></span>
+	        <span class="token range operator">..</span><span class="token punctuation">.</span>
+	
+	        <span class="token comment">// Stencil pass.</span>
+	        cmd<span class="token punctuation">.</span><span class="token function">DrawMesh</span><span class="token punctuation">(</span>m_SphereMesh<span class="token punctuation">,</span> transformMatrix<span class="token punctuation">,</span> m_StencilDeferredMaterial<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> m_StencilDeferredPasses<span class="token punctuation">[</span><span class="token punctuation">(</span><span class="token keyword">int</span><span class="token punctuation">)</span>StencilDeferredPasses<span class="token punctuation">.</span>StencilVolume<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	        <span class="token comment">// Lighting pass.</span>
+	        cmd<span class="token punctuation">.</span><span class="token function">DrawMesh</span><span class="token punctuation">(</span>m_SphereMesh<span class="token punctuation">,</span> transformMatrix<span class="token punctuation">,</span> m_StencilDeferredMaterial<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> m_StencilDeferredPasses<span class="token punctuation">[</span><span class="token punctuation">(</span><span class="token keyword">int</span><span class="token punctuation">)</span>StencilDeferredPasses<span class="token punctuation">.</span>PunctualLit<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	        cmd<span class="token punctuation">.</span><span class="token function">DrawMesh</span><span class="token punctuation">(</span>m_SphereMesh<span class="token punctuation">,</span> transformMatrix<span class="token punctuation">,</span> m_StencilDeferredMaterial<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> m_StencilDeferredPasses<span class="token punctuation">[</span><span class="token punctuation">(</span><span class="token keyword">int</span><span class="token punctuation">)</span>StencilDeferredPasses<span class="token punctuation">.</span>PunctualSimpleLit<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	    <span class="token punctuation">}</span>
+	
+	    <span class="token range operator">..</span><span class="token punctuation">.</span>
+	<span class="token punctuation">}</span>
+	
+</code></pre> 
+<p>  所以我们想找的shader就是m_StencilDeferredMaterial所对应的shader。于是回到开头，这个m_StencilDeferredMaterial是从UniversalRenderer构造函数中的UniversalRendererData（Runtime/UniversalRendererData.cs）里来的，而这个data的实例就是我们创建URP项目使用的那几个URP管线配置文件的其中一个（也可以通过Create-&gt;Rendering-&gt;URP Universal Renderer新建一个，或者URP包里Runtime/Data/UniversalRendererData也可以看到）：</p> 
+<p><img src="https://images2.imgbox.com/b0/b1/lmVy4vwB_o.png" alt="" height="450"><br>   我们在UniversalRendererData.cs代码里或者点击这个界面最右上角三个小点并选择Debug，都会发现stencilDeferredPS使用的是Shaders/Utils/StencilDeferred.shader（具体光照在ShaderLibrary/Lighting.hlsl中实现）。</p> 
+<p>  到此，一切差不多都串了起来。</p> 
+<h3><a id="Stencil_200"></a>Stencil</h3> 
+<p>  但还有一个疑问，Stencil（模板）这个词在代码中频繁出现，而TiledDeferred却并没有实际使用。实际上Unity自己在<a href="https://community.arm.com/cfs-file/__key/communityserver-blogs-components-weblogfiles/00-00-00-20-66/3_2D00_mmg2020_2D00_deferred_2D00_unity_2D00_chang.pdf" rel="nofollow">这里</a>讲的很清楚，他们最后采用了基于模板剔除光照的延迟渲染（Stencil，就是管线中深度检测、模板检测中的模板）而非经常被讨论的分块剔除光照的延迟渲染（Tiled-Based）。（一开始我只是在网上简单翻过一些资料了解Unity的延迟渲染管线，还以为Stencil只是说Unity自己写了一个延迟渲染的模板所以叫StencilDeferred…）</p> 
+<p>  而在之前提到的RenderStencilXXXLights函数中（当然，DirectionalLight除外），我们也会发现Unity先执行了Stencil Pass，然后执行了Lighting Pass。简单来说就是在光源处先使用一个凸几何体写入Stencil，仅覆盖了光能够照到的区域，然后再只对这部分区域进行该光源光照的着色。所以其实是Unity原本实现了Stencil和Tiled-Based两种，但综合考虑（不同设备支持、性能等）最终选择了Stencil。</p> 
+<p><img src="https://images2.imgbox.com/22/26/2OZ7uPsC_o.png" alt="" height="350"></p> 
+<p><img src="https://images2.imgbox.com/7e/57/CPU2p8ra_o.png" alt="" height="350"></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/f00b54c71cf75961f28f33dc81763cfd/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">win11环境下，vm虚拟机打开系统后，蓝屏重启解决方案</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/b5794da12c7b1b0be42e9a2636c896e8/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">四个基本子空间</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

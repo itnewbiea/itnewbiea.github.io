@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>LinuxIO总结 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="LinuxIO总结" />
+<meta property="og:description" content="CPU访问IO的方式 程序查询 cpu持续访问寄存器是否完成IO输入，直到检测到了完成会取出数据
+程序中断（interrupt） cpu去干别的事，IO接口根据寄存器状态判断是否写入结束。结束后给cpu发送信号让cpu来取数据
+中断并不是是指程序中断，只是一个提醒。类似于通知，比如处理器收到了软件或者硬件的提示该做某事了，这就是一个中断。
+通常来说外围设备发送的是异步信号。
+DMA接口 cpu和DMA（Direct Memory Access）总线直接链接，cpu告诉DMA接口需要把数据存在哪，DMA接口就会直接把数据写入主存（内存）
+允许外设可以直接读写主存而不需要cpu干预。硬盘控制器，显卡，网卡，声卡等。
+系统调用中的IO 系统调用（syscall）是一系列系统的函数，区别于用户自定义的函数(User)。系统调用通常是运行于内核态(Kernel)，更接近系统底层。系统调用可以直接访问硬件设备或者与内核交互，而用户程序是不可以的。用户想访问内核得先调用系统调用。
+内存：brk，nmap，free。unmap等函数
+文件：open，read.write,close
+网络:select,poll,epoll.sendfile
+linux中网络的IO模型 以下例子数据流向 网卡缓冲区&gt;内核缓冲区&gt;用户缓冲区
+阻塞IO 一个syscall会变成阻塞状态，直到内核完成工作（比如成功把数据发送到用户缓冲区），这时才会解开阻塞。
+一个线程只能有一个链接
+非阻塞IO 在内核就绪前（比如已经把网卡缓冲区的数据拷贝到了内核区）可以一直发起syscall。当内核状态为就绪时启动阻塞。
+一个线程可以多个链接，但是频繁的syscall很吃资源。
+初步判断这么设计是可以让多个链接的请求放成一个队列，增加并发能力。
+多路复用 在linux中，fd全称“File descriptor”，中文名为“文件描述符”，它是内核为了高效管理这些已经被打开的文件所创建的一种索引；它其实是一个非负整数，用于指代被打开的文件，所有执行I/O操作的系统调用都通过文件描述符来实现。
+在windows中句柄和fd是一个意思，用来标记被系统打开的资源，
+两者在形式上都是“唯一的整数”，是int类型
+select/poll 当发起syscall时阻塞执行。当内核变为就绪态，其他syscall可以直接已经就绪的数据。此时阻塞与否都可以。然后内核继续工作。
+int select (int n, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, struct timeval *timeout); 调用后 select 函数会阻塞，直到有描述副就绪（有数据 可读、可写、或者有except），或者超时（timeout 指定等待时间，如果立即返回设为 null 即可）， 函数返回。当 select 函数返回后，可以 通过遍历 fdset，来找到就绪的描述符。 优点：一次可以处理多个请求，返回批量数据。返回数据是用户自己遍历。这两者降低了syscall次数。
+缺点：整个数据传递的过程是拷贝整个数组，开销特别大。同时该函数返回值只有个数，具体数据仍需read自己遍历读取。
+epoll //创建epollFd，底层是在内核态分配一段区域，底层数据结构红黑树&#43;双向链表 //size用来告诉内核这个监听的数目一共有多大 int epoll_create(int size)； //往红黑树中增加、删除、更新管理的fd int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event)； //用来阻塞等待就绪的fd，类似select调用 int epoll_wait(int epfd, struct epoll_event * events, int maxevents, int timeout); 流程是create先创建epoll fd，在用ctl添加scoket fd 。打开 wait等待数据写入。当有异步IO变化时，wait返回有IO事件的FD。此时只返回有变动的FD。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/cc63aa01b5b39b0839a93b99fe094ed0/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-10-17T10:53:54+08:00" />
+<meta property="article:modified_time" content="2022-10-17T10:53:54+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">LinuxIO总结</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="CPUIO_0"></a>CPU访问IO的方式</h2> 
+<h3><a id="_2"></a>程序查询</h3> 
+<p>cpu持续访问寄存器是否完成IO输入，直到检测到了完成会取出数据</p> 
+<h3><a id="interrupt_6"></a>程序中断（interrupt）</h3> 
+<blockquote> 
+ <p>cpu去干别的事，IO接口根据寄存器状态判断是否写入结束。结束后给cpu发送信号让cpu来取数据</p> 
+</blockquote> 
+<p>中断并不是是指程序中断，只是一个提醒。类似于通知，比如处理器收到了软件或者硬件的提示该做某事了，这就是一个中断。</p> 
+<p>通常来说外围设备发送的是异步信号。</p> 
+<h3><a id="DMA_14"></a>DMA接口</h3> 
+<blockquote> 
+ <p>cpu和DMA（Direct Memory Access）总线直接链接，cpu告诉DMA接口需要把数据存在哪，DMA接口就会直接把数据写入主存（内存）</p> 
+</blockquote> 
+<p>允许外设可以直接读写主存而不需要cpu干预。硬盘控制器，显卡，网卡，声卡等。</p> 
+<h2><a id="IO_20"></a>系统调用中的IO</h2> 
+<blockquote> 
+ <p>系统调用（syscall）是一系列系统的函数，区别于用户自定义的函数(User)。系统调用通常是运行于内核态(Kernel)，更接近系统底层。系统调用可以直接访问硬件设备或者与内核交互，而用户程序是不可以的。用户想访问内核得先调用系统调用。</p> 
+ <p>内存：brk，nmap，free。unmap等函数</p> 
+ <p>文件：open，read.write,close</p> 
+ <p>网络:select,poll,epoll.sendfile</p> 
+</blockquote> 
+<h2><a id="linuxIO_30"></a>linux中网络的IO模型</h2> 
+<blockquote> 
+ <p>以下例子数据流向 网卡缓冲区&gt;内核缓冲区&gt;用户缓冲区</p> 
+</blockquote> 
+<h3><a id="IO_34"></a>阻塞IO</h3> 
+<p>一个syscall会变成阻塞状态，直到内核完成工作（比如成功把数据发送到用户缓冲区），这时才会解开阻塞。</p> 
+<blockquote> 
+ <p>一个线程只能有一个链接</p> 
+</blockquote> 
+<h3><a id="IO_40"></a>非阻塞IO</h3> 
+<p>在内核就绪前（比如已经把网卡缓冲区的数据拷贝到了内核区）可以一直发起syscall。当内核状态为就绪时启动阻塞。</p> 
+<blockquote> 
+ <p>一个线程可以多个链接，但是频繁的syscall很吃资源。</p> 
+ <p>初步判断这么设计是可以让多个链接的请求放成一个队列，增加并发能力。</p> 
+</blockquote> 
+<h3><a id="_48"></a>多路复用</h3> 
+<blockquote> 
+ <p>在linux中，<strong>fd</strong>全称“File descriptor”，中文名为“文件描述符”，它是内核为了高效管理这些已经被打开的文件所创建的一种索引；它其实是一个非负整数，用于指代被打开的文件，所有执行I/O操作的系统调用都通过文件描述符来实现。</p> 
+ <p>在windows中句柄和fd是一个意思，用来标记被系统打开的资源，</p> 
+ <p>两者在形式上都是“唯一的整数”，是int类型</p> 
+</blockquote> 
+<h4><a id="selectpoll_56"></a>select/poll</h4> 
+<p>当发起syscall时阻塞执行。当内核变为就绪态，其他syscall可以直接已经就绪的数据。此时阻塞与否都可以。然后内核继续工作。</p> 
+<pre><code class="prism language-c"><span class="token keyword">int</span> <span class="token function">select</span> <span class="token punctuation">(</span><span class="token keyword">int</span> n<span class="token punctuation">,</span> fd_set <span class="token operator">*</span>readfds<span class="token punctuation">,</span> fd_set <span class="token operator">*</span>writefds<span class="token punctuation">,</span> fd_set <span class="token operator">*</span>exceptfds<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">timeval</span> <span class="token operator">*</span>timeout<span class="token punctuation">)</span><span class="token punctuation">;</span>
+调用后 select 函数会阻塞，直到有描述副就绪（有数据 可读、可写、或者有except），或者超时（timeout 指定等待时间，如果立即返回设为 null 即可），
+函数返回。当 select 函数返回后，可以 通过遍历 fdset，来找到就绪的描述符。
+</code></pre> 
+<p>优点：一次可以处理多个请求，返回批量数据。返回数据是用户自己遍历。这两者降低了syscall次数。</p> 
+<p>缺点：整个数据传递的过程是拷贝整个数组，开销特别大。同时该函数返回值只有个数，具体数据仍需read自己遍历读取。</p> 
+<h4><a id="epoll_70"></a>epoll</h4> 
+<pre><code class="prism language-c"><span class="token comment">//创建epollFd，底层是在内核态分配一段区域，底层数据结构红黑树+双向链表</span>
+<span class="token comment">//size用来告诉内核这个监听的数目一共有多大</span>
+<span class="token keyword">int</span> <span class="token function">epoll_create</span><span class="token punctuation">(</span><span class="token keyword">int</span> size<span class="token punctuation">)</span>；
+<span class="token comment">//往红黑树中增加、删除、更新管理的fd</span>
+<span class="token keyword">int</span> <span class="token function">epoll_ctl</span><span class="token punctuation">(</span><span class="token keyword">int</span> epfd<span class="token punctuation">,</span> <span class="token keyword">int</span> op<span class="token punctuation">,</span> <span class="token keyword">int</span> fd<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">epoll_event</span> <span class="token operator">*</span>event<span class="token punctuation">)</span>；
+<span class="token comment">//用来阻塞等待就绪的fd，类似select调用</span>
+<span class="token keyword">int</span> <span class="token function">epoll_wait</span><span class="token punctuation">(</span><span class="token keyword">int</span> epfd<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">epoll_event</span> <span class="token operator">*</span> events<span class="token punctuation">,</span> <span class="token keyword">int</span> maxevents<span class="token punctuation">,</span> <span class="token keyword">int</span> timeout<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+</code></pre> 
+<p>流程是create先创建epoll fd，在用ctl添加scoket fd 。打开 wait等待数据写入。当有异步IO变化时，wait返回有IO事件的FD。此时只返回有变动的FD。</p> 
+<p>注意，此次创建的fd是内核和用户共享的<strong>内存</strong>区域。故只有一份文件且不用拷贝。</p> 
+<p>优点：fd不用来回拷贝占用磁盘IO.内核也不用持续遍历fd，只需要等待异步IO唤醒。最后返回的是有变动的fd，用户程序不用遍历。</p> 
+<h2><a id="IO_89"></a>IO模型应用</h2> 
+<h3><a id="redisenettyReactorepoll_91"></a>redise和netty采用了Reactor的模型。使用了epoll方式。</h3> 
+<h2><a id="IO_93"></a>磁盘IO</h2> 
+<blockquote> 
+ <p>对于磁 盘的一次读请求，首先经过虚拟 文件系统层（VFS Layer），其次 是具体的文件系统层（例如 Ext2），接下来是Cache层（Page Cache Layer）、通用块层 （Generic Block Layer）、I/O调度 层（I/O Scheduler Layer）、块设 备驱动层（Block Device Driver Layer），最后是物理块设备层 （Block Device Layer）。</p> 
+</blockquote> 
+<h3><a id="IOPage_Cache_97"></a>磁盘IO-Page Cache</h3> 
+<p>cpu取文件有两种方式，第一种是直接读取。第二种是让主存先加载好数据后cpu在读取。</p> 
+<p>Cache在主存上，是专门分配的。</p> 
+<blockquote> 
+ <p>两者比较看起来在读取的时候好像直接读取似乎更快，但其实数据还涉及到修改和写入的问题。对内存的直接修改比对硬盘会快数倍。与此同时加了内存这一层的封装可以实现更多功能。</p> 
+</blockquote> 
+<h4><a id="_105"></a>预读和回写</h4> 
+<p>预读是利用局部性原理，把数据从磁盘加载到主存时会把后面几页（默认三页）也加载。</p> 
+<p>回写是当数据加载到内核的cache时，系统才会把数据copy到应用程序的地址。分离直接读写，大多数操作在内存完成。提高性能。</p> 
+<p>只有当一些特定条件才会把缓存写入磁盘。</p> 
+<h3><a id="io_113"></a>磁盘io的三种方式</h3> 
+<h4><a id="BufferIO_115"></a>BufferIO</h4> 
+<blockquote> 
+ <p>访问filesystem&gt;PageCache&gt;BlockIOlayer&gt;Device</p> 
+</blockquote> 
+<p>Java 中常用的FileInputStream, FileOutputStream（包含FileReader, FileWriter, BufferedInputStream, BufferedOutputStream等）都是Buffer IO 首次读/写涉及 1次 用户态&lt;-&gt;内核态的切换, 2次 数据拷</p> 
+<p>需要注意的是，所有对数据的修改动作都是在用户缓冲区实现的。内核和硬件层只负责数据的传递。</p> 
+<h4><a id="DirectIO_123"></a>DirectIO</h4> 
+<blockquote> 
+ <p>直接访问BlockIOLayer</p> 
+</blockquote> 
+<p>在随机读的场景下，通过Page Cache可能会好心办坏事，缓存命中概率较低，Direct IO性 能可能会更好。 Java 原生并没有提供Direct IO的方式（不要和堆外内存DirectByteBuffer混淆），但可以通 过 JNA/JNI 调用 native 方法做到。github 地址：https://github.com/smacke/jaydio 每次读/写都涉及 1次 用户态&lt;-&gt;内核态的切换, 1次 数据拷</p> 
+<h4><a id="mmp_129"></a>mmp</h4> 
+<blockquote> 
+ <p>直接访问pageCache</p> 
+</blockquote> 
+<p>需要修改的数据（和数据地址）被缓存在内核中。（多个也可）进程可以直接访问。然后修改，之所以说是映射是因为数据在磁盘中不一定是连续的。所以需要地址来拼接起来。</p> 
+<p>mmap带来的好处： 1、减少系统调用。我们只需要一次 mmap() 系统调用，后续所有的调用像操作内存一样，而不会出现大量的 read/write 系统调用。 2、减少数据拷贝。普通的 read() 调用，数据需要经过两次拷贝；而 mmap 只需要从磁盘拷贝一次就可以了， 并且由于做过内存映射，也不需要再拷贝回用户空间。 使用mmap也要注意： 1、一次 map 的大小限制在 1.5G 左右； 2、会大量占用内存，如果使用不当可能会造成频繁的swap</p> 
+<p><strong>epoll 就是通过mmap 实现的共享内存</strong></p> 
+<blockquote> 
+ <p>这里所说的映射就是指，文件数据和文件地址的关联由mmap实现。比如获得一个修改文件的需求，他会返回文件在系统中的指针。然后由其他人直接操作文件指针。通过使用指针避免了整个文件的来回拷贝。同时因为文件在磁盘中通常是不连续的。mmap封装更能增强性能。</p> 
+</blockquote> 
+<h2><a id="IO_141"></a>磁盘IO的实践</h2> 
+<h3><a id="kafka_143"></a>kafka</h3> 
+<p>kafka的topic有很多个partition，每个partition对应多个stagement文件。stage文件在磁盘中是顺序读写的。</p> 
+<p>其中.index和.log文件就是使用mmap方式写入。</p> 
+<p>比如index索引记录了文件开始的地方，文件长度（偏移量），该记录在log文件的地址。</p> 
+<p>然后去log中找具体的消息。</p> 
+<blockquote> 
+ <p>1、Kafka 将 Partition 划分为多个 Segment， 每个 Segment 对应一个物理文件，Kafka 对 segment 文件追加写（顺序写） 2、producer 发送消息到 Broker 时，Broker 会使用 write() 系统调用 (对应到 Java NIO 的 FileChannel.write() API)，按偏移量写入数据， 此时数据都会先写入page cache。consumer 消费消息时，Broker 使用 sendfile() 系统调 用 (对应 FileChannel.transferTo() API)，以零 拷贝 的方式将数据从 page cache 传输到 broker 的 Socket buffer，然后再通过网络传 输。 3、消息从producer到consumer，通过批量 和压缩，减低网络传输次数及数据大小； 4、使用稀疏索引.index访问.log文件，且通 过mmap的方式，将 index 文件映射到内存， 减少系统调用次数，减少数据拷贝；</p> 
+</blockquote>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/783ec20746b7fc98863a725bb1b435a0/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">mpc模型预测控制原理详解</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a1ed63973359625e9538658d614f4f94/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">边缘产品UnixBench测试结果</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>零拷贝技术（DMA、MMAP、sendfile） - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="零拷贝技术（DMA、MMAP、sendfile）" />
+<meta property="og:description" content="零拷贝mmap、sendfile 定义 零拷贝技术主要是解决传统网络I/O操作中发送文件的性能问题：如下图表示一次read和write时传统I/O涉及到的CPU操作：
+涉及到4次用户态↔内核态上下文切换，其中read切换两次、write切换两次；涉及到4次数据拷贝。其中DMA拷贝两次、CPU拷贝两次； 上述操作多次的上下文切换与拷贝会影响性能。
+可以使用零拷贝技术mmap&#43;write、sendfile和splice来优化。
+DMA DMA（Direct Memory Access），即直接存储器存取，是一种快速传送数据的机制。利用它进行数据传送时不需要CPU的参与。
+使用DMA拷贝数据会获取一部分系统数据总线资源，用来传输数据，而不需要CPU参数。IO读取也不会引发中断。CPU读取IO操作，系统调用时是会引发中断的。
+mmap mmap（memory map）采用虚拟内存，地址映射来减少一次拷贝。可以减少将数据从内核态拷贝到用户态的性能消耗。
+如上图所示，从数据并没有从内核态拷贝到用户态，而是直接通过内存映射的方式得到待传文件的虚拟内存地址，在发送的时候，可以通过共享的虚拟内存地址将待发送文件信息拷贝到socket缓存区，发送出去。
+#include &lt;sys/mman.h&gt; #include &lt;sys/socket.h&gt; #include &lt;netinet/in.h&gt; #include &lt;unistd.h&gt; #include &lt;fcntl.h&gt; #include &lt;cstring&gt; int main() { // 打开文件并将其映射到内存中 int fd = open(&#34;file.txt&#34;, O_RDONLY); size_t size = lseek(fd, 0, SEEK_END); char* data = (char*) mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0); // 创建套接字并连接到目标地址 int sock = socket(AF_INET, SOCK_STREAM, 0); sockaddr_in addr; addr.sin_family = AF_INET; addr.sin_addr.s_addr = inet_addr(&#34;127.0.0.1&#34;); addr." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/c0602f0adb0926aef12a656ecd9ed05e/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-07-17T20:15:29+08:00" />
+<meta property="article:modified_time" content="2023-07-17T20:15:29+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">零拷贝技术（DMA、MMAP、sendfile）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="mmapsendfile_0"></a>零拷贝mmap、sendfile</h2> 
+<h2><a id="_1"></a>定义</h2> 
+<p>零拷贝技术主要是解决传统网络I/O操作中发送文件的性能问题：如下图表示一次read和write时传统I/O涉及到的CPU操作：</p> 
+<p><img src="https://images2.imgbox.com/4b/83/69WkH5of_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>涉及到4次用户态↔内核态上下文切换，其中read切换两次、write切换两次；</li><li>涉及到4次数据拷贝。其中DMA拷贝两次、CPU拷贝两次；</li></ul> 
+<p>上述操作多次的上下文切换与拷贝会影响性能。</p> 
+<p>可以使用零拷贝技术<code>mmap+write</code>、<code>sendfile</code>和<code>splice</code>来优化。</p> 
+<h3><a id="DMA_15"></a>DMA</h3> 
+<p>DMA（Direct Memory Access），即<strong>直接存储器存取</strong>，是一种<strong>快速传送数据</strong>的机制。利用它进行<strong>数据传送时不需要CPU的参与</strong>。</p> 
+<p>使用DMA拷贝数据会获取一部分系统数据总线资源，用来传输数据，而不需要CPU参数。IO读取也不会引发中断。CPU读取IO操作，系统调用时是会引发中断的。</p> 
+<h3><a id="mmap_21"></a>mmap</h3> 
+<p>mmap（memory map）采用虚拟内存，地址映射来减少一次拷贝。可以减少将数据从内核态拷贝到用户态的性能消耗。</p> 
+<p><img src="https://images2.imgbox.com/58/85/K1FwYX3D_o.png" alt="在这里插入图片描述"></p> 
+<p>如上图所示，从数据并没有从内核态拷贝到用户态，而是直接通过内存映射的方式得到待传文件的虚拟内存地址，在发送的时候，可以通过共享的虚拟内存地址将待发送文件信息拷贝到socket缓存区，发送出去。</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/mman.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/socket.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;netinet/in.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;unistd.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;fcntl.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;cstring&gt;</span></span>
+
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// 打开文件并将其映射到内存中</span>
+    <span class="token keyword">int</span> fd <span class="token operator">=</span> <span class="token function">open</span><span class="token punctuation">(</span><span class="token string">"file.txt"</span><span class="token punctuation">,</span> O_RDONLY<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    size_t size <span class="token operator">=</span> <span class="token function">lseek</span><span class="token punctuation">(</span>fd<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token constant">SEEK_END</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">char</span><span class="token operator">*</span> data <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token keyword">char</span><span class="token operator">*</span><span class="token punctuation">)</span> <span class="token function">mmap</span><span class="token punctuation">(</span><span class="token keyword">nullptr</span><span class="token punctuation">,</span> size<span class="token punctuation">,</span> PROT_READ<span class="token punctuation">,</span> MAP_PRIVATE<span class="token punctuation">,</span> fd<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 创建套接字并连接到目标地址</span>
+    <span class="token keyword">int</span> sock <span class="token operator">=</span> <span class="token function">socket</span><span class="token punctuation">(</span>AF_INET<span class="token punctuation">,</span> SOCK_STREAM<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    sockaddr_in addr<span class="token punctuation">;</span>
+    addr<span class="token punctuation">.</span>sin_family <span class="token operator">=</span> AF_INET<span class="token punctuation">;</span>
+    addr<span class="token punctuation">.</span>sin_addr<span class="token punctuation">.</span>s_addr <span class="token operator">=</span> <span class="token function">inet_addr</span><span class="token punctuation">(</span><span class="token string">"127.0.0.1"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    addr<span class="token punctuation">.</span>sin_port <span class="token operator">=</span> <span class="token function">htons</span><span class="token punctuation">(</span><span class="token number">1234</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">connect</span><span class="token punctuation">(</span>sock<span class="token punctuation">,</span> <span class="token punctuation">(</span>sockaddr<span class="token operator">*</span><span class="token punctuation">)</span> <span class="token operator">&amp;</span>addr<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>addr<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 将内存中的数据直接写入套接字</span>
+    <span class="token function">write</span><span class="token punctuation">(</span>sock<span class="token punctuation">,</span> data<span class="token punctuation">,</span> size<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//</span>
+
+    <span class="token comment">// 关闭套接字和文件，并解除内存映射</span>
+    <span class="token function">close</span><span class="token punctuation">(</span>sock<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">munmap</span><span class="token punctuation">(</span>data<span class="token punctuation">,</span> size<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">close</span><span class="token punctuation">(</span>fd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>mmap这里只是减少了copy，但还是需要4次上下文切换。那是否有什么方式可以减少上下文切换，这时sendfile就出来了。</p> 
+<h3><a id="sendfile_66"></a><code>sendfile</code></h3> 
+<p>sendfile可以减少文件发送时的上下文切换。</p> 
+<p>从 Linux 2.1 版本开始，Linux 引入了 <code>sendfile</code>来简化操作。<code>sendfile</code>方式可以替换上面的<code>mmap/write</code>方式来进一步优化。</p> 
+<p><code>sendfile</code>将以下操作：</p> 
+<pre><code>  mmap();
+  write();
+
+</code></pre> 
+<p><code>替换为：</code></p> 
+<pre><code> sendfile();
+</code></pre> 
+<p>这样就减少了上下文切换，因为少了一个应用程序发起<code>write</code>操作，直接发起<code>sendfile</code>操作。</p> 
+<p><img src="https://images2.imgbox.com/fe/a8/7kt6ab3A_o.png" alt="在这里插入图片描述"></p> 
+<p>直接通过DMA将磁盘数据复制到缓存区，在内核态将缓冲区的数据拷贝到socket缓存区，不需要用户态参与。</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/socket.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;fcntl.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;cstring&gt;</span></span>
+
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// 打开文件并获取文件描述符</span>
+    <span class="token keyword">int</span> fd <span class="token operator">=</span> <span class="token function">open</span><span class="token punctuation">(</span><span class="token string">"file.txt"</span><span class="token punctuation">,</span> O_RDONLY<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 创建套接字并连接到目标地址</span>
+    <span class="token keyword">int</span> sock <span class="token operator">=</span> <span class="token function">socket</span><span class="token punctuation">(</span>AF_INET<span class="token punctuation">,</span> SOCK_STREAM<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    sockaddr_in addr<span class="token punctuation">;</span>
+    addr<span class="token punctuation">.</span>sin_family <span class="token operator">=</span> AF_INET<span class="token punctuation">;</span>
+    addr<span class="token punctuation">.</span>sin_addr<span class="token punctuation">.</span>s_addr <span class="token operator">=</span> <span class="token function">inet_addr</span><span class="token punctuation">(</span><span class="token string">"127.0.0.1"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    addr<span class="token punctuation">.</span>sin_port <span class="token operator">=</span> <span class="token function">htons</span><span class="token punctuation">(</span><span class="token number">1234</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">connect</span><span class="token punctuation">(</span>sock<span class="token punctuation">,</span> <span class="token punctuation">(</span>sockaddr<span class="token operator">*</span><span class="token punctuation">)</span> <span class="token operator">&amp;</span>addr<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>addr<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 使用sendfile函数将文件信息发送到套接字</span>
+    off_t offset <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token keyword">struct</span> <span class="token class-name">stat</span> stat_buf<span class="token punctuation">;</span>
+    <span class="token function">fstat</span><span class="token punctuation">(</span>fd<span class="token punctuation">,</span> <span class="token operator">&amp;</span>stat_buf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">sendfile</span><span class="token punctuation">(</span>sock<span class="token punctuation">,</span> fd<span class="token punctuation">,</span> <span class="token operator">&amp;</span>offset<span class="token punctuation">,</span> stat_buf<span class="token punctuation">.</span>st_size<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//直接使用sendfile发送文件，避免上下文切换</span>
+
+    <span class="token comment">// 关闭套接字和文件</span>
+    <span class="token function">close</span><span class="token punctuation">(</span>sock<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">close</span><span class="token punctuation">(</span>fd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>可以看到sendfile经历了3次的copy动作，而且没有频繁的用户态↔内核态的状态切换。</p> 
+<p>那sendfile是不是就是完美的，还可不可以把cpu copy也节省呢?</p> 
+<h4><a id="_scattergather__sendfile_128"></a>带有 scatter/gather 的 sendfile方式</h4> 
+<p>Linux 2.4 内核进行了优化，提供了带有 <code>scatter/gather</code> 的 sendfile 操作，这个操作可以把最后一次 <code>CPU COPY</code> 去除。其原理就是在内核空间 Read BUffer 和 Socket Buffer 不做数据复制，而是将 Read Buffer 的内存地址、偏移量记录到相应的 Socket Buffer 中，这样就不需要复制。其本质和虚拟内存的解决方法思路一致，就是内存地址的记录。</p> 
+<p>下图展示了scatter/gather 的 sendfile 的原理：</p> 
+<p><img src="https://images2.imgbox.com/e2/c1/Ktl2Olk2_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="splice_137"></a><strong>splice</strong></h3> 
+<p>与<code>sendfile</code>不同的是，<code>splice</code>允许任意两个文件互相连接，而并不只是文件与<code>socket</code>进行数据传输。</p> 
+<p>对于从一个文件描述符发送数据到<code>socket</code>这种特例来说，一直都是使用<code>sendfile</code>系统调用；</p> 
+<p>而<code>splice</code>一直以来就只是一种机制，它并不仅限于<code>sendfile</code>的功能。也就是说 sendfile 是 splice 的一个子集。</p> 
+<p>和 sendfile 不同的是，splice 不需要硬件支持。</p> 
+<p>详细内容参考：<br> <a href="https://juejin.cn/post/6995519558475841550" rel="nofollow">https://juejin.cn/post/6995519558475841550</a><br> <a href="https://juejin.cn/post/7126195733471952910" rel="nofollow">https://juejin.cn/post/7126195733471952910</a></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/ec6973741874a731a96f763f36eee96f/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">BUUCTF——Web</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f421388617d2bf9ad35ef94e5728212b/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【BP分类】基于BP神经网络的数据分类预测附matlab代码</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

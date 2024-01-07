@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>flink规则引擎设计思路 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="flink规则引擎设计思路" />
+<meta property="og:description" content="在日常工作中我们经常收到一些诸如此类需求：“用户给点击了开屏广告，给用户下发私信”、“用户进入了推荐线，但在60秒内没有任何点击操作，弹框引导用户选择感兴趣的内容”、“用户点赞了某位作者的两篇以上的内容，但并没有关注过此作者，则弹框引导用户关注作者”、“用户点击了活动入口，进入了活动页、发生了点赞、收藏等交互操作，引导用户进入活动下一流程”。这些需求大致可以分为如下三大类：
+完成事件A，触发运营动作。完成时间A多次，触发运营动作。在固定时间内完成事件A，但未完成事件B，触发运营动作。依次完成事件A,B,C，触发运营动作。 这些需求从开发角度来看，代码有很高的相似性，所以我们对这些需求进行了抽象，基于flink开发了一套行为规则引擎，并在规则引擎之上将常用的运营动作模块化，真正做到十分钟上线一个运营策略，相对之前天级别的交付时间，效率大幅提升。
+先看下规则引擎整体的架构：
+一个任务上线，从“数据流输入”到“用户触达”，整个任务流程分为6个阶段：输入事件流、数据准备、规则平台、维度数据、规则引擎、用户触达系统。
+输入事件流
+数据主要来自于行为日志，也就是用户通过sdk上报的埋点数据以及后端埋点数据。为了后规则引擎易于处理，通常会对一些嵌套数据进行扁平化操作。
+数据准备
+这个阶段的主要工作就是为规则引擎准备输入数据，分为四个步骤：数据预处理、数据预过滤、数据流维度补充、数据流分区。
+规则平台
+规则平台面向的用户主要是运营。运营人员通过规则平台配置运营策略。规则平台会将这些规则分发给规则引擎，规则引擎将规则转换成处理逻辑。
+维度数据
+维度数据包含三部分：画像数据、业务库数据以及用户历史行为数据。这些数据在数据准备阶段会填充到数据流中，后续会介绍。
+规则引擎
+目前规则引擎支持四种规则类型，在实现上分别对应一个flink程序：
+完成事件A完成事件A多次完成事件A、未完成事件B依次完成事件A、B、C、D 接下来我们通过举例，从易到难的方式，介绍规则引擎的数据处理流程。
+第一个例子：用户发生点赞行为（规则类型1）
+输入数据流：
+{ &#34;uid&#34;:111, &#34;oid&#34;:&#34;562asdf12&#34;, &#34;action&#34;:&#34;like&#34;, &#34;time&#34;:&#34;1672383110&#34; } 这条数据意思为：用户（uid:111）在时间（time:1672383110）对内容（oid:562asdf12）进行了点赞操作（action:like）,这个场景再简单不过了。
+我们需要通过规则平台告诉规则引擎如何处理这个需求，例如我们先定义了一个能满足当前需求的规则串
+{ &#34;rule_id&#34;:&#34;00001&#34;, &#34;rule_type&#34;:&#34;1&#34;, &#34;conditions&#34;:{ &#34;action&#34;:&#34;like&#34; } } 稍微解释字段含义
+rule_id:规则id，规则唯一标识
+rule_type:规则类型，当前规则为“完成事件A”，故该值为“1”.
+conditions：规则引擎需要判定条件。
+在这个例子中flink规则引擎只要判断数据流中的action的值是否为“like”。
+第二个例子：用户触发点赞行为2次。（规则类型2）
+和第一个例子不一样的地方在于这个例子出现计数场景。先看下规则串和之前的例子有什么不同
+{ &#34;rule_id&#34;:&#34;000012&#34;, &#34;rule_type&#34;:&#34;2&#34;, &#34;pk&#34;:&#34;rule_id::uid&#34;, &#34;conditions&#34;:{ &#34;action&#34;:&#34;like&#34;, &#34;eventCount&#34;:&#34;eq:2&#34; } } rule_type:2,告诉规则引擎这是个”完成事件A多次“的任务，并且规则串新增属性pk、eventCount。‘pk’代表分区键，对应这flink程序中keyby中的字段，“eventCount”:&#34;eq:2&#34;在这个例子中代表：点赞次数等于2
+第三个例子：用户给同一作者文章点赞超过2次（规则类型2）
+在这个例子中需要用到作者信息，但是数据流中并没有。这就需要介绍下”数据预处理“部分。
+”数据预处理“阶段会干两件事：补充数据主体、数据扁平化。
+数据主体什么意思？对于一款UGC产品，最核心的主体包括：用户、内容、作者等。电商产品，主体包括：用户、商家、商品、品牌等。在我们的规则引擎里，数据主体通常作为关联数据的主键id，所以在数据预处理阶段，我们需要尽可能的将数据主体梳理全，并补充到数据中。在这个例子中我们可以通过oid，把作者id补充到数据中去。
+{ &#34;uid&#34;:111, &#34;oid&#34;:&#34;562asdf12&#34;, &#34;action&#34;:&#34;like&#34;, &#34;time&#34;:&#34;1672383110&#34;, &#34;author_id&#34;:12454 } “数据扁平化”：为了让规则引擎更好的处理数据，我们会在数据预处理阶段把嵌套的数据进行扁平化操作。
+回到例子，规则串可以如下描述
+{ &#34;rule_id&#34;:&#34;000012&#34;, &#34;rule_type&#34;:&#34;2&#34;, &#34;pk&#34;:&#34;rule_id::uid::author_id&#34;, &#34;conditions&#34;:{ &#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/960a5941a401f2e5c70f8f5b6566cb16/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-01-11T20:18:02+08:00" />
+<meta property="article:modified_time" content="2023-01-11T20:18:02+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">flink规则引擎设计思路</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>在日常工作中我们经常收到一些诸如此类需求：“用户给点击了开屏广告，给用户下发私信”、“用户进入了推荐线，但在60秒内没有任何点击操作，弹框引导用户选择感兴趣的内容”、“用户点赞了某位作者的两篇以上的内容，但并没有关注过此作者，则弹框引导用户关注作者”、“用户点击了活动入口，进入了活动页、发生了点赞、收藏等交互操作，引导用户进入活动下一流程”。这些需求大致可以分为如下三大类：</p> 
+<ul><li>完成事件A，触发运营动作。</li><li>完成时间A多次，触发运营动作。</li><li>在固定时间内完成事件A，但未完成事件B，触发运营动作。</li><li>依次完成事件A,B,C，触发运营动作。</li></ul> 
+<p>这些需求从开发角度来看，代码有很高的相似性，所以我们对这些需求进行了抽象，基于flink开发了一套行为规则引擎，并在规则引擎之上将常用的运营动作模块化，真正做到十分钟上线一个运营策略，相对之前天级别的交付时间，效率大幅提升。<br>   <br> 先看下规则引擎整体的架构：<br> <img src="https://images2.imgbox.com/23/94/c79EbWlj_o.png" alt="在这里插入图片描述"><br> 一个任务上线，从“数据流输入”到“用户触达”，整个任务流程分为6个阶段：<strong>输入事件流、数据准备、规则平台、维度数据、规则引擎、用户触达系统</strong>。</p> 
+<p><strong>输入事件流</strong><br> 数据主要来自于行为日志，也就是用户通过sdk上报的埋点数据以及后端埋点数据。为了后规则引擎易于处理，通常会对一些嵌套数据进行扁平化操作。</p> 
+<p><strong>数据准备</strong><br> 这个阶段的主要工作就是为规则引擎准备输入数据，分为四个步骤：数据预处理、数据预过滤、数据流维度补充、数据流分区。</p> 
+<p><strong>规则平台</strong><br> 规则平台面向的用户主要是运营。运营人员通过规则平台配置运营策略。规则平台会将这些规则分发给规则引擎，规则引擎将规则转换成处理逻辑。</p> 
+<p><strong>维度数据</strong><br> 维度数据包含三部分：画像数据、业务库数据以及用户历史行为数据。这些数据在数据准备阶段会填充到数据流中，后续会介绍。</p> 
+<p><strong>规则引擎</strong><br> 目前规则引擎支持四种规则类型，在实现上分别对应一个flink程序：</p> 
+<ul><li>完成事件A</li><li>完成事件A多次</li><li>完成事件A、未完成事件B</li><li>依次完成事件A、B、C、D</li></ul> 
+<p>接下来我们通过举例，从易到难的方式，介绍规则引擎的数据处理流程。</p> 
+<hr> 
+<p><strong>第一个例子：用户发生点赞行为（规则类型1）</strong><br> 输入数据流：</p> 
+<pre><code class="prism language-bash"><span class="token punctuation">{<!-- --></span>
+    <span class="token string">"uid"</span>:111,
+    <span class="token string">"oid"</span><span class="token builtin class-name">:</span><span class="token string">"562asdf12"</span>,
+    <span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"like"</span>,
+    <span class="token string">"time"</span><span class="token builtin class-name">:</span><span class="token string">"1672383110"</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>这条数据意思为：用户（uid:111）在时间（time:1672383110）对内容（oid:562asdf12）进行了点赞操作（action:like）,这个场景再简单不过了。<br> 我们需要通过规则平台告诉规则引擎如何处理这个需求，例如我们先定义了一个能满足当前需求的规则串</p> 
+<pre><code class="prism language-bash"><span class="token punctuation">{<!-- --></span>
+    <span class="token string">"rule_id"</span><span class="token builtin class-name">:</span><span class="token string">"00001"</span>,
+    <span class="token string">"rule_type"</span><span class="token builtin class-name">:</span><span class="token string">"1"</span>,
+    <span class="token string">"conditions"</span>:<span class="token punctuation">{<!-- --></span>
+        <span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"like"</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>稍微解释字段含义</p> 
+<p><strong>rule_id</strong>:规则id，规则唯一标识<br> <strong>rule_type</strong>:规则类型，当前规则为“完成事件A”，故该值为“1”.<br> <strong>conditions</strong>：规则引擎需要判定条件。<br> 在这个例子中flink规则引擎只要判断数据流中的action的值是否为“like”。</p> 
+<hr> 
+<p><strong>第二个例子：用户触发点赞行为2次。（规则类型2）</strong><br> 和第一个例子不一样的地方在于这个例子出现计数场景。先看下规则串和之前的例子有什么不同</p> 
+<pre><code class="prism language-bash"><span class="token punctuation">{<!-- --></span>
+    <span class="token string">"rule_id"</span><span class="token builtin class-name">:</span><span class="token string">"000012"</span>,
+    <span class="token string">"rule_type"</span><span class="token builtin class-name">:</span><span class="token string">"2"</span>,
+    <span class="token string">"pk"</span><span class="token builtin class-name">:</span><span class="token string">"rule_id::uid"</span>,
+    <span class="token string">"conditions"</span>:<span class="token punctuation">{<!-- --></span>
+        <span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"like"</span>,
+        <span class="token string">"eventCount"</span><span class="token builtin class-name">:</span><span class="token string">"eq:2"</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>rule_type</strong>:2,告诉规则引擎这是个”完成事件A多次“的任务，并且规则串新增属性<strong>pk、eventCount</strong>。‘pk’代表分区键，对应这flink程序中<strong>keyby</strong>中的字段，“eventCount”:"eq:2"在这个例子中代表：点赞次数等于2</p> 
+<hr> 
+<p><strong>第三个例子：用户给同一作者文章点赞超过2次（规则类型2）</strong><br> 在这个例子中需要用到作者信息，但是数据流中并没有。这就需要介绍下”<strong>数据预处理</strong>“部分。</p> 
+<p>”<strong>数据预处理</strong>“阶段会干两件事：<strong>补充数据主体、数据扁平化</strong>。<br> 数据主体什么意思？对于一款UGC产品，最核心的主体包括：用户、内容、作者等。电商产品，主体包括：用户、商家、商品、品牌等。在我们的规则引擎里，数据主体通常作为关联数据的主键id，所以在数据预处理阶段，我们需要尽可能的将数据主体梳理全，并补充到数据中。在这个例子中我们可以通过oid，把作者id补充到数据中去。</p> 
+<pre><code class="prism language-bash"><span class="token punctuation">{<!-- --></span>
+    <span class="token string">"uid"</span>:111,
+    <span class="token string">"oid"</span><span class="token builtin class-name">:</span><span class="token string">"562asdf12"</span>,
+    <span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"like"</span>,
+    <span class="token string">"time"</span><span class="token builtin class-name">:</span><span class="token string">"1672383110"</span>,
+    <span class="token string">"author_id"</span>:12454
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>“<strong>数据扁平化</strong>”：为了让规则引擎更好的处理数据，我们会在数据预处理阶段把嵌套的数据进行扁平化操作。</p> 
+<p>回到例子，规则串可以如下描述</p> 
+<pre><code class="prism language-bash"><span class="token punctuation">{<!-- --></span>
+    <span class="token string">"rule_id"</span><span class="token builtin class-name">:</span><span class="token string">"000012"</span>,
+    <span class="token string">"rule_type"</span><span class="token builtin class-name">:</span><span class="token string">"2"</span>,
+    <span class="token string">"pk"</span><span class="token builtin class-name">:</span><span class="token string">"rule_id::uid::author_id"</span>,
+    <span class="token string">"conditions"</span>:<span class="token punctuation">{<!-- --></span>
+        <span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"like"</span>,
+        <span class="token string">"eventCount"</span><span class="token builtin class-name">:</span><span class="token string">"gt:2"</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>和第二个例子中唯一不同的是，把author_id添加到分区键pk中,flink程序会按照"<strong>rule_id::uid::author_id</strong>"进行keyby操作，这样就可以进行计数操作了。</p> 
+<hr> 
+<p><strong>第四个例子：用户给同一作者文章点赞超过2次，但没有关注作者。</strong></p> 
+<p>在此例子中涉及到了主体之间的关系，而“用户”和“作者”之间的关系存在数据库中，在数据处理过程中，这些数据是怎么使用的？这里就需要介绍下”维度数据“模块。”维度数据“主要包含3中类型数据：<strong>画像数据、业务库数据和用户历史行为数据</strong>。<br> <strong>画像数据</strong>：这个比较好理解，主要是用户相关的属性信息，例如：性别，城市，年龄等。<br> <strong>业务库数据</strong>：这种数据需要通过业务库获得，在这个例子中，用户是否关注了作者属于这个范畴。<br> <strong>历史行为数据</strong>：在有些规则场景中我们会需要用户的一些历史数据进行计算，例如：”用户在过去一周内访问过活动页，并且进行了内容生产“。通常我们会通过离线计算的方式，将数据导入到维度数据中。</p> 
+<p>”<strong>维度数据</strong>“通常使用键值数据库存储，例如：redis，hbase等。维度数据生成的方式有两种：通过规则平台从业务库中自动同步到键值数据库，或者直接通过代码的方式。<br> 回到这个例子中，先看下规则串有什么不一样</p> 
+<pre><code class="prism language-bash"><span class="token punctuation">{<!-- --></span>
+    <span class="token string">"rule_id"</span><span class="token builtin class-name">:</span><span class="token string">"000012"</span>,
+    <span class="token string">"rule_type"</span><span class="token builtin class-name">:</span><span class="token string">"2"</span>,
+    <span class="token string">"pk"</span><span class="token builtin class-name">:</span><span class="token string">"rule_id::uid::author_id"</span>,
+    <span class="token string">"dimKey"</span>:<span class="token punctuation">{<!-- --></span>
+        <span class="token string">"isAttention"</span><span class="token builtin class-name">:</span><span class="token string">"uid,author_id"</span>
+    <span class="token punctuation">}</span>,
+    <span class="token string">"conditions"</span>:<span class="token punctuation">{<!-- --></span>
+        <span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"like"</span>,
+        <span class="token string">"isAttention"</span>:false,
+        <span class="token string">"eventCount"</span><span class="token builtin class-name">:</span><span class="token string">"gt:2"</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>dimKey</strong>:这个字段中的”isAttention“代表要新增的维度数据，在这个例子中代表”没有关注作者“，这个字段在规则平台维护。"uid,author_id"意思是flink程序需要通过数据流中的uid和author_id去”维度数据“中获得isAttention的值。</p> 
+<p>在规则串里我们只是定义了isAttention的获取方式，那数据是填充的据流程是怎么样的？这里涉及到两个模块：<strong>“数据预过滤”和“数据流维度补充”</strong>。</p> 
+<p><strong>数据预过滤:</strong><br> 在该阶段“数据准备”的flink程序会根据规则平台中的规则，对数据流进行过滤（将数据流中的“action”值与规则平台维护的规则中的”action“进行比对）数据过滤后，数据流中只包含规则相关的数据。<br> 除此之外，flink程序还会把规则填充到数据流中。例如：规则平台维护了三条规则</p> 
+<pre><code class="prism language-bash"><span class="token punctuation">{<!-- --></span>
+    <span class="token string">"rule_id"</span><span class="token builtin class-name">:</span><span class="token string">"00001"</span>,
+    <span class="token string">"rule_type"</span><span class="token builtin class-name">:</span><span class="token string">"1"</span>,
+    <span class="token string">"conditions"</span>:<span class="token punctuation">{<!-- --></span>
+        <span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"like"</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token punctuation">{<!-- --></span>
+    <span class="token string">"rule_id"</span><span class="token builtin class-name">:</span><span class="token string">"00002"</span>,
+    <span class="token string">"rule_type"</span><span class="token builtin class-name">:</span><span class="token string">"1"</span>,
+    <span class="token string">"conditions"</span>:<span class="token punctuation">{<!-- --></span>
+        <span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"share"</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token punctuation">{<!-- --></span>
+    <span class="token string">"rule_id"</span><span class="token builtin class-name">:</span><span class="token string">"00003"</span>,
+    <span class="token string">"rule_type"</span><span class="token builtin class-name">:</span><span class="token string">"2"</span>,
+    <span class="token string">"pk"</span><span class="token builtin class-name">:</span><span class="token string">"rule_id::uid::author_id"</span>,
+    <span class="token string">"dimKey"</span>:<span class="token punctuation">{<!-- --></span>
+        <span class="token string">"isAttention"</span><span class="token builtin class-name">:</span><span class="token string">"uid,author_id"</span>
+    <span class="token punctuation">}</span>,
+    <span class="token string">"conditions"</span>:<span class="token punctuation">{<!-- --></span>
+        <span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"like"</span>,
+        <span class="token string">"isAttention"</span>:false,
+        <span class="token string">"eventCount"</span><span class="token builtin class-name">:</span><span class="token string">"gt:2"</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>有三条数据进入到flink程序，</p> 
+<pre><code class="prism language-bash"><span class="token punctuation">{<!-- --></span><span class="token string">"uid"</span>:111, <span class="token string">"oid"</span><span class="token builtin class-name">:</span><span class="token string">"562asdf12"</span>,<span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"like"</span>, <span class="token string">"time"</span><span class="token builtin class-name">:</span><span class="token string">"1672383110"</span>,<span class="token string">"author_id"</span>:12454<span class="token punctuation">}</span>
+<span class="token punctuation">{<!-- --></span><span class="token string">"uid"</span>:111, <span class="token string">"oid"</span><span class="token builtin class-name">:</span><span class="token string">"562asdf12"</span>,<span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"share"</span>, <span class="token string">"time"</span><span class="token builtin class-name">:</span><span class="token string">"1672383412"</span>,<span class="token string">"author_id"</span>:12454<span class="token punctuation">}</span>
+<span class="token punctuation">{<!-- --></span><span class="token string">"uid"</span>:113, <span class="token string">"oid"</span><span class="token builtin class-name">:</span><span class="token string">"562asdf12"</span>,<span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"comment"</span>, <span class="token string">"time"</span><span class="token builtin class-name">:</span><span class="token string">"1672383412"</span>,<span class="token string">"author_id"</span>:12454<span class="token punctuation">}</span>
+</code></pre> 
+<p>经过数据预过滤后，数据输出如下</p> 
+<pre><code class="prism language-bash"><span class="token punctuation">{<!-- --></span><span class="token string">"uid"</span>:111,<span class="token string">"oid"</span><span class="token builtin class-name">:</span><span class="token string">"562asdf12"</span>,<span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"like"</span>,<span class="token string">"time"</span><span class="token builtin class-name">:</span><span class="token string">"1672383110"</span>,<span class="token string">"rule"</span>:<span class="token punctuation">{<!-- --></span><span class="token string">"rule_id"</span><span class="token builtin class-name">:</span><span class="token string">"00001"</span>,<span class="token string">"rule_type"</span><span class="token builtin class-name">:</span><span class="token string">"1"</span>,<span class="token string">"conditions"</span>:<span class="token punctuation">{<!-- --></span><span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"like"</span><span class="token punctuation">}</span><span class="token punctuation">}</span><span class="token punctuation">}</span>
+
+<span class="token punctuation">{<!-- --></span><span class="token string">"uid"</span>:111,<span class="token string">"oid"</span><span class="token builtin class-name">:</span><span class="token string">"562asdf12"</span>,<span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"like"</span>,<span class="token string">"time"</span><span class="token builtin class-name">:</span><span class="token string">"1672383110"</span>,<span class="token string">"rule"</span>:<span class="token punctuation">{<!-- --></span><span class="token string">"rule_id"</span><span class="token builtin class-name">:</span><span class="token string">"00003"</span>,<span class="token string">"rule_type"</span><span class="token builtin class-name">:</span><span class="token string">"2"</span>,<span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"like"</span>,<span class="token string">"pk"</span><span class="token builtin class-name">:</span><span class="token string">"rule_id::uid::author_id"</span>,<span class="token string">"dimKey"</span>:<span class="token punctuation">{<!-- --></span><span class="token string">"isAttention"</span><span class="token builtin class-name">:</span><span class="token string">"uid,author_id"</span><span class="token punctuation">}</span>,<span class="token string">"conditions"</span>:<span class="token punctuation">{<!-- --></span><span class="token string">"isAttention"</span>:false,<span class="token string">"eventCount"</span><span class="token builtin class-name">:</span><span class="token string">"gt:2"</span><span class="token punctuation">}</span><span class="token punctuation">}</span><span class="token punctuation">}</span>
+
+<span class="token punctuation">{<!-- --></span><span class="token string">"uid"</span>:111,<span class="token string">"oid"</span><span class="token builtin class-name">:</span><span class="token string">"562asdf12"</span>,<span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"share"</span>,<span class="token string">"time"</span><span class="token builtin class-name">:</span><span class="token string">"1672383412"</span>,<span class="token string">"rule"</span>:<span class="token punctuation">{<!-- --></span><span class="token string">"rule_id"</span><span class="token builtin class-name">:</span><span class="token string">"00002"</span>,<span class="token string">"rule_type"</span><span class="token builtin class-name">:</span><span class="token string">"1"</span>,,<span class="token string">"conditions"</span>:<span class="token punctuation">{<!-- --></span><span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"share"</span><span class="token punctuation">}</span><span class="token punctuation">}</span><span class="token punctuation">}</span>
+</code></pre> 
+<p>我们可以看到，输出了3条数据，但需要注意的是</p> 
+<pre><code class="prism language-bash"><span class="token punctuation">{<!-- --></span>
+    <span class="token string">"uid"</span>:113,
+    <span class="token string">"oid"</span><span class="token builtin class-name">:</span><span class="token string">"562asdf12"</span>,
+    <span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"comment"</span>,
+    <span class="token string">"time"</span><span class="token builtin class-name">:</span><span class="token string">"1672383412"</span>,
+    <span class="token string">"author_id"</span>:12454
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>这条数据的action没有和任何一条规则中的action匹配，所以这条数据被抛弃了。而</p> 
+<pre><code class="prism language-bash"><span class="token punctuation">{<!-- --></span>
+    <span class="token string">"uid"</span>:111,
+    <span class="token string">"oid"</span><span class="token builtin class-name">:</span><span class="token string">"562asdf12"</span>,
+    <span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"like"</span>,
+    <span class="token string">"time"</span><span class="token builtin class-name">:</span><span class="token string">"1672383110"</span>,
+    <span class="token string">"author_id"</span>:12454
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>这条数数据的action和两条规则匹配成功，为了后续程序处理方便，我们对数据进行了冗余处理，数据预过滤后，输出了两条数据。<br> <strong>数据流维度补充</strong><br> 在这个步骤中，数据准备flink会按照数据中的规则，从”维度数据“中获取需要填充的维度数据。例如</p> 
+<pre><code class="prism language-bash"><span class="token punctuation">{<!-- --></span>
+    <span class="token string">"uid"</span>:111,
+    <span class="token string">"oid"</span><span class="token builtin class-name">:</span><span class="token string">"562asdf12"</span>,
+    <span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"like"</span>,
+    <span class="token string">"time"</span><span class="token builtin class-name">:</span><span class="token string">"1672383110"</span>,
+    <span class="token string">"author_id"</span>:12454,
+    <span class="token string">"rule"</span>:<span class="token punctuation">{<!-- --></span>
+        <span class="token string">"rule_id"</span><span class="token builtin class-name">:</span><span class="token string">"00003"</span>,
+        <span class="token string">"rule_type"</span><span class="token builtin class-name">:</span><span class="token string">"2"</span>,
+        <span class="token string">"pk"</span><span class="token builtin class-name">:</span><span class="token string">"rule_id::uid::author_id"</span>,
+        <span class="token string">"dimKey"</span>:<span class="token punctuation">{<!-- --></span>
+            <span class="token string">"isAttention"</span><span class="token builtin class-name">:</span><span class="token string">"uid,author_id"</span>
+        <span class="token punctuation">}</span>,
+        <span class="token string">"conditions"</span>:<span class="token punctuation">{<!-- --></span>
+            <span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"like"</span>,
+            <span class="token string">"isAttention"</span>:false,
+            <span class="token string">"eventCount"</span><span class="token builtin class-name">:</span><span class="token string">"gt:2"</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>这条数据需要填充”isAttention“属性，填充”isAttention“需要用到”uid,author_id“两个字段。数据准备flink程序，使用”isAttention::uid::author_id“从”维度数据“中获得{“isAttention”:false},并填充到数据流中</p> 
+<pre><code class="prism language-bash"><span class="token punctuation">{<!-- --></span>
+    <span class="token string">"uid"</span>:111,
+    <span class="token string">"oid"</span><span class="token builtin class-name">:</span><span class="token string">"562asdf12"</span>,
+    <span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"like"</span>,
+    <span class="token string">"time"</span><span class="token builtin class-name">:</span><span class="token string">"1672383110"</span>,
+    <span class="token string">"author_id"</span>:12454,
+    <span class="token string">"isAttention"</span>:false,
+    <span class="token string">"rule"</span>:<span class="token punctuation">{<!-- --></span>
+        <span class="token string">"rule_id"</span><span class="token builtin class-name">:</span><span class="token string">"00003"</span>,
+        <span class="token string">"rule_type"</span><span class="token builtin class-name">:</span><span class="token string">"2"</span>,
+        <span class="token string">"pk"</span><span class="token builtin class-name">:</span><span class="token string">"rule_id::uid::author_id"</span>,
+        <span class="token string">"dimKey"</span>:<span class="token punctuation">{<!-- --></span>
+            <span class="token string">"isAttention"</span><span class="token builtin class-name">:</span><span class="token string">"uid,author_id"</span>
+        <span class="token punctuation">}</span>,
+        <span class="token string">"conditions"</span>:<span class="token punctuation">{<!-- --></span>
+            <span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"like"</span>,
+            <span class="token string">"isAttention"</span>:false,
+            <span class="token string">"eventCount"</span><span class="token builtin class-name">:</span><span class="token string">"gt:2"</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>flink规则引擎就可以根据”conditions“中的条件，判断当前数据是否满足条件。</p> 
+<hr> 
+<p><strong>第五个例子：用户点赞文章，文章包含标签“大户型”或“别墅”</strong><br> 这个例子和第四个例子类似，都是需要从”维度数据“中补充业务库数据。我们看下数据处理流程</p> 
+<p>原始数据</p> 
+<pre><code class="prism language-bash"><span class="token punctuation">{<!-- --></span><span class="token string">"uid"</span>:111, <span class="token string">"oid"</span><span class="token builtin class-name">:</span><span class="token string">"562asdf12"</span>,<span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"like"</span>,<span class="token string">"time"</span><span class="token builtin class-name">:</span><span class="token string">"1672383110"</span>,<span class="token string">"author_id"</span>:12454<span class="token punctuation">}</span>
+</code></pre> 
+<p>规则：</p> 
+<pre><code class="prism language-bash"><span class="token punctuation">{<!-- --></span>
+    <span class="token string">"rule_id"</span><span class="token builtin class-name">:</span><span class="token string">"00003"</span>,
+    <span class="token string">"rule_type"</span><span class="token builtin class-name">:</span><span class="token string">"1"</span>,
+    <span class="token string">"pk"</span><span class="token builtin class-name">:</span><span class="token string">"rule_id::uid::oid"</span>,
+    <span class="token string">"dimKey"</span>:<span class="token punctuation">{<!-- --></span>
+        <span class="token string">"tags"</span><span class="token builtin class-name">:</span><span class="token string">"oid"</span>
+    <span class="token punctuation">}</span>,
+    <span class="token string">"conditions"</span>:<span class="token punctuation">{<!-- --></span>
+        <span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"like"</span>,
+        <span class="token string">"tags"</span>:<span class="token punctuation">[</span>
+            <span class="token string">"大户型"</span>,
+            <span class="token string">"别墅"</span>
+        <span class="token punctuation">]</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>数据预过滤后</p> 
+<pre><code class="prism language-bash"><span class="token punctuation">{<!-- --></span>
+    <span class="token string">"uid"</span>:111,
+    <span class="token string">"oid"</span><span class="token builtin class-name">:</span><span class="token string">"562asdf12"</span>,
+    <span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"like"</span>,
+    <span class="token string">"time"</span><span class="token builtin class-name">:</span><span class="token string">"1672383110"</span>,
+    <span class="token string">"author_id"</span>:12454,
+    <span class="token string">"rule"</span>:<span class="token punctuation">{<!-- --></span>
+        <span class="token string">"rule_id"</span><span class="token builtin class-name">:</span><span class="token string">"00003"</span>,
+        <span class="token string">"rule_type"</span><span class="token builtin class-name">:</span><span class="token string">"1"</span>,
+        <span class="token string">"pk"</span><span class="token builtin class-name">:</span><span class="token string">"rule_id::uid::oid"</span>,
+        <span class="token string">"dimKey"</span>:<span class="token punctuation">{<!-- --></span>
+            <span class="token string">"tags"</span><span class="token builtin class-name">:</span><span class="token string">"oid"</span>
+        <span class="token punctuation">}</span>,
+        <span class="token string">"conditions"</span>:<span class="token punctuation">{<!-- --></span>
+            <span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"like"</span>,
+            <span class="token string">"tags"</span>:<span class="token punctuation">[</span>
+                <span class="token string">"大户型"</span>,
+                <span class="token string">"别墅"</span>
+            <span class="token punctuation">]</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>数据维度补充后</p> 
+<pre><code class="prism language-bash"><span class="token punctuation">{<!-- --></span>
+    <span class="token string">"uid"</span>:111,
+    <span class="token string">"oid"</span><span class="token builtin class-name">:</span><span class="token string">"562asdf12"</span>,
+    <span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"like"</span>,
+    <span class="token string">"time"</span><span class="token builtin class-name">:</span><span class="token string">"1672383110"</span>,
+    <span class="token string">"author_id"</span>:12454,
+    <span class="token string">"tags"</span>:<span class="token punctuation">[</span>
+        <span class="token string">"大户型"</span>,
+        <span class="token string">"别墅"</span>,
+        <span class="token string">"大三居"</span>
+    <span class="token punctuation">]</span>,
+    <span class="token string">"rule"</span>:<span class="token punctuation">{<!-- --></span>
+        <span class="token string">"rule_id"</span><span class="token builtin class-name">:</span><span class="token string">"00003"</span>,
+        <span class="token string">"rule_type"</span><span class="token builtin class-name">:</span><span class="token string">"1"</span>,
+        <span class="token string">"pk"</span><span class="token builtin class-name">:</span><span class="token string">"rule_id::uid::oid"</span>,
+        <span class="token string">"dimKey"</span>:<span class="token punctuation">{<!-- --></span>
+            <span class="token string">"tags"</span><span class="token builtin class-name">:</span><span class="token string">"oid"</span>
+        <span class="token punctuation">}</span>,
+        <span class="token string">"conditions"</span>:<span class="token punctuation">{<!-- --></span>
+            <span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"like"</span>,
+            <span class="token string">"tags"</span>:<span class="token punctuation">[</span>
+                <span class="token string">"大户型"</span>,
+                <span class="token string">"别墅"</span>
+            <span class="token punctuation">]</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>flink规则引擎只需要数据中的tags和条件中的tags进行交集计算，就可以得到结果。</p> 
+<hr> 
+<p><strong>第六个例子：用户进入了推荐线，但在60秒内没有任何点击操作</strong><br> 这个例子属于“完成A时间但未完成B”类型，我们直接看规则串是什么样的</p> 
+<pre><code class="prism language-bash"><span class="token punctuation">{<!-- --></span><span class="token string">"rule_id"</span><span class="token builtin class-name">:</span><span class="token string">"00004"</span>,<span class="token string">"rule_type"</span><span class="token builtin class-name">:</span><span class="token string">"3"</span>,<span class="token string">"pk"</span><span class="token builtin class-name">:</span><span class="token string">"rule_id::uid"</span>,<span class="token string">"index"</span>:0,<span class="token string">"winthTime"</span>:60,<span class="token string">"conditions"</span>:<span class="token punctuation">{<!-- --></span><span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"recommend"</span><span class="token punctuation">}</span><span class="token punctuation">}</span>
+<span class="token punctuation">{<!-- --></span><span class="token string">"rule_id"</span><span class="token builtin class-name">:</span><span class="token string">"00004"</span>,<span class="token string">"rule_type"</span><span class="token builtin class-name">:</span><span class="token string">"3"</span>,<span class="token string">"pk"</span><span class="token builtin class-name">:</span><span class="token string">"rule_id::uid"</span>,<span class="token string">"index"</span>:1,<span class="token string">"winthTime"</span>:60<span class="token string">",conditions"</span>:<span class="token punctuation">{<!-- --></span><span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"click"</span><span class="token punctuation">}</span><span class="token punctuation">}</span>
+</code></pre> 
+<p>这个规则串有两条数据，分别对应着“事件A”、“事件B”。“事件A”对应的<strong>index</strong>为0，“事件B”的<strong>index</strong>为1。<strong>winthTime</strong>的值对应“60秒内”。数据处理流程如下图。<br> <img src="https://images2.imgbox.com/7a/f5/U7RceFWJ_o.png" alt="在这里插入图片描述"></p> 
+<hr> 
+<p><strong>第七个例子：用户点击了活动入口，进入了活动页、发生了点赞、分享等交互操作，引导用户进入活动下一流程。</strong><br> 先看下规则串</p> 
+<pre><code class="prism language-bash"><span class="token punctuation">{<!-- --></span>
+    <span class="token string">"rule_id"</span><span class="token builtin class-name">:</span><span class="token string">"00007"</span>,
+    <span class="token string">"rule_type"</span><span class="token builtin class-name">:</span><span class="token string">"4"</span>,
+    <span class="token string">"pk"</span><span class="token builtin class-name">:</span><span class="token string">"rule_id::uid"</span>,
+    <span class="token string">"index"</span>:0,
+    <span class="token string">"winthTime"</span>:60,
+    <span class="token string">"conditions"</span>:<span class="token punctuation">{<!-- --></span>
+        <span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"activities-click"</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token string">"rule_id"</span><span class="token builtin class-name">:</span><span class="token string">"00007"</span>,
+    <span class="token string">"rule_type"</span><span class="token builtin class-name">:</span><span class="token string">"4"</span>,
+    <span class="token string">"pk"</span><span class="token builtin class-name">:</span><span class="token string">"rule_id::uid"</span>,
+    <span class="token string">"index"</span>:1,
+    <span class="token string">"winthTime"</span>:60,
+    <span class="token string">"conditions"</span>:<span class="token punctuation">{<!-- --></span>
+        <span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"activities-pv"</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token punctuation">{<!-- --></span>
+    <span class="token string">"rule_id"</span><span class="token builtin class-name">:</span><span class="token string">"00007"</span>,
+    <span class="token string">"rule_type"</span><span class="token builtin class-name">:</span><span class="token string">"4"</span>,
+    <span class="token string">"pk"</span><span class="token builtin class-name">:</span><span class="token string">"rule_id::uid"</span>,
+    <span class="token string">"index"</span>:2,
+    <span class="token string">"winthTime"</span>:60,
+    <span class="token string">"conditions"</span>:<span class="token punctuation">{<!-- --></span>
+        <span class="token string">"action"</span><span class="token builtin class-name">:</span><span class="token string">"click,share"</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>这个规则串包含3条数据，分别对应“<strong>点击活动入口</strong>”、“<strong>进入活动页</strong>”、“<strong>点赞、分享</strong>”。<br> 通常这种复杂的事件流匹配需要用到flink cep，但是使用CEP无法解决规则动态变更，并且每一个规则需要对应一个flink任务。基于这个背景，我们对事件顺序流匹配做了一个简单的实现，具体细节可以参照这篇文章：<a href="https://blog.csdn.net/woloqun/article/details/126254055">https://blog.csdn.net/woloqun/article/details/126254055</a>。</p> 
+<hr> 
+<p>看到这里，你会发现，其实从技术角度没有特别复杂的逻辑。那难点是什么？难点是如何设计平台，生成规则串。最后贴几张草图，大家参考下</p> 
+<p><img src="https://images2.imgbox.com/f0/34/yhE79Xnk_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/f9/72/eN45swX7_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/ad/d2/8CAIo9Pp_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/b0/4b/RRt3tovR_o.png" alt="在这里插入图片描述"></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/2e7eded078cde6aa539714a0cb5565b5/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【leetcode 144、154、94、102】二叉树的遍历</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/320cb0768a61d7cd3cfc90274abe13fd/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">elementui的表格实现滚动到底部加载更多</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

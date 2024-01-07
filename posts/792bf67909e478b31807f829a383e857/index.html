@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【Linux驱动】Linux中断（二）—— 按键中断驱动 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【Linux驱动】Linux中断（二）—— 按键中断驱动" />
+<meta property="og:description" content="前一篇已经在设备树的 gpio-led 节点中引入了中断信息，接下来将通过API来获取设备树中的中断信息。gpio-led 节点具体内容如下：
+gpio-key0 { pinctrl-names = &#34;default&#34;; pinctrl-0 = &lt;&amp;pinctrl_gpio_keys&gt;; // pinctrl子系统配置电气属性 key-gpio = &lt;&amp;gpio1 18 GPIO_ACTIVE_HIGH&gt;; // gpio子系统进行引脚初始化 interrupt-parent = &lt;&amp;gpio1&gt;; // 中断类型为 gpio1 interrupts = &lt;18 IRQ_TYPE_EDGE_FALLING&gt;; // 中断引脚为 GPIO1_IO18，触发方式为下降沿 status = &#34;okay&#34;; }; 一、中断 API 1、获取中断信息 获取设备树中 interrupts 属性的信息有两种方式，一种是针对 gpio 的方式，另一种是比较通用的方式。最终获取到的都是中断号，这里的中断号和裸机开发时的中断号不一样，裸机开发我们是根据参考文档来获取中断号
+而下面通过 API 获取到的中断号是经过映射的，类似于虚拟内存和物理内存的映射，这样做的目的是保护原中断号。这也是为什么后续获取到的中断号会与裸机开发时使用的中断号不一致。
+gpio_to_irq
+gpio_to_irq 是仅用于获取 gpio 中断相关信息，要求对应节点的父类中断控制器为 gpio，即 interrupt-parent 属性引用的是 gpio 控制器。该接口的声明在 &lt;asm/gpio.h&gt;，接口原型如下: #define gpio_to_irq	__gpio_to_irq /** * @ param gpio 表示根据gpio设备树节点获取到的 gpio 编号 * @ return 成功返回中断号，失败返回负值 */ int __gpio_to_irq(unsigned gpio); irq_of_parse_and_map" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/792bf67909e478b31807f829a383e857/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-01-04T16:05:34+08:00" />
+<meta property="article:modified_time" content="2024-01-04T16:05:34+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【Linux驱动】Linux中断（二）—— 按键中断驱动</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>前一篇已经在设备树的 gpio-led 节点中引入了中断信息，接下来将通过API来获取设备树中的中断信息。gpio-led 节点具体内容如下：</p> 
+<pre><code class="language-cpp">gpio-key0 {
+	pinctrl-names = "default";
+	pinctrl-0 = &lt;&amp;pinctrl_gpio_keys&gt;;            // pinctrl子系统配置电气属性
+	key-gpio = &lt;&amp;gpio1 18 GPIO_ACTIVE_HIGH&gt;;     // gpio子系统进行引脚初始化
+	interrupt-parent = &lt;&amp;gpio1&gt;;                 // 中断类型为 gpio1
+	interrupts = &lt;18 IRQ_TYPE_EDGE_FALLING&gt;;     // 中断引脚为 GPIO1_IO18，触发方式为下降沿
+	status = "okay";
+};</code></pre> 
+<p></p> 
+<h2>一、中断 API</h2> 
+<h3>1、获取中断信息</h3> 
+<p>获取设备树中 interrupts 属性的信息有两种方式，一种是针对 gpio 的方式，另一种是比较通用的方式。最终获取到的都是中断号，这里的中断号和裸机开发时的中断号不一样，裸机开发我们是根据参考文档来获取中断号</p> 
+<p class="img-center"><img alt="" height="75" src="https://images2.imgbox.com/ad/78/l8vL8h02_o.png" width="635"></p> 
+<p>而下面<span style="color:#4da8ee;">通过 API 获取到的中断号是经过映射的</span>，类似于虚拟内存和物理内存的映射，这样做的目的是保护原中断号。这也是为什么后续获取到的中断号会与裸机开发时使用的中断号不一致。</p> 
+<blockquote> 
+ <p><span style="color:#4da8ee;"><strong>gpio_to_irq</strong></span></p> 
+</blockquote> 
+<p>gpio_to_irq 是仅用于获取 gpio 中断相关信息，要求对应节点的父类中断控制器为 gpio，即 interrupt-parent 属性引用的是 gpio 控制器。该接口的声明在 <span style="color:#ff9900;">&lt;asm/gpio.h&gt;</span><span style="color:#494949;">，接口原型如下: </span></p> 
+<pre><code class="language-cpp">#define gpio_to_irq	__gpio_to_irq
+/**
+ * @ param gpio  表示根据gpio设备树节点获取到的 gpio 编号
+ * @ return      成功返回中断号，失败返回负值
+ */
+int __gpio_to_irq(unsigned gpio);</code></pre> 
+<blockquote> 
+ <p><span style="color:#4da8ee;"><strong>irq_of_parse_and_map</strong></span></p> 
+</blockquote> 
+<p>irq_of_parse_and_map 是比较通用的中断信息获取方式，不仅仅适用于 gpio，也适用于其他外设中断。该接口的声明在 <span style="color:#ff9900;">&lt;linux/of_irq.h&gt;</span>，接口原型如下：</p> 
+<pre><code class="language-cpp">/**
+ * @ param dev   设备树节点
+ * @ param index interrupts属性索引
+ * @ return      成功返回中断号，失败返回负值
+ */
+unsigned int irq_of_parse_and_map(struct device_node *dev,
+						          int index);</code></pre> 
+<p>注意：interrupts属性中可以包含多个中断信息，需要index来获取当前驱动所需的中断信息</p> 
+<p class="img-center"><img alt="" height="63" src="https://images2.imgbox.com/e0/51/1F2TnM6V_o.png" width="493"></p> 
+<p></p> 
+<h3>2、注册中断</h3> 
+<p>注册中断时主要告诉内核以下内容:</p> 
+<ul><li><span style="color:#0d0016;"><strong>中断号:</strong></span><span style="color:#494949;"> 映射后的中断号</span></li><li><span style="color:#0d0016;"><strong>触发方式：</strong></span><span style="color:#494949;">如何触发中断</span></li><li><span style="color:#0d0016;"><strong>中断服务函数：</strong></span><span style="color:#494949;">中断触发后如何处理</span></li><li><strong>中断服务函数参数</strong></li></ul> 
+<p>注册中断使用的 API 为 request_irq，函数原型的声明在 <span style="color:#ff9900;">&lt;linux/interrupt.h&gt;</span>，</p> 
+<pre><code class="language-cpp">/**
+ * @param irq       映射后的中断号
+ * @param handler   中断服务函数
+ * @param flags     触发方式
+ * @param name      中断名
+ * @param dev       给中断服务函数传递的参数
+ * @return          成功返回0，失败返回负值
+ */
+int request_irq(unsigned int irq, 
+                irq_handler_t handler, 
+                unsigned long flags,
+	            const char *name, 
+                void *dev);</code></pre> 
+<p>中断服务函数声明：</p> 
+<pre><code class="language-cpp">typedef irqreturn_t (*irq_handler_t)(int, void *);</code></pre> 
+<p>触发方式 flags（linux/irq.h）</p> 
+<p class="img-center"><img alt="" height="116" src="https://images2.imgbox.com/2f/94/CxZLJtIb_o.png" width="541"></p> 
+<p>中断名 name：</p> 
+<p>        设置以后可以在/proc/interrupts 文件中看到对应的中断名字，以此来判断中断是否注册成功</p> 
+<p></p> 
+<h3>3、释放中断</h3> 
+<p>注册中断后，如果模块被卸载，需要释放中断，释放中断 free_irq 的接口原型声明在 &lt;<span style="color:#ff9900;">linux/interrupt.h</span>&gt;</p> 
+<pre><code class="language-cpp">/**
+ * @param irq       映射后的中断号
+ * @param dev       给中断服务函数传递的参数
+ */
+void free_irq(unsigned int irq, void * dev);</code></pre> 
+<p></p> 
+<h2>二、驱动完善</h2> 
+<h3>1、驱动入口函数</h3> 
+<p>驱动入口函数主要是获取中断号，并申请中断，其他的诸如申请设备号、自动创建驱动节点等操作将不再赘述。下面使用变量 status 来代表某个外设的状态，按键按下时中断触发，此时反转设备状态。</p> 
+<pre><code class="language-cpp">struct chrdev_t 
+{
+    // ...
+
+	struct device_node* gpioNode;			/* 设备树节点 */
+	uint32_t 			gpioNum;			/* gpio 引脚编号 */
+	uint32_t 			irqNum;				/* 中断号 */
+
+	uint32_t            status;				/* 设备状态 */
+};
+static struct chrdev_t chrdev;
+
+/* 驱动入口函数 */
+static int __init kerneltimer_init(void)
+{
+	uint32_t ret = 0;
+
+	/* 获取key0设备树节点 */
+	chrdev.gpioNode = of_find_node_by_path("/gpio-key0");
+	if(chrdev.gpioNode == NULL)
+	{	
+		printk("node cannot be found!\n");
+		return -1;
+	}
+    // 获取 gpio 编号
+	chrdev.gpioNum = of_get_named_gpio(chrdev.gpioNode, "key-gpio", 0);
+	if (chrdev.gpioNum &lt; 0)
+	{
+		printk("gpio property fetch failed!\n");
+		return -1;
+	}
+    // 配置 gpio 为输入
+	ret = gpio_direction_input(chrdev.gpioNum);
+	if (ret &lt; 0)
+	{
+		printk("gpio set failed!\n");
+		return -1;
+	}
+
+#if 1
+	// 根据gpio编号获取中断信息
+	chrdev.irqNum = gpio_to_irq(chrdev.gpioNum);
+	if (chrdev.irqNum &lt; 0)
+	{
+		printk("irq number fetch failed!\n");
+		return -1;
+	}
+#else
+	// 根据节点获取中断号
+	chrdev.irqNum = irq_of_parse_and_map(chrdev.gpioNode, 0);
+	if (chrdev.irqNum &lt; 0)
+	{
+		printk("irq number fetch failed!\n");
+		return -1;
+	}
+#endif
+	printk("中断号: %u\n", chrdev.irqNum);
+    // 设备初始状态为 0
+	chrdev.status = 0;
+	// 注册中断
+	ret = request_irq(chrdev.irqNum, key0_handler, IRQ_TYPE_EDGE_FALLING, "key0-int", &amp;chrdev);
+	if (ret &lt; 0)
+	{
+		printk("irq subscribe failed!\n");
+		return -1;
+	}
+
+    // ... 
+}</code></pre> 
+<p></p> 
+<h3>2、中断服务函数</h3> 
+<p>上面在介绍注册中断 API 时已经提及了中断服务函数的声明，第一个参数为 中断号，第二个参数为注册时传递给中断服务函数的参数</p> 
+<pre><code class="language-cpp">static irqreturn_t key0_handler(int irq, void * dev)
+{
+	struct chrdev_t* pdev = (struct chrdev_t*)dev;
+
+	// 状态反转
+	pdev-&gt;status = !pdev-&gt;status;
+	return IRQ_RETVAL(IRQ_HANDLED);
+}</code></pre> 
+<p></p> 
+<h3>3、read 操作函数</h3> 
+<pre><code class="language-cpp">static ssize_t chrdev_read(struct file *pfile, char __user * pbuf, size_t size, loff_t * poff)
+{
+    // 在 open 函数中 pfile-&gt;private_data = &amp;chrdev;
+	struct chrdev_t* pdev = pfile-&gt;private_data;
+	unsigned long ret = 0;
+	
+    // 将设备状态返回给应用层
+	ret = copy_to_user(pbuf, &amp;pdev-&gt;status, sizeof(pdev-&gt;status));
+	if (ret != 0)
+	{
+		printk("kernel send data failed!\n");
+		return -1;
+	}
+	
+	return sizeof(pdev-&gt;status);
+}</code></pre> 
+<p></p> 
+<h3>4、驱动退出函数</h3> 
+<p>驱动退出函数需要释放中断</p> 
+<pre><code class="language-cpp">static void __exit kerneltimer_exit(void)
+{
+    // ... 
+
+	/* 注销中断 */
+	free_irq(chrdev.irqNum, &amp;chrdev);
+}</code></pre> 
+<p></p> 
+<h2>三、测试</h2> 
+<p>在应用程序中每隔 1s 调用 read 函数来获取设备状态</p> 
+<pre><code class="language-cpp">#include &lt;sys/types.h&gt;
+#include &lt;sys/stat.h&gt;
+#include &lt;fcntl.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+
+#define delayms(x)        usleep(x * 1000)
+
+void printHelp()
+{
+    printf("usage: ./xxxApp &lt;driver_path&gt;\n");
+}
+
+int main(int argc, char* argv[])
+{
+    if (argc != 2)
+    {
+        printHelp();
+        return -1;
+    }
+    
+    char* driver_path = argv[1];       // 位置0 保存的是 ./chrdevbaseApp
+    int state = 0;
+    int ret = 0;
+    int fd = 0;
+
+    fd = open(driver_path, O_RDONLY);
+    if (fd &lt; 0)
+    {
+        perror("open file failed");
+        return -2;
+    }
+
+    while (1)
+    {
+        ret = read(fd, &amp;state, sizeof(state));
+        if (ret &lt; 0)
+        {
+            printf("read data error\n");
+            break;
+        }
+
+        printf("中断触发状态：%d\n", state);
+        delayms(1000);
+    }
+    
+    close(fd);
+    return 0;
+}</code></pre> 
+<p>裸机开发时，GPIO1_IO18 对应的中断号为99，现在因为经过一层映射，屏蔽了真正的中断号，使用了虚拟中断号，所以这里的中断号为 47 </p> 
+<p class="img-center"><img alt="" height="38" src="https://images2.imgbox.com/9e/a1/wx16HfFO_o.png" width="483"></p> 
+<p>应用程序的测试结果如下，按下按键时触发中断，此时状态反转。 </p> 
+<p class="img-center"><img alt="" height="275" src="https://images2.imgbox.com/ce/86/5AXwPR0R_o.png" width="338"></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/008c815246e59e39b6a43eeee35a4a12/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Linux引导过程和服务</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/9d78487956f9a8d33ffa66150e8dbdb2/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">高阶形状函数（线性应变杆）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

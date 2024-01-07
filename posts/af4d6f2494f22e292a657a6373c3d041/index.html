@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Qt信号槽连接方式源码解读 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Qt信号槽连接方式源码解读" />
+<meta property="og:description" content="前言 Qt的五（四）种连接方式，在上一篇已经讲明，本篇主要分析在源码上是如何实现这几种连接方式的。本次源码为Qt 5.15.2搞懂务必认真阅读最后添加注释后的代码 connect时会做什么？ 已知connect是可以实现一个信号连接多个槽的，并且Qt会为每一个信号创建一个槽链表。
+所以其内部当发现(触发)connect时，就会把connect的“接收者和槽”加入到对应的信号的槽链表上。存储的就是接收者及其槽的索引(函数地址)。当然每一个接收对象也会记录与之连接信号，以便销毁时会通知信号将其断开。(后续会专门补这块的源码分析)
+获取信号对应的槽 通常我们在跳转到一个信号的定义时，都会看到类似这种的代码
+// SIGNAL 0 void TestMoc::testMocSignal(int _t1, int _t2) { void *_a[] = { nullptr, const_cast&lt;void*&gt;(reinterpret_cast&lt;const void*&gt;(std::addressof(_t1))), const_cast&lt;void*&gt;(reinterpret_cast&lt;const void*&gt;(std::addressof(_t2))) }; QMetaObject::activate(this, &amp;staticMetaObject, 0, _a); } 这里要重点关注QMetaObject::activate的第三个参数0，会根据这个索引值，把发送者(this)、信号函数的参数,传给activate函数,
+void TestMoc::qt_static_metacall(QObject *_o, QMetaObject::Call _c, int _id, void **_a) { if (_c == QMetaObject::InvokeMetaMethod) { auto *_t = static_cast&lt;TestMoc *&gt;(_o); Q_UNUSED(_t) switch (_id) { case 0: _t-&gt;testMocSignal((*reinterpret_cast&lt; int(*)&gt;(_a[1])),(*reinterpret_cast&lt; int(*)&gt;(_a[2]))); break; case 1: _t-&gt;testMocSignal2((*reinterpret_cast&lt; int(*)&gt;(_a[1]))); break; default: ; } } else if (_c == QMetaObject::IndexOfMethod) { //····· } } QMetaObject::activate 最终是执行doActivate执行槽函数" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/af4d6f2494f22e292a657a6373c3d041/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-10-30T19:25:22+08:00" />
+<meta property="article:modified_time" content="2022-10-30T19:25:22+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Qt信号槽连接方式源码解读</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h4><a id="_0"></a>前言</h4> 
+<ul><li>Qt的五（四）种连接方式，在上一篇已经讲明，本篇主要分析在源码上是如何实现这几种连接方式的。</li><li>本次源码为<strong>Qt 5.15.2</strong></li><li>搞懂务必认真阅读最后添加注释后的代码</li></ul> 
+<h4><a id="connect_4"></a>connect时会做什么？</h4> 
+<p>已知connect是可以实现一个信号连接多个槽的，并且Qt会为每一个信号创建一个槽链表。<br> 所以其内部当发现(触发)connect时，就会把connect的“接收者和槽”加入到对应的信号的槽链表上。存储的就是接收者及其槽的索引(函数地址)。当然每一个接收对象也会记录与之连接信号，以便销毁时会通知信号将其断开。(后续会专门补这块的源码分析)</p> 
+<h4><a id="_7"></a>获取信号对应的槽</h4> 
+<p>通常我们在跳转到一个信号的定义时，都会看到类似这种的代码</p> 
+<pre><code class="prism language-c"><span class="token comment">// SIGNAL 0</span>
+<span class="token keyword">void</span> TestMoc<span class="token operator">::</span><span class="token function">testMocSignal</span><span class="token punctuation">(</span><span class="token keyword">int</span> _t1<span class="token punctuation">,</span> <span class="token keyword">int</span> _t2<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">void</span> <span class="token operator">*</span>_a<span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span> nullptr<span class="token punctuation">,</span> const_cast<span class="token operator">&lt;</span><span class="token keyword">void</span><span class="token operator">*</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>reinterpret_cast<span class="token operator">&lt;</span><span class="token keyword">const</span> <span class="token keyword">void</span><span class="token operator">*</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>std<span class="token operator">::</span><span class="token function">addressof</span><span class="token punctuation">(</span>_t1<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">,</span> const_cast<span class="token operator">&lt;</span><span class="token keyword">void</span><span class="token operator">*</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>reinterpret_cast<span class="token operator">&lt;</span><span class="token keyword">const</span> <span class="token keyword">void</span><span class="token operator">*</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>std<span class="token operator">::</span><span class="token function">addressof</span><span class="token punctuation">(</span>_t2<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">}</span><span class="token punctuation">;</span>
+    QMetaObject<span class="token operator">::</span><span class="token function">activate</span><span class="token punctuation">(</span>this<span class="token punctuation">,</span> <span class="token operator">&amp;</span>staticMetaObject<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> _a<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>这里要重点关注QMetaObject::activate的第三个参数0，会根据这个索引值，把发送者(this)、信号函数的参数,传给activate函数,</p> 
+<pre><code class="prism language-c"><span class="token keyword">void</span> TestMoc<span class="token operator">::</span><span class="token function">qt_static_metacall</span><span class="token punctuation">(</span>QObject <span class="token operator">*</span>_o<span class="token punctuation">,</span> QMetaObject<span class="token operator">::</span>Call _c<span class="token punctuation">,</span> <span class="token keyword">int</span> _id<span class="token punctuation">,</span> <span class="token keyword">void</span> <span class="token operator">*</span><span class="token operator">*</span>_a<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>_c <span class="token operator">==</span> QMetaObject<span class="token operator">::</span>InvokeMetaMethod<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">auto</span> <span class="token operator">*</span>_t <span class="token operator">=</span> static_cast<span class="token operator">&lt;</span>TestMoc <span class="token operator">*</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>_o<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">Q_UNUSED</span><span class="token punctuation">(</span>_t<span class="token punctuation">)</span>
+        <span class="token keyword">switch</span> <span class="token punctuation">(</span>_id<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">case</span> <span class="token number">0</span><span class="token operator">:</span> _t<span class="token operator">-&gt;</span><span class="token function">testMocSignal</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token operator">*</span>reinterpret_cast<span class="token operator">&lt;</span> <span class="token keyword">int</span><span class="token punctuation">(</span><span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>_a<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token punctuation">(</span><span class="token operator">*</span>reinterpret_cast<span class="token operator">&lt;</span> <span class="token keyword">int</span><span class="token punctuation">(</span><span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>_a<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token keyword">break</span><span class="token punctuation">;</span>
+        <span class="token keyword">case</span> <span class="token number">1</span><span class="token operator">:</span> _t<span class="token operator">-&gt;</span><span class="token function">testMocSignal2</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token operator">*</span>reinterpret_cast<span class="token operator">&lt;</span> <span class="token keyword">int</span><span class="token punctuation">(</span><span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>_a<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token keyword">break</span><span class="token punctuation">;</span>
+        <span class="token keyword">default</span><span class="token operator">:</span> <span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>_c <span class="token operator">==</span> QMetaObject<span class="token operator">::</span>IndexOfMethod<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">//·····</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>QMetaObject::activate 最终是执行doActivate执行槽函数</p> 
+<pre><code class="prism language-c"><span class="token keyword">void</span> QMetaObject<span class="token operator">::</span><span class="token function">activate</span><span class="token punctuation">(</span>QObject <span class="token operator">*</span>sender<span class="token punctuation">,</span> <span class="token keyword">const</span> QMetaObject <span class="token operator">*</span>m<span class="token punctuation">,</span> <span class="token keyword">int</span> local_signal_index<span class="token punctuation">,</span>
+                           <span class="token keyword">void</span> <span class="token operator">*</span><span class="token operator">*</span>argv<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">int</span> signal_index <span class="token operator">=</span> local_signal_index <span class="token operator">+</span> QMetaObjectPrivate<span class="token operator">::</span><span class="token function">signalOffset</span><span class="token punctuation">(</span>m<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">Q_UNLIKELY</span><span class="token punctuation">(</span>qt_signal_spy_callback_set<span class="token punctuation">.</span><span class="token function">loadRelaxed</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+        doActivate<span class="token operator">&lt;</span>true<span class="token operator">&gt;</span><span class="token punctuation">(</span>sender<span class="token punctuation">,</span> signal_index<span class="token punctuation">,</span> argv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">else</span>
+        doActivate<span class="token operator">&lt;</span>false<span class="token operator">&gt;</span><span class="token punctuation">(</span>sender<span class="token punctuation">,</span> signal_index<span class="token punctuation">,</span> argv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="doActivate_48"></a>doActivate的实现</h4> 
+<ol><li>获取信号对应的槽函数链表</li><li>获取当前的发送信号的线程ID，并判断是否在发送者线程</li><li>遍历该信号的所有连接 
+  <ol><li>如果不在发送者线程，对接收者进行加锁</li><li>如果当前时默认连接，并且接收者和发送<strong>信号</strong>不在同一线程或者指定为Qt::QueuedConnection连接，通过queued_activate封装成事件调用postevnt给接收者</li><li>当前连接方式为Qt::BlockingQueuedConnection 
+    <ol><li>同一个线程抛出死锁警告</li><li>构造的QMetaCallEvent通过postEvent形式给接收者</li><li>并且通过QSemaphore阻塞发送者线程，等待槽函数执行完毕将</li><li>接收者执行槽函数完毕后再执行semaphore.release()来释放信号使其(调用发送信号的对象继续执行)</li></ol> </li><li>处理所有的直连(Qt::DirectConnection)<br> 1. 通过 call方法调用槽Qt5的函数指针<br> 2. 通过callFunction即moc_XXXX.cpp里的qt_static_metacall<br> 3. 通过metacall, 也就是moc_XXXX.cpp里的qt_metacall再调用</li></ol> </li></ol> 
+<pre><code class="prism language-c"><span class="token keyword">void</span> <span class="token function">doActivate</span><span class="token punctuation">(</span>QObject <span class="token operator">*</span>sender<span class="token punctuation">,</span> <span class="token keyword">int</span> signal_index<span class="token punctuation">,</span> <span class="token keyword">void</span> <span class="token operator">*</span><span class="token operator">*</span>argv<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    QObjectPrivate <span class="token operator">*</span>sp <span class="token operator">=</span> QObjectPrivate<span class="token operator">::</span><span class="token function">get</span><span class="token punctuation">(</span>sender<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//·····省略</span>
+    bool senderDeleted <span class="token operator">=</span> false<span class="token punctuation">;</span>
+    <span class="token punctuation">{<!-- --></span>
+    <span class="token function">Q_ASSERT</span><span class="token punctuation">(</span>sp<span class="token operator">-&gt;</span>connections<span class="token punctuation">.</span><span class="token function">loadAcquire</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    
+    QObjectPrivate<span class="token operator">::</span>ConnectionDataPointer <span class="token function">connections</span><span class="token punctuation">(</span>sp<span class="token operator">-&gt;</span>connections<span class="token punctuation">.</span><span class="token function">loadRelaxed</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    QObjectPrivate<span class="token operator">::</span>SignalVector <span class="token operator">*</span>signalVector <span class="token operator">=</span> connections<span class="token operator">-&gt;</span>signalVector<span class="token punctuation">.</span><span class="token function">loadRelaxed</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//1.获取信号对应的槽函数链表</span>
+    <span class="token keyword">const</span> QObjectPrivate<span class="token operator">::</span>ConnectionList <span class="token operator">*</span>list<span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>signal_index <span class="token operator">&lt;</span> signalVector<span class="token operator">-&gt;</span><span class="token function">count</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+        list <span class="token operator">=</span> <span class="token operator">&amp;</span>signalVector<span class="token operator">-&gt;</span><span class="token function">at</span><span class="token punctuation">(</span>signal_index<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">else</span>
+        list <span class="token operator">=</span> <span class="token operator">&amp;</span>signalVector<span class="token operator">-&gt;</span><span class="token function">at</span><span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//2.获取当前的发送信号的线程ID，并判断是否在发送者线程</span>
+    Qt<span class="token operator">::</span>HANDLE currentThreadId <span class="token operator">=</span> QThread<span class="token operator">::</span><span class="token function">currentThreadId</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    bool inSenderThread <span class="token operator">=</span> currentThreadId <span class="token operator">==</span> QObjectPrivate<span class="token operator">::</span><span class="token function">get</span><span class="token punctuation">(</span>sender<span class="token punctuation">)</span><span class="token operator">-&gt;</span>threadData<span class="token punctuation">.</span><span class="token function">loadRelaxed</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span>threadId<span class="token punctuation">.</span><span class="token function">loadRelaxed</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//3.遍历该信号的所有连接</span>
+    <span class="token comment">/*参考代码
+    QObjectPrivate::Connection *c = list-&gt;first.loadRelaxed();
+    if (!c)
+        continue;
+    do {
+		//...
+    }  while ((c = c-&gt;nextConnectionList.loadRelaxed()) != nullptr &amp;&amp; c-&gt;id &lt;= highestConnectionId);
+    */</span>
+    <span class="token comment">//源代码</span>
+    <span class="token keyword">do</span> <span class="token punctuation">{<!-- --></span>
+        QObjectPrivate<span class="token operator">::</span>Connection <span class="token operator">*</span>c <span class="token operator">=</span> list<span class="token operator">-&gt;</span>first<span class="token punctuation">.</span><span class="token function">loadRelaxed</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>c<span class="token punctuation">)</span>
+            <span class="token keyword">continue</span><span class="token punctuation">;</span>
+        <span class="token keyword">do</span> <span class="token punctuation">{<!-- --></span>
+            QObject <span class="token operator">*</span> <span class="token keyword">const</span> receiver <span class="token operator">=</span> c<span class="token operator">-&gt;</span>receiver<span class="token punctuation">.</span><span class="token function">loadRelaxed</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>receiver<span class="token punctuation">)</span>
+                <span class="token keyword">continue</span><span class="token punctuation">;</span>
+            QThreadData <span class="token operator">*</span>td <span class="token operator">=</span> c<span class="token operator">-&gt;</span>receiverThreadData<span class="token punctuation">.</span><span class="token function">loadRelaxed</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>td<span class="token punctuation">)</span>
+                <span class="token keyword">continue</span><span class="token punctuation">;</span>
+            <span class="token comment">//3.1如果不在发送者线程，对接收者进行加锁</span>
+            bool receiverInSameThread<span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>inSenderThread<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                receiverInSameThread <span class="token operator">=</span> currentThreadId <span class="token operator">==</span> td<span class="token operator">-&gt;</span>threadId<span class="token punctuation">.</span><span class="token function">loadRelaxed</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token comment">// need to lock before reading the threadId, because moveToThread() could interfere</span>
+                QMutexLocker <span class="token function">lock</span><span class="token punctuation">(</span><span class="token function">signalSlotLock</span><span class="token punctuation">(</span>receiver<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                receiverInSameThread <span class="token operator">=</span> currentThreadId <span class="token operator">==</span> td<span class="token operator">-&gt;</span>threadId<span class="token punctuation">.</span><span class="token function">loadRelaxed</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token comment">//3.2 如果当前时默认连接，并且接收者和发送**信号**不在同一线程或者指定为Qt::QueuedConnection连接</span>
+            <span class="token comment">// 通过queued_activate封装成事件事件postevnt给接收者</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>c<span class="token operator">-&gt;</span>connectionType <span class="token operator">==</span> Qt<span class="token operator">::</span>AutoConnection <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span>receiverInSameThread<span class="token punctuation">)</span>
+                <span class="token operator">||</span> <span class="token punctuation">(</span>c<span class="token operator">-&gt;</span>connectionType <span class="token operator">==</span> Qt<span class="token operator">::</span>QueuedConnection<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token function">queued_activate</span><span class="token punctuation">(</span>sender<span class="token punctuation">,</span> signal_index<span class="token punctuation">,</span> c<span class="token punctuation">,</span> argv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">continue</span><span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">QT_CONFIG</span><span class="token punctuation">(</span>thread<span class="token punctuation">)</span></span></span>
+            <span class="token punctuation">}</span>
+            <span class="token comment">//3.3 当前连接方式为Qt::BlockingQueuedConnection</span>
+            <span class="token comment">// 同一个线程抛出死锁警告</span>
+            <span class="token comment">// 并且通过QSemaphore 阻塞发送者线程，等待槽函数执行完毕将构造的QMetaCallEvent通过postEvent形式给接收者</span>
+            <span class="token comment">// 接收者执行槽函数完毕后再执行semaphore.release()来释放信号使其(调用发送信号的对象继续执行)</span>
+            <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>c<span class="token operator">-&gt;</span>connectionType <span class="token operator">==</span> Qt<span class="token operator">::</span>BlockingQueuedConnection<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>receiverInSameThread<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token function">qWarning</span><span class="token punctuation">(</span><span class="token string">"Qt: Dead lock detected while activating a BlockingQueuedConnection: "</span>
+                    <span class="token string">"Sender is %s(%p), receiver is %s(%p)"</span><span class="token punctuation">,</span>
+                    sender<span class="token operator">-&gt;</span><span class="token function">metaObject</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span><span class="token function">className</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> sender<span class="token punctuation">,</span>
+                    receiver<span class="token operator">-&gt;</span><span class="token function">metaObject</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span><span class="token function">className</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> receiver<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+                QSemaphore semaphore<span class="token punctuation">;</span>
+                <span class="token punctuation">{<!-- --></span>
+                    QBasicMutexLocker <span class="token function">locker</span><span class="token punctuation">(</span><span class="token function">signalSlotLock</span><span class="token punctuation">(</span>sender<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>c<span class="token operator">-&gt;</span>receiver<span class="token punctuation">.</span><span class="token function">loadAcquire</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+                        <span class="token keyword">continue</span><span class="token punctuation">;</span>
+                    QMetaCallEvent <span class="token operator">*</span>ev <span class="token operator">=</span> c<span class="token operator">-&gt;</span>isSlotObject <span class="token operator">?</span>
+                        new <span class="token function">QMetaCallEvent</span><span class="token punctuation">(</span>c<span class="token operator">-&gt;</span>slotObj<span class="token punctuation">,</span> sender<span class="token punctuation">,</span> signal_index<span class="token punctuation">,</span> argv<span class="token punctuation">,</span> <span class="token operator">&amp;</span>semaphore<span class="token punctuation">)</span> <span class="token operator">:</span>
+                        new <span class="token function">QMetaCallEvent</span><span class="token punctuation">(</span>c<span class="token operator">-&gt;</span>method_offset<span class="token punctuation">,</span> c<span class="token operator">-&gt;</span>method_relative<span class="token punctuation">,</span> c<span class="token operator">-&gt;</span>callFunction<span class="token punctuation">,</span>
+                                           sender<span class="token punctuation">,</span> signal_index<span class="token punctuation">,</span> argv<span class="token punctuation">,</span> <span class="token operator">&amp;</span>semaphore<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    QCoreApplication<span class="token operator">::</span><span class="token function">postEvent</span><span class="token punctuation">(</span>receiver<span class="token punctuation">,</span> ev<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+                semaphore<span class="token punctuation">.</span><span class="token function">acquire</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">continue</span><span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+            <span class="token punctuation">}</span>
+            <span class="token comment">//3.4 处理所有的直连(Qt::DirectConnection)</span>
+            <span class="token comment">// Qt还可以进行信号转发，一个信号连接另一个信号的形式</span>
+            QObjectPrivate<span class="token operator">::</span>Sender <span class="token function">senderData</span><span class="token punctuation">(</span>receiverInSameThread <span class="token operator">?</span> receiver <span class="token operator">:</span> nullptr<span class="token punctuation">,</span> sender<span class="token punctuation">,</span> signal_index<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">//3.4.1 如果是槽，则直接通过call方法调用槽Qt5的函数指针</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>c<span class="token operator">-&gt;</span>isSlotObject<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                c<span class="token operator">-&gt;</span>slotObj<span class="token operator">-&gt;</span><span class="token function">ref</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+                <span class="token keyword">struct</span> <span class="token class-name">Deleter</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token keyword">void</span> <span class="token function">operator</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">(</span>QtPrivate<span class="token operator">::</span>QSlotObjectBase <span class="token operator">*</span>slot<span class="token punctuation">)</span> <span class="token keyword">const</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token keyword">if</span> <span class="token punctuation">(</span>slot<span class="token punctuation">)</span> slot<span class="token operator">-&gt;</span><span class="token function">destroyIfLastRef</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span><span class="token punctuation">;</span>
+                <span class="token keyword">const</span> std<span class="token operator">::</span>unique_ptr<span class="token operator">&lt;</span>QtPrivate<span class="token operator">::</span>QSlotObjectBase<span class="token punctuation">,</span> Deleter<span class="token operator">&gt;</span> obj<span class="token punctuation">{<!-- --></span>c<span class="token operator">-&gt;</span>slotObj<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+                <span class="token punctuation">{<!-- --></span>
+                    <span class="token function">Q_TRACE_SCOPE</span><span class="token punctuation">(</span>QMetaObject_activate_slot_functor<span class="token punctuation">,</span> obj<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    obj<span class="token operator">-&gt;</span><span class="token function">call</span><span class="token punctuation">(</span>receiver<span class="token punctuation">,</span> argv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span> 
+            <span class="token comment">//3.4.2 通过callFunction即moc_XXXX.cpp里的qt_static_metacall</span>
+            <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>c<span class="token operator">-&gt;</span>callFunction <span class="token operator">&amp;&amp;</span> c<span class="token operator">-&gt;</span>method_offset <span class="token operator">&lt;=</span> receiver<span class="token operator">-&gt;</span><span class="token function">metaObject</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span><span class="token function">methodOffset</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token comment">//we compare the vtable to make sure we are not in the destructor of the object.</span>
+                <span class="token keyword">const</span> <span class="token keyword">int</span> method_relative <span class="token operator">=</span> c<span class="token operator">-&gt;</span>method_relative<span class="token punctuation">;</span>
+                <span class="token keyword">const</span> <span class="token keyword">auto</span> callFunction <span class="token operator">=</span> c<span class="token operator">-&gt;</span>callFunction<span class="token punctuation">;</span>
+                <span class="token keyword">const</span> <span class="token keyword">int</span> methodIndex <span class="token operator">=</span> <span class="token punctuation">(</span>Q_HAS_TRACEPOINTS <span class="token operator">||</span> callbacks_enabled<span class="token punctuation">)</span> <span class="token operator">?</span> c<span class="token operator">-&gt;</span><span class="token function">method</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">:</span> <span class="token number">0</span><span class="token punctuation">;</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>callbacks_enabled <span class="token operator">&amp;&amp;</span> signal_spy_set<span class="token operator">-&gt;</span>slot_begin_callback <span class="token operator">!=</span> nullptr<span class="token punctuation">)</span>
+                    signal_spy_set<span class="token operator">-&gt;</span><span class="token function">slot_begin_callback</span><span class="token punctuation">(</span>receiver<span class="token punctuation">,</span> methodIndex<span class="token punctuation">,</span> argv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+                <span class="token punctuation">{<!-- --></span>
+                    <span class="token function">Q_TRACE_SCOPE</span><span class="token punctuation">(</span>QMetaObject_activate_slot<span class="token punctuation">,</span> receiver<span class="token punctuation">,</span> methodIndex<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token function">callFunction</span><span class="token punctuation">(</span>receiver<span class="token punctuation">,</span> QMetaObject<span class="token operator">::</span>InvokeMetaMethod<span class="token punctuation">,</span> method_relative<span class="token punctuation">,</span> argv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>callbacks_enabled <span class="token operator">&amp;&amp;</span> signal_spy_set<span class="token operator">-&gt;</span>slot_end_callback <span class="token operator">!=</span> nullptr<span class="token punctuation">)</span>
+                    signal_spy_set<span class="token operator">-&gt;</span><span class="token function">slot_end_callback</span><span class="token punctuation">(</span>receiver<span class="token punctuation">,</span> methodIndex<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span> 
+            <span class="token comment">//3.4.3 通过metacall, 也就是moc_XXXX.cpp里的qt_metacall再调用</span>
+            <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">const</span> <span class="token keyword">int</span> method <span class="token operator">=</span> c<span class="token operator">-&gt;</span>method_relative <span class="token operator">+</span> c<span class="token operator">-&gt;</span>method_offset<span class="token punctuation">;</span>
+
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>callbacks_enabled <span class="token operator">&amp;&amp;</span> signal_spy_set<span class="token operator">-&gt;</span>slot_begin_callback <span class="token operator">!=</span> nullptr<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    signal_spy_set<span class="token operator">-&gt;</span><span class="token function">slot_begin_callback</span><span class="token punctuation">(</span>receiver<span class="token punctuation">,</span> method<span class="token punctuation">,</span> argv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+
+                <span class="token punctuation">{<!-- --></span>
+                    <span class="token function">Q_TRACE_SCOPE</span><span class="token punctuation">(</span>QMetaObject_activate_slot<span class="token punctuation">,</span> receiver<span class="token punctuation">,</span> method<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    QMetaObject<span class="token operator">::</span><span class="token function">metacall</span><span class="token punctuation">(</span>receiver<span class="token punctuation">,</span> QMetaObject<span class="token operator">::</span>InvokeMetaMethod<span class="token punctuation">,</span> method<span class="token punctuation">,</span> argv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>callbacks_enabled <span class="token operator">&amp;&amp;</span> signal_spy_set<span class="token operator">-&gt;</span>slot_end_callback <span class="token operator">!=</span> nullptr<span class="token punctuation">)</span>
+                    signal_spy_set<span class="token operator">-&gt;</span><span class="token function">slot_end_callback</span><span class="token punctuation">(</span>receiver<span class="token punctuation">,</span> method<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            
+        <span class="token punctuation">}</span> <span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>c <span class="token operator">=</span> c<span class="token operator">-&gt;</span>nextConnectionList<span class="token punctuation">.</span><span class="token function">loadRelaxed</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">!=</span> nullptr <span class="token operator">&amp;&amp;</span> c<span class="token operator">-&gt;</span>id <span class="token operator">&lt;=</span> highestConnectionId<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token punctuation">}</span> <span class="token keyword">while</span> <span class="token punctuation">(</span>list <span class="token operator">!=</span> <span class="token operator">&amp;</span>signalVector<span class="token operator">-&gt;</span><span class="token function">at</span><span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span>
+        <span class="token comment">//start over for all signals;</span>
+        <span class="token punctuation">(</span><span class="token punctuation">(</span>list <span class="token operator">=</span> <span class="token operator">&amp;</span>signalVector<span class="token operator">-&gt;</span><span class="token function">at</span><span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">,</span> true<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>connections<span class="token operator">-&gt;</span>currentConnectionId<span class="token punctuation">.</span><span class="token function">loadRelaxed</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span>
+            senderDeleted <span class="token operator">=</span> true<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>senderDeleted<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        sp<span class="token operator">-&gt;</span>connections<span class="token punctuation">.</span><span class="token function">loadRelaxed</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span><span class="token function">cleanOrphanedConnections</span><span class="token punctuation">(</span>sender<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>callbacks_enabled <span class="token operator">&amp;&amp;</span> signal_spy_set<span class="token operator">-&gt;</span>signal_end_callback <span class="token operator">!=</span> nullptr<span class="token punctuation">)</span>
+            signal_spy_set<span class="token operator">-&gt;</span><span class="token function">signal_end_callback</span><span class="token punctuation">(</span>sender<span class="token punctuation">,</span> signal_index<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<h4><a id="_221"></a>最后</h4> 
+<p>Qt 信号槽源码这块不同版本的是由差异的，本次是按照Qt5.15的源码解读，但原理逻辑流程上大同小异</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/d9bc864b4d7939c914e6c500df9c7dfd/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">安卓轮播图免费</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/19777d6c0ed3a7e9d9e45584d5889162/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">SSM整合（配置类方式）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>爱奇艺容器实践（内附云原生落地沙龙干货下载） - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="爱奇艺容器实践（内附云原生落地沙龙干货下载）" />
+<meta property="og:description" content="4月10日下午，爱奇艺技术产品团队举办了“i技术会”线下技术沙龙，本次技术会的主题是“云原生落地探索与实践”，邀请快手、百度和字节跳动的技术专家，与爱奇艺技术产品团队共同分享与探讨云原生落地的实践经验。
+其中，来自爱奇艺的技术专家赵慰为大家带来了爱奇艺容器实践的分享，讲述了爱奇艺的容器应用场景和在容器网络、容器运行时方面的实践经验。
+PS：关注公众号，在后台回复关键词“云原生”，就可以获得本次技术会嘉宾分享PPT和录播视频。
+以下为“爱奇艺容器实践”干货分享，根据【i技术会】现场演讲整理而成。
+爱奇艺容器实践/分享嘉宾：爱奇艺技术专家赵慰
+本场分享的主要内容包括爱奇艺近年来在容器方面的实践经验和遇到过的问题，以及我们在选型和探索过程中的一些心路历程。
+1、爱奇艺容器应用场景
+爱奇艺内部超过一半的应用实例正在以容器形式运行，这些容器基本都运行在物理机集群上面。最初爱奇艺采用Mesos框架、基于Mesos的开源服务调度框架Marathon和自研批处理框架Sisyphus，并基于Marathon研发了QAE（iQIYI App Engine）。当时，大量公司以Mesos/Marathon为基础做着类似的事情。前不久，有消息表明Mesos即将从Apache光荣退休，而Twitter贡献的著名Mesos调度框架Aurora项目也早在去年二月份就已进入Apache退役名单。对于Mesos的告别，我们感到非常遗憾，同时也加快了向Kubernetes转型的脚步。爱奇艺在Kubernetes方面起步较晚，之后除提供原生K8S服务之外，我们还会进一步在K8S基础上提供不同抽象级别的应用引擎，包括Serverless、FaaS、workflow等，希望以后能够有机会和大家分享我们后续的工作。
+2、容器网络实践
+爱奇艺容器网络应用的发展如图所示：
+我们在Mesos框架用的最多的是Docker原生的local Bridge &#43; NAT，于2014年投入使用，现在还在大量运行；中途尝试过Calico，然而当时Docker和K8S等组织有关容器网络标准的争论导致我们无法全力投入某种技术，加之管理难度的限制，最终导致Calico方案并没有在爱奇艺大规模应用；后来发展K8S时，由于之前NAT策略在应用上不太友好，所以我们定了一个基础方向，将容器网络跟内网打通，并选了一些具体实现方法，比如VXLAN、Calico/CNI。后来Cilium出现，并在一些公司得到应用，大家比较感兴趣；既然我们起步已经晚了，倒不如直接采用一些激进的新方案奋起直追。
+可能有些同学对CNM（Container Network Model，容器网络模型）和CNI（Container Network Interface，容器网络接口）的容器标准之争不太了解，下面做一个简单的解释：
+Docker将自己的网络方面剥离出一个独立项目libnetwork并提出了CNM，定义了网络、接入点等概念以及创建网络、加入网络等操作，允许第三方插件按照标准与Docker对接；CoreOS则提出了更为简单的CNI，只定义了往网络里面加减容器的接口标准。当时对于两款接口的使用，两家公司各执一词。对于K8S方来说，他们觉得CNM的接口和Docker的结合过于紧密，所定的用户操作标准也过于复杂，CNI相比CNM来说更加安全、简单、松耦合；Docker方对此的官方回复是，K8S等社区的意见和建议不符合Docker的整体设计。最终K8S选择了CNI作为网络方案。现在CNI在行业应用中占据主导地位，但对于插件来说，无论对哪个接口，所做的工作内容都是差不多的，例如CNM要求网络配置要通过Docker的libKV存储，而CNI没有这方面的要求，但对于网络插件来说，它的存储总是要有的，只不过由插件自己管理或由K8S统一管理对于K8S用户来说更加方便。
+（1）Bridge &#43; NAT 回到Mesos环境中。由于当时Mesos还没有很好地支持CNI，而爱奇艺在使用CNM中遇到了很多管理和运维上的困难，最简单可靠的Bridge &#43; NAT方案成为了唯一选择。当时我们想的也比较简单、理想化，认为不管走NAT还是不走NAT，在服务注册发现把这些信息掩饰掉就好。但在长期的实践中，这层NAT还是给我们的运维工作带来了无比多的烦恼。
+我们遇到的常见问题包括RPC暴露服务地址、排障时IP PORT查应用不能正常使用、Nginx Keepalive失效等。另外还有一些偶发问题比如网卡无法释放、IP冲突等等，但整体来说还是比较可靠。
+Nginx Keepalive失效是这几个问题里面比较棘手的一个。
+问题：多个 RS，通过 Nginx 代理请求，QPS 极低，偶发 502，有一定规律复现。
+解决：
+1）抓包：——Nginx：502 时，直接收到 RST；
+——RS 容器内：中间发送过 FIN，502 时没有包。
+2）解决：
+推测几个可能性：
+——iptables 有 bug——然而相关文章表明，这种情况只会小概率出现并不会稳定出现，不太符合这个 bug 的现象，而且该服务使用短链接访问 FIN 正常，故排除此原因；
+——bridge 网络问题：小概率出现，同样不符合；
+——iptables NAT 规则问题：继续抓包，从RS容器发出的FIN包入手，主机上被没有处理，进而发现时主机NAT表里已经没有了Nginx到RS的连接转换规则，联系到低频请求的情况，最终判断为是RS空闲超时后主动断开keepalive连接，而Nginx并不知情仍尝试使用旧连接导致访问失败。
+这个问题没有完美的解决方案，缓解思路有几个：
+1）将内核参数net.netfilter.nf_conntrack_tcp_timeout_established调大，使NAT规则容忍的空闲时间超过RS容忍的空闲连接时间；
+2）Nginx或其他客户端使用Keepalive时使用TCP心跳等机制维持连接；
+3）全部使用短连接请求。
+（2）Bridge/CNI &#43; VXLAN
+应用K8S之后，一开始爱奇艺尝试了Bridge/CNI &#43; VXLAN。对于二层网络，K8S官方至今没有给出最佳实践方案。我们只了解到类似GCE等公有云通过这种方式使用，但整个工作应该和Docker早期一个叫pipework的工具差不多，还是比较简单好用的。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/a94b52f2726994c7c7792d81c96f7378/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-04-23T11:59:40+08:00" />
+<meta property="article:modified_time" content="2021-04-23T11:59:40+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">爱奇艺容器实践（内附云原生落地沙龙干货下载）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div id="js_content"> 
+ <p>4月10日下午，爱奇艺技术产品团队举办了“i技术会”线下技术沙龙，本次技术会的主题是“云原生落地探索与实践”，邀请快手、百度和字节跳动的技术专家，与爱奇艺技术产品团队共同分享与探讨云原生落地的实践经验。</p> 
+ <p>其中，来自爱奇艺的技术专家赵慰为大家带来了爱奇艺容器实践的分享，讲述了爱奇艺的容器应用场景和在容器网络、容器运行时方面的实践经验。</p> 
+ <p>PS：关注公众号，在后台回复关键词“<strong>云原生</strong>”，就可以获得本次技术会嘉宾分享PPT和录播视频。</p> 
+ <p><strong>以下为“爱奇艺容器实践”干货分享，</strong>根据【i技术会】现场演讲整理而成。</p> 
+ <p><strong>爱奇艺容器实践</strong>/分享嘉宾：爱奇艺技术专家赵慰</p> 
+ <p>本场分享的主要内容包括爱奇艺近年来在容器方面的实践经验和遇到过的问题，以及我们在选型和探索过程中的一些心路历程。</p> 
+ <p style="text-align: left">     1、爱奇艺容器应用场景</p> 
+ <p><img src="https://images2.imgbox.com/19/61/JnXB83kj_o.png"></p> 
+ <p>爱奇艺内部超过一半的应用实例正在以容器形式运行，这些容器基本都运行在物理机集群上面。最初爱奇艺采用Mesos框架、基于Mesos的开源服务调度框架Marathon和自研批处理框架Sisyphus，并基于Marathon研发了QAE（iQIYI App Engine）。当时，大量公司以Mesos/Marathon为基础做着类似的事情。前不久，有消息表明Mesos即将从Apache光荣退休，而Twitter贡献的著名Mesos调度框架Aurora项目也早在去年二月份就已进入Apache退役名单。对于Mesos的告别，我们感到非常遗憾，同时也加快了向Kubernetes转型的脚步。爱奇艺在Kubernetes方面起步较晚，之后除提供原生K8S服务之外，我们还会进一步在K8S基础上提供不同抽象级别的应用引擎，包括Serverless、FaaS、workflow等，希望以后能够有机会和大家分享我们后续的工作。</p> 
+ <p style="text-align: left">     2、容器网络实践</p> 
+ <p>爱奇艺容器网络应用的发展如图所示：</p> 
+ <p><img src="https://images2.imgbox.com/10/4f/ma9poOoK_o.png"></p> 
+ <p>我们在Mesos框架用的最多的是Docker原生的local Bridge + NAT，于2014年投入使用，现在还在大量运行；中途尝试过Calico，然而当时Docker和K8S等组织有关容器网络标准的争论导致我们无法全力投入某种技术，加之管理难度的限制，最终导致Calico方案并没有在爱奇艺大规模应用；后来发展K8S时，由于之前NAT策略在应用上不太友好，所以我们定了一个基础方向，将容器网络跟内网打通，并选了一些具体实现方法，比如VXLAN、Calico/CNI。后来Cilium出现，并在一些公司得到应用，大家比较感兴趣；既然我们起步已经晚了，倒不如直接采用一些激进的新方案奋起直追。</p> 
+ <p>可能有些同学对CNM（Container Network Model，容器网络模型）和CNI（Container Network Interface，容器网络接口）的容器标准之争不太了解，下面做一个简单的解释：</p> 
+ <p>Docker将自己的网络方面剥离出一个独立项目libnetwork并提出了CNM，定义了网络、接入点等概念以及创建网络、加入网络等操作，允许第三方插件按照标准与Docker对接；CoreOS则提出了更为简单的CNI，只定义了往网络里面加减容器的接口标准。当时对于两款接口的使用，两家公司各执一词。对于K8S方来说，他们觉得CNM的接口和Docker的结合过于紧密，所定的用户操作标准也过于复杂，CNI相比CNM来说更加安全、简单、松耦合；Docker方对此的官方回复是，K8S等社区的意见和建议不符合Docker的整体设计。最终K8S选择了CNI作为网络方案。现在CNI在行业应用中占据主导地位，但对于插件来说，无论对哪个接口，所做的工作内容都是差不多的，例如CNM要求网络配置要通过Docker的libKV存储，而CNI没有这方面的要求，但对于网络插件来说，它的存储总是要有的，只不过由插件自己管理或由K8S统一管理对于K8S用户来说更加方便。</p> 
+ <p><strong>（1）Bridge + NAT </strong></p> 
+ <p>回到Mesos环境中。由于当时Mesos还没有很好地支持CNI，而爱奇艺在使用CNM中遇到了很多管理和运维上的困难，最简单可靠的Bridge + NAT方案成为了唯一选择。当时我们想的也比较简单、理想化，认为不管走NAT还是不走NAT，在服务注册发现把这些信息掩饰掉就好。但在长期的实践中，这层NAT还是给我们的运维工作带来了无比多的烦恼。</p> 
+ <p> </p> 
+ <p>我们遇到的常见问题包括RPC暴露服务地址、排障时IP PORT查应用不能正常使用、Nginx Keepalive失效等。另外还有一些偶发问题比如网卡无法释放、IP冲突等等，但整体来说还是比较可靠。</p> 
+ <p>Nginx Keepalive失效是这几个问题里面比较棘手的一个。</p> 
+ <p><strong>问题</strong>：多个 RS，通过 Nginx 代理请求，QPS 极低，偶发 502，有一定规律复现。</p> 
+ <p><strong>解决</strong>：</p> 
+ <p>1）抓包：——Nginx：502 时，直接收到 RST；</p> 
+ <p>——RS 容器内：中间发送过 FIN，502 时没有包。</p> 
+ <p>2）解决：</p> 
+ <p>推测几个可能性：</p> 
+ <p>——iptables 有 bug——然而相关文章表明，这种情况只会小概率出现并不会稳定出现，不太符合这个 bug 的现象，而且该服务使用短链接访问 FIN 正常，故排除此原因；</p> 
+ <p>——bridge 网络问题：小概率出现，同样不符合；</p> 
+ <p>——iptables NAT 规则问题：继续抓包，从RS容器发出的FIN包入手，主机上被没有处理，进而发现时主机NAT表里已经没有了Nginx到RS的连接转换规则，联系到低频请求的情况，最终判断为是RS空闲超时后主动断开keepalive连接，而Nginx并不知情仍尝试使用旧连接导致访问失败。</p> 
+ <p>这个问题没有完美的解决方案，缓解思路有几个：</p> 
+ <p style="text-align: left">1）将内核参数net.netfilter.nf_conntrack_tcp_timeout_established调大，使NAT规则容忍的空闲时间超过RS容忍的空闲连接时间；</p> 
+ <p>2）Nginx或其他客户端使用Keepalive时使用TCP心跳等机制维持连接；</p> 
+ <p>3）全部使用短连接请求。</p> 
+ <p><strong>（2）Bridge/CNI + VXLAN</strong></p> 
+ <p>应用K8S之后，一开始爱奇艺尝试了Bridge/CNI + VXLAN。对于二层网络，K8S官方至今没有给出最佳实践方案。我们只了解到类似GCE等公有云通过这种方式使用，但整个工作应该和Docker早期一个叫pipework的工具差不多，还是比较简单好用的。</p> 
+ <p>在应用过程中也遇到过一些问题：</p> 
+ <p><strong>问题</strong>：该模式下，Pod内访问Service IP的请求如果被转发到同节点的实例，则收不到响应。</p> 
+ <p><strong>解决</strong>：这个问题是也和iptables有关，如果内核参数net.bridge.bridge-nf-call-iptables 值为1，则数据包会经过主机iptables处理并遗憾丢失。将参数开机置为0后，仍发现各节点的参数值为1；经过一系列排查，最终发现是Docker启动时会加载除bridge外还加载br_netfilter模块，同时修改参数为1。于是将br_netfilter设置为开机加载，加之内核参数开机置0，问题即被解决。另一个解决思路是，放弃Docker，更换为Containerd。</p> 
+ <p><strong>（3）Cilium/CNI + BGP</strong></p> 
+ <p>Cilium这部分是比较冒险的一个尝试，它的工作原理简单而言，就是把一些工作通过eBPF机制实现到内核里。这种程序本身不会比普通程序执行更快，但它大大缩短了执行路径。</p> 
+ <p><img src="https://images2.imgbox.com/d5/06/pL8aAi22_o.png"></p> 
+ <p>（图片来自网络）</p> 
+ <p>与Bridge/CNI + VXLAN相比，Cilium/CNI + BGP涉及到整个基础网络环境的改动。其中IPAM和BGP与网络规划密切相关。</p> 
+ <p>IPAM的思路一般有完全分布式的CIDR per host或集中式的CIDR per IDC、global CIDR几种。各种选择都有利弊，比如CIDR per host的路由表虽然简单，但IP漂移局限性较大，并且会因为碎片化浪费大量IP；而CIDR per IDC、global CIDR方案IP漂移局限性小，也能节省IP，但会导致路由表变得即为庞大难以维护。经协调，我们最终决定按照TOR做规划，尽可能在路由复杂度、IP资源与灵活性之间做出权衡。具体的网络规划涉及保密信息，此处不便展开。</p> 
+ <p> </p> 
+ <p>BGP配置涉及到交换机和主机较大的改动。宿主机延续了之前的双物理网卡HA设计，通过分别于两个交换机建立BGP连接，并建立等价路由，既能提升网络带宽又能在一定程度保障网络高可用。</p> 
+ <p><img src="https://images2.imgbox.com/22/2e/kTRwm8Rd_o.png"></p> 
+ <p><img src="https://images2.imgbox.com/2c/c6/TTzSyjUL_o.png"></p> 
+ <p><strong>（4）Bridge/CNI + Cilium/CNI混合部署</strong></p> 
+ <p><strong>问题</strong>：——Cilium + BGP 改造周期长，不能及时满足交付时间；</p> 
+ <p>        ——Cilium 技术本身潜在风险，需要准备快速恢复的方案；</p> 
+ <p>        ——存量 Bridge 集群平滑迁移到 Cilium。</p> 
+ <p><strong>解决</strong>：——Bridge、Cilium 在内网网段统一规划，跨节点走交换机；</p> 
+ <p>      ——为不同网络节点打标签，通过 Daemon Set 部署 CNI Agent。</p> 
+ <p><img src="https://images2.imgbox.com/22/cc/FYNRJ0PD_o.png"></p> 
+ <p>如图，绿色线是二层网络，红色三层数据通路。</p> 
+ <p style="text-align: left">     3、容器运行时</p> 
+ <p>在容器运行时这方面，爱奇艺也做过很多的尝试。使用最早也是最多的当然是Docker；有一段时间曾尝试过Mesos Unified Container；最后在K8S环境里选择了Containerd + RunC/Kata。</p> 
+ <p>Docker Daemon早期的工作模式和稳定性为很多使用者所诟病；后来我们为更好地保持集群和容器状态一致性，尝试使用Mesos推出的Unified Container，然而遇到的问题并不比Docker少太多。由于当时镜像、容器的存储可靠性和使用效率不尽人意，以及缺少排障工具等等原因，这段尝试最终告一段落，当然现在还有一些特殊的应用场景仍在沿用这个环境。</p> 
+ <p>这篇文章要分享的方案主要还是<strong>Containerd + RunC/Kata</strong>。</p> 
+ <p><strong>使用容器时经常要被以下几个问题困扰</strong>：</p> 
+ <p>首先，容器的隔离性并不充分，容器之间会有一定程度的相互影响，很多情况下，一个容器出问题会导致整个主机的运行瘫痪。比如我们之前遇到过一些问题，一个容器中的进程数飙升导致整个宿主机load升高，并伴随着高频的线程切换，这种情况cgroup的简单限制无法帮助其他容器正常运行；另外还遇到过一些低级错误，例如请求完忘记关掉连接，导致很快耗尽FD进而整机故障；</p> 
+ <p>其次，容器内检测到的资源通常为宿主机的资源，比如有些JAVA程序通过检测CPU、内存来自动适配自己的线程数等运行状态。当然Java等也都在逐渐往适配容器的方向发展，但效果还不是太理想；</p> 
+ <p>最后是安全需求，比如各种资源的可见性、可访问性控制。</p> 
+ <p>解决以上问题的一个常见思路是将容器放在虚拟机内运行。实际应用中要突破两个点，一是虚拟机要尽可能轻量、启动快，二是与方便使用、与Kubernetes等方便集成。</p> 
+ <p><strong>容器运行时的实践</strong></p> 
+ <p><strong>（1）Kata</strong></p> 
+ <p><img src="https://images2.imgbox.com/a0/d0/NTCbgfJe_o.png"></p> 
+ <p>（图片来自网络）</p> 
+ <p>爱奇艺接触英特尔Clear Containers比较早，但一直没有正式应用过，只是做了一些简单的试验，类似还包括HYPER；两个项目最后合并成了Kata Containers，将原来的虚机进行最大程度的精简但不影响使用。Kata同样遵守OCI标准，能够与外部控制器交互，比如Containerd或者自身CLI。</p> 
+ <p><img src="https://images2.imgbox.com/0f/82/buYRdGfg_o.png"></p> 
+ <p style="text-align: center">图注：测试Kata与RunC的性能</p> 
+ <p>我们对Kata进行了一系列基准测试。根据测试结果，可以看出两者的启动时间相差不多，Kata一秒多一点，RunC是半秒，在实际应用中对毫秒级启动的需求也没有那么多，是完全可以接受的差距。而CPU测试是使用了经典的素数计算，计算2,000,000个素数，8线程，运行60秒，看能运转多少轮；内存测试的大小为100G。整体来看Kata比RunC稍微慢了一点点。</p> 
+ <p>值得注意的是，实际应用场景中表现出来的性能通常与基准测试有一定差距。比如我们深度学习的图片推理场景进行测试，Kata相比RunC有5%到10%的损耗，勉强在可接受范围之内，但是如果要规模应用，还需要进一步优化。</p> 
+ <p>不过，Kata本身因为套了一层虚机，实际应用还有一些限制，列举如下：</p> 
+ <p>·需要 CPU 开启 vmx 虚拟化支持</p> 
+ <p>·不支持 host 网络模式</p> 
+ <p>·不支持加入其它容器 network namespace</p> 
+ <p>·不支持 docker checkpoint、restore 功能</p> 
+ <p>·不完全支持 events，例如不支持 OOM notification</p> 
+ <p>·Update command 不支持 block IO weight</p> 
+ <p>·不支持 docker run 参数 --shm-size 设定共享内存</p> 
+ <p>·不支持 docker run 参数 –sysctl等</p> 
+ <p>在实际应用时，除了不支持host网络模式偶尔对我们有一些影响之外，其他限制基本没有影响。</p> 
+ <p><strong>（2）gVisor</strong></p> 
+ <p><img src="https://images2.imgbox.com/84/7a/lwaJ86Pz_o.png"></p> 
+ <p>（图片来自网络）</p> 
+ <p>gVisor是轻量虚拟化的另一个选项，由谷歌推出，使用Golang开发了一个“高仿”内核。在极致性能的同时，也带来了一些兼容性问题。</p> 
+ <p>在这里放上它的官方文档和兼容性描述连接：</p> 
+ <p>官方文档：https://gvisor.dev/docs/</p> 
+ <p style="text-align: left">兼容性：https://gvisor.dev/docs/user_guide/compatibility/</p> 
+ <p>爱奇艺没有选择gVisor的原因是很多目前生产环境中的必需的工具它暂时无法完美支持，比如IP、SSHD、netstat等命令。</p> 
+ <p><strong>（3）Containerd + RunC/Kata</strong></p> 
+ <p>Containerd与RunC的关系：</p> 
+ <p><img src="https://images2.imgbox.com/fd/6c/aweXsB9c_o.png"></p> 
+ <p>（图片来自网络）</p> 
+ <p>简单解释一下，OCI是Docker领衔推出的开放容器标准，定义了镜像、容器运行时、镜像仓库规范。只要Kata和RunC都按照OCI去实现接口，就基本可以直接进行替换。替换过程如果用Docker会繁琐一些，但是用Containerd会非常简单。</p> 
+ <p><img src="https://images2.imgbox.com/b9/16/7p0HTglx_o.png"></p> 
+ <p>（图片来自网络）</p> 
+ <p>前一段时间，Kubernetes自v1.20之后将Docker标记为Deprecated状态的声明一度引起恐慌；但从目前的情况来看，使用Containerd替换Docker + Shim已经是一个很简便的操作。</p> 
+ <p> </p> 
+ <p>有了以上基础，在Kubernetes中使用Kata就变得很简单。首先要有一个K8S的Runtime Class，在Containerd上加上Runtime Class的相应配置：</p> 
+ <p><img src="https://images2.imgbox.com/46/50/YLxK900m_o.png"></p> 
+ <p>最后在Pod Spec中指定Kata：</p> 
+ <p><img src="https://images2.imgbox.com/db/8c/TcvLlIjS_o.png"></p> 
+ <p><strong>应用场景</strong></p> 
+ <p>互联网行业普遍面临的一个问题是服务器资源利用率比较低。即使在午高峰、晚高峰等时间段，整体利用率也不尽如人意。截图是某个集群24h内的CPU利用率监控统计。如图所示，红色框中的突起部分，是我们稍微做了一些工作去解决这个问题，比如晚上去运行一些任务；由于是随机选取一天，看起来比日常平均优化效果略差一些。</p> 
+ <p><img src="https://images2.imgbox.com/89/fd/0MeCDlBE_o.png"></p> 
+ <p>如图所示，目前方案以Mesos为主，同时管理KVM和Docker宿主机。虚机的部分比较简单粗暴，在每台宿主机上使用空闲资源（按照实际利用率）创建合适规格的虚拟机，在夜间启动、凌晨关闭；Docker部分则利用Mesos灵活的资源超卖能力，为超卖资源分配单独的Role。两种资源统一由Mesos管理，并交由任务调度系统使用，为避免影响到常规负载，调度时间同样控制在半夜1点到6点。</p> 
+ <p><img src="https://images2.imgbox.com/95/ca/C8K6F3TO_o.png"></p> 
+ <p>在K8S + Kata/RunC的环境中，事情会变得简单一些。这得益于K8S提供的比较可靠的纵向、横向伸缩能力，和Kata提供的较强的性能隔离特性。虚机由于创建时对资源调度的控制并不精确，白天使用可能会对常规虚机性能造成较大影响，因此仍然保持仅在夜间运行。容器方面RunC的部分就是正常的调度，而Kata用来运行一些转码等离线任务；整体资源由K8S统一控制，避免多个资源和任务管理框架在服务器控制上产生冲突。</p> 
+ <p><img src="https://images2.imgbox.com/42/90/t9QCmjGs_o.png"></p> 
+ <p>爱奇艺在K8S在线离线混部方面的工作才刚刚起步，希望在过去Mesos混部的基础上做出精细化的运作，并进一步提升服务器利用率。</p> 
+ <p><img src="https://images2.imgbox.com/95/22/3JnPmFZU_o.png"></p> 
+ <p>也许你还想看</p> 
+ <p><a href="http://mp.weixin.qq.com/s?__biz=MzI0MjczMjM2NA%3D%3D&amp;chksm=e9757a0ede02f31802e0b1d17a466ed14224383b995dd87b1af34a15e660bdfa1016f8865337&amp;idx=1&amp;mid=2247493165&amp;scene=21&amp;sn=aaa2dbd343e089578673705e15c31ad1#wechat_redirect" rel="nofollow">构建用户安全评级，UGC智能化审核应用实践</a><br></p> 
+ <p><a href="http://mp.weixin.qq.com/s?__biz=MzI0MjczMjM2NA%3D%3D&amp;chksm=e9757a26de02f330938798c6502a228c6a2e543604cbc009aff655b31f5c32b85d122fd68aea&amp;idx=2&amp;mid=2247493125&amp;scene=21&amp;sn=37d159b5550dcf9a25f37624f17af340#wechat_redirect" rel="nofollow">OCR技术在爱奇艺的应用实践及演进</a></p> 
+ <p><img src="https://images2.imgbox.com/53/44/yfP52VhY_o.gif">扫一扫下方二维码，更多精彩内容陪伴你！</p> 
+</div>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/36553893ad227207312fb385a305e05b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">QT应用编程: 程序发布添加版权、版本信息</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/1dc78dabd53b59f70121be169742f99f/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">电流采样电路</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

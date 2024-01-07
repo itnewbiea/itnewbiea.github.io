@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>播放器适配经验总结——IOS - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="播放器适配经验总结——IOS" />
+<meta property="og:description" content="IOS平台统一使用HLS协议，包括M3U8文件和分段TS文件
+1、抖屏 现象：播放中画面动作抖动，好像画面的顺序错乱
+范围：Mp4文件转成TS，没有问题，ASF转成TS文件，有该现象
+原因：ASF没有cts_delta字段，TS（PES）中的PTS直接使用DTS，H.264中帧的顺序是DTS顺序，与显示顺序是不同的，B帧会出现在P帧前面，但是在后面显示
+方案：自己根据帧率和帧的顺序，计算PTS，或者恢复出cts_delta值
+帧率可以通过SPS中获取：
+frame_rate = sps.vui_parameters.num_units_in_tick.time_scale / sps.vui_parameters.num_units_in_tick
+当然前提是 sps.vui_parameters_present_flag &amp;&amp; sps.vui_parameters.timing_info_present_flag &amp;&amp; sps.vui_parameters.fixed_frame_rate_flag
+前提不满足的时候，可以用前后两个帧的dts差来计算：
+frame_rate = time_scale / dts_diff
+帧的顺序在每个帧内部有字段表示，根据sps.pic_order_cnt_type有不同算法，现在只考虑sps.pic_order_cnt_type == 0的情况，这时候slice.slice_header.pic_order_cnt_lsb表示顺序
+cts = (dts of idr) &#43; slice.slice_header.pic_order_cnt_lsb / 2 * time_scale / frame_rate
+或者直接使用num_units_in_tick：
+cts = (dts of idr) &#43; slice.slice_header.pic_order_cnt_lsb / 2 * sps.vui_parameters.num_units_in_tick
+2、爆音 现象：播放过程中声音异常，夹杂着轻微爆炸的声音
+范围：Mp4文件转成TS，没有问题，ASF、FLV转成TS文件，有该现象
+原因：ASF、FLV时间戳是毫秒级精度，TS文件是90000分之一秒，相差90倍，直接乘以90转换，精度不够。IOS播放TS的时候，完全依赖TS时间戳。
+比如采样率22050的音频，1024的采样点一个Sample，那么前三个Sample的时间戳情况是：
+Sample号精确时间戳（秒）ASF时间戳误差TS时间戳误差000011024/22050-0.00043990.00000453522048/220500.0001202-0.000002041 方案：自己根据采样率计算TS的时间戳，问题完整解决。
+音频sample n的TS（PES）时间戳为n * 90000 * 1024 / 采样率
+备注：一开始没有找到这个原因，采用合并音频帧的方法，几十个音频帧合并起来，基本能解决问题，其中原因是合并之后误差减少，用上面的原因分析也是说得通的。
+3、绿屏 现象：播放刚开始，会出现瞬间绿色画面" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/9675aa480e4dbf91a473f499adc15702/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2012-07-06T11:26:41+08:00" />
+<meta property="article:modified_time" content="2012-07-06T11:26:41+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">播放器适配经验总结——IOS</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>IOS平台统一使用HLS协议，包括M3U8文件和分段TS文件</p> 
+<h3>1、抖屏</h3> 
+<p>现象：播放中画面动作抖动，好像画面的顺序错乱</p> 
+<p>范围：Mp4文件转成TS，没有问题，ASF转成TS文件，有该现象</p> 
+<p>原因：ASF没有cts_delta字段，TS（PES）中的PTS直接使用DTS，H.264中帧的顺序是DTS顺序，与显示顺序是不同的，B帧会出现在P帧前面，但是在后面显示</p> 
+<p>方案：自己根据帧率和帧的顺序，计算PTS，或者恢复出cts_delta值</p> 
+<p>帧率可以通过SPS中获取：</p> 
+<p>frame_rate = sps.vui_parameters.num_units_in_tick.time_scale / sps.vui_parameters.num_units_in_tick</p> 
+<p>当然前提是 sps.vui_parameters_present_flag &amp;&amp; sps.vui_parameters.timing_info_present_flag &amp;&amp; sps.vui_parameters.fixed_frame_rate_flag</p> 
+<p>前提不满足的时候，可以用前后两个帧的dts差来计算：</p> 
+<p>frame_rate = time_scale / dts_diff</p> 
+<p>帧的顺序在每个帧内部有字段表示，根据sps.pic_order_cnt_type有不同算法，现在只考虑sps.pic_order_cnt_type == 0的情况，这时候slice.slice_header.pic_order_cnt_lsb表示顺序</p> 
+<p>cts = (dts of idr) + slice.slice_header.pic_order_cnt_lsb / 2 * time_scale / frame_rate</p> 
+<p>或者直接使用num_units_in_tick：</p> 
+<p>cts = (dts of idr) + slice.slice_header.pic_order_cnt_lsb / 2 * sps.vui_parameters.num_units_in_tick</p> 
+<h3>2、爆音</h3> 
+<p>现象：播放过程中声音异常，夹杂着轻微爆炸的声音</p> 
+<p>范围：Mp4文件转成TS，没有问题，ASF、FLV转成TS文件，有该现象</p> 
+<p>原因：ASF、FLV时间戳是毫秒级精度，TS文件是90000分之一秒，相差90倍，直接乘以90转换，精度不够。IOS播放TS的时候，完全依赖TS时间戳。</p> 
+<p>比如采样率22050的音频，1024的采样点一个Sample，那么前三个Sample的时间戳情况是：</p> 
+<p> </p> 
+<table border="1" cellspacing="1" cellpadding="1" width="200"><tbody><tr><td>Sample号</td><td>精确时间戳（秒）</td><td>ASF时间戳误差</td><td>TS时间戳误差</td></tr><tr><td>0</td><td>0</td><td>0</td><td>0</td></tr><tr><td>1</td><td>1024/22050</td><td>-0.0004399</td><td>0.000004535</td></tr><tr><td>2</td><td>2048/22050</td><td>0.0001202</td><td>-0.000002041</td></tr></tbody></table> 
+<p></p> 
+<p>方案：自己根据采样率计算TS的时间戳，问题完整解决。</p> 
+<p>音频sample n的TS（PES）时间戳为n * 90000 * 1024 / 采样率</p> 
+<p>备注：一开始没有找到这个原因，采用合并音频帧的方法，几十个音频帧合并起来，基本能解决问题，其中原因是合并之后误差减少，用上面的原因分析也是说得通的。</p> 
+<h3>3、绿屏</h3> 
+<p>现象：播放刚开始，会出现瞬间绿色画面</p> 
+<p>范围：播放某几个文件时；有时正常从头播放没有绿屏，但是从中间继续播放会有绿屏。</p> 
+<p>原因：问题焦点集中在SEI的位置，Mp4只有第一个帧有SEI（只在第一个分段Mp4中有SEI），该帧的格式是：SEI + I Slice（IDR Nalu），是同步帧。老版本bento4生成PES结果是AUD + SEI + SPS + PPS + I Slice（IDR）；新版本版本bento4生成PES结果是AUD + SPS + PPS + SEI + I Slice（IDR）。虽然新版本有改动，也不能解决绿屏问题，还需要进一步分析。</p> 
+<p>方案：</p> 
+<h3>4、播放器crash</h3> 
+<p>现象：播放器直接crash掉</p> 
+<p>范围：MacOs平台，播放某几个文件时，在一个特定时间点。iphone、ipad并没有问题，但是同一影片同一时间点，会有播放丢帧现象</p> 
+<p>原因：问题本质上在于媒资压片（用Mp4Box生成Mp4文件）生成了不合常规的帧格式，在一个帧中出现了两个slice：P Slice + I Slice（IDR Nalu），该帧不在Mp4同步帧索引中，因此不算是同步帧。老版本的bento4生成PES的策略是在每个帧前面加上AUD，在IDR前面增加SPS、PPS，所以转换结果是AUD + P Slice + SPS + PPS + I Slice（IDR）；新版本的bento4生成PES的策略是在每个帧前面加上AUD，在同步帧增加SPS、PPS（在AUD后面），所以转换结果是AUD + P Slice + I Slice（IDR）。Mac是QuickTime播放器在解析PES时，不知道什么算法，会在第一种情形Crash，第二种情况丢失一个I Slice，出现图像失常。请注意，如果Mp4的帧格式符合常规，那么新老bento4生成的结果是一样的。</p> 
+<p>最后确认是老版本MP4Box的bug，它在生成的MP4文件时将I和P帧打在了一个Sample中。具体原因是这个版本的MP4Box是以0x 00 00 00 01为起始码寻找NAL包，碰到以0x00 00 01开头时（比如出问题的IDR帧）就会跳过去，而264标准 中起始码0x 00 00 01或0x 00 00 00 01都应支持的。</p> 
+<p>方案：更新Mp4Box</p> 
+<h3>5、无图像</h3> 
+<p>现象：播放有声音、无图像</p> 
+<p>范围：ipad、iphone，一个特定的频道</p> 
+<p>原因：在FLV文件转成TS文件时，FLV文件在没有同步帧上有SPS，PPS，转换逻辑据此判断H.264 ES流中存在AUD（Access Unit Delimiter），但是实际上不存在AUD，导致生成的TS文件中没有AUD，ios平台的播放器需要AUD，没有就不能播放视频。</p> 
+<p>方案：修正转换逻辑，直接判断有没有AUD，并补充AUD。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/738cff3c0e981fc8928f3f032d7472fe/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Svchost.exe进程详解及Svchost.exe病毒清除方法</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/78572f5b1a48e4fa759dd2a10fdfefbf/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">视频和图片的相互转换</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

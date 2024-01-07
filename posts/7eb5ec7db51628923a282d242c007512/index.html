@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>用Delphi调用阿里云的OpenAPI更新动态域名解析记录 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="用Delphi调用阿里云的OpenAPI更新动态域名解析记录" />
+<meta property="og:description" content="用Delphi调用阿里云的OpenAPI更新动态域名解析记录 家里一直是电信的宽带，虽然只是200M下行30M上行的平均水平，但是对于平时下载量不大的我来说已经绰绰有余了，很多时候需要从外网访问家里的NAS的资料，但是因为不是固定IP，每次一重启路由器或者每隔几天，家里的IP地址都是变动一下，前阵子一直使用docker安装了一个阿里云的DDNS软件非常好用，突然有一天不更新IP到阿里云的服务器上了，又加上自己的管理软件的服务端是安装到Windows下（用unRaidNAS虚拟了一个WindowsServer），所以干脆想办法把这个功能加到自己的管理服务端软件上，这时候开始祭出我们的工具Delphi。（前几篇文章已经说了如何安装社区版的Delphi和如何在unRaid下虚拟Windows）。
+在正式操作之前，首先说明下使用aliyun的DDNS的基本条件。 1、这个也是最最关键的必不可少的一步，就是你家必须要有公网IP，现在很多地方宽带供应商只给内网IP（特别是移动和联通），如果是电信的话，可以打10000号免费开通公网IP功能，至于给不给你开，看各地的政策。反正我家一直是公网IP。
+2、你得有个阿里云的域名，如果没有，赶紧去阿里云上去买个，不差钱的可以买个.com、.cn的，如果只是玩玩的可以买个.xyz等超级便宜的域名。至于腾讯云的域名，有两种方法：你可以把域名改为阿里云托管，也可以将下面的代码稍微改动改成腾讯云的。因为我只有阿里云的域名，所以没法测试腾讯云的，这里就不改动了
+3、获得阿里云的访问key和访问key的密钥。这个在你登录阿里云后，在头像上点击鼠标左键会弹出来一个菜单，就可以直接看到。这里也给个建议，最好不要用主key和密钥，因为一旦泄露，也就是将你的阿里云的所有权限暴露给别人了，所以可以建立一个子用户key并且给他设置权限只能修改域名解析。
+4、提前在阿里云的域名管理上建立一个新的二级域名，虽然可以通过代码添加，但是我觉得自己手工添加会更安全，至少不会让自己的域名列表不经意的多出很多无用的二级域名。
+有了前面的几步，现在正是进入主题。代码写起来比较简单，只要根据阿里云的OpenAPI的文档编写就可以，当然你得学会看懂文档。很快我就将所有的代码完成，但是运行的时候一直提示错误，最主要错误就是一直提示签名值错误，这个签名值在我的理解也就是校验值，用来校验你是否有权限访问和修改域名解析。然后慢慢调试，在查看文档和阿里云公开的代码，发现有几个大坑，而在文档上却没有说明，当然也可能和每个编程工具的处理有点小关系，现在将每个大坑一一的说明下：
+坑1：做签名值的时候，发现调试出来的签名值很长，几乎是官方计算出来的两到三倍，代码仔细看看没什么打问题，已经按照文档要求使用了URL编码后再进行HMAC_SHA1然后最后再进行BASE64编码，整个过程都没任何问题，而且编码函数经过测试也没问题。文档上也没有任何说明要做其他的编码或者转变。后来发现惊醒HMAC_SHA1编码的时候，一定要生成他的原始二进制数据，而我们正常情况下一般都是生成字符串数据，我了了个去！好了，现在生成的签名值已经和官方的签名值的长度一模一样。
+Pascal
+var sSignByte: TBytes; begin // 构造用于签名的字符串 Result := Format(&#39;GET&amp;%s&amp;%s&#39;, [TURI.URLEncode(&#39;/&#39;), TURI.URLEncode(sCanonicalQueryString)]); // 使用HMAC-SHA1计算返回原始二进制数据 sSignByte := THashSHA1.GetHMACAsBytes(Result, sKeyScret &#43; &#39;&amp;&#39;); // 得到签名值 Result := TURI.URLEncode(TNetEncoding.Base64.EncodeBytesToString(sSignByte)); end; 坑2：这下自以为没问题了，但是生成的签名值一直没官方的不一样啊，编码前的原始字符串貌似也一模一样，就是生成的签名值确实另外一个值，无奈，只能又是一步一步调试并且每一步和官方的值做对比，突然发现，UTC时间经过URL编码后会把里面的时间分隔符的&#34;：&#34;会编码上&#34;%3A&#34;，在生成签名值前，再进行一次URL编码，官方的会把签名的“%3A”里面的&#34;%&#34;再进行一次编码，变成了&#34;%253A&#34;，而在Delphi中却没有编码，在我的理解中，确实不需要再编码了啊，因为这里已经按URL编码过一次了，这也算是一个坑吧，没办法，只能按照阿里云的要求，对其中的%再进行一次单独的替换。所以就有了下面代码的最后2行代码。
+Pascal
+sBody := Format(&#39;AccessKeyId=%s&amp;Action=DescribeSubDomainRecords&amp;Format=json&amp;SignatureMethod=HMAC-SHA1&amp;&#39;, [sKey.Trim]); sBody := sBody &#43; Format(&#39;SignatureNonce=%s&amp;SignatureVersion=1.0&amp;SubDomain=%s&amp;&#39;, [GetNowStr, LowerCase(sDomain.Trim)]); sBody1 := sBody &#43; Format(&#39;Timestamp=%s&amp;Version=2015-01-09&#39;, [GetUTC]); sBody := sBody &#43; Format(&#39;Timestamp=%s&amp;Version=2015-01-09&#39;, [GetUTC.Replace(&#39;%&#39;, &#39;%25&#39;)]); 坑3：获取UTC时间，UTC时间也就是我们说的世界标准时间，正常我们获取UTC时间都是带毫秒的，这个一点问题都没有，而且也都是ISO8601的标准对时间进行格式化，但是我发现，在生成签名值的时候，和官方算出来的虽然一模一样，但是每次还是提示签名值不对，这个坑整整耗了我一天时间，百思不得其解。后来仔细对比，官方获取的UTC时间只精确到秒，而我获取的UTC时间是精确到毫秒，理论上这个没太大的关系，但是我尝试和官方同步使用精确到秒之后，这个问题竟然给解决了。
+Pascal
+function GetUTC: string; // 获取ISO8601格式的UTC世界标准时间 var pTime: _TIME_ZONE_INFORMATION; begin GetTimeZoneInformation(pTime); // 自带的函数带有毫秒，在Update的时候签名值出错，所以使用不带毫秒的时间 // Result := TURI." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/7eb5ec7db51628923a282d242c007512/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-01-05T11:53:48+08:00" />
+<meta property="article:modified_time" content="2024-01-05T11:53:48+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">用Delphi调用阿里云的OpenAPI更新动态域名解析记录</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2><a href="https://www.rehope.cn/?id=16" rel="nofollow" title="用Delphi调用阿里云的OpenAPI更新动态域名解析记录">用Delphi调用阿里云的OpenAPI更新动态域名解析记录</a></h2> 
+<p></p> 
+<p>       家里一直是电信的宽带，虽然只是200M下行30M上行的平均水平，但是对于平时下载量不大的我来说已经绰绰有余了，很多时候需要从外网访问家里的NAS的资料，但是因为不是固定IP，每次一重启路由器或者每隔几天，家里的IP地址都是变动一下，前阵子一直使用docker安装了一个阿里云的DDNS软件非常好用，突然有一天不更新IP到阿里云的服务器上了，又加上自己的管理软件的服务端是安装到Windows下（用unRaidNAS虚拟了一个WindowsServer），所以干脆想办法把这个功能加到自己的管理服务端软件上，这时候开始祭出我们的工具Delphi。（前几篇文章已经说了如何安装社区版的Delphi和如何在unRaid下虚拟Windows）。</p> 
+<p>       在正式操作之前，首先说明下使用aliyun的DDNS的基本条件。  </p> 
+<p>      1、这个也是最最关键的必不可少的一步，就是你家必须要有公网IP，现在很多地方宽带供应商只给内网IP（特别是移动和联通），如果是电信的话，可以打10000号免费开通公网IP功能，至于给不给你开，看各地的政策。反正我家一直是公网IP。</p> 
+<p>      2、你得有个阿里云的域名，如果没有，赶紧去阿里云上去买个，不差钱的可以买个.com、.cn的，如果只是玩玩的可以买个.xyz等超级便宜的域名。至于腾讯云的域名，有两种方法：你可以把域名改为阿里云托管，也可以将下面的代码稍微改动改成腾讯云的。因为我只有阿里云的域名，所以没法测试腾讯云的，这里就不改动了</p> 
+<p>      3、获得阿里云的访问key和访问key的密钥。这个在你登录阿里云后，在头像上点击鼠标左键会弹出来一个菜单，就可以直接看到。这里也给个建议，最好不要用主key和密钥，因为一旦泄露，也就是将你的阿里云的所有权限暴露给别人了，所以可以建立一个子用户key并且给他设置权限只能修改域名解析。</p> 
+<p>      4、提前在阿里云的域名管理上建立一个新的二级域名，虽然可以通过代码添加，但是我觉得自己手工添加会更安全，至少不会让自己的域名列表不经意的多出很多无用的二级域名。</p> 
+<p>       有了前面的几步，现在正是进入主题。代码写起来比较简单，只要根据阿里云的OpenAPI的文档编写就可以，当然你得学会看懂文档。很快我就将所有的代码完成，但是运行的时候一直提示错误，最主要错误就是一直提示签名值错误，这个签名值在我的理解也就是校验值，用来校验你是否有权限访问和修改域名解析。然后慢慢调试，在查看文档和阿里云公开的代码，发现有几个大坑，而在文档上却没有说明，当然也可能和每个编程工具的处理有点小关系，现在将每个大坑一一的说明下：</p> 
+<p>       坑1：做签名值的时候，发现调试出来的签名值很长，几乎是官方计算出来的两到三倍，代码仔细看看没什么打问题，已经按照文档要求使用了URL编码后再进行HMAC_SHA1然后最后再进行BASE64编码，整个过程都没任何问题，而且编码函数经过测试也没问题。文档上也没有任何说明要做其他的编码或者转变。后来发现惊醒HMAC_SHA1编码的时候，一定要生成他的原始二进制数据，而我们正常情况下一般都是生成字符串数据，我了了个去！好了，现在生成的签名值已经和官方的签名值的长度一模一样。</p> 
+<p>Pascal</p> 
+<pre><code>var
+  sSignByte: TBytes;
+begin
+  // 构造用于签名的字符串
+  Result := Format('GET&amp;%s&amp;%s', [TURI.URLEncode('/'), TURI.URLEncode(sCanonicalQueryString)]);
+  // 使用HMAC-SHA1计算返回原始二进制数据
+  sSignByte := THashSHA1.GetHMACAsBytes(Result, sKeyScret + '&amp;');
+  // 得到签名值
+  Result := TURI.URLEncode(TNetEncoding.Base64.EncodeBytesToString(sSignByte));
+end;</code></pre> 
+<p>       坑2：这下自以为没问题了，但是生成的签名值一直没官方的不一样啊，编码前的原始字符串貌似也一模一样，就是生成的签名值确实另外一个值，无奈，只能又是一步一步调试并且每一步和官方的值做对比，突然发现，UTC时间经过URL编码后会把里面的时间分隔符的"："会编码上"%3A"，在生成签名值前，再进行一次URL编码，官方的会把签名的“%3A”里面的"%"再进行一次编码，变成了"%253A"，而在Delphi中却没有编码，在我的理解中，确实不需要再编码了啊，因为这里已经按URL编码过一次了，这也算是一个坑吧，没办法，只能按照阿里云的要求，对其中的%再进行一次单独的替换。所以就有了下面代码的最后2行代码。</p> 
+<p>Pascal</p> 
+<pre><code>  sBody := Format('AccessKeyId=%s&amp;Action=DescribeSubDomainRecords&amp;Format=json&amp;SignatureMethod=HMAC-SHA1&amp;', [sKey.Trim]);
+  sBody := sBody + Format('SignatureNonce=%s&amp;SignatureVersion=1.0&amp;SubDomain=%s&amp;', [GetNowStr, LowerCase(sDomain.Trim)]);
+  sBody1 := sBody + Format('Timestamp=%s&amp;Version=2015-01-09', [GetUTC]);
+  sBody := sBody + Format('Timestamp=%s&amp;Version=2015-01-09', [GetUTC.Replace('%', '%25')]);</code></pre> 
+<p>       坑3：获取UTC时间，UTC时间也就是我们说的世界标准时间，正常我们获取UTC时间都是带毫秒的，这个一点问题都没有，而且也都是ISO8601的标准对时间进行格式化，但是我发现，在生成签名值的时候，和官方算出来的虽然一模一样，但是每次还是提示签名值不对，这个坑整整耗了我一天时间，百思不得其解。后来仔细对比，官方获取的UTC时间只精确到秒，而我获取的UTC时间是精确到毫秒，理论上这个没太大的关系，但是我尝试和官方同步使用精确到秒之后，这个问题竟然给解决了。</p> 
+<p>Pascal</p> 
+<pre><code>function GetUTC: string;
+// 获取ISO8601格式的UTC世界标准时间
+var
+  pTime: _TIME_ZONE_INFORMATION;
+begin
+  GetTimeZoneInformation(pTime);
+  // 自带的函数带有毫秒，在Update的时候签名值出错，所以使用不带毫秒的时间
+  // Result := TURI.URLEncode(DateToISO8601(IncMinute(Now, pTime.bias)));
+  Result := TURI.URLEncode(FormatDateTime('YYYY-MM-DD''T''hh:nn:ss''Z''', IncMinute(Now, pTime.bias)));
+end</code></pre> 
+<p>       经过上面的填坑，很快整个代码都修改完成，其他的代码都是最最常规的，经过测试，已经很轻松的能够更新阿里云的域名解析了。加到自己的软件服务端，再也不需要安装官方或者其他的AliDDNS软件了。下面将所有的代码贴上，拿走不谢，如果有看官发现里面的错误或者有新的改动，希望能给个反馈哦。</p> 
+<p>Pascal</p> 
+<pre><code>// *******************************************************
+//
+// AliDDNS - 阿里云DDNS自动更新代码
+//
+// 版权所有 (C) 2019-2020
+// 作者:      HenryXu
+// 更新日期:  2020.03.23
+// 联系方式：QQ( 55524082 )
+// 说明：
+// 01、本函数只适用于AliYun的动态域名更新解析使用
+// 02、域名必须在AliYun上注册
+// 03、AliYun的AccessKeyID和AccessKeySecret可控制AliYun的所有权限，请妥善保管
+// 04、建议开通子用户AccessKey，并设置只能修改云解析的权限
+// 05、本函数待有优化之处，我会及时更新
+// 06、有什么建议或修改其中的代码，希望能发一份给我以共同修改
+//
+// *******************************************************
+
+unit SQ_AliDDNS;
+
+interface
+
+uses
+  Winapi.Windows, System.Classes, System.SysUtils, System.JSON, System.DateUtils, System.Hash, System.NetEncoding,
+  System.Net.URLClient, System.Net.HttpClient, System.Net.HttpClientComponent, System.Net.Socket;
+
+{ -------------------------------------------------------------------------------
+  过程名:    UpdateDomainRecord
+  作者:      HenryXu
+  日期:      2020.03.21
+  参数:      sKey, sKeyScret, sDomain: string
+  参数说明： AccessKeyID，AccessKeySecret，域名
+  返回值:    string
+  ------------------------------------------------------------------------------- }
+function UpdateDomainRecord(sKey, sKeyScret, sDomain: string): string;
+
+implementation
+
+const
+  ApiAliAddr = 'http://alidns.aliyuncs.com/';
+  PubIPAddr = 'http://ip.3322.net/';
+
+type
+  TSubDomainInfo = record
+    RR: string;
+    TTL: string;
+    IP: string;
+    RecordId: string;
+    Output: string;
+  end;
+
+function GetUTC: string;
+// 获取ISO8601格式的UTC世界标准时间
+var
+  pTime: _TIME_ZONE_INFORMATION;
+begin
+  GetTimeZoneInformation(pTime);
+  // 自带的函数带有毫秒，在Update的时候签名值出错，所以使用不带毫秒的时间
+  // Result := TURI.URLEncode(DateToISO8601(IncMinute(Now, pTime.bias)));
+  Result := TURI.URLEncode(FormatDateTime('YYYY-MM-DD''T''hh:nn:ss''Z''', IncMinute(Now, pTime.bias)));
+end;
+
+function GetNowStr: string;
+begin
+  Result := FormatDateTime('YYYYMMDDhhnnss', Now);
+end;
+
+function httpSendRequest(sBody: string): string;
+// 发送Http请求
+var
+  FHttpClient: TNetHttpClient;
+begin
+  FHttpClient := TNetHttpClient.Create(nil);
+  try
+    Result := FHttpClient.Get(sBody).ContentAsString(TEncoding.UTF8);
+  finally
+    FHttpClient.Free;
+  end;
+end;
+
+function GetPublicIP: string;
+// 获取本机的公网IP
+begin
+  Result := httpSendRequest(PubIPAddr).Trim;
+end;
+
+function GetSignature(sCanonicalQueryString, sKeyScret: string): string;
+var
+  sSignByte: TBytes;
+begin
+  // 构造用于签名的字符串
+  Result := Format('GET&amp;%s&amp;%s', [TURI.URLEncode('/'), TURI.URLEncode(sCanonicalQueryString)]);
+  // 使用HMAC-SHA1计算返回原始二进制数据
+  sSignByte := THashSHA1.GetHMACAsBytes(Result, sKeyScret + '&amp;');
+  // 得到签名值
+  Result := TURI.URLEncode(TNetEncoding.Base64.EncodeBytesToString(sSignByte));
+end;
+
+function GetDomainRecordID(sKey, sKeyScret, sDomain: string): TSubDomainInfo;
+// 获取AliYun上对应域名的解析信息
+var
+  sBody, sBody1: string;
+  oJson: TJSONObject;
+  index: integer;
+begin
+  sBody := Format('AccessKeyId=%s&amp;Action=DescribeSubDomainRecords&amp;Format=json&amp;SignatureMethod=HMAC-SHA1&amp;', [sKey.Trim]);
+  sBody := sBody + Format('SignatureNonce=%s&amp;SignatureVersion=1.0&amp;SubDomain=%s&amp;', [GetNowStr, LowerCase(sDomain.Trim)]);
+  sBody1 := sBody + Format('Timestamp=%s&amp;Version=2015-01-09', [GetUTC]);
+  sBody := sBody + Format('Timestamp=%s&amp;Version=2015-01-09', [GetUTC.Replace('%', '%25')]);
+  Result.Output := httpSendRequest(Format('%s?%s&amp;Signature=%s', [ApiAliAddr, sBody1,
+    GetSignature(sBody, sKeyScret.Trim)]));
+  // 这里从结果中需要取RecordId,RR和TTL三个值
+  oJson := TJSONObject.ParseJSONValue(Trim(Result.Output)) as TJSONObject;
+  if oJson &lt;&gt; nil then
+  begin
+    try
+      if oJson.TryGetValue('TotalCount', index) and (index &gt; 0) then
+      begin
+        Result.RecordId := oJson.GetValue&lt;String&gt;('DomainRecords.Record[0].RecordId').Trim;
+        Result.RR := oJson.GetValue&lt;String&gt;('DomainRecords.Record[0].RR').Trim;
+        Result.IP := oJson.GetValue&lt;String&gt;('DomainRecords.Record[0].Value').Trim;
+        Result.TTL := oJson.GetValue&lt;String&gt;('DomainRecords.Record[0].TTL').Trim;
+      end;
+    finally
+      oJson.Free;
+    end;
+  end;
+end;
+
+function UpdateDomainRecord(sKey, sKeyScret, sDomain: string): string;
+// 更新AliYun上对应域名的IP记录
+var
+  sBody, sBody1: string;
+  SubdomainInfo: TSubDomainInfo;
+begin
+  if GetPublicIP = TIPAddress.LookupName(sDomain).Address then
+    Exit;
+  SubdomainInfo := GetDomainRecordID(sKey, sKeyScret, sDomain);
+  if not SubdomainInfo.RecordId.IsEmpty then
+  // 如果AliYun中存在对应域名的记录
+  begin
+    // 以防万一再次确认公网IP和域名记录里的IP是否一样
+    if GetPublicIP = SubdomainInfo.IP then
+      Exit;
+    sBody := Format('AccessKeyId=%s&amp;Action=UpdateDomainRecord&amp;Format=json&amp;RR=%s&amp;', [sKey.Trim, SubdomainInfo.RR]);
+    sBody := sBody + Format('RecordId=%s&amp;SignatureMethod=HMAC-SHA1&amp;', [SubdomainInfo.RecordId]);
+    sBody := sBody + Format('SignatureNonce=%s&amp;SignatureVersion=1.0&amp;TTL=%s&amp;', [GetNowStr, SubdomainInfo.TTL]);
+    sBody1 := sBody + Format('Timestamp=%s&amp;Type=A&amp;Value=%s&amp;Version=2015-01-09', [GetUTC, GetPublicIP]);
+    sBody := sBody + Format('Timestamp=%s&amp;Type=A&amp;Value=%s&amp;Version=2015-01-09',
+      [GetUTC.Replace('%', '%25'), GetPublicIP]);
+    Result := httpSendRequest(Format('%s?%s&amp;Signature=%s', [ApiAliAddr, sBody1, GetSignature(sBody, sKeyScret.Trim)]));
+  end
+  else
+    Result := SubdomainInfo.Output;
+end;
+
+end.</code></pre> 
+<p></p> 
+<p> </p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/36bc7d4869a534e143962875468ed66e/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">零信任（Zero Trust）：理论与实践</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/bc662aa734ca02c26bbca70fa1f21055/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">AI时代Python金融大数据分析实战：ChatGPT让金融大数据分析插上翅膀</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

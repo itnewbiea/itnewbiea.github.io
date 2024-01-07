@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>STM32 GPIO模拟i2c通信实现sht20的温湿度采样 并以JSON格式上报（串口调试助手为例） - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="STM32 GPIO模拟i2c通信实现sht20的温湿度采样 并以JSON格式上报（串口调试助手为例）" />
+<meta property="og:description" content="一、先了解I2C协议 由时钟线SCL和数据线SDA构成的通信线路,利用上拉电阻将它们拉成高电平（表示总线空闲） I2C总线可以有多个从设备，且每个从设备都有一个唯一的7bit地址物理识别，因为I2C地址全0为广播地址，所以I2C总线理论上最多能带2^7-1=127个从设备
+（I2C：半双工通信的同步串行通信协议，采用电平信号，数据传输采用大端方式MSB，先发高位数据）
+I2C总线通信时序：
+I2C协议的起始信号（start）：当SCL保持高电平时，SDA出现一个下降沿，产生起始位
+I2C协议的停止信号（stop）：当SCL保持高电平时，SDA出现一个上升沿，产生停止位
+（停止通信后，总线空闲，处于高电平）
+主设备向从设备发送从设备地址信号，在收到从设备的应答信号后通讯连接才建立成功
+若未收到应答则表示寻址失败。
+希望继续，则给出“应答（ACK）”信号，即SDA为低电平
+不希望继续，则给出“非应答（NACK）”信号，即SDA为高电平
+（建立通信后才开始传输数据位）
+（读写方向位：RW，0为写操作，1为读操作）
+主机发送数据流程：
+1、主机在检测到总线为空闲时，发送一个启动信号&#34;S&#34;，开始一次通信的开始
+2、主机接着发送一个从设备地址，它由7bit物理地址和1bit读写控制位R/W组成(此时RW=0)（发送的地址有7位的物理地址和1位的读写方向号）
+3、相对应的从机收到命令字节后向主机回馈应答信号ACK(ACK=D)
+4、主机收到从机的应答信号后开始发送第一个字节的数据；
+5、从机收到数据后返回一个应答信号ACK；
+6、主机收到应答信号后再发送下一个数据字节；
+7、主机发完最后一个字节并收到ACK后，向从机发送一个停止信号P结束本次通信并释放总线；
+8、从机收到p信号后也退出与主机之间的通信；
+主机接收数据流程：
+1、主机发送启动信号后，接着发送地址字节(其中R/W=1) :
+2、对应的从机收到地址字节后，返回一个应答信号并向主机发送数据；
+3、主机收到数据后向从机反馈一个应答信号ACK:
+4、从机收到应答信号后再向主机发送下一个数据:
+5、当主机完成接收数据后，向从机发送一个NAK，从机收到非应答信号后便停止发送；
+6、主机发送非应答信号后，再发送一个停止信号，释放总线结束通信
+stm32l431rct6的i2c引脚分配（本例我们使用引脚PB6和PB7为例）
+二、了解sht20 stm32l431rct6的温湿度传感器引脚分配
+三、开整 记得把串口使能了（这里我使用的是串口1），如下，其他的我相信你们都配好了（ctr&#43;s就可以直接生成代码哦）
+1、在 Core/Src 下创建并编写 SHT20 温湿度传感器的驱动源文件 sht20.c sht20.c代码如下 #include&lt;stdio.h&gt; #include &#34;stm32l4xx_hal.h&#34; #include &#34;sht20.h&#34; #include &#34;tim.h&#34; /* 通过该宏控制是使用 HAL 库里的 I2C 接口还是使用 GPIO 模拟串口的接口*/ #define CONFIG_GPIO_I2C #ifdef CONFIG_GPIO_I2C #include &#34;gpioi2c.h&#34; #else #include &#34;i2c.h&#34; #endif /*采样*/ int SHT20_Sample_data(uint8_t cmd, float *data) { uint8_t buff[2]; float sht20_data=0." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/f3b260a535d04977b4c55790872fa2fe/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-07-28T13:40:14+08:00" />
+<meta property="article:modified_time" content="2023-07-28T13:40:14+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">STM32 GPIO模拟i2c通信实现sht20的温湿度采样 并以JSON格式上报（串口调试助手为例）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h3>一、先了解I2C协议</h3> 
+<p style="margin-left:.0001pt;text-align:justify;">由时钟线SCL和数据线SDA构成的通信线路,利用上拉电阻将它们拉成高电平（表示总线空闲）     </p> 
+<p style="margin-left:.0001pt;text-align:justify;">I2C总线可以有多个从设备，且每个从设备都有一个唯一的7bit地址物理识别，因为I2C地址全0为广播地址，所以I2C总线理论上最多能带2^7-1=127个从设备</p> 
+<p style="margin-left:.0001pt;text-align:justify;">（I2C：半双工通信的同步串行通信协议，采用电平信号，数据传输采用大端方式MSB，先发高位数据）</p> 
+<p style="margin-left:.0001pt;text-align:justify;">I2C总线通信时序：</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><img alt="" height="254" src="https://images2.imgbox.com/4c/b2/2BFG2bMo_o.png" width="829"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">I2C协议的起始信号（start）：当SCL保持高电平时，SDA出现一个下降沿，产生起始位</p> 
+<p style="margin-left:.0001pt;text-align:justify;">I2C协议的停止信号（stop）：当SCL保持高电平时，SDA出现一个上升沿，产生停止位</p> 
+<p style="margin-left:.0001pt;text-align:justify;">（停止通信后，总线空闲，处于高电平）</p> 
+<p style="margin-left:.0001pt;text-align:justify;">主设备向从设备发送从设备地址信号，在收到从设备的应答信号后通讯连接才建立成功</p> 
+<p style="margin-left:.0001pt;text-align:justify;">若未收到应答则表示寻址失败。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">希望继续，则给出“应答（ACK）”信号，即SDA为低电平</p> 
+<p style="margin-left:.0001pt;text-align:justify;">不希望继续，则给出“非应答（NACK）”信号，即SDA为高电平</p> 
+<p style="margin-left:.0001pt;text-align:justify;">（建立通信后才开始传输数据位）</p> 
+<p style="margin-left:.0001pt;text-align:justify;">（读写方向位：RW，0为写操作，1为读操作）</p> 
+<p style="margin-left:.0001pt;text-align:justify;">主机发送数据流程：</p> 
+<p style="margin-left:.0001pt;text-align:justify;">1、主机在检测到总线为空闲时，发送一个启动信号"S"，开始一次通信的开始</p> 
+<p style="margin-left:.0001pt;text-align:justify;">2、主机接着发送一个从设备地址，它由7bit物理地址和1bit读写控制位R/W组成(此时RW=0)（发送的地址有7位的物理地址和1位的读写方向号）</p> 
+<p style="margin-left:.0001pt;text-align:justify;">3、相对应的从机收到命令字节后向主机回馈应答信号ACK(ACK=D)</p> 
+<p style="margin-left:.0001pt;text-align:justify;">4、主机收到从机的应答信号后开始发送第一个字节的数据；</p> 
+<p style="margin-left:.0001pt;text-align:justify;">5、从机收到数据后返回一个应答信号ACK；</p> 
+<p style="margin-left:.0001pt;text-align:justify;">6、主机收到应答信号后再发送下一个数据字节；</p> 
+<p style="margin-left:.0001pt;text-align:justify;">7、主机发完最后一个字节并收到ACK后，向从机发送一个停止信号P结束本次通信并释放总线；</p> 
+<p style="margin-left:.0001pt;text-align:justify;">8、从机收到p信号后也退出与主机之间的通信；</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><img alt="" height="168" src="https://images2.imgbox.com/c2/62/wCcM18vt_o.png" width="606"></p> 
+<p></p> 
+<p style="margin-left:.0001pt;text-align:justify;">主机接收数据流程：</p> 
+<p style="margin-left:.0001pt;text-align:justify;">1、主机发送启动信号后，接着发送地址字节(其中R/W=1) :</p> 
+<p style="margin-left:.0001pt;text-align:justify;">2、对应的从机收到地址字节后，返回一个应答信号并向主机发送数据；</p> 
+<p style="margin-left:.0001pt;text-align:justify;">3、主机收到数据后向从机反馈一个应答信号ACK:</p> 
+<p style="margin-left:.0001pt;text-align:justify;">4、从机收到应答信号后再向主机发送下一个数据:</p> 
+<p style="margin-left:.0001pt;text-align:justify;">5、当主机完成接收数据后，向从机发送一个NAK，从机收到非应答信号后便停止发送；</p> 
+<p style="margin-left:.0001pt;text-align:justify;">6、主机发送非应答信号后，再发送一个停止信号，释放总线结束通信</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><img alt="" height="153" src="https://images2.imgbox.com/9c/f3/MtDVVnDa_o.png" width="642"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">stm32l431rct6的i2c引脚分配（本例我们使用引脚PB6和PB7为例）</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><img alt="" height="155" src="https://images2.imgbox.com/04/70/xY28NvTp_o.png" width="330"></p> 
+<p></p> 
+<h3> 二、了解sht20</h3> 
+<p>stm32l431rct6的温湿度传感器引脚分配</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p><img alt="" height="311" src="https://images2.imgbox.com/e4/be/OvE1Cc41_o.png" width="370"></p> 
+<p><img alt="" height="266" src="https://images2.imgbox.com/1d/7e/NXqmYjE2_o.png" width="337"></p> 
+<p></p> 
+<h3>三、开整</h3> 
+<p>记得把串口使能了（这里我使用的是串口1），如下，其他的我相信你们都配好了（ctr+s就可以直接生成代码哦）</p> 
+<p><img alt="" height="398" src="https://images2.imgbox.com/4c/f8/GgVAHA9p_o.png" width="517"></p> 
+<h4>1、在 Core/Src 下创建并编写 SHT20 温湿度传感器的驱动源文件 sht20.c</h4> 
+<p> <img alt="" height="539" src="https://images2.imgbox.com/38/d8/wMvxtvNJ_o.png" width="1058"></p> 
+<p></p> 
+<p></p> 
+<p><img alt="" height="514" src="https://images2.imgbox.com/81/e1/F5GEgFLm_o.png" width="768"></p> 
+<h5> sht20.c代码如下</h5> 
+<pre><code class="language-cs">#include&lt;stdio.h&gt;
+#include "stm32l4xx_hal.h"
+#include "sht20.h"
+#include "tim.h"
+
+/* 通过该宏控制是使用 HAL 库里的 I2C 接口还是使用 GPIO 模拟串口的接口*/
+#define CONFIG_GPIO_I2C
+
+#ifdef CONFIG_GPIO_I2C
+#include "gpioi2c.h"
+#else
+#include "i2c.h"
+#endif
+
+/*采样*/
+int SHT20_Sample_data(uint8_t cmd, float *data)
+{
+	uint8_t 	buff[2];
+	float 		sht20_data=0.0;
+	int			rv;
+    /*主设备向发送从设备地址信号，这里sht20的写地址是0x80,成功则返回1个字节*/
+	rv=I2C_Master_Transmit(0x80,&amp;cmd,1); 
+	if(0!=rv)
+	{
+		return -1;
+	}
+	if(cmd==0xf3)
+	{
+		HAL_Delay(85);
+	}
+	else if(cmd==0xf5)
+	{
+		HAL_Delay(29);
+	}
+    /*主设备向发送从设备地址信号，这里sht20的读地址是0x81,成功则返回2个字节，分别是温湿度的整数                
+     *和小数，并且数据放在buff中*/
+	rv=I2C_Master_Receive(0x81,buff,2);
+	if(0!=rv)
+    {
+		return -1;
+    }
+	sht20_data=buff[0];
+	sht20_data=ldexp(sht20_data,8);
+	sht20_data+=buff[1]&amp;0xFC;
+	if(cmd==0xf3)    //0xf3为读温度的信号
+	{
+		*data=(-46.85+175.72*sht20_data/65536);//计算温度的公式
+	}
+	else if(cmd==0xf5)    //0xf5为读湿度的信号
+	{
+		*data=(-6.0+125.0*sht20_data/65536);//计算湿度的公式
+	}
+	return *data;
+
+}</code></pre> 
+<h4>2、同理，在 Core/Inc 下创建并编写 SHT20 温湿度传感器的驱动头文件 sht20.h</h4> 
+<h5> sht20.h代码如下：</h5> 
+<pre><code class="language-cs">#ifndef INC_SHT20_H_
+#define INC_SHT20_H_
+
+#include "stm32l4xx_hal.h"
+
+#define  add_w  0x80  //地址写
+#define  add_r  0x81  //地址读
+#define measure_temp 0xf3  //读取温度
+#define measure_hum 0xf5   //读取湿度
+
+#define user_code_w 0xe6
+#define user_code_r 0xe7
+
+#define RST_code 0xfe	//复位
+
+int SHT20_Sample_data(uint8_t cmd, float *data);
+#endif /* INC_SHT20_H_ */
+</code></pre> 
+<h4>3、同理，在 Core/Src 下创建并编写 GPIO 模拟 I2C 驱动源文件 gpioi2c.c</h4> 
+<h5>gpioi2c.c代码如下：</h5> 
+<pre><code class="language-cs">#include &lt;stdio.h&gt;
+#include "stm32l4xx_hal.h"
+#include "tim.h" /* delay_us() implement */
+#include "gpio.h"
+#include "gpioi2c.h"
+
+#define I2C_CLK_STRETCH_TIMEOUT 50
+
+#define CONFIG_GPIO_I2C_DEBUG
+#ifdef CONFIG_GPIO_I2C_DEBUG
+#define i2c_print(format,args...) printf(format, ##args)
+#else
+#define i2c_print(format,args...) do{} while(0)
+#endif
+
+/* GPIO Simulate I2C Bus pins */
+typedef struct i2c_gpio_s
+{
+		GPIO_TypeDef *group;
+		uint16_t scl; /* SCL */
+		uint16_t sda; /* SDA */
+} i2c_gpio_t;
+
+static i2c_gpio_t i2c_pins = { GPIOB, GPIO_PIN_6/*SCL*/, GPIO_PIN_7/*SDA*/ };
+
+#define SDA_IN() do{ GPIO_InitTypeDef GPIO_InitStruct = {0}; \
+							GPIO_InitStruct.Pin = i2c_pins.sda; \
+							GPIO_InitStruct.Mode = GPIO_MODE_INPUT; \
+							GPIO_InitStruct.Pull = GPIO_PULLUP; \
+							GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH; \
+							HAL_GPIO_Init(i2c_pins.group, &amp;GPIO_InitStruct); \
+						}while(0)
+
+#define SDA_OUT() do{ GPIO_InitTypeDef GPIO_InitStruct = {0}; \
+							GPIO_InitStruct.Pin = i2c_pins.sda; \
+							GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP; \
+							GPIO_InitStruct.Pull = GPIO_PULLUP; \
+							GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH; \
+							HAL_GPIO_Init(i2c_pins.group, &amp;GPIO_InitStruct); \
+						}while(0)
+
+#define SCL_OUT() do{ GPIO_InitTypeDef GPIO_InitStruct = {0}; \
+							GPIO_InitStruct.Pin = i2c_pins.scl; \
+							GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP; \
+							GPIO_InitStruct.Pull = GPIO_PULLUP; \
+							GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH; \
+							HAL_GPIO_Init(i2c_pins.group, &amp;GPIO_InitStruct); \
+						}while(0)
+
+#define SCL_H() HAL_GPIO_WritePin(i2c_pins.group, i2c_pins.scl, GPIO_PIN_SET)
+#define SCL_L() HAL_GPIO_WritePin(i2c_pins.group, i2c_pins.scl, GPIO_PIN_RESET)
+#define SDA_H() HAL_GPIO_WritePin(i2c_pins.group, i2c_pins.sda, GPIO_PIN_SET)
+#define SDA_L() HAL_GPIO_WritePin(i2c_pins.group, i2c_pins.sda, GPIO_PIN_RESET)
+#define READ_SDA() HAL_GPIO_ReadPin(i2c_pins.group, i2c_pins.sda)
+#define READ_SCL() HAL_GPIO_ReadPin(i2c_pins.group, i2c_pins.scl)
+
+static inline uint8_t I2c_WaitWhileClockStretching(uint16_t timeout)
+{
+		while( timeout-- &gt; 0 )
+		{
+			if( READ_SCL() )
+				break;
+			delay_us(1);
+        }
+		return timeout ? NO_ERROR : BUS_ERROR;
+}
+
+/* StartCondition(S) */
+uint8_t I2c_StartCondition()
+{
+			uint8_t rv = NO_ERROR;
+			SDA_OUT();
+			SCL_OUT();
+/* StartCondition(S): A high to low transition on the SDA line while SCL is high.
+		_______
+SCL: 		   |___
+		_____
+SDA: 		 |_____
+*/
+			SDA_H();
+				delay_us(1);
+			SCL_H();
+				delay_us(1);
+#ifdef I2C_CLK_STRETCH_TIMEOUT
+			rv = I2c_WaitWhileClockStretching(I2C_CLK_STRETCH_TIMEOUT);
+			if( rv )
+			{
+				i2c_print("ERROR: %s() I2C bus busy\n", __func__);
+				return rv;
+            }
+#endif
+			SDA_L();
+			delay_us(2);
+			SCL_L();
+			delay_us(2);
+			return rv;
+}
+
+/* StopCondition(P) */
+uint8_t I2c_StopCondition(void)
+{
+			uint8_t rv = NO_ERROR;
+			SDA_OUT();
+/* StopCondition(P): A low to high transition on the SDA line while SCL is high.
+		 _____
+SCL: ___|
+			_____
+SDA: ______|
+*/
+			SCL_L();
+			SDA_L();
+			delay_us(2);
+			SCL_H();
+			delay_us(2);
+#ifdef I2C_CLK_STRETCH_TIMEOUT
+			rv = I2c_WaitWhileClockStretching(I2C_CLK_STRETCH_TIMEOUT);
+			if( rv )
+			{
+				i2c_print("ERROR: %s() I2C bus busy\n", __func__);
+			}
+#endif
+			SDA_H();
+			delay_us(2);
+			return rv;
+}
+uint8_t I2c_WriteByte(uint8_t byte)
+{
+			uint8_t rv = NO_ERROR;
+			uint8_t mask;
+			/* Data line changes must happened when SCL is low */
+			SDA_OUT();
+			SCL_L();
+			/* 1Byte=8bit, MSB send: bit[7]--&gt;bit[0] */
+			for(mask=0x80; mask&gt;0; mask&gt;&gt;=1)
+			{
+				if((mask &amp; byte) == 0)
+				{
+					SDA_L();
+				}
+				else
+				{
+					SDA_H();
+				}
+				delay_us(5); // data set-up time (t_SU;DAT)
+				SCL_H();
+				delay_us(5); // SCL high time (t_HIGH)
+#ifdef I2C_CLK_STRETCH_TIMEOUT
+				rv = I2c_WaitWhileClockStretching(I2C_CLK_STRETCH_TIMEOUT);
+				if( rv )
+				{
+					i2c_print("ERROR: %s() I2C bus busy\n", __func__);
+					goto OUT;
+				}
+#endif
+				SCL_L();
+				delay_us(5); // data hold time(t_HD;DAT)
+			}
+			/* clk #9 wait ACK/NAK from slave */
+			SDA_IN();
+			SCL_H(); // clk #9 for ack
+			delay_us(5); // data set-up time (t_SU;DAT)
+#ifdef I2C_CLK_STRETCH_TIMEOUT
+			rv = I2c_WaitWhileClockStretching(I2C_CLK_STRETCH_TIMEOUT);
+			if( rv )
+			{
+				i2c_print("ERROR: %s() I2C bus busy\n", __func__);
+				goto OUT;
+			}
+#endif
+			 /* High level means NAK */
+			if( READ_SDA() )
+			rv = ACK_ERROR;
+OUT:
+			SCL_L();
+			delay_us(20);
+			return rv;
+}
+
+uint8_t I2c_ReadByte(uint8_t *byte, uint8_t ack)
+{
+		uint8_t rv = NO_ERROR;
+		uint8_t mask;
+		*byte = 0x00;
+		SDA_IN();
+		/* 1Byte=8bit, MSB send: bit[7]--&gt;bit[0] */
+		for(mask = 0x80; mask &gt; 0; mask &gt;&gt;= 1)
+		{
+			SCL_H(); // start clock on SCL-line
+			delay_us(1); // clock set-up time (t_SU;CLK)
+#ifdef I2C_CLK_STRETCH_TIMEOUT
+			rv = I2c_WaitWhileClockStretching(I2C_CLK_STRETCH_TIMEOUT);
+			if( rv )
+			{
+				i2c_print("ERROR: %s() I2C bus busy\n", __func__);
+				goto OUT;
+			}
+#endif
+			if(READ_SDA())
+				*byte |= mask; // read bit
+			SCL_L();
+			delay_us(2); // data hold time(t_HD;DAT)
+		}
+		/* clk #9 send ACK/NAK to slave */
+		if(ack == ACK)
+		{
+			SDA_OUT();
+			SDA_L(); // send Acknowledge if necessary
+		}
+		else if( ack == NAK )
+		{
+			SDA_OUT();
+			SDA_H(); // send NotAcknowledge if necessary
+		}
+		delay_us(1); // data set-up time (t_SU;DAT)
+		SCL_H(); // clk #9 for ack
+		delay_us(2); // SCL high time (t_HIGH)
+#ifdef I2C_CLK_STRETCH_TIMEOUT
+		rv = I2c_WaitWhileClockStretching(I2C_CLK_STRETCH_TIMEOUT);
+		if( rv )
+		{
+		 i2c_print("ERROR: %s() I2C bus busy\n", __func__);
+		}
+#endif
+OUT:
+		SCL_L();
+		delay_us(2); // wait to see byte package on scope
+		return rv;
+}
+
+uint8_t I2c_SendAddress(uint8_t addr)
+{
+     return I2c_WriteByte(addr);
+}
+
+int I2C_Master_Receive(uint8_t addr, uint8_t *buf, int len)
+{
+			int i;
+			int rv = NO_ERROR;
+			uint8_t byte;
+			I2c_StartCondition();
+			rv = I2c_SendAddress(addr);
+			if( rv )
+			{
+				i2c_print("Send I2C read address failure, rv=%d\n", rv);
+				goto OUT;
+			}
+#ifdef I2C_CLK_STRETCH_TIMEOUT
+			/* wait while clock streching */
+			rv = I2c_WaitWhileClockStretching(I2C_CLK_STRETCH_TIMEOUT);
+			if( rv )
+			{
+				i2c_print("ERROR: %s() I2C wait clock stretching failure, rv=%d\n", __func__, rv);
+				return rv;
+			}
+#endif
+			for (i=0; i&lt;len; i++)
+			{
+				if( !I2c_ReadByte(&amp;byte, ACK) )
+				{
+					buf[i] = byte;
+				}
+				else
+					goto OUT;
+			}
+OUT:
+			I2c_StopCondition();
+			return rv;
+}
+
+int I2C_Master_Transmit(uint8_t addr, uint8_t *data, int bytes)
+{
+			int i;
+			int rv = NO_ERROR;
+			if(!data)
+			{
+			 return PARM_ERROR;
+			}
+			 i2c_print("I2C Mastr start transimit [%d] bytes data to addr [0x%02x]\n", bytes, addr);
+			 I2c_StartCondition();
+			  rv = I2c_SendAddress(addr);
+			if( rv )
+			{
+				goto OUT;
+			}
+	for (i=0; i&lt;bytes; i++)
+	{
+		  if( NO_ERROR != (rv=I2c_WriteByte(data[i])) )
+		{
+		  break;
+		}
+	}
+OUT:
+  I2c_StopCondition();
+  return rv;
+}</code></pre> 
+<h4>4、同理，在 Core/Inc 下创建并编写 GPIO 模拟 I2C 头文件 gpioi2c.h</h4> 
+<p>gpioi2c.h代码如下：</p> 
+<pre><code class="language-cs">enum
+{
+	NO_ERROR = 0x00, // no error
+	PARM_ERROR = 0x01, // parameter out of range error
+	ACK_ERROR = 0x02, // no acknowledgment error
+	CHECKSUM_ERROR = 0x04, // checksum mismatch error
+	TIMEOUT_ERROR = 0x08, // timeout error
+	BUS_ERROR = 0x10, // bus busy
+};
+enum
+{
+	ACK_NONE, /* Without ACK/NAK Reply */
+	ACK, /* Reply with ACK */
+	NAK, /* Reply with NAK */
+};
+extern int I2C_Master_Receive(uint8_t addr, uint8_t *buf, int len);
+extern int I2C_Master_Transmit(uint8_t addr, uint8_t *data, int bytes);</code></pre> 
+<h4>5、修改main.c中的代码，找到下列相应位置，添加如图代码即可</h4> 
+<p><img alt="" height="200" src="https://images2.imgbox.com/a9/b7/wugF2ReD_o.png" width="527"></p> 
+<p></p> 
+<p><img alt="" height="411" src="https://images2.imgbox.com/6b/81/fV9WlNuE_o.png" width="712"></p> 
+<p> <img alt="" height="304" src="https://images2.imgbox.com/76/57/tsVNBVQA_o.png" width="1200"></p> 
+<p><img alt="" height="118" src="https://images2.imgbox.com/3d/5e/WQDXVwKg_o.png" width="584"></p> 
+<h5> 编写好之后，点击运行代码</h5> 
+<p><img alt="" height="508" src="https://images2.imgbox.com/c7/6a/n4Ks2Gd5_o.png" width="1174"></p> 
+<h5> 将程序烧录至开发板</h5> 
+<p><img alt="" height="756" src="https://images2.imgbox.com/dd/31/KJpqAGYz_o.png" width="1200"></p> 
+<p> <img alt="" height="746" src="https://images2.imgbox.com/0d/f9/MxFbZOZu_o.png" width="1200"></p> 
+<p></p> 
+<p></p> 
+<h5>串口调试助手连接板子，在板子上按复位键就可以看到打印信息了，如下：</h5> 
+<p><img alt="" height="798" src="https://images2.imgbox.com/f8/41/8gvWbeow_o.png" width="1158"></p> 
+<p></p> 
+<p></p> 
+<p></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/16aff2aa132a9c63247337abd69458b0/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">JS如何获取最近一个月或指定天数的日期,并以数组的形式存储</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/332de8c876339220ec346a702f3dbfc3/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">GitHub上怎么寻找项目？</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

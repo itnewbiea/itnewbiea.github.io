@@ -1,0 +1,1724 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>MultiBox 详解 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="MultiBox 详解" />
+<meta property="og:description" content="MultiBox 详解 一、生成 Region proposals（一）网络部分（二）Bounding Box（三）置信度（四）损失函数1、Bounding Box Loss2、Confidence Loss3、最终的 Loss （五）三种优化方法 二、对 Region Proposals 分类 Scalable Object Detection using Deep Neural Networks 论文链接
+在 R-CNN 网络中，提取 region proposals 使用的是一种传统的基于搜索的策略，这种策略的时间复杂度高而且生成的 region proposals 数量很多，不利于后续网络对生成的 region proposals 进行分类。在这篇论文中，作者提出了一种利用深度学习的方法提取 region proposals，大大减少了时间复杂度和生成 region proposals 的数量。而且可以进行多目标的检测。为之后提出的各种利用 CNN 网络生成 region proposals 的方法奠定了基础。
+其中作者的主要实现的功能就是：在不知道类别的情况下定位目标，并提供定位此目标的 confidence。可以理解为，在不知道要分几类的情况下，定位出来图片中所有可能的候选目标。
+一、生成 Region proposals 这一步也是本论文的核心，即如何使用 CNN 网络生成 region proposals。注意：无论是生成 Region 还是进行分类，对于 CNN 网络部分，作者使用的都是 AlexNet。
+作者定义了一个新的 loss，通过最优化这个新的 loss，实现了对目标的定位，以及提供了在此回归框下的目标的置信度（此时还不知道目标的类别，只是预测了它框住的是一个物体的概率）
+（一）网络部分 网络输出的 region proposals 的数量是固定的，这个数量通过超参数 K 指定。在试验中，作者使用的 K = 100 K=100 K=100 或 K = 200 K=200 K=200。我们将第 i i i 个对象框，以及与其关联的置信度，设置为最后一层的节点值。对于每个生成的 region 都有5个值，其中两个坐标（2 x 2 = 4 个值），还有一个置信度（1 个值）" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/6abc28b98b906a5b49fb3974db0ffa67/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-03-13T21:10:16+08:00" />
+<meta property="article:modified_time" content="2020-03-13T21:10:16+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">MultiBox 详解</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>MultiBox 详解</h4> 
+ <ul><li><ul><li><a href="#_Region_proposals_17" rel="nofollow">一、生成 Region proposals</a></li><li><ul><li><a href="#_25" rel="nofollow">（一）网络部分</a></li><li><a href="#Bounding_Box_35" rel="nofollow">（二）Bounding Box</a></li><li><a href="#_45" rel="nofollow">（三）置信度</a></li><li><a href="#_53" rel="nofollow">（四）损失函数</a></li><li><ul><li><a href="#1Bounding_Box_Loss_66" rel="nofollow">1、Bounding Box Loss</a></li><li><a href="#2Confidence_Loss_78" rel="nofollow">2、Confidence Loss</a></li><li><a href="#3_Loss_91" rel="nofollow">3、最终的 Loss</a></li></ul> 
+    </li><li><a href="#_110" rel="nofollow">（五）三种优化方法</a></li></ul> 
+   </li><li><a href="#_Region_Proposals__122" rel="nofollow">二、对 Region Proposals 分类</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2>Scalable Object Detection using Deep Neural Networks</h2> 
+<p><a href="https://www.cv-foundation.org/openaccess/content_cvpr_2014/papers/Erhan_Scalable_Object_Detection_2014_CVPR_paper.pdf" rel="nofollow">论文链接</a></p> 
+<hr> 
+<blockquote> 
+ <p>  在 R-CNN 网络中，提取 region proposals 使用的是一种传统的基于搜索的策略，这种策略的时间复杂度高而且生成的 region proposals 数量很多，不利于后续网络对生成的 region proposals 进行分类。在这篇论文中，作者提出了一种利用深度学习的方法提取 region proposals，大大减少了时间复杂度和生成 region proposals 的数量。而且可以进行多目标的检测。为之后提出的各种利用 CNN 网络生成 region proposals 的方法奠定了基础。</p> 
+</blockquote> 
+<p>  其中作者的<mark>主要实现的功能</mark>就是：<mark>在不知道类别的情况下定位目标，并提供定位此目标的 confidence</mark>。可以理解为，在不知道要分几类的情况下，定位出来图片中所有可能的候选目标。</p> 
+<br> 
+<br> 
+<h3><a id="_Region_proposals_17"></a>一、生成 Region proposals</h3> 
+<hr> 
+<p>  这一步也是本论文的核心，即如何使用 CNN 网络生成 region proposals。注意：无论是生成 Region 还是进行分类，对于 CNN 网络部分，作者使用的都是 AlexNet。</p> 
+<p>  作者<mark>定义了一个新的 loss，通过最优化这个新的 loss，实现了对目标的定位，以及提供了在此回归框下的目标的置信度</mark>（此时还不知道目标的类别，只是预测了它框住的是一个物体的概率）<br> <br></p> 
+<h4><a id="_25"></a>（一）网络部分</h4> 
+<hr> 
+<p>  <mark>网络输出的 region proposals 的数量是固定的，这个数量通过超参数 K 指定</mark>。在试验中，作者使用的 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         K 
+        
+       
+         = 
+        
+       
+         100 
+        
+       
+      
+        K=100 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.07153em;">K</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.64444em; vertical-align: 0em;"></span><span class="mord">1</span><span class="mord">0</span><span class="mord">0</span></span></span></span></span> 或 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         K 
+        
+       
+         = 
+        
+       
+         200 
+        
+       
+      
+        K=200 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.07153em;">K</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.64444em; vertical-align: 0em;"></span><span class="mord">2</span><span class="mord">0</span><span class="mord">0</span></span></span></span></span>。我们将第 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         i 
+        
+       
+      
+        i 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.65952em; vertical-align: 0em;"></span><span class="mord mathdefault">i</span></span></span></span></span> 个对象框，以及与其关联的置信度，设置为最后一层的节点值。对于每个生成的 region 都有5个值，其中两个坐标（2 x 2 = 4 个值），还有一个置信度（1 个值）</p> 
+<p>  具体做法是，<mark>将两个输出层都连接到最后的隐藏层</mark>。其中，第一个输出层用于回归 Bounding Box，第二个输出层用于得到置信度。</p> 
+<br> 
+<h4><a id="Bounding_Box_35"></a>（二）Bounding Box</h4> 
+<hr> 
+<p>  将 Bounding Box 的<mark>左上角坐标，和右下角坐标设置为 4 个节点值</mark>。使用符号 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          l 
+         
+        
+          i 
+         
+        
+       
+      
+        l_i 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.84444em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.01968em;">l</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: -0.01968em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 表示。其中 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          l 
+         
+        
+          i 
+         
+        
+       
+         ∈ 
+        
+        
+        
+          R 
+         
+        
+          4 
+         
+        
+       
+      
+        l_i\in\mathbb{R^4} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.84444em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.01968em;">l</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: -0.01968em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.814108em; vertical-align: 0em;"></span><span class="mord"><span class="mord"><span class="mord mathbb">R</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.814108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">4</span></span></span></span></span></span></span></span></span></span></span></span></span>。</p> 
+<p>  其中<mark>坐标需要进行归一化</mark>，具体的做法是：点的 x 坐标除以图像的宽，点的 y 坐标除以图像的高。经过这样的处理，x, y 的值就相当于占整个图像的比例，就和图像的大小无关了。</p> 
+<br> 
+<h4><a id="_45"></a>（三）置信度</h4> 
+<hr> 
+<p>  <mark>置信度代表，圈住的 Bounding Box 中的东西，是一个物体的概率</mark>（这里并不知道类别）。这个置信度，使用模型最后一层的一个节点值表示。符号记为：<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          c 
+         
+        
+          i 
+         
+        
+       
+      
+        c_i 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.58056em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">c</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>，其中 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          c 
+         
+        
+          i 
+         
+        
+       
+         ∈ 
+        
+       
+         [ 
+        
+       
+         0 
+        
+       
+         , 
+        
+       
+         1 
+        
+       
+         ] 
+        
+       
+      
+        c_i\in[0,1] 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6891em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">c</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mopen">[</span><span class="mord">0</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord">1</span><span class="mclose">]</span></span></span></span></span>，是通过 sigmoid 函数压缩网络输出数值得到。</p> 
+<br> 
+<h4><a id="_53"></a>（四）损失函数</h4> 
+<hr> 
+<blockquote> 
+ <p><strong>数学符号表示：</strong><br> （1）<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          K 
+         
+        
+       
+         K 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.07153em;">K</span></span></span></span></span> 表示生成的 Bounding Box 的数量<br> （2）<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          M 
+         
+        
+       
+         M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.10903em;">M</span></span></span></span></span> 表示 ground truth 的数量<br> （3）<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           l 
+          
+         
+           i 
+          
+         
+        
+       
+         l_i 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.84444em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.01968em;">l</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: -0.01968em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 表示第 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          i 
+         
+        
+       
+         i 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.65952em; vertical-align: 0em;"></span><span class="mord mathdefault">i</span></span></span></span></span> 个 Bounding Box 的左上角、右下角坐标的四个值。其中 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          i 
+         
+        
+          ∈ 
+         
+        
+          { 
+         
+        
+          1 
+         
+        
+          , 
+         
+        
+          2 
+         
+        
+          , 
+         
+        
+          3 
+         
+        
+          , 
+         
+        
+          . 
+         
+        
+          . 
+         
+        
+          . 
+         
+        
+          , 
+         
+        
+          K 
+         
+        
+          } 
+         
+        
+       
+         i\in\{1,2,3,...,K\} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.69862em; vertical-align: -0.0391em;"></span><span class="mord mathdefault">i</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mopen">{<!-- --></span><span class="mord">1</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord">2</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord">3</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord">.</span><span class="mord">.</span><span class="mord">.</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault" style="margin-right: 0.07153em;">K</span><span class="mclose">}</span></span></span></span></span><br> （4）<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           g 
+          
+         
+           j 
+          
+         
+        
+       
+         g_j 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.716668em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.03588em;">g</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: -0.03588em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.05724em;">j</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 表示第 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          j 
+         
+        
+       
+         j 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.85396em; vertical-align: -0.19444em;"></span><span class="mord mathdefault" style="margin-right: 0.05724em;">j</span></span></span></span></span> 个 ground truth 的左上角、右下角坐标的四个值，其中 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          j 
+         
+        
+          ∈ 
+         
+        
+          { 
+         
+        
+          1 
+         
+        
+          , 
+         
+        
+          2 
+         
+        
+          , 
+         
+        
+          3 
+         
+        
+          , 
+         
+        
+          . 
+         
+        
+          . 
+         
+        
+          . 
+         
+        
+          , 
+         
+        
+          M 
+         
+        
+          } 
+         
+        
+       
+         j\in\{1,2,3,...,M\} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.85396em; vertical-align: -0.19444em;"></span><span class="mord mathdefault" style="margin-right: 0.05724em;">j</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mopen">{<!-- --></span><span class="mord">1</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord">2</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord">3</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord">.</span><span class="mord">.</span><span class="mord">.</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault" style="margin-right: 0.10903em;">M</span><span class="mclose">}</span></span></span></span></span><br> （5）<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           c 
+          
+         
+           i 
+          
+         
+        
+       
+         c_i 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.58056em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">c</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 表示第 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          i 
+         
+        
+       
+         i 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.65952em; vertical-align: 0em;"></span><span class="mord mathdefault">i</span></span></span></span></span> 个 Bounding Box 的置信度<br> （6）<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           x 
+          
+          
+          
+            i 
+           
+          
+            j 
+           
+          
+         
+        
+          ∈ 
+         
+        
+          { 
+         
+        
+          0 
+         
+        
+          , 
+         
+        
+          1 
+         
+        
+          } 
+         
+        
+       
+         x_{ij}\in\{0,1\} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.825208em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">i</span><span class="mord mathdefault mtight" style="margin-right: 0.05724em;">j</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mopen">{<!-- --></span><span class="mord">0</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord">1</span><span class="mclose">}</span></span></span></span></span> 表示第 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          i 
+         
+        
+       
+         i 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.65952em; vertical-align: 0em;"></span><span class="mord mathdefault">i</span></span></span></span></span> 个预测值和第 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          j 
+         
+        
+       
+         j 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.85396em; vertical-align: -0.19444em;"></span><span class="mord mathdefault" style="margin-right: 0.05724em;">j</span></span></span></span></span> 个真值匹配，其中 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          i 
+         
+        
+          ∈ 
+         
+        
+          { 
+         
+        
+          1 
+         
+        
+          , 
+         
+        
+          2 
+         
+        
+          , 
+         
+        
+          3 
+         
+        
+          , 
+         
+        
+          . 
+         
+        
+          . 
+         
+        
+          . 
+         
+        
+          , 
+         
+        
+          K 
+         
+        
+          } 
+         
+        
+       
+         i\in\{1,2,3,...,K\} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.69862em; vertical-align: -0.0391em;"></span><span class="mord mathdefault">i</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mopen">{<!-- --></span><span class="mord">1</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord">2</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord">3</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord">.</span><span class="mord">.</span><span class="mord">.</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault" style="margin-right: 0.07153em;">K</span><span class="mclose">}</span></span></span></span></span> 、<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          j 
+         
+        
+          ∈ 
+         
+        
+          { 
+         
+        
+          1 
+         
+        
+          , 
+         
+        
+          2 
+         
+        
+          , 
+         
+        
+          3 
+         
+        
+          , 
+         
+        
+          . 
+         
+        
+          . 
+         
+        
+          . 
+         
+        
+          , 
+         
+        
+          M 
+         
+        
+          } 
+         
+        
+       
+         j\in\{1,2,3,...,M\} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.85396em; vertical-align: -0.19444em;"></span><span class="mord mathdefault" style="margin-right: 0.05724em;">j</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mopen">{<!-- --></span><span class="mord">1</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord">2</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord">3</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord">.</span><span class="mord">.</span><span class="mord">.</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault" style="margin-right: 0.10903em;">M</span><span class="mclose">}</span></span></span></span></span></p> 
+</blockquote> 
+<br> 
+<h5><a id="1Bounding_Box_Loss_66"></a>1、Bounding Box Loss</h5> 
+<hr> 
+<p><strong>回归 Bounding Box 部分的损失的定义如下：</strong></p> 
+<p><span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           F 
+          
+          
+          
+            m 
+           
+          
+            a 
+           
+          
+            t 
+           
+          
+            c 
+           
+          
+            h 
+           
+          
+         
+        
+          ( 
+         
+        
+          x 
+         
+        
+          , 
+         
+        
+          l 
+         
+        
+          ) 
+         
+        
+          = 
+         
+         
+         
+           1 
+          
+         
+           2 
+          
+         
+         
+         
+           ∑ 
+          
+          
+          
+            i 
+           
+          
+            , 
+           
+          
+            j 
+           
+          
+         
+         
+         
+           x 
+          
+          
+          
+            i 
+           
+          
+            j 
+           
+          
+         
+        
+          ∣ 
+         
+        
+          ∣ 
+         
+         
+         
+           l 
+          
+         
+           i 
+          
+         
+        
+          − 
+         
+         
+         
+           g 
+          
+         
+           j 
+          
+         
+        
+          ∣ 
+         
+         
+         
+           ∣ 
+          
+         
+           2 
+          
+         
+           2 
+          
+         
+        
+       
+         F_{match}(x,l)=\frac{1}{2}\sum_{i,j}x_{ij}||l_i-g_j||_2^2 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.13889em;">F</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.336108em;"><span class="" style="top: -2.55em; margin-left: -0.13889em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">m</span><span class="mord mathdefault mtight">a</span><span class="mord mathdefault mtight">t</span><span class="mord mathdefault mtight">c</span><span class="mord mathdefault mtight">h</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mopen">(</span><span class="mord mathdefault">x</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault" style="margin-right: 0.01968em;">l</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 2.73522em; vertical-align: -1.41378em;"></span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.32144em;"><span class="" style="top: -2.314em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord">2</span></span></span><span class="" style="top: -3.23em;"><span class="pstrut" style="height: 3em;"></span><span class="frac-line" style="border-bottom-width: 0.04em;"></span></span><span class="" style="top: -3.677em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord">1</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.686em;"><span class=""></span></span></span></span></span><span class="mclose nulldelimiter"></span></span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mop op-limits"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.05001em;"><span class="" style="top: -1.87233em; margin-left: 0em;"><span class="pstrut" style="height: 3.05em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">i</span><span class="mpunct mtight">,</span><span class="mord mathdefault mtight" style="margin-right: 0.05724em;">j</span></span></span></span><span class="" style="top: -3.05em;"><span class="pstrut" style="height: 3.05em;"></span><span class=""><span class="mop op-symbol large-op">∑</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 1.41378em;"><span class=""></span></span></span></span></span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">i</span><span class="mord mathdefault mtight" style="margin-right: 0.05724em;">j</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span><span class="mord">∣</span><span class="mord">∣</span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.01968em;">l</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: -0.01968em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1.15022em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.03588em;">g</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: -0.03588em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.05724em;">j</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span><span class="mord">∣</span><span class="mord"><span class="mord">∣</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.864108em;"><span class="" style="top: -2.453em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span><span class="" style="top: -3.113em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.247em;"><span class=""></span></span></span></span></span></span></span></span></span></span></span></p> 
+<p>  使用 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          L 
+         
+        
+          2 
+         
+        
+       
+      
+        L_2 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.83333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">L</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.301108em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 正则最小化 Bounding Box 与 Ground Truth 的差值。当 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+         
+         
+           i 
+          
+         
+           j 
+          
+         
+        
+       
+         = 
+        
+       
+         1 
+        
+       
+      
+        x_{ij}=1 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.716668em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">i</span><span class="mord mathdefault mtight" style="margin-right: 0.05724em;">j</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.64444em; vertical-align: 0em;"></span><span class="mord">1</span></span></span></span></span> 时，说明第 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         i 
+        
+       
+      
+        i 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.65952em; vertical-align: 0em;"></span><span class="mord mathdefault">i</span></span></span></span></span> 个 Bounding Box 与第 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         j 
+        
+       
+      
+        j 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.85396em; vertical-align: -0.19444em;"></span><span class="mord mathdefault" style="margin-right: 0.05724em;">j</span></span></span></span></span> 个 Ground Truth 是匹配的，那么就计算损失，用于进一步减少 Bounding Box 与 Ground Truth 的差值。相反，如果 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+         
+         
+           i 
+          
+         
+           j 
+          
+         
+        
+       
+         = 
+        
+       
+         0 
+        
+       
+      
+        x_{ij}=0 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.716668em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">i</span><span class="mord mathdefault mtight" style="margin-right: 0.05724em;">j</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.64444em; vertical-align: 0em;"></span><span class="mord">0</span></span></span></span></span> 说明不匹配，那么就不需要优化 Bounding Box 的位置。</p> 
+<br> 
+<h5><a id="2Confidence_Loss_78"></a>2、Confidence Loss</h5> 
+<hr> 
+<p><strong>置信度的损失定义如下：</strong></p> 
+<p><span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           F 
+          
+          
+          
+            c 
+           
+          
+            o 
+           
+          
+            n 
+           
+          
+            f 
+           
+          
+         
+        
+          ( 
+         
+        
+          x 
+         
+        
+          , 
+         
+        
+          c 
+         
+        
+          ) 
+         
+        
+          = 
+         
+        
+          − 
+         
+         
+         
+           ∑ 
+          
+          
+          
+            i 
+           
+          
+            , 
+           
+          
+            j 
+           
+          
+         
+         
+         
+           x 
+          
+          
+          
+            i 
+           
+          
+            j 
+           
+          
+         
+        
+          l 
+         
+        
+          o 
+         
+        
+          g 
+         
+        
+          ( 
+         
+         
+         
+           c 
+          
+         
+           i 
+          
+         
+        
+          ) 
+         
+        
+          − 
+         
+         
+         
+           ∑ 
+          
+         
+           i 
+          
+         
+        
+          ( 
+         
+        
+          1 
+         
+        
+          − 
+         
+         
+         
+           ∑ 
+          
+         
+           j 
+          
+         
+         
+         
+           x 
+          
+          
+          
+            i 
+           
+          
+            j 
+           
+          
+         
+        
+          ) 
+         
+        
+          l 
+         
+        
+          o 
+         
+        
+          g 
+         
+        
+          ( 
+         
+        
+          1 
+         
+        
+          − 
+         
+         
+         
+           c 
+          
+         
+           i 
+          
+         
+        
+          ) 
+         
+        
+       
+         F_{conf}(x,c)=-\sum_{i,j}x_{ij}log(c_i)-\sum_i(1-\sum_jx_{ij})log(1-c_i) 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.03611em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.13889em;">F</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.336108em;"><span class="" style="top: -2.55em; margin-left: -0.13889em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">c</span><span class="mord mathdefault mtight">o</span><span class="mord mathdefault mtight">n</span><span class="mord mathdefault mtight" style="margin-right: 0.10764em;">f</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span><span class="mopen">(</span><span class="mord mathdefault">x</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault">c</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 2.46378em; vertical-align: -1.41378em;"></span><span class="mord">−</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mop op-limits"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.05001em;"><span class="" style="top: -1.87233em; margin-left: 0em;"><span class="pstrut" style="height: 3.05em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">i</span><span class="mpunct mtight">,</span><span class="mord mathdefault mtight" style="margin-right: 0.05724em;">j</span></span></span></span><span class="" style="top: -3.05em;"><span class="pstrut" style="height: 3.05em;"></span><span class=""><span class="mop op-symbol large-op">∑</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 1.41378em;"><span class=""></span></span></span></span></span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">i</span><span class="mord mathdefault mtight" style="margin-right: 0.05724em;">j</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span><span class="mord mathdefault" style="margin-right: 0.01968em;">l</span><span class="mord mathdefault">o</span><span class="mord mathdefault" style="margin-right: 0.03588em;">g</span><span class="mopen">(</span><span class="mord"><span class="mord mathdefault">c</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 2.32767em; vertical-align: -1.27767em;"></span><span class="mop op-limits"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.05001em;"><span class="" style="top: -1.87233em; margin-left: 0em;"><span class="pstrut" style="height: 3.05em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">i</span></span></span><span class="" style="top: -3.05001em;"><span class="pstrut" style="height: 3.05em;"></span><span class=""><span class="mop op-symbol large-op">∑</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 1.27767em;"><span class=""></span></span></span></span></span><span class="mopen">(</span><span class="mord">1</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 2.46378em; vertical-align: -1.41378em;"></span><span class="mop op-limits"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.05001em;"><span class="" style="top: -1.87233em; margin-left: 0em;"><span class="pstrut" style="height: 3.05em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.05724em;">j</span></span></span><span class="" style="top: -3.05em;"><span class="pstrut" style="height: 3.05em;"></span><span class=""><span class="mop op-symbol large-op">∑</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 1.41378em;"><span class=""></span></span></span></span></span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">i</span><span class="mord mathdefault mtight" style="margin-right: 0.05724em;">j</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span><span class="mord mathdefault" style="margin-right: 0.01968em;">l</span><span class="mord mathdefault">o</span><span class="mord mathdefault" style="margin-right: 0.03588em;">g</span><span class="mopen">(</span><span class="mord">1</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord"><span class="mord mathdefault">c</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span></span></span></span></span></span></p> 
+<p>  使用交叉熵损失的变形优化 confidence，我们可以把 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          ∑ 
+         
+        
+          j 
+         
+        
+        
+        
+          x 
+         
+         
+         
+           i 
+          
+         
+           j 
+          
+         
+        
+       
+         = 
+        
+       
+         1 
+        
+       
+      
+        \sum_jx_{ij}=1 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.18582em; vertical-align: -0.435818em;"></span><span class="mop"><span class="mop op-symbol small-op" style="position: relative; top: -5e-06em;">∑</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.161954em;"><span class="" style="top: -2.40029em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.05724em;">j</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.435818em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">i</span><span class="mord mathdefault mtight" style="margin-right: 0.05724em;">j</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.64444em; vertical-align: 0em;"></span><span class="mord">1</span></span></span></span></span> 看做 Bounding Box <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         i 
+        
+       
+      
+        i 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.65952em; vertical-align: 0em;"></span><span class="mord mathdefault">i</span></span></span></span></span> 能匹配到 Ground Truth 的概率。那么 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          ∑ 
+         
+        
+          j 
+         
+        
+        
+        
+          x 
+         
+         
+         
+           i 
+          
+         
+           j 
+          
+         
+        
+       
+         = 
+        
+       
+         0 
+        
+       
+      
+        \sum_jx_{ij}=0 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.18582em; vertical-align: -0.435818em;"></span><span class="mop"><span class="mop op-symbol small-op" style="position: relative; top: -5e-06em;">∑</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.161954em;"><span class="" style="top: -2.40029em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.05724em;">j</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.435818em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">i</span><span class="mord mathdefault mtight" style="margin-right: 0.05724em;">j</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.64444em; vertical-align: 0em;"></span><span class="mord">0</span></span></span></span></span> 就是 Bounding Box <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         i 
+        
+       
+      
+        i 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.65952em; vertical-align: 0em;"></span><span class="mord mathdefault">i</span></span></span></span></span> 不能能匹配到 Ground Truth 的概率。当 Bounding Box <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         i 
+        
+       
+      
+        i 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.65952em; vertical-align: 0em;"></span><span class="mord mathdefault">i</span></span></span></span></span> 能匹配到 Ground Truth 时 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         1 
+        
+       
+         − 
+        
+        
+        
+          ∑ 
+         
+        
+          j 
+         
+        
+        
+        
+          x 
+         
+         
+         
+           x 
+          
+         
+           j 
+          
+         
+        
+       
+         = 
+        
+       
+         0 
+        
+       
+      
+        1-\sum_jx_{xj}=0 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.72777em; vertical-align: -0.08333em;"></span><span class="mord">1</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1.18582em; vertical-align: -0.435818em;"></span><span class="mop"><span class="mop op-symbol small-op" style="position: relative; top: -5e-06em;">∑</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.161954em;"><span class="" style="top: -2.40029em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.05724em;">j</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.435818em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">x</span><span class="mord mathdefault mtight" style="margin-right: 0.05724em;">j</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.64444em; vertical-align: 0em;"></span><span class="mord">0</span></span></span></span></span>，即我们只优化 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          F 
+         
+         
+         
+           c 
+          
+         
+           o 
+          
+         
+           n 
+          
+         
+           f 
+          
+         
+        
+       
+         ( 
+        
+       
+         x 
+        
+       
+         , 
+        
+       
+         c 
+        
+       
+         ) 
+        
+       
+      
+        F_{conf}(x,c) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.03611em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.13889em;">F</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.336108em;"><span class="" style="top: -2.55em; margin-left: -0.13889em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">c</span><span class="mord mathdefault mtight">o</span><span class="mord mathdefault mtight">n</span><span class="mord mathdefault mtight" style="margin-right: 0.10764em;">f</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span><span class="mopen">(</span><span class="mord mathdefault">x</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault">c</span><span class="mclose">)</span></span></span></span></span> 的前半部分的 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         − 
+        
+       
+         l 
+        
+       
+         o 
+        
+       
+         g 
+        
+       
+         ( 
+        
+        
+        
+          c 
+         
+        
+          i 
+         
+        
+       
+         ) 
+        
+       
+      
+        -log(c_i) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord">−</span><span class="mord mathdefault" style="margin-right: 0.01968em;">l</span><span class="mord mathdefault">o</span><span class="mord mathdefault" style="margin-right: 0.03588em;">g</span><span class="mopen">(</span><span class="mord"><span class="mord mathdefault">c</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span></span></span></span></span>，反之当 Bounding Box <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         i 
+        
+       
+      
+        i 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.65952em; vertical-align: 0em;"></span><span class="mord mathdefault">i</span></span></span></span></span> 不能匹配到 Ground Truth 时 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          ∑ 
+         
+        
+          j 
+         
+        
+        
+        
+          x 
+         
+         
+         
+           i 
+          
+         
+           j 
+          
+         
+        
+       
+         = 
+        
+       
+         0 
+        
+       
+      
+        \sum_jx_{ij}=0 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.18582em; vertical-align: -0.435818em;"></span><span class="mop"><span class="mop op-symbol small-op" style="position: relative; top: -5e-06em;">∑</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.161954em;"><span class="" style="top: -2.40029em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.05724em;">j</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.435818em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">i</span><span class="mord mathdefault mtight" style="margin-right: 0.05724em;">j</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.64444em; vertical-align: 0em;"></span><span class="mord">0</span></span></span></span></span>，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         1 
+        
+       
+         − 
+        
+        
+        
+          ∑ 
+         
+        
+          j 
+         
+        
+        
+        
+          x 
+         
+         
+         
+           x 
+          
+         
+           j 
+          
+         
+        
+       
+         = 
+        
+       
+         1 
+        
+       
+      
+        1-\sum_jx_{xj}=1 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.72777em; vertical-align: -0.08333em;"></span><span class="mord">1</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1.18582em; vertical-align: -0.435818em;"></span><span class="mop"><span class="mop op-symbol small-op" style="position: relative; top: -5e-06em;">∑</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.161954em;"><span class="" style="top: -2.40029em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.05724em;">j</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.435818em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">x</span><span class="mord mathdefault mtight" style="margin-right: 0.05724em;">j</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.64444em; vertical-align: 0em;"></span><span class="mord">1</span></span></span></span></span>，即我们只优化 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          F 
+         
+         
+         
+           c 
+          
+         
+           o 
+          
+         
+           n 
+          
+         
+           f 
+          
+         
+        
+       
+         ( 
+        
+       
+         x 
+        
+       
+         , 
+        
+       
+         c 
+        
+       
+         ) 
+        
+       
+      
+        F_{conf}(x,c) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.03611em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.13889em;">F</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.336108em;"><span class="" style="top: -2.55em; margin-left: -0.13889em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">c</span><span class="mord mathdefault mtight">o</span><span class="mord mathdefault mtight">n</span><span class="mord mathdefault mtight" style="margin-right: 0.10764em;">f</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span><span class="mopen">(</span><span class="mord mathdefault">x</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault">c</span><span class="mclose">)</span></span></span></span></span> 的后半部分的 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         − 
+        
+       
+         l 
+        
+       
+         o 
+        
+       
+         g 
+        
+       
+         ( 
+        
+       
+         1 
+        
+       
+         − 
+        
+        
+        
+          c 
+         
+        
+          i 
+         
+        
+       
+         ) 
+        
+       
+      
+        -log(1-c_i) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord">−</span><span class="mord mathdefault" style="margin-right: 0.01968em;">l</span><span class="mord mathdefault">o</span><span class="mord mathdefault" style="margin-right: 0.03588em;">g</span><span class="mopen">(</span><span class="mord">1</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord"><span class="mord mathdefault">c</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span></span></span></span></span>。</p> 
+<p>  换句话说，当 i，j 匹配时（Bounding Box 与 Ground Truth 匹配），最小化损失函数会增大 confidence；当 i, j 不匹配时，最小化损失函数会减小 confidence。</p> 
+<br> 
+<h5><a id="3_Loss_91"></a>3、最终的 Loss</h5> 
+<hr> 
+<p>  我们<mark>引入一个权重 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          α 
+         
+        
+       
+         \alpha 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.0037em;">α</span></span></span></span></span> 来联合 Bounding Box Loss 和 Confidence Loss</mark>，具体式子如下：</p> 
+<p><span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          F 
+         
+        
+          ( 
+         
+        
+          x 
+         
+        
+          , 
+         
+        
+          l 
+         
+        
+          , 
+         
+        
+          c 
+         
+        
+          ) 
+         
+        
+          = 
+         
+        
+          α 
+         
+         
+         
+           F 
+          
+          
+          
+            m 
+           
+          
+            a 
+           
+          
+            t 
+           
+          
+            c 
+           
+          
+            h 
+           
+          
+         
+        
+          ( 
+         
+        
+          x 
+         
+        
+          , 
+         
+        
+          l 
+         
+        
+          ) 
+         
+        
+          + 
+         
+         
+         
+           F 
+          
+          
+          
+            c 
+           
+          
+            o 
+           
+          
+            n 
+           
+          
+            f 
+           
+          
+         
+        
+          ( 
+         
+        
+          x 
+         
+        
+          , 
+         
+        
+          c 
+         
+        
+          ) 
+         
+        
+       
+         F(x,l,c)=\alpha F_{match}(x,l)+F_{conf}(x,c) 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault" style="margin-right: 0.13889em;">F</span><span class="mopen">(</span><span class="mord mathdefault">x</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault" style="margin-right: 0.01968em;">l</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault">c</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault" style="margin-right: 0.0037em;">α</span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.13889em;">F</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.336108em;"><span class="" style="top: -2.55em; margin-left: -0.13889em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">m</span><span class="mord mathdefault mtight">a</span><span class="mord mathdefault mtight">t</span><span class="mord mathdefault mtight">c</span><span class="mord mathdefault mtight">h</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mopen">(</span><span class="mord mathdefault">x</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault" style="margin-right: 0.01968em;">l</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1.03611em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.13889em;">F</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.336108em;"><span class="" style="top: -2.55em; margin-left: -0.13889em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">c</span><span class="mord mathdefault mtight">o</span><span class="mord mathdefault mtight">n</span><span class="mord mathdefault mtight" style="margin-right: 0.10764em;">f</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span><span class="mopen">(</span><span class="mord mathdefault">x</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault">c</span><span class="mclose">)</span></span></span></span></span></span></p> 
+<p>  或者我们可以换一种方式来理解，对于一个 Bounding Box 来说，我们只有先与 Ground Truth 先匹配，再计算 Confidence 才有意义，即 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          F 
+         
+         
+         
+           m 
+          
+         
+           a 
+          
+         
+           t 
+          
+         
+           c 
+          
+         
+           h 
+          
+         
+        
+       
+         ( 
+        
+       
+         x 
+        
+       
+         , 
+        
+       
+         l 
+        
+       
+         ) 
+        
+       
+      
+        F_{match}(x,l) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.13889em;">F</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.336108em;"><span class="" style="top: -2.55em; margin-left: -0.13889em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">m</span><span class="mord mathdefault mtight">a</span><span class="mord mathdefault mtight">t</span><span class="mord mathdefault mtight">c</span><span class="mord mathdefault mtight">h</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mopen">(</span><span class="mord mathdefault">x</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault" style="margin-right: 0.01968em;">l</span><span class="mclose">)</span></span></span></span></span> 为条件，根据拉格朗日乘子法，我们对条件乘以一个拉格朗日乘子 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         α 
+        
+       
+      
+        \alpha 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.0037em;">α</span></span></span></span></span> ，那么我们也可以得到上式。<mark><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          α 
+         
+        
+       
+         \alpha 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.0037em;">α</span></span></span></span></span> 作者设的 0.3</mark>。</p> 
+<p>  我们优化上面的式子：<br> <img src="https://images2.imgbox.com/03/31/6z2YkeNo_o.png" alt="优化"></p> 
+<p>  上式对 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         l 
+        
+       
+         , 
+        
+       
+         c 
+        
+       
+      
+        l, c 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.88888em; vertical-align: -0.19444em;"></span><span class="mord mathdefault" style="margin-right: 0.01968em;">l</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault">c</span></span></span></span></span> 求一阶偏导的结果如下：<br> <img src="https://images2.imgbox.com/8e/15/iCmok1Lj_o.png" alt="偏导数"><br> <br></p> 
+<h4><a id="_110"></a>（五）三种优化方法</h4> 
+<hr> 
+<ol><li>对 Ground Truth 的位置进行聚类，找到K个这样的聚类/中心点，我们可以使用它们作为每个预测位置的先验。因此，该学习算法被鼓励对每个预测位置的残差进行先验学习。</li><li>再匹配 Ground Truth 之前，可以先挑出来 K 个最佳匹配，然后对这些最佳匹配进行优化。</li><li>可以每个类生成 K 个 region（这种方法生成的 Region 的数量会随类别数量暴增，不推荐）</li></ol> 
+<br> 
+<br> 
+<h3><a id="_Region_Proposals__122"></a>二、对 Region Proposals 分类</h3> 
+<hr> 
+<blockquote> 
+ <p>分类使用的也是 CNN 网络 AlexNet。即第一个 AlexNet 用于生成 Region Proposals，第二个 AlexNet 用于分类。</p> 
+</blockquote> 
+<p>  <mark>对所有的 Region Proposals 先进行 NMS</mark>，剔除重复的框。然后<mark>再送入 CNN 网络进行分类</mark>。这里作者使用的和前面生成 Region Proposals 的是同一种网络，都是 AlexNet。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/fcc01438d8d91587c4e702e6bb315977/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">使用nodemcu玩转物联网系列（七）：notemcu通过mqtt协议“订阅功能”实现onenet设备的“开关”</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/866cff7a89bc7789941a654f5c55b6e7/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">python 写入csv的两种方法</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

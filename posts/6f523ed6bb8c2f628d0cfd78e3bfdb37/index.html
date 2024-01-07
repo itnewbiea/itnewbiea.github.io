@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>完了，CPU100%了，教你如何快速定位CPU100%问题 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="完了，CPU100%了，教你如何快速定位CPU100%问题" />
+<meta property="og:description" content="今天特地把我和同事，之前遇到过的Cpu使用率100%的问题，总结了一下，给有需要的朋友一个参数。
+前言 cpu使用率100%问题，是一个让人非常头疼的问题。因为出现这类问题的原因千奇百怪，最关键的是它不是必现的，有可能是系统运行了一段时间之后，在突然的某个时间点出现问题。
+今天特地把我和同事，之前遇到过的cpu使用率100%的问题，总结了一下，给有需要的朋友一个参数。
+1、一次性获取的数据太多 我之前参与过餐饮相关的业务系统开发，当时我所在的团队是菜品的下游业务。
+当时菜品系统有菜品的更新，会发kafka消息，我们系统订阅该topic，就能获取到最近更新的菜品数据。
+同步菜品数据的功能，上线了一年多的时候，没有出现过什么问题。
+但在某一天下午，我们收到了大量CPU100%的报警邮件。
+追查原因之后发现，菜品系统出现了bug，我们每次获取到的都是全量的菜品数据，并非增量的数据。
+一次性获取的数据太多。
+菜品修改还是比较频繁的，也就是说我们系统，会频繁的读取和解析大量的数据，导致CPU不断飙升。
+其根本原因是频繁的full gc。
+2、kafka自动确认 之前我们的餐饮子系统中间，是通过消息中间件：kafka进行通信的。
+上游系统中产生了数据，写入db之后，然后把相关业务单据的id，通过kafka消息发送到broker上。
+下游系统订阅相关topic的消息，获取业务单据的id，然后调用上游系统的业务查询接口，获取相关业务数据。
+刚开始为了方便，我们消费订单消息时，kafka的确认机制，使用的是自动确认（可以少写点代码）。
+刚开始问题不大。
+随着业务的发展，用户量越来越多，每天产生的kafka消息也越来越多。
+终于开始爆出了cpu使用率100%的问题。
+后来，我们把kafka的consumer，消费消息后改成手动确认，cpu使用率100%的问题就被解决了。
+3、死循环 在实际工作中，可能每个开发都写过死循环的代码。
+死循环有两种：
+在while、for、forEach循环中的死循环。无限递归。 这两种情况，程序会不停的运行，使用寄存器保存循环次数或者递归深度，一直占用cpu，导致cpu使用率飙升。
+在使用JDK1.7时，还有些死循环比如多线程的环境下，往HashMap中put数据，可能会导致链表出现死循环。
+就会导致cpu不断飙高。
+4、多线程导数据 之前我们组有位同事做了一个供应商excel数据导入功能。
+该功能上线之后发现excel中数据只要稍微多一点，导入的耗时时间就会很长。
+因为导入供应商相关的业务逻辑有些复杂，涉及了多张表，而且是单线程中一条条按顺序导入的。
+那位同事为了提升导入数据的性能，将单线程导入，改成了使用线程池的多线程导入。
+这样改造之后，excel数据导入的速度确实提升了很多。
+但上线之后，却带来另外一个问题，即：CPU使用率一路飙升。
+多线程导入数据，如果线程数量比较多，会存在大量线程上下文切换的过程，这个过程非常消耗CPU资源。
+5、同步大量文件 我之前参与过游戏平台的开发。
+游戏厂商的游戏接入我们平台，我们帮他们推广，赚了钱进行分成。
+每一款游戏都有一个定制化的官网，域名、图片和样式都不一样。
+当时出于性能考虑，我们当时使用了FreeMarker模板引擎，为每一款游戏都生成专门的html的静态官网。
+当时提供了十几个不同的模板，可以给游戏的运营同学选择。
+原本是没啥问题的。
+但有一次节日活动，为了增加一些喜庆的元素，在每一个模板文件中都加了一些样式。
+这就需要把所有游戏的官网，用新的模板重新生成一次了。
+生成完毕之后，需要把所有的html文件，一次性同步到web服务器的指定目录下。
+由于涉及到了大量文件的同步，导致存放文件的那台应用服务器CPU飙升的很高。
+6、死锁 为了防止并发场景中，多个线程修改公共资源，导致的数据异常问题。
+很多时候我们会在代码中使用synchronized或者Lock加锁。
+这样多个线程进入临界方法或者代码段时，需要竞争某个对象或者类的锁，只有抢到相应的锁，才能访问临界资源。其他的线程，则需要等待，拥有锁的线程释放锁，下一次可以继续竞争那把锁。
+有些业务场景中，某段代码需要线程获取多把锁，才能完成业务逻辑。
+但由于代码的bug，或者释放锁的顺序不正确，可能会引起死锁的问题。
+例如：
+&#34;pool-4-thread-1&#34; prio=10 tid=0x00007f27bc11a000 nid=0x2ae9 waiting on condition [0x00007f2768ef9000] java.lang.Thread.State: WAITING (parking) at sun.misc.Unsafe.park(Native Method) - parking to wait for &lt;0x0000000090e1d048&gt; (a java." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/6f523ed6bb8c2f628d0cfd78e3bfdb37/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-03-28T14:11:02+08:00" />
+<meta property="article:modified_time" content="2023-03-28T14:11:02+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">完了，CPU100%了，教你如何快速定位CPU100%问题</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <blockquote> 
+ <p>今天特地把我和同事，之前遇到过的Cpu使用率100%的问题，总结了一下，给有需要的朋友一个参数。</p> 
+</blockquote> 
+<h3 id="hb958e5d-NKi1AdY7">前言</h3> 
+<p>cpu使用率100%问题，是一个让人非常头疼的问题。因为出现这类问题的原因千奇百怪，最关键的是它不是必现的，有可能是系统运行了一段时间之后，在突然的某个时间点出现问题。</p> 
+<p>今天特地把我和同事，之前遇到过的cpu使用率100%的问题，总结了一下，给有需要的朋友一个参数。</p> 
+<p></p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/8a/a6/c8xLZ95H_o.png"></p> 
+<p></p> 
+<h3 id="hb958e5d-0UNPMc15">1、一次性获取的数据太多</h3> 
+<p>我之前参与过餐饮相关的业务系统开发，当时我所在的团队是菜品的下游业务。</p> 
+<p>当时菜品系统有菜品的更新，会发kafka消息，我们系统订阅该topic，就能获取到最近更新的菜品数据。</p> 
+<p>同步菜品数据的功能，上线了一年多的时候，没有出现过什么问题。</p> 
+<p>但在某一天下午，我们收到了大量CPU100%的报警邮件。</p> 
+<p>追查原因之后发现，菜品系统出现了bug，我们每次获取到的都是全量的菜品数据，并非增量的数据。</p> 
+<p>一次性获取的数据太多。</p> 
+<p>菜品修改还是比较频繁的，也就是说我们系统，会频繁的读取和解析大量的数据，导致CPU不断飙升。</p> 
+<p>其根本原因是频繁的full gc。</p> 
+<h3 id="hb958e5d-T1JjDG6C">2、kafka自动确认</h3> 
+<p>之前我们的餐饮子系统中间，是通过消息中间件：kafka进行通信的。</p> 
+<p>上游系统中产生了数据，写入db之后，然后把相关业务单据的id，通过kafka消息发送到broker上。</p> 
+<p>下游系统订阅相关topic的消息，获取业务单据的id，然后调用上游系统的业务查询接口，获取相关业务数据。</p> 
+<p>刚开始为了方便，我们消费订单消息时，kafka的确认机制，使用的是自动确认（可以少写点代码）。</p> 
+<p>刚开始问题不大。</p> 
+<p>随着业务的发展，用户量越来越多，每天产生的kafka消息也越来越多。</p> 
+<p>终于开始爆出了cpu使用率100%的问题。</p> 
+<p>后来，我们把kafka的consumer，消费消息后改成手动确认，cpu使用率100%的问题就被解决了。</p> 
+<h3 id="hb958e5d-LnHc4399">3、死循环</h3> 
+<p>在实际工作中，可能每个开发都写过死循环的代码。</p> 
+<p>死循环有两种：</p> 
+<ol><li>在while、for、forEach循环中的死循环。</li><li>无限递归。</li></ol> 
+<p>这两种情况，程序会不停的运行，使用寄存器保存循环次数或者递归深度，一直占用cpu，导致cpu使用率飙升。</p> 
+<p>在使用JDK1.7时，还有些死循环比如多线程的环境下，往HashMap中put数据，可能会导致链表出现死循环。</p> 
+<p>就会导致cpu不断飙高。</p> 
+<h3 id="hb958e5d-O4jQiK6F">4、多线程导数据</h3> 
+<p>之前我们组有位同事做了一个供应商excel数据导入功能。</p> 
+<p>该功能上线之后发现excel中数据只要稍微多一点，导入的耗时时间就会很长。</p> 
+<p>因为导入供应商相关的业务逻辑有些复杂，涉及了多张表，而且是单线程中一条条按顺序导入的。</p> 
+<p>那位同事为了提升导入数据的性能，将单线程导入，改成了使用线程池的多线程导入。</p> 
+<p>这样改造之后，excel数据导入的速度确实提升了很多。</p> 
+<p>但上线之后，却带来另外一个问题，即：CPU使用率一路飙升。</p> 
+<p>多线程导入数据，如果线程数量比较多，会存在大量线程上下文切换的过程，这个过程非常消耗CPU资源。</p> 
+<h3 id="hb958e5d-LPpU823Q">5、同步大量文件</h3> 
+<p>我之前参与过游戏平台的开发。</p> 
+<p>游戏厂商的游戏接入我们平台，我们帮他们推广，赚了钱进行分成。</p> 
+<p>每一款游戏都有一个定制化的官网，域名、图片和样式都不一样。</p> 
+<p>当时出于性能考虑，我们当时使用了FreeMarker模板引擎，为每一款游戏都生成专门的html的静态官网。</p> 
+<p>当时提供了十几个不同的模板，可以给游戏的运营同学选择。</p> 
+<p>原本是没啥问题的。</p> 
+<p>但有一次节日活动，为了增加一些喜庆的元素，在每一个模板文件中都加了一些样式。</p> 
+<p>这就需要把所有游戏的官网，用新的模板重新生成一次了。</p> 
+<p>生成完毕之后，需要把所有的html文件，一次性同步到web服务器的指定目录下。</p> 
+<p>由于涉及到了大量文件的同步，导致存放文件的那台应用服务器CPU飙升的很高。</p> 
+<h3 id="hb958e5d-BG4Gs2o6">6、死锁</h3> 
+<p>为了防止并发场景中，多个线程修改公共资源，导致的数据异常问题。</p> 
+<p>很多时候我们会在代码中使用synchronized或者Lock加锁。</p> 
+<p>这样多个线程进入临界方法或者代码段时，需要竞争某个对象或者类的锁，只有抢到相应的锁，才能访问临界资源。其他的线程，则需要等待，拥有锁的线程释放锁，下一次可以继续竞争那把锁。</p> 
+<p>有些业务场景中，某段代码需要线程获取多把锁，才能完成业务逻辑。</p> 
+<p>但由于代码的bug，或者释放锁的顺序不正确，可能会引起死锁的问题。</p> 
+<p>例如：</p> 
+<pre><code class="language-javascript">"pool-4-thread-1" prio=10 tid=0x00007f27bc11a000 nid=0x2ae9 waiting on condition [0x00007f2768ef9000]
+java.lang.Thread.State: WAITING (parking)
+at sun.misc.Unsafe.park(Native Method)
+- parking to wait for  &lt;0x0000000090e1d048&gt; (a java.util.concurrent.locks.ReentrantLock$FairSync)
+at java.util.concurrent.locks.LockSupport.park(LockSupport.java:186)</code></pre> 
+<p>比如线程a拥有锁c，需要获取锁d，才能完成业务逻辑。</p> 
+<p>而刚好此时线程b拥有锁d，需要获取锁c，也能完成业务逻辑。</p> 
+<p>线程a等待线程b释放锁，而线程b等待线程a释放锁，两个线程都持有对方需要的锁，无法主动释放，就会出现死锁问题。</p> 
+<p>死锁会导致CPU使用率飙升。</p> 
+<h3 id="hb958e5d-99WgfFWl">7、正则匹配</h3> 
+<p>不知道你使用过正则表达式没有?</p> 
+<p>有时候我们为了验证用户输入的手机号、邮箱、身份证号、网页地址是否合法。</p> 
+<p>通常情况下，会使用正则表达式，例如：</p> 
+<pre><code class="language-javascript">^([hH][tT]{2}[pP]://|[hH][tT]{2}[pP][sS]://)(([A-Za-z0-9-~]+).)+([A-Za-z0-9-~/])+$</code></pre> 
+<p>这个正则表达式可以分为三个部分：</p> 
+<ul><li>第一部分匹配 http 和 https 协议。</li><li>第二部分匹配 www. 字符。</li><li>第三部分匹配许多字符。</li></ul> 
+<p>一个写的不好的正则表达式，就可以导致cpu使用率一下子飚升。</p> 
+<p>其实这里导致 CPU 使用率高的关键原因就是：Java 正则表达式使用的引擎实现是NFA自动机，这种正则表达式引擎在进行字符匹配时会发生回溯。</p> 
+<p>而一旦发生回溯，那其消耗的时间就会变得很长，有可能是几分钟，也有可能是几个小时，时间长短取决于回溯的次数和复杂度。</p> 
+<p>我们写的正则表达式，要尽量减少回溯。</p> 
+<h3 id="hb958e5d-U8UBlO0b">8、耗时计算</h3> 
+<p>有时候，我们的业务系统需要实时计算数据，比如：电商系统中需要实时计算优惠后的最终价格。</p> 
+<p>或者需要在代码中，从一堆数据中，统计汇总出我们所需要的数据。</p> 
+<p>如果这个实时计算或者实时统计的场景，是一个非常耗时的操作，并且该场景的请求并发量还不小。</p> 
+<p>就可能会导致cpu飙高。</p> 
+<p>因为实时计算需要消耗cpu资源，如果一直计算，就会一直消耗cpu资源。</p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/fb0c462d6c2e1e0f52215902bc1e4d4f/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">云服务器centos8搭建网站 apache&#43;php&#43;mysql</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/d79c305a66a20caefc9a321d266b9c2b/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【学习记录】镭神32线激光雷达ROS下运行fromRosMsg()报错 Failed to find match for field “intensity“ 问题</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

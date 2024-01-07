@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>CountDownLatch、Semaphore详解 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="CountDownLatch、Semaphore详解" />
+<meta property="og:description" content="这篇文章将会详细介绍基于AQS实现的两个并发类CountDownLatch和Semaphore，通过深入底层源代码讲解其具体实现。
+目录
+CountDownLatch
+countDown()
+await()
+Semaphore
+Semaphore类图
+Semaphore的应用场景
+acquire()
+tryAcquire()
+CountDownLatch /** * A synchronization aid that allows one or more threads to wait until * a set of operations being performed in other threads completes. */ 上面是CountDownLatch这个API的前两行注释，一句话已经说明了这个类的作用。
+一种同步辅助工具，允许一个或多个线程等待其他线程正在执行的一组操作完成。
+CountDownLatch是一个计数器，通过的构造方法指定初始计数器的值，调用CountDownLatch的countDown()方法让计数器的值减少1，当计数器的值变成0时，调用它的await()方法阻塞的当前线程会被释放（其实就是从for循环中结束返回），继续执行剩余的代码。
+这个类的结构很简单，就不画类图了，直接贴出代码
+package java.util.concurrent; import java.util.concurrent.locks.AbstractQueuedSynchronizer; public class CountDownLatch { private static final class Sync extends AbstractQueuedSynchronizer { private static final long serialVersionUID = 4982264981922014374L; Sync(int count) { setState(count); } int getCount() { return getState(); } protected int tryAcquireShared(int acquires) { return (getState() == 0) ?" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/4e576b8e705b8bfc58477c01f55eecae/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-10-09T23:46:02+08:00" />
+<meta property="article:modified_time" content="2023-10-09T23:46:02+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">CountDownLatch、Semaphore详解</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <blockquote> 
+ <p>这篇文章将会详细介绍基于AQS实现的两个并发类CountDownLatch和Semaphore，通过深入底层源代码讲解其具体实现。</p> 
+</blockquote> 
+<p> </p> 
+<p id="main-toc"><strong>目录</strong></p> 
+<p id="CountDownLatch-toc" style="margin-left:0px;"><a href="#CountDownLatch" rel="nofollow">CountDownLatch</a></p> 
+<p id="%C2%A0countDown()-toc" style="margin-left:40px;"><a href="#%C2%A0countDown%28%29" rel="nofollow"> countDown()</a></p> 
+<p id="%C2%A0await()-toc" style="margin-left:40px;"><a href="#%C2%A0await%28%29" rel="nofollow"> await()</a></p> 
+<p id="Semaphore-toc" style="margin-left:0px;"><a href="#Semaphore" rel="nofollow">Semaphore</a></p> 
+<p id="%C2%A0Semaphore%E7%B1%BB%E5%9B%BE-toc" style="margin-left:40px;"><a href="#%C2%A0Semaphore%E7%B1%BB%E5%9B%BE" rel="nofollow"> Semaphore类图</a></p> 
+<p id="%C2%A0Semaphore%E7%9A%84%E5%BA%94%E7%94%A8%E5%9C%BA%E6%99%AF-toc" style="margin-left:40px;"><a href="#%C2%A0Semaphore%E7%9A%84%E5%BA%94%E7%94%A8%E5%9C%BA%E6%99%AF" rel="nofollow"> Semaphore的应用场景</a></p> 
+<p id="%C2%A0acquire()-toc" style="margin-left:40px;"><a href="#%C2%A0acquire%28%29" rel="nofollow"> acquire()</a></p> 
+<p id="tryAcquire()-toc" style="margin-left:40px;"><a href="#tryAcquire%28%29" rel="nofollow"> tryAcquire()</a></p> 
+<hr id="hr-toc"> 
+<p></p> 
+<h2 id="CountDownLatch" style="background-color:transparent;">CountDownLatch</h2> 
+<pre><code class="language-java">/**
+ * A synchronization aid that allows one or more threads to wait until
+ * a set of operations being performed in other threads completes.
+ */</code></pre> 
+<p>上面是CountDownLatch这个API的前两行注释，一句话已经说明了这个类的作用。</p> 
+<blockquote> 
+ <p>一种同步辅助工具，允许一个或多个线程等待其他线程正在执行的一组操作完成。</p> 
+</blockquote> 
+<blockquote> 
+ <p>CountDownLatch是一个计数器，通过的构造方法指定初始计数器的值，调用CountDownLatch的countDown()方法让计数器的值减少1，当计数器的值变成0时，调用它的await()方法阻塞的当前线程会被释放（其实就是从for循环中结束返回），继续执行剩余的代码。</p> 
+</blockquote> 
+<p>这个类的结构很简单，就不画类图了，直接贴出代码</p> 
+<pre><code class="language-java">package java.util.concurrent;
+
+import java.util.concurrent.locks.AbstractQueuedSynchronizer;
+
+public class CountDownLatch {
+    
+    private static final class Sync extends AbstractQueuedSynchronizer {
+        private static final long serialVersionUID = 4982264981922014374L;
+
+        Sync(int count) {
+            setState(count);
+        }
+
+        int getCount() {
+            return getState();
+        }
+
+        protected int tryAcquireShared(int acquires) {
+            return (getState() == 0) ? 1 : -1;
+        }
+
+        protected boolean tryReleaseShared(int releases) {
+            // Decrement count; signal when transition to zero
+            for (;;) {
+                int c = getState();
+                if (c == 0)
+                    return false;
+                int nextc = c-1;
+                if (compareAndSetState(c, nextc))
+                    return nextc == 0;
+            }
+        }
+    }
+
+    private final Sync sync;
+
+    public CountDownLatch(int count) {
+        if (count &lt; 0) throw new IllegalArgumentException("count &lt; 0");
+        this.sync = new Sync(count);
+    }
+
+    public void await() throws InterruptedException {
+        sync.acquireSharedInterruptibly(1);
+    }
+
+    public boolean await(long timeout, TimeUnit unit)
+        throws InterruptedException {
+        return sync.tryAcquireSharedNanos(1, unit.toNanos(timeout));
+    }
+
+    public void countDown() {
+        sync.releaseShared(1);
+    }
+
+    public long getCount() {
+        return sync.getCount();
+    }
+
+    public String toString() {
+        return super.toString() + "[Count = " + sync.getCount() + "]";
+    }
+
+}</code></pre> 
+<blockquote> 
+ <p>CountDownLatch是通过AQS的实现类Sync来实现这个计数器功能的，通过AQS的state属性保存计数器的值。</p> 
+ <p></p> 
+ <p>因为这里的计数器值state是共享的，所以重写了AQS的tryAcquireShared()和tryReleaseShared()方法。</p> 
+ <p></p> 
+ <p>为什么要重写这两个方法呢？</p> 
+ <p>因为AQS里的几个重要的方法aquire()和release()会根据当前是独占模式还是共享模式去调用对应的tryAcquire()/tryAcquireShared()、tryRelease()/tryReleaseShared()方法。</p> 
+ <p></p> 
+ <p>而Java已经约定了，继承AQS应该指明state属性的语义：</p> 
+ <p>- 在CountDownLatch中，state值表示计数器的值；</p> 
+ <p>- 在Semaphore中，state值表示许可证的数量；</p> 
+</blockquote> 
+<p></p> 
+<p>接下来，介绍CountDownLatch中的两个最重要的方法：</p> 
+<h3 id="%C2%A0countDown()" style="background-color:transparent;"> countDown()</h3> 
+<blockquote> 
+ <p>让计数器的值减1</p> 
+</blockquote> 
+<pre><code class="language-java">    public void countDown() {
+        sync.releaseShared(1);
+    }</code></pre> 
+<p> 在这个方法里调用了releaseShared()方法，因为静态内部类Sync没有重写这个方法，所以调用的是其父类AbstractQueuedSynchronizer的releaseShared()方法。</p> 
+<pre><code class="language-java">    public final boolean releaseShared(int arg) {
+        if (tryReleaseShared(arg)) {
+            doReleaseShared();
+
+            return true;
+        }
+
+        return false;
+    }</code></pre> 
+<p>这个方法里先调用tryReleaseShared()方法，因为Sync重写了这个方法，所以调用的是Sync的方法。</p> 
+<pre><code class="language-java">        protected boolean tryReleaseShared(int releases) {
+
+            for (;;) {
+                // 获取state值，如果是0，直接返回false
+                int c = getState();
+
+                if (c == 0) {
+                    return false;
+                }
+
+                // 通过Unsafe工具类的CAS方法尝试修改state的值为state - 1
+                int nextc = c - 1;
+
+                if (compareAndSetState(c, nextc)) {
+                    // 根据修改后的state值是否为0（修改之前的state值是否为1）返回true或false
+                    return nextc == 0;
+                }
+            }
+        }</code></pre> 
+<p></p> 
+<p></p> 
+<h3 id="%C2%A0await()" style="background-color:transparent;"> await()</h3> 
+<blockquote> 
+ <p>阻塞当前线程，直到state值变成0才恢复。</p> 
+</blockquote> 
+<pre><code class="language-java">public void await() throws InterruptedException {
+    sync.acquireSharedInterruptibly(1);
+}</code></pre> 
+<p>在方法内部调用了AQS的acquireSharedInterruptibly()方法，Interruptibly后缀的方法都可以被中断。</p> 
+<pre><code class="language-java">    public final void acquireSharedInterruptibly(int arg) throws InterruptedException {
+        if (Thread.interrupted())
+            throw new InterruptedException();
+        
+        if (tryAcquireShared(arg) &lt; 0)
+            doAcquireSharedInterruptibly(arg);
+    }</code></pre> 
+<p>在这个方法中，先调用Thread类的静态方法interrupted()判断当前线程是否被中断，如果当前线程中断状态为true，则清除线程的中断标记并返回true。否则返回false。如果当前线程是被中断的状态，则抛出中断异常返回。关于interrupted()方法的详细介绍，请参考文章</p> 
+<p><a class="link-info has-card" href="https://blog.csdn.net/heyl163_/article/details/132138422" title="interrupt()、interrupted()和isInterruptd()的区别"><span class="link-card-box"><span class="link-title">interrupt()、interrupted()和isInterruptd()的区别</span><span class="link-link"><img class="link-link-icon" src="https://images2.imgbox.com/3b/61/IGdHKZo3_o.png" alt="icon-default.png?t=N7T8">https://blog.csdn.net/heyl163_/article/details/132138422</span></span></a>如果当前线程是正常的状态，调用tryAcquireShared()方法，因为Sync重写了这个方法，所以调用的是Sync的tryAcquireShared()方法。这个方法就是判断当前state属性值是否为0，如果不是0就返回-1，否则返回1</p> 
+<pre><code class="language-java">        protected int tryAcquireShared(int acquires) {
+            return (getState() == 0) ? 1 : -1;
+        }</code></pre> 
+<p>继续回到上面的代码，当state不为0时，会执行doAcquireSharedInterruptibly()方法，注意，这里的一个死循环for会让当前线程一直阻塞在这里，直到tryAcquireShared()获取到的返回值大于0，也就是1时才退出循环，而根据上面的方法，此时state值为0。</p> 
+<pre><code class="language-java">    private void doAcquireSharedInterruptibly(int arg) throws InterruptedException {
+        final Node node = addWaiter(Node.SHARED);
+        boolean failed = true;
+
+        try {
+            for (;;) {
+                final Node p = node.predecessor();
+
+                if (p == head) {
+                    int r = tryAcquireShared(arg);
+
+                    if (r &gt;= 0) {
+                        setHeadAndPropagate(node, r);
+
+                        p.next = null; // help GC
+                        failed = false;
+
+                        return;
+                    }
+                }
+
+                if (shouldParkAfterFailedAcquire(p, node) &amp;&amp; parkAndCheckInterrupt())
+                    throw new InterruptedException();
+            }
+        } finally {
+            if (failed)
+                cancelAcquire(node);
+        }
+    }</code></pre> 
+<blockquote> 
+ <p>总结：这里的等待是通过无条件的for循环让当前线程一直等待，直到state的值变为0才退出循环返回。所以，在这里可以替代线程的join()方法使用，这也是CountDownLatch的主要用途。</p> 
+</blockquote> 
+<p></p> 
+<h2 id="Semaphore" style="background-color:transparent;">Semaphore</h2> 
+<h3>Semaphore的简单介绍</h3> 
+<blockquote> 
+ <p>A counting semaphore.Conceptually, a semaphore maintains a set of permits. Each acquire blocks if necessary until a permit is available, and then takes it. Each release adds a permit, potentially releasing a blocking acquirer. However, no actual permit objects are used; the Semaphore just keeps a count of the number available and acts accordingly.</p> 
+ <p></p> 
+ <p>一个计数器信号量，一个Semaphore包含一组许可证的集合，每个获取器都会在必要时阻塞，直到有许可证可用，然后获取它。每次释放都会增加一个许可，从而有可能释放阻塞的获取者。不过， Semaphore 并不使用实际的许可证对象；它只是对可用数量进行计数，并采取相应的行动。</p> 
+</blockquote> 
+<p></p> 
+<h3 id="%C2%A0Semaphore%E7%B1%BB%E5%9B%BE" style="background-color:transparent;"> Semaphore类图</h3> 
+<p><img alt="" height="1200" src="https://images2.imgbox.com/da/e2/bL2ZED2t_o.png" width="1200"></p> 
+<p></p> 
+<h3 id="%C2%A0Semaphore%E7%9A%84%E5%BA%94%E7%94%A8%E5%9C%BA%E6%99%AF"> Semaphore的应用场景</h3> 
+<p>接下来通过一个案例来介绍Semaphore适用于什么场景</p> 
+<blockquote> 
+ <p>在广州过节和朋友去吃火锅就知道，桌子数量是固定的，一个店就那么大，就只有x桌。去到店里基本上是要排队的，要等取号在自己的号数前面的人吃完出来才能空出来桌位，否则就要在那里一直等。</p> 
+</blockquote> 
+<p>上面的场景，假如店里刚好坐满，这时候突然来了1对情侣，这时候因为店里的人还没吃完，要等最少一桌的人用完餐之后出来才能轮到这队情侣用餐。</p> 
+<p>其实这里的操作就是acquire()，店里的桌数就是Semaphore的初始许可数。</p> 
+<p></p> 
+<h3 id="%C2%A0acquire()"> acquire()</h3> 
+<pre><code class="language-java">public void acquire() throws InterruptedException {
+    sync.acquireSharedInterruptibly(1);
+}</code></pre> 
+<p>方法内部调用了以下方法，当线程被中断时，清除中断标记，抛出中断异常。否则，调用tryAcquireShared()方法尝试得到一个许可证。</p> 
+<pre><code class="language-java">    public final void acquireSharedInterruptibly(int arg) throws InterruptedException {
+        if (Thread.interrupted())
+            throw new InterruptedException();
+        if (tryAcquireShared(arg) &lt; 0)
+            doAcquireSharedInterruptibly(arg);
+    }</code></pre> 
+<p>这里会根据调用构造方法指定的公平锁还是非公平锁调用FairSync或NoneFairSync的tryAcquireShared()方法。</p> 
+<p>如果是使用一个参数的构造方法实例化，则使用默认的非公平锁，否则根据参数fair来决定是否公平锁。</p> 
+<pre><code class="language-java">public Semaphore(int permits) {
+    sync = new NonfairSync(permits);
+}
+
+public Semaphore(int permits, boolean fair) {
+    sync = fair ? new FairSync(permits) : new NonfairSync(permits);
+}</code></pre> 
+<p>以默认的NoneFairSync为例，tryAcquireShared()方法会调用其超类Sync中定义的nonfairTryAcquireShared()方法。</p> 
+<pre><code class="language-java">protected int tryAcquireShared(int acquires) {
+    return nonfairTryAcquireShared(acquires);
+}
+
+final int nonfairTryAcquireShared(int acquires) {
+    for (;;) {
+        int available = getState();
+        int remaining = available - acquires;
+
+        if (remaining &lt; 0 || compareAndSetState(available, remaining))
+            return remaining;
+    }
+}</code></pre> 
+<p>nonfairTryAcquireShared()方法中会一直尝试去扣减AQS中的state值，也就是信号量中的许可证的数量。</p> 
+<blockquote> 
+ <p>回到acquireSharedInterruptibly()方法，当我们尝试扣减state之后state小于0，也就是许可证数量不够了，就会执行doAcquireSharedInterruptibly()方法，这个方法在CountDownLatch里也讲了，主线程会一直在for循环里出不去，相当于阻塞在这里了，直到申请许可证成功，也就是上面的方法返回了不小于0的数。</p> 
+</blockquote> 
+<pre><code class="language-java">    public final void acquireSharedInterruptibly(int arg) throws InterruptedException {
+        if (Thread.interrupted())
+            throw new InterruptedException();
+
+        if (tryAcquireShared(arg) &lt; 0)
+            doAcquireSharedInterruptibly(arg);
+    }
+
+    private void doAcquireInterruptibly(int arg)
+        throws InterruptedException {
+        final Node node = addWaiter(Node.EXCLUSIVE);
+        boolean failed = true;
+
+        try {
+            for (;;) {
+                final Node p = node.predecessor();
+
+                if (p == head &amp;&amp; tryAcquire(arg)) {
+                    setHead(node);
+                    p.next = null; // help GC
+                    failed = false;
+                    return;
+                }
+
+                if (shouldParkAfterFailedAcquire(p, node) &amp;&amp; parkAndCheckInterrupt())
+                    throw new InterruptedException();
+            }
+        } finally {
+            if (failed)
+                cancelAcquire(node);
+        }
+    }</code></pre> 
+<p></p> 
+<h3 id="tryAcquire()"> tryAcquire()</h3> 
+<blockquote> 
+ <p>尝试获取许可证，如果许可证数量足够，则返回true，否则返回false。</p> 
+</blockquote> 
+<pre><code class="language-java">public boolean tryAcquire() {
+    return sync.nonfairTryAcquireShared(1) &gt;= 0;
+}</code></pre> 
+<p></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/1ade81cd6c8d8a909eaab5f8c9741a20/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">python毕业设计基于django的IT行业招聘数据分析与岗位推荐系统 开题报告</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/050ba73af51a12c70023d5de2ef0e16f/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">用python代码画出一片星空,用python绘制满天星代码</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

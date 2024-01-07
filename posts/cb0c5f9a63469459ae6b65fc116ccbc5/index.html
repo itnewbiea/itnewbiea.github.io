@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>flink批量 async io 写入hbase - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="flink批量 async io 写入hbase" />
+<meta property="og:description" content="目录 flink 采用批量 async io 方式写入hbase遇到的问题： java.util.concurrent.TimeoutException: Async function call has timed out. flink 采用批量 async io 方式写入hbase 一条一条数据写入hbase太慢了，故采用批量的方式，每2000条数据一个批量写入hbase，提高写入性能
+设置一个三秒的翻滚窗口， 将数据聚合在一起， 然后批量的方式， Async IO 异步写入hbase
+经在压测环境验证，当长期大数据量消费， 设置checkpoint， async I/O 批量写入hbase 会出现checkpoint超时，写入hbase不及时，flink反压机制不生效。。 这种方式在生产环境慎用！！！！！！
+这是坑。。。。。。。
+val RunDataDS: DataStream[FdcData[RunData]] = getDatas() // 设置翻滚窗口，聚合数据 val alarmRuleResultStream: DataStream[List[RunData]] = RunDataDS .map(_.datas) .keyBy(_.toolName) .window(TumblingEventTimeWindows.of(Time.seconds(3))) .process(new RunDataProcessWindowFunction()) // 异步IO 写入hbase AsyncDataStream.orderedWait( alarmRuleResultStream, new TestDataHbaseSink(ProjectConfig.HBASE_RUNDATA_TABLE), 6000, TimeUnit.MILLISECONDS, 100) .name(&#34;Hbase Sink&#34;) /** * 聚合在一起，批量写入 */ class RunDataProcessWindowFunction extends ProcessWindowFunction[RunData, List[RunData], String, TimeWindow] { def process(key: String, context: Context, input: Iterable[RunData], out: Collector[List[RunData]]): Unit = { out." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/cb0c5f9a63469459ae6b65fc116ccbc5/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-07-01T11:29:37+08:00" />
+<meta property="article:modified_time" content="2022-07-01T11:29:37+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">flink批量 async io 写入hbase</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>目录</h4> 
+ <ul><li><ul><li><ul><li><a href="#flink__async_io_hbase_4" rel="nofollow">flink 采用批量 async io 方式写入hbase</a></li><li><a href="#_javautilconcurrentTimeoutException_Async_function_call_has_timed_out_162" rel="nofollow">遇到的问题： java.util.concurrent.TimeoutException: Async function call has timed out.</a></li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h4><a id="flink__async_io_hbase_4"></a>flink 采用批量 async io 方式写入hbase</h4> 
+<p>    一条一条数据写入hbase太慢了，故采用批量的方式，每2000条数据一个批量写入hbase，提高写入性能</p> 
+<p>    设置一个三秒的翻滚窗口， 将数据聚合在一起， 然后批量的方式， Async IO 异步写入hbase</p> 
+<p><strong><font color="#FF0000">    经在压测环境验证，当长期大数据量消费， 设置checkpoint， async I/O 批量写入hbase 会出现checkpoint超时，写入hbase不及时，flink反压机制不生效。。 这种方式在生产环境慎用！！！！！！</font></strong></p> 
+<p><strong><font color="#FF0000">这是坑。。。。。。。</font></strong></p> 
+<pre><code class="prism language-scala"><span class="token keyword">val</span> RunDataDS<span class="token operator">:</span> DataStream<span class="token punctuation">[</span>FdcData<span class="token punctuation">[</span>RunData<span class="token punctuation">]</span><span class="token punctuation">]</span> <span class="token operator">=</span> getDatas<span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+    <span class="token comment">// 设置翻滚窗口，聚合数据</span>
+    <span class="token keyword">val</span> alarmRuleResultStream<span class="token operator">:</span> DataStream<span class="token punctuation">[</span>List<span class="token punctuation">[</span>RunData<span class="token punctuation">]</span><span class="token punctuation">]</span> <span class="token operator">=</span> RunDataDS
+      <span class="token punctuation">.</span>map<span class="token punctuation">(</span>_<span class="token punctuation">.</span>datas<span class="token punctuation">)</span>
+      <span class="token punctuation">.</span>keyBy<span class="token punctuation">(</span>_<span class="token punctuation">.</span>toolName<span class="token punctuation">)</span>
+      <span class="token punctuation">.</span>window<span class="token punctuation">(</span>TumblingEventTimeWindows<span class="token punctuation">.</span>of<span class="token punctuation">(</span>Time<span class="token punctuation">.</span>seconds<span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+      <span class="token punctuation">.</span>process<span class="token punctuation">(</span><span class="token keyword">new</span> RunDataProcessWindowFunction<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+
+    <span class="token comment">// 异步IO 写入hbase</span>
+    AsyncDataStream<span class="token punctuation">.</span>orderedWait<span class="token punctuation">(</span>
+      alarmRuleResultStream<span class="token punctuation">,</span>
+      <span class="token keyword">new</span> TestDataHbaseSink<span class="token punctuation">(</span>ProjectConfig<span class="token punctuation">.</span>HBASE_RUNDATA_TABLE<span class="token punctuation">)</span><span class="token punctuation">,</span>
+      <span class="token number">6000</span><span class="token punctuation">,</span>
+      TimeUnit<span class="token punctuation">.</span>MILLISECONDS<span class="token punctuation">,</span>
+      <span class="token number">100</span><span class="token punctuation">)</span>
+      <span class="token punctuation">.</span>name<span class="token punctuation">(</span><span class="token string">"Hbase Sink"</span><span class="token punctuation">)</span>
+<span class="token comment">/**
+   *  聚合在一起，批量写入
+   */</span>
+  <span class="token keyword">class</span> RunDataProcessWindowFunction <span class="token keyword">extends</span> ProcessWindowFunction<span class="token punctuation">[</span>RunData<span class="token punctuation">,</span> List<span class="token punctuation">[</span>RunData<span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token builtin">String</span><span class="token punctuation">,</span> TimeWindow<span class="token punctuation">]</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">def</span> process<span class="token punctuation">(</span>key<span class="token operator">:</span> <span class="token builtin">String</span><span class="token punctuation">,</span> context<span class="token operator">:</span> Context<span class="token punctuation">,</span> input<span class="token operator">:</span> Iterable<span class="token punctuation">[</span>RunData<span class="token punctuation">]</span><span class="token punctuation">,</span> out<span class="token operator">:</span> Collector<span class="token punctuation">[</span>List<span class="token punctuation">[</span>RunData<span class="token punctuation">]</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token operator">:</span> <span class="token builtin">Unit</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+      out<span class="token punctuation">.</span>collect<span class="token punctuation">(</span>input<span class="token punctuation">.</span>toList<span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<p>自定义sink： TestDataHbaseSink 继承 RichAsyncFunction</p> 
+<p>val table: BufferedMutator = connection.getBufferedMutator(TableName.valueOf(tableName))<br> 批量写入hbase</p> 
+<pre><code class="prism language-scala">
+<span class="token keyword">import</span> <span class="token namespace">com<span class="token punctuation">.</span>hzw<span class="token punctuation">.</span>fdc<span class="token punctuation">.</span>scalabean<span class="token punctuation">.</span></span><span class="token punctuation">{<!-- --></span>RunData<span class="token punctuation">,</span> RunEventData<span class="token punctuation">}</span>
+<span class="token keyword">import</span> <span class="token namespace">com<span class="token punctuation">.</span>hzw<span class="token punctuation">.</span>fdc<span class="token punctuation">.</span>util<span class="token punctuation">.</span></span><span class="token punctuation">{<!-- --></span>ExceptionInfo<span class="token punctuation">,</span> ProjectConfig<span class="token punctuation">}</span>
+<span class="token keyword">import</span> <span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>api<span class="token punctuation">.</span>java<span class="token punctuation">.</span>utils<span class="token punctuation">.</span></span>ParameterTool
+<span class="token keyword">import</span> <span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>configuration<span class="token punctuation">.</span></span>Configuration
+<span class="token keyword">import</span> <span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>streaming<span class="token punctuation">.</span>api<span class="token punctuation">.</span>functions<span class="token punctuation">.</span>sink<span class="token punctuation">.</span></span><span class="token punctuation">{<!-- --></span>RichSinkFunction<span class="token punctuation">,</span> SinkFunction<span class="token punctuation">}</span>
+<span class="token keyword">import</span> <span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>streaming<span class="token punctuation">.</span>api<span class="token punctuation">.</span>scala<span class="token punctuation">.</span>async<span class="token punctuation">.</span></span><span class="token punctuation">{<!-- --></span>ResultFuture<span class="token punctuation">,</span> RichAsyncFunction<span class="token punctuation">}</span>
+<span class="token keyword">import</span> <span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>hadoop<span class="token punctuation">.</span>hbase<span class="token punctuation">.</span>client<span class="token punctuation">.</span></span><span class="token punctuation">{<!-- --></span>BufferedMutator<span class="token punctuation">,</span> Connection<span class="token punctuation">,</span> ConnectionFactory<span class="token punctuation">,</span> Put<span class="token punctuation">}</span>
+<span class="token keyword">import</span> <span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>hadoop<span class="token punctuation">.</span>hbase<span class="token punctuation">.</span>util<span class="token punctuation">.</span></span>Bytes
+<span class="token keyword">import</span> <span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>hadoop<span class="token punctuation">.</span>hbase<span class="token punctuation">.</span></span><span class="token punctuation">{<!-- --></span>HBaseConfiguration<span class="token punctuation">,</span> TableName<span class="token punctuation">}</span>
+<span class="token keyword">import</span> <span class="token namespace">org<span class="token punctuation">.</span>slf4j<span class="token punctuation">.</span></span><span class="token punctuation">{<!-- --></span>Logger<span class="token punctuation">,</span> LoggerFactory<span class="token punctuation">}</span>
+
+<span class="token keyword">import</span> <span class="token namespace">scala<span class="token punctuation">.</span>collection<span class="token punctuation">.</span></span>JavaConverters<span class="token punctuation">.</span>_
+<span class="token keyword">import</span> <span class="token namespace">scala<span class="token punctuation">.</span>collection<span class="token punctuation">.</span>mutable<span class="token punctuation">.</span></span>ListBuffer
+
+<span class="token comment">/**
+ *   批量写入hbase
+ *
+ */</span>
+<span class="token keyword">class</span> TestDataHbaseSink<span class="token punctuation">(</span>tableName<span class="token operator">:</span> <span class="token builtin">String</span><span class="token punctuation">)</span> <span class="token keyword">extends</span> RichAsyncFunction<span class="token punctuation">[</span>List<span class="token punctuation">[</span>RunData<span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token builtin">String</span><span class="token punctuation">]</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token keyword">var</span> connection<span class="token operator">:</span> Connection <span class="token operator">=</span> _
+  <span class="token keyword">private</span> <span class="token keyword">val</span> logger<span class="token operator">:</span> Logger <span class="token operator">=</span> LoggerFactory<span class="token punctuation">.</span>getLogger<span class="token punctuation">(</span>classOf<span class="token punctuation">[</span>WindowEndRunDataHbaseSink<span class="token punctuation">]</span><span class="token punctuation">)</span>
+
+  <span class="token keyword">override</span> <span class="token keyword">def</span> open<span class="token punctuation">(</span>parameters<span class="token operator">:</span> Configuration<span class="token punctuation">)</span><span class="token operator">:</span> <span class="token builtin">Unit</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// 获取全局配置变量</span>
+    <span class="token keyword">val</span> parameters <span class="token operator">=</span> getRuntimeContext<span class="token punctuation">.</span>getExecutionConfig<span class="token punctuation">.</span>getGlobalJobParameters<span class="token punctuation">.</span>asInstanceOf<span class="token punctuation">[</span>ParameterTool<span class="token punctuation">]</span>
+    ProjectConfig<span class="token punctuation">.</span>getConfig<span class="token punctuation">(</span>parameters<span class="token punctuation">)</span>
+
+
+    <span class="token comment">//创建hbase连接</span>
+    <span class="token keyword">val</span> conf <span class="token operator">=</span> HBaseConfiguration<span class="token punctuation">.</span>create<span class="token punctuation">(</span><span class="token punctuation">)</span>
+    conf<span class="token punctuation">.</span>set<span class="token punctuation">(</span><span class="token string">"hbase.zookeeper.quorum"</span><span class="token punctuation">,</span> ProjectConfig<span class="token punctuation">.</span>HBASE_ZOOKEEPER_QUORUM<span class="token punctuation">)</span>
+    conf<span class="token punctuation">.</span>set<span class="token punctuation">(</span><span class="token string">"hbase.zookeeper.property.clientPort"</span><span class="token punctuation">,</span> ProjectConfig<span class="token punctuation">.</span>HBASE_ZOOKEEPER_PROPERTY_CLIENTPORT<span class="token punctuation">)</span>
+    connection <span class="token operator">=</span> ConnectionFactory<span class="token punctuation">.</span>createConnection<span class="token punctuation">(</span>conf<span class="token punctuation">)</span>
+  <span class="token punctuation">}</span>
+
+<span class="token keyword">override</span> <span class="token keyword">def</span> timeout<span class="token punctuation">(</span>input<span class="token operator">:</span> List<span class="token punctuation">[</span>RunData<span class="token punctuation">]</span><span class="token punctuation">,</span> resultFuture<span class="token operator">:</span> ResultFuture<span class="token punctuation">[</span><span class="token builtin">String</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token operator">:</span> <span class="token builtin">Unit</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">super</span><span class="token punctuation">.</span>timeout<span class="token punctuation">(</span>input<span class="token punctuation">,</span> resultFuture<span class="token punctuation">)</span>
+    resultFuture<span class="token punctuation">.</span>complete<span class="token punctuation">(</span>List<span class="token punctuation">(</span><span class="token string">"timeout"</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+  <span class="token punctuation">}</span>
+  
+ <span class="token comment">/**
+   * 数据写入
+   */</span>
+  <span class="token keyword">override</span> <span class="token keyword">def</span> asyncInvoke<span class="token punctuation">(</span>runEventDataList<span class="token operator">:</span> List<span class="token punctuation">[</span>RunData<span class="token punctuation">]</span><span class="token punctuation">,</span> resultFuture<span class="token operator">:</span> ResultFuture<span class="token punctuation">[</span><span class="token builtin">String</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token operator">:</span> <span class="token builtin">Unit</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">val</span> table<span class="token operator">:</span> BufferedMutator <span class="token operator">=</span> connection<span class="token punctuation">.</span>getBufferedMutator<span class="token punctuation">(</span>TableName<span class="token punctuation">.</span>valueOf<span class="token punctuation">(</span>tableName<span class="token punctuation">)</span><span class="token punctuation">)</span>
+
+    <span class="token keyword">val</span> puts<span class="token operator">:</span> ListBuffer<span class="token punctuation">[</span>Put<span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token keyword">new</span> ListBuffer<span class="token punctuation">(</span><span class="token punctuation">)</span>
+    <span class="token keyword">var</span> count <span class="token operator">=</span> <span class="token number">0</span>
+
+    <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+
+      <span class="token keyword">for</span> <span class="token punctuation">(</span>runStartEvent <span class="token keyword">&lt;-</span> runEventDataList<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+
+          <span class="token keyword">val</span> runid <span class="token operator">=</span> <span class="token string-interpolation"><span class="token id function">s</span><span class="token string">"</span><span class="token interpolation"><span class="token punctuation">${<!-- --></span><span class="token expression">runStartEvent<span class="token punctuation">.</span>toolName</span><span class="token punctuation">}</span></span><span class="token string">--</span><span class="token interpolation"><span class="token punctuation">${<!-- --></span><span class="token expression">runStartEvent<span class="token punctuation">.</span>chamberName</span><span class="token punctuation">}</span></span><span class="token string">--</span><span class="token interpolation"><span class="token punctuation">${<!-- --></span><span class="token expression">runStartEvent<span class="token punctuation">.</span>runStartTime</span><span class="token punctuation">}</span></span><span class="token string">"</span></span>
+
+          <span class="token keyword">val</span> key <span class="token operator">=</span> <span class="token string-interpolation"><span class="token id function">s</span><span class="token string">"</span><span class="token interpolation"><span class="token punctuation">${<!-- --></span><span class="token expression">runStartEvent<span class="token punctuation">.</span>toolName</span><span class="token punctuation">}</span></span><span class="token string">_</span><span class="token interpolation"><span class="token punctuation">${<!-- --></span><span class="token expression">runStartEvent<span class="token punctuation">.</span>chamberName</span><span class="token punctuation">}</span></span><span class="token string">"</span></span><span class="token punctuation">.</span>hashCode <span class="token operator">%</span> <span class="token number">10</span>
+          <span class="token keyword">val</span> put <span class="token operator">=</span> <span class="token keyword">new</span> Put<span class="token punctuation">(</span>Bytes<span class="token punctuation">.</span>toBytes<span class="token punctuation">(</span><span class="token string-interpolation"><span class="token id function">s</span><span class="token string">"</span><span class="token interpolation"><span class="token punctuation">${<!-- --></span><span class="token expression">key</span><span class="token punctuation">}</span></span><span class="token string">_</span><span class="token interpolation"><span class="token punctuation">${<!-- --></span><span class="token expression">runStartEvent<span class="token punctuation">.</span>toolName</span><span class="token punctuation">}</span></span><span class="token string">_</span><span class="token interpolation"><span class="token punctuation">${<!-- --></span><span class="token expression">runStartEvent<span class="token punctuation">.</span>chamberName</span><span class="token punctuation">}</span></span><span class="token string">_</span><span class="token interpolation"><span class="token punctuation">${<!-- --></span><span class="token expression">runStartEvent<span class="token punctuation">.</span>runStartTime</span><span class="token punctuation">}</span></span><span class="token string">"</span></span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+          put<span class="token punctuation">.</span>addColumn<span class="token punctuation">(</span>Bytes<span class="token punctuation">.</span>toBytes<span class="token punctuation">(</span><span class="token string">"f1"</span><span class="token punctuation">)</span><span class="token punctuation">,</span> Bytes<span class="token punctuation">.</span>toBytes<span class="token punctuation">(</span><span class="token string">"RUN_ID"</span><span class="token punctuation">)</span><span class="token punctuation">,</span> Bytes<span class="token punctuation">.</span>toBytes<span class="token punctuation">(</span>runid<span class="token punctuation">)</span><span class="token punctuation">)</span>
+          put<span class="token punctuation">.</span>addColumn<span class="token punctuation">(</span>Bytes<span class="token punctuation">.</span>toBytes<span class="token punctuation">(</span><span class="token string">"f1"</span><span class="token punctuation">)</span><span class="token punctuation">,</span> Bytes<span class="token punctuation">.</span>toBytes<span class="token punctuation">(</span><span class="token string">"TOOL_NAME"</span><span class="token punctuation">)</span><span class="token punctuation">,</span> Bytes<span class="token punctuation">.</span>toBytes<span class="token punctuation">(</span>runStartEvent<span class="token punctuation">.</span>toolName<span class="token punctuation">)</span><span class="token punctuation">)</span>
+          put<span class="token punctuation">.</span>addColumn<span class="token punctuation">(</span>Bytes<span class="token punctuation">.</span>toBytes<span class="token punctuation">(</span><span class="token string">"f1"</span><span class="token punctuation">)</span><span class="token punctuation">,</span> Bytes<span class="token punctuation">.</span>toBytes<span class="token punctuation">(</span><span class="token string">"CHAMBER_NAME"</span><span class="token punctuation">)</span><span class="token punctuation">,</span> Bytes<span class="token punctuation">.</span>toBytes<span class="token punctuation">(</span>runStartEvent<span class="token punctuation">.</span>chamberName<span class="token punctuation">)</span><span class="token punctuation">)</span>
+          put<span class="token punctuation">.</span>addColumn<span class="token punctuation">(</span>Bytes<span class="token punctuation">.</span>toBytes<span class="token punctuation">(</span><span class="token string">"f1"</span><span class="token punctuation">)</span><span class="token punctuation">,</span> Bytes<span class="token punctuation">.</span>toBytes<span class="token punctuation">(</span><span class="token string">"RUN_START_TIME"</span><span class="token punctuation">)</span><span class="token punctuation">,</span> Bytes<span class="token punctuation">.</span>toBytes<span class="token punctuation">(</span>runStartEvent<span class="token punctuation">.</span>runStartTime<span class="token punctuation">)</span><span class="token punctuation">)</span>
+
+          puts<span class="token punctuation">.</span>append<span class="token punctuation">(</span>put<span class="token punctuation">)</span>
+          count <span class="token operator">=</span> count <span class="token operator">+</span> <span class="token number">1</span>
+
+          <span class="token keyword">if</span> <span class="token punctuation">(</span>count <span class="token operator">%</span> <span class="token number">2000</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+            table<span class="token punctuation">.</span>mutate<span class="token punctuation">(</span>puts<span class="token punctuation">.</span>asJava<span class="token punctuation">)</span>
+            puts<span class="token punctuation">.</span>clear<span class="token punctuation">(</span><span class="token punctuation">)</span>
+            count <span class="token operator">=</span> <span class="token number">0</span>
+          <span class="token punctuation">}</span>
+
+        <span class="token punctuation">}</span><span class="token keyword">catch</span> <span class="token punctuation">{<!-- --></span>
+          <span class="token keyword">case</span> ex<span class="token operator">:</span> Exception <span class="token keyword">=&gt;</span> logger<span class="token punctuation">.</span>warn<span class="token punctuation">(</span><span class="token string-interpolation"><span class="token id function">s</span><span class="token string">" Exception:</span><span class="token interpolation"><span class="token punctuation">${<!-- --></span><span class="token expression">ExceptionInfo<span class="token punctuation">.</span>getExceptionInfo<span class="token punctuation">(</span>ex<span class="token punctuation">)</span></span><span class="token punctuation">}</span></span><span class="token string"> data: </span><span class="token interpolation"><span class="token punctuation">$</span><span class="token expression">runStartEvent</span></span><span class="token string">"</span></span><span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+      <span class="token punctuation">}</span>
+      table<span class="token punctuation">.</span>mutate<span class="token punctuation">(</span>puts<span class="token punctuation">.</span>asJava<span class="token punctuation">)</span>
+    <span class="token punctuation">}</span><span class="token keyword">catch</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">case</span> ex<span class="token operator">:</span> Exception <span class="token keyword">=&gt;</span> logger<span class="token punctuation">.</span>warn<span class="token punctuation">(</span><span class="token string-interpolation"><span class="token id function">s</span><span class="token string">" Exception:</span><span class="token interpolation"><span class="token punctuation">${<!-- --></span><span class="token expression">ExceptionInfo<span class="token punctuation">.</span>getExceptionInfo<span class="token punctuation">(</span>ex<span class="token punctuation">)</span></span><span class="token punctuation">}</span></span><span class="token string">"</span></span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span><span class="token keyword">finally</span> <span class="token punctuation">{<!-- --></span>
+      table<span class="token punctuation">.</span>close<span class="token punctuation">(</span><span class="token punctuation">)</span>
+      resultFuture<span class="token punctuation">.</span>complete<span class="token punctuation">(</span>List<span class="token punctuation">(</span><span class="token string">"ok"</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+
+  <span class="token punctuation">}</span>
+
+
+  <span class="token comment">/**
+   * 关闭链接
+   */</span>
+  <span class="token keyword">override</span> <span class="token keyword">def</span> close<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">:</span> <span class="token builtin">Unit</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+    connection<span class="token punctuation">.</span>close<span class="token punctuation">(</span><span class="token punctuation">)</span>
+    <span class="token keyword">super</span><span class="token punctuation">.</span>close<span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+  <span class="token punctuation">}</span>
+
+
+  <span class="token keyword">def</span> hasLength<span class="token punctuation">(</span>str<span class="token operator">:</span> <span class="token builtin">String</span><span class="token punctuation">)</span><span class="token operator">:</span> <span class="token builtin">String</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>str <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      str
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token string">""</span>
+    <span class="token punctuation">}</span>
+  <span class="token punctuation">}</span>
+
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<h4><a id="_javautilconcurrentTimeoutException_Async_function_call_has_timed_out_162"></a>遇到的问题： java.util.concurrent.TimeoutException: Async function call has timed out.</h4> 
+<p>是因为异步方式没有返回数据；解决方案：<br> 添加：<br> resultFuture.complete(List(“ok”))<br> <img src="https://images2.imgbox.com/9b/58/fW5xA57c_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/77/b0/LX0LREdZ_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-bash"><span class="token number">2021</span>-12-20 <span class="token number">15</span>:55:55
+java.lang.Exception: Could not complete the stream element: Record @ <span class="token number">1639986929999</span> <span class="token builtin class-name">:</span> 
+    at org.apache.flink.streaming.api.operators.async.AsyncWaitOperator<span class="token variable">$ResultHandler</span>.completeExceptionally<span class="token punctuation">(</span>AsyncWaitOperator.java:368<span class="token punctuation">)</span>
+    at org.apache.flink.streaming.api.scala.async.JavaResultFutureWrapper.completeExceptionally<span class="token punctuation">(</span>JavaResultFutureWrapper.scala:42<span class="token punctuation">)</span>
+    at org.apache.flink.streaming.api.scala.async.AsyncFunction<span class="token variable">$class</span>.timeout<span class="token punctuation">(</span>AsyncFunction.scala:60<span class="token punctuation">)</span>
+    at org.apache.flink.streaming.api.scala.async.RichAsyncFunction.timeout<span class="token punctuation">(</span>RichAsyncFunction.scala:37<span class="token punctuation">)</span>
+    at org.apache.flink.streaming.api.scala.async.ScalaRichAsyncFunctionWrapper.timeout<span class="token punctuation">(</span>ScalaRichAsyncFunctionWrapper.scala:40<span class="token punctuation">)</span>
+    at org.apache.flink.streaming.api.operators.async.AsyncWaitOperator<span class="token variable">$ResultHandler</span>.timerTriggered<span class="token punctuation">(</span>AsyncWaitOperator.java:391<span class="token punctuation">)</span>
+    at org.apache.flink.streaming.api.operators.async.AsyncWaitOperator<span class="token variable">$ResultHandler</span>.lambda<span class="token variable">$registerTimeout</span><span class="token variable">$1</span><span class="token punctuation">(</span>AsyncWaitOperator.java:386<span class="token punctuation">)</span>
+    at org.apache.flink.streaming.runtime.tasks.StreamTask.invokeProcessingTimeCallback<span class="token punctuation">(</span>StreamTask.java:1327<span class="token punctuation">)</span>
+    at org.apache.flink.streaming.runtime.tasks.StreamTask.lambda<span class="token variable">$null</span><span class="token variable">$17</span><span class="token punctuation">(</span>StreamTask.java:1318<span class="token punctuation">)</span>
+    at org.apache.flink.streaming.runtime.tasks.StreamTaskActionExecutor<span class="token variable">$1</span>.runThrowing<span class="token punctuation">(</span>StreamTaskActionExecutor.java:50<span class="token punctuation">)</span>
+    at org.apache.flink.streaming.runtime.tasks.mailbox.Mail.run<span class="token punctuation">(</span>Mail.java:90<span class="token punctuation">)</span>
+    at org.apache.flink.streaming.runtime.tasks.mailbox.MailboxProcessor.processMail<span class="token punctuation">(</span>MailboxProcessor.java:317<span class="token punctuation">)</span>
+    at org.apache.flink.streaming.runtime.tasks.mailbox.MailboxProcessor.runMailboxLoop<span class="token punctuation">(</span>MailboxProcessor.java:189<span class="token punctuation">)</span>
+    at org.apache.flink.streaming.runtime.tasks.StreamTask.runMailboxLoop<span class="token punctuation">(</span>StreamTask.java:619<span class="token punctuation">)</span>
+    at org.apache.flink.streaming.runtime.tasks.StreamTask.invoke<span class="token punctuation">(</span>StreamTask.java:583<span class="token punctuation">)</span>
+    at org.apache.flink.runtime.taskmanager.Task.doRun<span class="token punctuation">(</span>Task.java:758<span class="token punctuation">)</span>
+    at org.apache.flink.runtime.taskmanager.Task.run<span class="token punctuation">(</span>Task.java:573<span class="token punctuation">)</span>
+    at java.lang.Thread.run<span class="token punctuation">(</span>Thread.java:748<span class="token punctuation">)</span>
+Caused by: java.util.concurrent.TimeoutException: Async <span class="token keyword">function</span> call has timed out.
+    <span class="token punctuation">..</span>. <span class="token number">16</span> <span class="token function">more</span>
+</code></pre>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/6520147dd078c4dcd13b44c31c460780/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">2021-Swin Transformer</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/9a0e2e0639488efe22c12e0eb28380b3/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Python实用脚本/算法集合, 附源代码下载</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

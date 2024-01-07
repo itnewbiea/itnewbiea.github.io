@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>yolov5训练加速--一个可能忽视的细节（mmdetection也一样），为什么显卡使用率老是为0？（续） - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="yolov5训练加速--一个可能忽视的细节（mmdetection也一样），为什么显卡使用率老是为0？（续）" />
+<meta property="og:description" content="之前写过一篇训练加速的文章：
+https://blog.csdn.net/ogebgvictor/article/details/129784503
+但是有些细节需要更正或者补充，故再写一篇。
+目录
+一。是用缩放到640的jpg训练，还是用缩放到640的npy文件训练？
+1.先改一下代码
+2.实验
+a)缓存到内存中
+b)缓存640npy
+c)接下来用缩放到640的jpg来训练
+d)640npy与640jpg交叉验证
+e)数据有点多，为方便对比，放个表上来
+3.但是如果我就是有可能要用640jpg呢
+直接上汇总表对比
+二。更多细节
+1.坐标超像素
+2.对齐精度
+a)图片缩放方法是否一致
+b)算法代码会不会有坑？
+三。batch-size8和16、32，为啥没区别？
+1.取数据比GPU计算快
+2.取数据比GPU计算慢
+3.取数据比GPU慢，并且提升batch-size
+4.取数据比GPU慢，并且继续提升batch-size
+一。是用缩放到640的jpg训练，还是用缩放到640的npy文件训练？ 如果训练分辨率用640，那么在训练的过程中，yolov5会先把图片resize成640，然后再进行后续的处理（数据增强、前向推理），所以你把图片事先resize成640，似乎是一样的。但是如果你把它保存为jpg，然后在训练的时候用这个640的jpg，其实与原图resize到640是不一样的！
+因为jpg是有损编码，会有一定的损失。而原图resize到640，比如采用双线性插值，它其实是具有超像素的信息的，但是保存为640的jpg，就又会损失掉一部分信息。所以最好在resize成640后，直接用numpy把它保存为npy文件，这是完全无损的。（题外话：比如用1080p的显示器，去播放2K甚至4K的视频，可能就是觉得比播放1080p的视频更清晰，可能就是因为有超像素的信息~~）
+你可能会问：损失的那一点点信息有关系吗？下面实验一下。我用的数据集是cityscape数据集，从中选了10个分类：&#39;person&#39;, &#39;rider&#39;, &#39;car&#39;, &#39;truck&#39;, &#39;bus&#39;, &#39;train&#39;, &#39;motorcycle&#39;, &#39;bicycle&#39;。这个数据集的图片分辨率都是2048乘1024的，所以缩放到640的话，缩放比例为3.2，这个比例还是蛮大的。原图上面有大小不一的物体，有的小物体在缩放后就会很小了。并且此数据集中重叠的物体很多。所以用640分辨率来训练，其实并不是很合适，但是这正好用来验证一下640jpg导致的损失信息对训练效果的影响。
+1.先改一下代码 用yolov5-7.0的代码来实验，但是他的代码在把图片保存为npy的时候(即训练参数--cache disk)，并没有先缩放到640再保存，而是直接按原图尺寸保存。
+对应函数为utils/dataloaders.py中的LoadImagesAndLabels.cache_images_to_disk()，所以我把它修改了一下，如下cache_images_to_disk是我修改后的，cache_images_to_disk_old是修改前的。
+def cache_images_to_disk(self, i): # Saves an image as an *.npy file for faster loading f = self.npy_files[i] if not f.exists(): im = cv2.imread(self.im_files[i]) # BGR assert im is not None, f&#39;Image Not Found {f}&#39; h0, w0 = im." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/7657d2cf0ef9d8d1eeaa6d5a56436c15/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-09-03T01:00:17+08:00" />
+<meta property="article:modified_time" content="2023-09-03T01:00:17+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">yolov5训练加速--一个可能忽视的细节（mmdetection也一样），为什么显卡使用率老是为0？（续）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>之前写过一篇训练加速的文章：</p> 
+<p><a href="https://blog.csdn.net/ogebgvictor/article/details/129784503" title="https://blog.csdn.net/ogebgvictor/article/details/129784503">https://blog.csdn.net/ogebgvictor/article/details/129784503</a></p> 
+<p>但是有些细节需要更正或者补充，故再写一篇。</p> 
+<p id="main-toc"><strong>目录</strong></p> 
+<p id="%E4%B8%80%E3%80%82%E6%98%AF%E7%94%A8%E7%BC%A9%E6%94%BE%E5%88%B0640%E7%9A%84jpg%E8%AE%AD%E7%BB%83%EF%BC%8C%E8%BF%98%E6%98%AF%E7%94%A8%E7%BC%A9%E6%94%BE%E5%88%B0640%E7%9A%84npy%E6%96%87%E4%BB%B6%E8%AE%AD%E7%BB%83%EF%BC%9F-toc" style="margin-left:0px;"><a href="#%E4%B8%80%E3%80%82%E6%98%AF%E7%94%A8%E7%BC%A9%E6%94%BE%E5%88%B0640%E7%9A%84jpg%E8%AE%AD%E7%BB%83%EF%BC%8C%E8%BF%98%E6%98%AF%E7%94%A8%E7%BC%A9%E6%94%BE%E5%88%B0640%E7%9A%84npy%E6%96%87%E4%BB%B6%E8%AE%AD%E7%BB%83%EF%BC%9F" rel="nofollow">一。是用缩放到640的jpg训练，还是用缩放到640的npy文件训练？</a></p> 
+<p id="1.%E5%85%88%E6%94%B9%E4%B8%80%E4%B8%8B%E4%BB%A3%E7%A0%81-toc" style="margin-left:40px;"><a href="#1.%E5%85%88%E6%94%B9%E4%B8%80%E4%B8%8B%E4%BB%A3%E7%A0%81" rel="nofollow">1.先改一下代码</a></p> 
+<p id="2.%E5%AE%9E%E9%AA%8C-toc" style="margin-left:40px;"><a href="#2.%E5%AE%9E%E9%AA%8C" rel="nofollow">2.实验</a></p> 
+<p id="a)%E7%BC%93%E5%AD%98%E5%88%B0%E5%86%85%E5%AD%98%E4%B8%AD-toc" style="margin-left:80px;"><a href="#a%29%E7%BC%93%E5%AD%98%E5%88%B0%E5%86%85%E5%AD%98%E4%B8%AD" rel="nofollow">a)缓存到内存中</a></p> 
+<p id="%C2%A0b)%E7%BC%93%E5%AD%98640npy-toc" style="margin-left:80px;"><a href="#%C2%A0b%29%E7%BC%93%E5%AD%98640npy" rel="nofollow"> b)缓存640npy</a></p> 
+<p id="c)%E6%8E%A5%E4%B8%8B%E6%9D%A5%E7%94%A8%E7%BC%A9%E6%94%BE%E5%88%B0640%E7%9A%84jpg%E6%9D%A5%E8%AE%AD%E7%BB%83-toc" style="margin-left:80px;"><a href="#c%29%E6%8E%A5%E4%B8%8B%E6%9D%A5%E7%94%A8%E7%BC%A9%E6%94%BE%E5%88%B0640%E7%9A%84jpg%E6%9D%A5%E8%AE%AD%E7%BB%83" rel="nofollow">c)接下来用缩放到640的jpg来训练</a></p> 
+<p id="d)640npy%E4%B8%8E640jpg%E4%BA%A4%E5%8F%89%E9%AA%8C%E8%AF%81-toc" style="margin-left:80px;"><a href="#d%29640npy%E4%B8%8E640jpg%E4%BA%A4%E5%8F%89%E9%AA%8C%E8%AF%81" rel="nofollow">d)640npy与640jpg交叉验证</a></p> 
+<p id="e)%E6%95%B0%E6%8D%AE%E6%9C%89%E7%82%B9%E5%A4%9A%EF%BC%8C%E4%B8%BA%E6%96%B9%E4%BE%BF%E5%AF%B9%E6%AF%94%EF%BC%8C%E6%94%BE%E4%B8%AA%E8%A1%A8%E4%B8%8A%E6%9D%A5-toc" style="margin-left:80px;"><a href="#e%29%E6%95%B0%E6%8D%AE%E6%9C%89%E7%82%B9%E5%A4%9A%EF%BC%8C%E4%B8%BA%E6%96%B9%E4%BE%BF%E5%AF%B9%E6%AF%94%EF%BC%8C%E6%94%BE%E4%B8%AA%E8%A1%A8%E4%B8%8A%E6%9D%A5" rel="nofollow">e)数据有点多，为方便对比，放个表上来</a></p> 
+<p id="3.%E4%BD%86%E6%98%AF%E5%A6%82%E6%9E%9C%E6%88%91%E5%B0%B1%E6%98%AF%E6%9C%89%E5%8F%AF%E8%83%BD%E8%A6%81%E7%94%A8640jpg%E5%91%A2-toc" style="margin-left:40px;"><a href="#3.%E4%BD%86%E6%98%AF%E5%A6%82%E6%9E%9C%E6%88%91%E5%B0%B1%E6%98%AF%E6%9C%89%E5%8F%AF%E8%83%BD%E8%A6%81%E7%94%A8640jpg%E5%91%A2" rel="nofollow">3.但是如果我就是有可能要用640jpg呢</a></p> 
+<p id="%E7%9B%B4%E6%8E%A5%E4%B8%8A%E6%B1%87%E6%80%BB%E8%A1%A8%E5%AF%B9%E6%AF%94-toc" style="margin-left:80px;"><a href="#%E7%9B%B4%E6%8E%A5%E4%B8%8A%E6%B1%87%E6%80%BB%E8%A1%A8%E5%AF%B9%E6%AF%94" rel="nofollow">直接上汇总表对比</a></p> 
+<p id="%E4%BA%8C%E3%80%82%E6%9B%B4%E5%A4%9A%E7%BB%86%E8%8A%82-toc" style="margin-left:0px;"><a href="#%E4%BA%8C%E3%80%82%E6%9B%B4%E5%A4%9A%E7%BB%86%E8%8A%82" rel="nofollow">二。更多细节</a></p> 
+<p id="1.%E5%9D%90%E6%A0%87%E8%B6%85%E5%83%8F%E7%B4%A0-toc" style="margin-left:40px;"><a href="#1.%E5%9D%90%E6%A0%87%E8%B6%85%E5%83%8F%E7%B4%A0" rel="nofollow">1.坐标超像素</a></p> 
+<p id="2.%E5%AF%B9%E9%BD%90%E7%B2%BE%E5%BA%A6-toc" style="margin-left:40px;"><a href="#2.%E5%AF%B9%E9%BD%90%E7%B2%BE%E5%BA%A6" rel="nofollow">2.对齐精度</a></p> 
+<p id="a)%E5%9B%BE%E7%89%87%E7%BC%A9%E6%94%BE%E6%96%B9%E6%B3%95%E6%98%AF%E5%90%A6%E4%B8%80%E8%87%B4-toc" style="margin-left:80px;"><a href="#a%29%E5%9B%BE%E7%89%87%E7%BC%A9%E6%94%BE%E6%96%B9%E6%B3%95%E6%98%AF%E5%90%A6%E4%B8%80%E8%87%B4" rel="nofollow">a)图片缩放方法是否一致</a></p> 
+<p id="b)%E7%AE%97%E6%B3%95%E4%BB%A3%E7%A0%81%E4%BC%9A%E4%B8%8D%E4%BC%9A%E6%9C%89%E5%9D%91%EF%BC%9F-toc" style="margin-left:80px;"><a href="#b%29%E7%AE%97%E6%B3%95%E4%BB%A3%E7%A0%81%E4%BC%9A%E4%B8%8D%E4%BC%9A%E6%9C%89%E5%9D%91%EF%BC%9F" rel="nofollow">b)算法代码会不会有坑？</a></p> 
+<p id="%E4%B8%89%E3%80%82batch-size8%E5%92%8C16%E3%80%8132%EF%BC%8C%E4%B8%BA%E5%95%A5%E6%B2%A1%E5%8C%BA%E5%88%AB%EF%BC%9F-toc" style="margin-left:0px;"><a href="#%E4%B8%89%E3%80%82batch-size8%E5%92%8C16%E3%80%8132%EF%BC%8C%E4%B8%BA%E5%95%A5%E6%B2%A1%E5%8C%BA%E5%88%AB%EF%BC%9F" rel="nofollow">三。batch-size8和16、32，为啥没区别？</a></p> 
+<p id="1.%E5%8F%96%E6%95%B0%E6%8D%AE%E6%AF%94GPU%E8%AE%A1%E7%AE%97%E5%BF%AB-toc" style="margin-left:40px;"><a href="#1.%E5%8F%96%E6%95%B0%E6%8D%AE%E6%AF%94GPU%E8%AE%A1%E7%AE%97%E5%BF%AB" rel="nofollow">1.取数据比GPU计算快</a></p> 
+<p id="2.%E5%8F%96%E6%95%B0%E6%8D%AE%E6%AF%94GPU%E8%AE%A1%E7%AE%97%E6%85%A2-toc" style="margin-left:40px;"><a href="#2.%E5%8F%96%E6%95%B0%E6%8D%AE%E6%AF%94GPU%E8%AE%A1%E7%AE%97%E6%85%A2" rel="nofollow">2.取数据比GPU计算慢</a></p> 
+<p id="3.%E5%8F%96%E6%95%B0%E6%8D%AE%E6%AF%94GPU%E6%85%A2%EF%BC%8C%E5%B9%B6%E4%B8%94%E6%8F%90%E5%8D%87batch-size-toc" style="margin-left:40px;"><a href="#3.%E5%8F%96%E6%95%B0%E6%8D%AE%E6%AF%94GPU%E6%85%A2%EF%BC%8C%E5%B9%B6%E4%B8%94%E6%8F%90%E5%8D%87batch-size" rel="nofollow">3.取数据比GPU慢，并且提升batch-size</a></p> 
+<p id="4.%E5%8F%96%E6%95%B0%E6%8D%AE%E6%AF%94GPU%E6%85%A2%EF%BC%8C%E5%B9%B6%E4%B8%94%E7%BB%A7%E7%BB%AD%E6%8F%90%E5%8D%87batch-size-toc" style="margin-left:40px;"><a href="#4.%E5%8F%96%E6%95%B0%E6%8D%AE%E6%AF%94GPU%E6%85%A2%EF%BC%8C%E5%B9%B6%E4%B8%94%E7%BB%A7%E7%BB%AD%E6%8F%90%E5%8D%87batch-size" rel="nofollow">4.取数据比GPU慢，并且继续提升batch-size</a></p> 
+<hr id="hr-toc"> 
+<p></p> 
+<h2 id="%E4%B8%80%E3%80%82%E6%98%AF%E7%94%A8%E7%BC%A9%E6%94%BE%E5%88%B0640%E7%9A%84jpg%E8%AE%AD%E7%BB%83%EF%BC%8C%E8%BF%98%E6%98%AF%E7%94%A8%E7%BC%A9%E6%94%BE%E5%88%B0640%E7%9A%84npy%E6%96%87%E4%BB%B6%E8%AE%AD%E7%BB%83%EF%BC%9F">一。是用缩放到640的jpg训练，还是用缩放到640的npy文件训练？</h2> 
+<p>如果训练分辨率用640，那么在训练的过程中，yolov5会先把图片resize成640，然后再进行后续的处理（数据增强、前向推理），所以你把图片事先resize成640，似乎是一样的。但是如果你把它保存为jpg，然后在训练的时候用这个640的jpg，其实与原图resize到640是不一样的！</p> 
+<p>因为jpg是有损编码，会有一定的损失。而原图resize到640，比如采用双线性插值，它其实是具有超像素的信息的，但是保存为640的jpg，就又会损失掉一部分信息。所以最好在resize成640后，直接用numpy把它保存为npy文件，这是完全无损的。（题外话：比如用1080p的显示器，去播放2K甚至4K的视频，可能就是觉得比播放1080p的视频更清晰，可能就是因为有超像素的信息~~）</p> 
+<p>你可能会问：损失的那一点点信息有关系吗？下面实验一下。我用的数据集是cityscape数据集，从中选了10个分类：'person', 'rider', 'car', 'truck', 'bus', 'train', 'motorcycle', 'bicycle'。这个数据集的图片分辨率都是2048乘1024的，所以缩放到640的话，缩放比例为3.2，这个比例还是蛮大的。原图上面有大小不一的物体，有的小物体在缩放后就会很小了。并且此数据集中重叠的物体很多。所以用640分辨率来训练，其实并不是很合适，但是这正好用来验证一下640jpg导致的损失信息对训练效果的影响。</p> 
+<h3 id="1.%E5%85%88%E6%94%B9%E4%B8%80%E4%B8%8B%E4%BB%A3%E7%A0%81">1.先改一下代码</h3> 
+<p>用yolov5-7.0的代码来实验，但是他的代码在把图片保存为npy的时候(即训练参数--cache disk)，并没有先缩放到640再保存，而是直接按原图尺寸保存。</p> 
+<p>对应函数为utils/dataloaders.py中的LoadImagesAndLabels.cache_images_to_disk()，所以我把它修改了一下，如下cache_images_to_disk是我修改后的，cache_images_to_disk_old是修改前的。</p> 
+<pre><code class="language-python">    def cache_images_to_disk(self, i):
+        # Saves an image as an *.npy file for faster loading
+        f = self.npy_files[i]
+        if not f.exists():
+            im = cv2.imread(self.im_files[i])  # BGR
+            assert im is not None, f'Image Not Found {f}'
+            h0, w0 = im.shape[:2]  # orig hw
+            r = self.img_size / max(h0, w0)  # ratio
+            if r != 1:  # if sizes are not equal
+                interp = cv2.INTER_LINEAR if (self.augment or r &gt; 1) else cv2.INTER_AREA
+                im = cv2.resize(im, (int(w0 * r), int(h0 * r)), interpolation=interp)
+            np.save(f.as_posix(), im)
+
+    def cache_images_to_disk_old(self, i):
+        # Saves an image as an *.npy file for faster loading
+        f = self.npy_files[i]
+        if not f.exists():
+            np.save(f.as_posix(), cv2.imread(self.im_files[i]))</code></pre> 
+<p>修改的逻辑其实就是参照load_image函数，如果是把图片缓存到内存中（即训练参数--cache的默认值ram），则会调此函数获取resize后的图片，然后赋值给self.ims。</p> 
+<p><img alt="" height="564" src="https://images2.imgbox.com/55/45/0JZD1E8Q_o.png" width="1109"></p> 
+<p> 接下来对比一下缓存到内存中与修改后的缓存640npy的训练结果是否一样。</p> 
+<h3 id="2.%E5%AE%9E%E9%AA%8C">2.实验</h3> 
+<h4 id="a)%E7%BC%93%E5%AD%98%E5%88%B0%E5%86%85%E5%AD%98%E4%B8%AD">a)缓存到内存中</h4> 
+<p>python train.py --data data/cityscape.yaml --cfg models/yolov5s.yaml --weights weights/yolov5s.pt --batch-size 32 --epochs 100   --hyp data/hyps/hyp.scratch-low.yaml  --name cityscape_ram_test --cache  --worker 4 </p> 
+<p>起初是因为省时间，只训练了100轮，不过后来我发现想训练300轮的话，在90轮左右就过拟合了，也说明了640分辨率可能并不太适合用在cityscape数据集上。</p> 
+<p><img alt="" height="309" src="https://images2.imgbox.com/dc/c6/F5nm32q1_o.png" width="865"></p> 
+<p>另外说明一下为啥要指定worker4呢，一个是缓存到内存中后，解码完全不用时间，读取npy也是相当快的，但其实最主要的问题是：内存不够。。。，在windows上训练，worker进程与主进程基本上不共享内存（因为多进程用的是spawn模式），所以主进程加载到内存中的npy，worker进程都会复制一遍，那就是几倍的关系。</p> 
+<p>map50-95为27.6%，map50为47.4%</p> 
+<h4 id="%C2%A0b)%E7%BC%93%E5%AD%98640npy"> b)缓存640npy</h4> 
+<p>python train.py --data data/cityscape.yaml --cfg models/yolov5s.yaml --weights weights/yolov5s.pt --batch-size 32 --epochs 100   --hyp data/hyps/hyp.scratch-low.yaml  --name cityscape_cache_disk_100 --cache disk --worker 8  </p> 
+<p><img alt="" height="274" src="https://images2.imgbox.com/ac/8f/9NUfrJ4v_o.png" width="865"></p> 
+<p>map50-95为27.4%，map50为48.3%。</p> 
+<p>两者差不多吧，map50高了0.9%，这个可能是有点随机性的差异。虽然yolov5是设置了固定随机种子，但有的时候相同条件下训练结果一样，有的时候又不完全一样。</p> 
+<h4 id="c)%E6%8E%A5%E4%B8%8B%E6%9D%A5%E7%94%A8%E7%BC%A9%E6%94%BE%E5%88%B0640%E7%9A%84jpg%E6%9D%A5%E8%AE%AD%E7%BB%83">c)接下来用缩放到640的jpg来训练</h4> 
+<p>python train.py --data data/cityscape_640.yaml --cfg models/yolov5s.yaml --weights weights/yolov5s.pt --batch-size 32 --epochs 100   --hyp data/hyps/hyp.scratch-low.yaml  --name cityscape_640_nocache  --worker 8  </p> 
+<p><img alt="" height="287" src="https://images2.imgbox.com/6b/31/wr3jPmCa_o.png" width="865"></p> 
+<p> map50-95为26.1%，map50为47.9%</p> 
+<p> 可以看到map50-95与640npy相比，下降了1.3%。</p> 
+<h4 id="d)640npy%E4%B8%8E640jpg%E4%BA%A4%E5%8F%89%E9%AA%8C%E8%AF%81">d)640npy与640jpg交叉验证</h4> 
+<p>接下来我们用它训练的模型在原图上验证一下（其实就是原图resize到640了）</p> 
+<p><img alt="" height="180" src="https://images2.imgbox.com/6c/f4/NB9GRB4e_o.png" width="865"></p> 
+<p>神奇地发现，map50-95居然还提升了0.4%</p> 
+<p>接着我们再用640npy训练的模型在640jpg上验证一下</p> 
+<p><img alt="" height="183" src="https://images2.imgbox.com/78/14/RrDu2PkY_o.png" width="865"></p> 
+<p> 更神奇地发现，这下降的真是有点多，640npy在原图上的验证结果相比，map50-95下降1.9%，map50下降3.1%</p> 
+<h4 id="e)%E6%95%B0%E6%8D%AE%E6%9C%89%E7%82%B9%E5%A4%9A%EF%BC%8C%E4%B8%BA%E6%96%B9%E4%BE%BF%E5%AF%B9%E6%AF%94%EF%BC%8C%E6%94%BE%E4%B8%AA%E8%A1%A8%E4%B8%8A%E6%9D%A5">e)数据有点多，为方便对比，放个表上来</h4> 
+<table cellspacing="0" style="width:433pt;"><tbody><tr><td style="vertical-align:bottom;width:215pt;"></td><td style="vertical-align:bottom;width:52pt;"><span style="color:#000000;">P</span></td><td style="vertical-align:bottom;width:52pt;"><span style="color:#000000;">R</span></td><td style="vertical-align:bottom;width:52pt;"><span style="color:#000000;">mAP50</span></td><td style="vertical-align:bottom;width:62pt;"><span style="color:#000000;">mAP50-95</span></td></tr><tr><td style="vertical-align:bottom;"><span style="color:#000000;">缓存到内存中</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.716</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.416</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.474</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.276</span></td></tr><tr><td style="vertical-align:bottom;"><span style="color:#000000;">缓存640npy</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.714</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.42</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.483</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.274</span></td></tr><tr><td style="vertical-align:bottom;"><span style="color:#000000;">640npy在640jpg上验证</span></td><td style="vertical-align:bottom;width:52pt;"><span style="color:#000000;">0.748</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.374</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.452</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.255</span></td></tr><tr><td style="vertical-align:bottom;"><span style="color:#000000;">640jpg</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.716</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.43</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.479</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.261</span></td></tr><tr><td style="vertical-align:bottom;"><span style="color:#000000;">640jpg在原图上验证</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.704</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.426</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.478</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.265</span></td></tr></tbody></table> 
+<p>对比上表，有几点发现</p> 
+<p>1)用640jpg来训练，mAP50-95略有下降，但是如果用它的模型在原图上验证，效果又会回升一点</p> 
+<p>注：这里的原图指的是原图resize到640哦</p> 
+<p>2)用640npy训练的模型，在640jpg上验证，性能下降地更明显</p> 
+<p>3)所以说首先可肯定的是，640jpg的训练与原图训练绝对是不一样的，具体选择哪种方案来训练，就看你最终会在什么样的场景下去使用你的模型，如果你推理的时候都是用大图推理（即大图resize到640直接推理，而不是拿个640的jpg来推理），那就用640npy的方案就行了。</p> 
+<p>4)至于为什么640npy训练的结果在640jpg上是最差的，可能的原因是640npy里的超像素信息比较多，训练的时候模型比较依赖这些超像素的信息，而你现在验证的时候没有这些信息了（或者说损失掉了较多的信息），那自然是会导致性能下降的</p> 
+<h3 id="3.%E4%BD%86%E6%98%AF%E5%A6%82%E6%9E%9C%E6%88%91%E5%B0%B1%E6%98%AF%E6%9C%89%E5%8F%AF%E8%83%BD%E8%A6%81%E7%94%A8640jpg%E5%91%A2">3.但是如果我就是有可能要用640jpg呢</h3> 
+<p>如题，如果我就是有可能在推理的时候，就是有可能会遇到小图的jpg（当然，大图的也有），那其实也很简单啊，就是让你的模型看到更多的情况就行了。但是如果训练集中只有大图，手动制作一批640jpg的副本，似乎有点浪费空间。其实完全可以在训练的过程中动态实现。</p> 
+<p>在yolov5的数据集类的LoadImagesAndLabels.__getitem__()方法中(utils/dataloaders.py)，会调一个数据增强的方法，注意上面的self.augment在训练集中默认是True</p> 
+<p><img alt="" height="1019" src="https://images2.imgbox.com/af/46/hx51NQY3_o.png" width="1200"></p> 
+<p>其对应代码在utils/augmentations.py中，红框中就是jpg压缩增强，这里的概率p原来写的是0.0，我改成0.1了，即让它在训练的时候，会有10%的概率动态地把图片做jpg压缩，压缩质量范围就是quality_lower（这里写的75）到quality_upperI(默认100）。另外上面还有模糊增强，只是使用的概率更小，只有1%，这些也可能会提升模型的鲁棒性。</p> 
+<p><img alt="" height="1184" src="https://images2.imgbox.com/41/19/5GZbmO5e_o.png" width="1200"></p> 
+<p>还有一点要注意，即上图中的绿框，它为啥要在try-catch里面来导入增强模块呢，因为yolov5的requirements.txt里面其实没让你装albumentations包，它是注释掉的！你得取消注释，装一下才行。下图我已经取消注释了。</p> 
+<p><img alt="" height="1170" src="https://images2.imgbox.com/fa/93/y78yJ8Cx_o.png" width="1200"></p> 
+<p>接下来还是用640npy训练，但是这次是开启了10%概率的jpg压缩增强哦，省时间还是100轮~~</p> 
+<p><img alt="" height="282" src="https://images2.imgbox.com/a8/4b/ytTDmmfI_o.png" width="865"></p> 
+<p>达到了最高的mAP！</p> 
+<p>然后在640jpg上再验证一下</p> 
+<p><img alt="" height="184" src="https://images2.imgbox.com/df/be/b5dIdIst_o.png" width="865"></p> 
+<p>与原图的验证效果，还是有下降，但是下降地比之前小了一些。并且它的mAP50-95比直接用640jpg训练还要高。另外可能跟训练轮数也有关系，100轮，10%的概率jpg增强，触发增强的次数比较少，并且提高了增强强度后，可能更不容易过拟合了，300轮可能会达到更好的效果。</p> 
+<h4 id="%E7%9B%B4%E6%8E%A5%E4%B8%8A%E6%B1%87%E6%80%BB%E8%A1%A8%E5%AF%B9%E6%AF%94">直接上汇总表对比</h4> 
+<table cellspacing="0" style="width:433pt;"><tbody><tr><td style="vertical-align:bottom;width:215pt;"></td><td style="vertical-align:bottom;width:52pt;"><span style="color:#000000;">P</span></td><td style="vertical-align:bottom;width:52pt;"><span style="color:#000000;">R</span></td><td style="vertical-align:bottom;width:52pt;"><span style="color:#000000;">mAP50</span></td><td style="vertical-align:bottom;width:62pt;"><span style="color:#000000;">mAP50-95</span></td></tr><tr><td style="vertical-align:bottom;"><span style="color:#000000;">缓存到内存中</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.716</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.416</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.474</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.276</span></td></tr><tr><td style="vertical-align:bottom;"><span style="color:#000000;">缓存640npy</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.714</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.42</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.483</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.274</span></td></tr><tr><td style="vertical-align:bottom;"><span style="color:#000000;">640npy在640jpg上验证</span></td><td style="vertical-align:bottom;width:52pt;"><span style="color:#000000;">0.748</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.374</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.452</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.255</span></td></tr><tr><td style="vertical-align:bottom;"><span style="color:#000000;">640jpg</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.716</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.43</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.479</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.261</span></td></tr><tr><td style="vertical-align:bottom;"><span style="color:#000000;">640jpg在原图上验证</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.704</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.426</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.478</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.265</span></td></tr><tr><td style="vertical-align:bottom;"><span style="color:#000000;">缓存640npy(开启jpg增强,0.1概率)</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.708</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.427</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.484</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.281</span></td></tr><tr><td style="vertical-align:bottom;"><span style="color:#000000;">缓存640npy(开启jpg增强) 在640jpg上验证</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.733</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.409</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.469</span></td><td style="vertical-align:bottom;"><span style="color:#000000;">0.269</span></td></tr></tbody></table> 
+<p></p> 
+<h2 id="%E4%BA%8C%E3%80%82%E6%9B%B4%E5%A4%9A%E7%BB%86%E8%8A%82">二。更多细节</h2> 
+<h3 id="1.%E5%9D%90%E6%A0%87%E8%B6%85%E5%83%8F%E7%B4%A0">1.坐标超像素</h3> 
+<p>大图resize到小图，可以具有超像素信息。对应的物体边框其实也是可以有超像素信息的。如果你在缩放图片后，使用的是缩放后的舍去小数位的坐标，有可能会导致模型训练效果下降哦。</p> 
+<p>由于yolov5所使用的标注文件中是以小数形式的相对坐标宽高来保存边框，所以你不需要过多地去关注它（只要你小数点后保留精度不要太低就行，保留6位基本就够啦）。</p> 
+<p>但如果你用的不是yolov5，并且你需要提前缩放图片来加速训练，那你就需要仔细关注一下边框坐标的问题了。比如你用的算法可能需要用coco数据集、voc数据集，它们用的都是绝对坐标。你如果要提前制作一份缩放后的数据集，那你应该用带小数位的坐标，并且你还要关注一下你所用的算法是怎么去使用这些坐标的，如果解析的时候仍然是当作整数来用（有可能报错，也有可能舍小数位），那你得把它们改改，最终保证整个流程一直走到损失计算的时候，都不会丢失小数位才行。</p> 
+<h3 id="2.%E5%AF%B9%E9%BD%90%E7%B2%BE%E5%BA%A6">2.对齐精度</h3> 
+<p>由于你额外处理了数据集，可能会担心影响模型性能，尤其是如果在处理过程有严重错误地话，那可能就不是影响性能这么简单了。所以你需要先验证一下你改的对不对，最起码保证同一个模型，在你缩放后的数据集上的验证结果，与在原图上的验证结果是一样的。</p> 
+<p>那你就要注意一些细微的细节</p> 
+<h4 id="a)%E5%9B%BE%E7%89%87%E7%BC%A9%E6%94%BE%E6%96%B9%E6%B3%95%E6%98%AF%E5%90%A6%E4%B8%80%E8%87%B4">a)图片缩放方法是否一致</h4> 
+<p>比如yolov5缩放图片的时候，长边缩放到640，缩放比例为r，短边用r缩放后如果结果不为整数，那就舍掉小数位（所以实际上长短边的缩放比例可能不一样哦），那么你想对齐验证精度的话，你最好是保证跟它完全一致。否则可能验证结果就是有那么一点点差别，然后你又不知道这是为什么，就挺难受（可能也有点担心，我是不是哪错了~~)。</p> 
+<p>并且不是什么算法都是这么缩放的，比如mmdetection，它就不是直接舍掉那个小数位，而是用4舍5入的方式。所以你需要仔细去看一下你所用的算法代码。</p> 
+<p>尤其是如果你用的是绝对坐标，并且需要自己去缩放坐标的时候，这就更重要了，因为上面只是涉及到让模型看到的图片可能会有一点点差别，而你缩放坐标如果没有正确处理长短边的缩放比例，你这就不是差别，而是差错了。你本意是让模型能用到超像素的边框坐标，而你实际上可能让它用了错误的边框坐标，虽然只有那一点点错，但可能反而让你达不到超像素的效果。</p> 
+<h4 id="b)%E7%AE%97%E6%B3%95%E4%BB%A3%E7%A0%81%E4%BC%9A%E4%B8%8D%E4%BC%9A%E6%9C%89%E5%9D%91%EF%BC%9F">b)算法代码会不会有坑？</h4> 
+<p>还真可能有，如果原来的算法代码在缩放的时候，就有那么一点点差错，那你自然就对齐不了了，所以在你确认自己没错的时候，就仔细看看算法代码是不是他自己就错了~~</p> 
+<h2 id="%E4%B8%89%E3%80%82batch-size8%E5%92%8C16%E3%80%8132%EF%BC%8C%E4%B8%BA%E5%95%A5%E6%B2%A1%E5%8C%BA%E5%88%AB%EF%BC%9F">三。batch-size8和16、32，为啥没区别？</h2> 
+<p>如果没做读图加速，并且使用的就是s级别的小模型，有可能会发现，用batch-size8训练一轮，与用batch-size32训练一轮，居然没有明显区别。比如我在公司的V100环境，用的是mmdetection，yolox-s级别的模型，就观察到这种情况。就算图片加载慢，但batch8完全不可能充分利用到显卡算力，我batch32总能在GPU计算这一块节省不少时间吧？</p> 
+<p>其实加载数据与GPU计算（前向推理、反向传播）这两者不是串行的，而是并行的，当然前提是dataloader的worker不是0，所以它们其实是木桶效应。</p> 
+<p>在你开启迭代dataloader之后，worker们就开始加载图片啦，比如你要batch8，它们并不是搞到8个处理后的图片给你后就休息了，它们会事先多加载一点，然后给你，你去GPU计算的时候，它们又会去继续加载，当然不是无限加载啊，具体的调度算法我没有去看。但是在它们加载图片比较快的时候（即存在空闲期的情况下），它们绝对不会出现较大的延时，就是说你每次要图的时候都能立马给你，让你的GPU尽量不等待。</p> 
+<p>但是如果加载图片慢，那就真没办法了，不是worker们偷闲，人家全速运转都满足不了你的需求。此时你把batch8提升成batch32，那肯定是一点用都没有，因为此时的总体运行时间就是图片加载时间，你把batch8提升成batch32，只会让GPU的闲时占比更高，不会有其它变化。</p> 
+<p>所以如果情况反过来，你要训练yolov5l，yolov5x级别的模型，很可能此时木桶的短板变成了显卡，而不是加载图片，那你就完全不用管加载图片的事情了。但是如果你想省电、或者延长CPU使用寿命、或者降低CPU温度的话，你还是可以去优化一下的~~</p> 
+<p>你可能会说，上面的木桶短板说法是不是你猜测的？我们跑一个具体的例子来验证一下。</p> 
+<h3 id="1.%E5%8F%96%E6%95%B0%E6%8D%AE%E6%AF%94GPU%E8%AE%A1%E7%AE%97%E5%BF%AB">1.取数据比GPU计算快</h3> 
+<pre><code class="language-python">from torch.utils.data import Dataset, DataLoader
+import torch
+
+from datetime import datetime
+import time
+
+
+def colorstr(*input):
+    # Colors a string https://en.wikipedia.org/wiki/ANSI_escape_code, i.e.  colorstr('blue', 'hello world')
+    *args, string = input if len(input) &gt; 1 else ('blue', 'bold', input[0])  # color arguments, string
+    colors = {
+        'black': '\033[30m',  # basic colors
+        'red': '\033[31m',
+        'green': '\033[32m',
+        'yellow': '\033[33m',
+        'blue': '\033[34m',
+        'magenta': '\033[35m',
+        'cyan': '\033[36m',
+        'white': '\033[37m',
+        'bright_black': '\033[90m',  # bright colors
+        'bright_red': '\033[91m',
+        'bright_green': '\033[92m',
+        'bright_yellow': '\033[93m',
+        'bright_blue': '\033[94m',
+        'bright_magenta': '\033[95m',
+        'bright_cyan': '\033[96m',
+        'bright_white': '\033[97m',
+        'end': '\033[0m',  # misc
+        'bold': '\033[1m',
+        'underline': '\033[4m'}
+    return ''.join(colors[x] for x in args) + f'{string}' + colors['end']
+
+
+def get_time_str():
+    return datetime.now().strftime('%Y/%m/%d %H:%M:%S.%f')[:-3]
+
+
+class MyDataSet(Dataset):
+    def __init__(self):
+        self.data = list(range(20))
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        print(f'{get_time_str()}:{torch.utils.data.get_worker_info().id}:reading...')
+        time.sleep(0.3)
+        result = self.data[idx]
+        print(f'{get_time_str()}:{torch.utils.data.get_worker_info().id}:return {self.data[idx]}')
+        return result
+
+
+if __name__ == '__main__':
+    train_data = MyDataSet()
+    train_loader = DataLoader(train_data, batch_size=4,
+                              shuffle=True,
+                              num_workers=2)
+
+    start_time = time.time()
+    for i, item in enumerate(train_loader):
+        print(colorstr('red', 'bold', f'{get_time_str()}:main:predict {item}'))
+        time.sleep(0.7)
+        print(colorstr('red', 'bold', f'{get_time_str()}:main:predict end'))
+    print(f'耗时{(time.time() - start_time)}秒')</code></pre> 
+<p>代码很简单，数据集里面有20个数字，数据集每取一项都耗时0.3秒（用sleep模拟），dataloader的batch设为4，因为有两个worker并行，所以取一次数据的总时间就是0.3秒。而取到数据后进行GPU计算需要0.7秒（还是用sleep模拟），所以说每推理一次的耗时大于取数据的时间。并且在取数据的开始结束，推理的开始结束都打了日志，那我们看看主进程到底会不会存在等待取数据而导致GPU闲置的情况。</p> 
+<p><img alt="" height="1200" src="https://images2.imgbox.com/5c/aa/T6DIx9Jn_o.png" width="881"></p> 
+<p>可以看到，在毫秒级是没有等待的哦（这里为了方便观察，借用了yolov5里面的colorstr函数，可以在控制台打印带颜色的字符）。并且会发现，第一次迭代dataload的时候，它会先多取一些数据，然后再返回给主进程，这样做的好处就是，如果取数据和GPU计算的时间差不多，接下来大家就可以不间断地并行执行了。</p> 
+<h3 id="2.%E5%8F%96%E6%95%B0%E6%8D%AE%E6%AF%94GPU%E8%AE%A1%E7%AE%97%E6%85%A2">2.取数据比GPU计算慢</h3> 
+<p>不重复贴代码了，就是修改一下两处sleep的时间就行了，改为每取一次数据0.7秒，每计算一轮0.3秒。</p> 
+<p><img alt="" height="776" src="https://images2.imgbox.com/fe/96/kyXF0IkA_o.png" width="1200"></p> 
+<p><img alt="" height="1200" src="https://images2.imgbox.com/27/25/cYe73M6S_o.png" width="1002"></p> 
+<p>耗时9.78秒，可以看到主进程有两轮没等，有两轮等了。那两轮没等是因为dataloader攒齐了两轮的数据一次性给主进程了，但是这样也改变不了终将要等的局面。</p> 
+<h3 id="3.%E5%8F%96%E6%95%B0%E6%8D%AE%E6%AF%94GPU%E6%85%A2%EF%BC%8C%E5%B9%B6%E4%B8%94%E6%8F%90%E5%8D%87batch-size">3.取数据比GPU慢，并且提升batch-size</h3> 
+<p>直接把batch-size调为8，并且模拟GPU计算的一轮时间仍然是0.3秒，因为我们模拟的场景是，batch-size为4的时候，不能充分利用GPU，而8仍然没有发挥GPU的全部性能。所以计算一次的时间自然就不变啦。但是这样能不能缩短整体的运行时间呢？</p> 
+<p>还是直接贴一下改动的地方</p> 
+<p><img alt="" height="639" src="https://images2.imgbox.com/ec/61/dKle0EcY_o.png" width="1184"></p> 
+<p><img alt="" height="392" src="https://images2.imgbox.com/04/4e/bogVdRuR_o.png" width="825"></p> 
+<p>耗时9.75秒，每次运行时间不完全一样，几乎没有节省什么时间。</p> 
+<p>注：如果你提升num_workers，那肯定是会缩短总体运行时间的（因为我们是用sleep来模拟CPU计算时间的，它实际上完全不占CPU），但是我们设定的场景是2个worker已经让cpu满负荷了，所以不能作弊！</p> 
+<h3 id="4.%E5%8F%96%E6%95%B0%E6%8D%AE%E6%AF%94GPU%E6%85%A2%EF%BC%8C%E5%B9%B6%E4%B8%94%E7%BB%A7%E7%BB%AD%E6%8F%90%E5%8D%87batch-size">4.取数据比GPU慢，并且继续提升batch-size</h3> 
+<p>之前已经说了不会缩短时间，但这里想说的是，这还甚至有可能会延长时间哦，现在把batch设为16，每一次计算时间仍然不变，仍然是0.3秒</p> 
+<p><img alt="" height="651" src="https://images2.imgbox.com/e2/31/RS6Gl29P_o.png" width="1200"></p> 
+<p><img alt="" height="1128" src="https://images2.imgbox.com/c0/d0/UgdM7yrg_o.png" width="1200"></p> 
+<p>见证奇迹的时间到了，耗时12.86秒，一开始取数据，两个worker是并行取的，但到了后面，全是worker0在取，worker1到一旁休息去了！这就非常有意思了，有时间要研究研究dataload的源码看看。</p> 
+<p>另外，如果你把batch设为20的话，你可能会发现，全程都只有worker0在工作，worker1压根就没来！</p> 
+<p></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/102495e1e277cfdbdcfe08183864d4d3/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">OpenGL问题列表</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/0412a1f5d87cceed2e66957f62dfd853/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">详细图解,二叉排序树的遍历、删除、插入，通过bf优化构建成平衡二叉树(avl树)的原理</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Wddm内存段翻译 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Wddm内存段翻译" />
+<meta property="og:description" content="本文翻译自https://learn.microsoft.com/zh-cn/windows-hardware/drivers/display/handling-memory-segments,并加上自己理解 部分缩写
+vidmm:video memory managerkmd：可以看作mini port driverumd:user model driver
+WDDM Segment 创建 Segmentmemory segment和aperture segment（都为线性)memory segemntaperture segment分割memory-Space segment为bank将虚拟地址映射到内存段指定segment给DMA Buffer当创建allocation指定 segment 在vidmm可以管理GPU的地址空间之前，miniportDriver必须使用内存段向vidmm描述Gpu的地址空间(这里应该指的是PA),MiniPortDriver创建内存段以统一和抽象Video memory，驱动可以根据硬件支持的内存类中配置内存段，（例如帧缓存或者系统内存段）
+​ 在驱动初始化期间，驱动一定要返回segment 类型列表，它描述了vidmm 如何管理内存资源，驱动指定它支持的段类型，并通过响应对其DxgkDdiQueryAdapterInfo的调用来描述每个类型，即使用DXGK_SEGMENTDESCRIRPTOR来描述每个段。
+创建 Segment ​ 在DxgkDdiQueryAdapterInfo这个函数中，我们一般是使用 DXGKARG_QUERYADAPTERINFO 结构的 Type 成员来表示我们要表示的信息类型，而与memory segment相关的是DXGKQAITYPE_QUERYSEGMENT4。
+​ 图形子系统调用驱动的DxgkDdiQueryAdapterInfo两次以获取segment信息，第一次将DXGK_QUERYSEGMENTOUT4的 pSegmentDescriptor 成员设置为 NULL ，用来检测驱动支持的segment数量，第二次则检索每个段的详细信息，即详细填充DXGK_QUERYSEGMENTOUT4的pSegmentDesciptor，一个segment对应一个pSegmentDesciptor，（PS：DXGK_QUERYSEGMENTOUT4填充在DXGKARG_QUERYADAPTERINFO的pOutputData里。同时在第二次调用时候，我们还应该为Paging buffer 分配内存，填充PagingBufferPrivateDataSize、PagingBufferSegmentId和PagingBufferSize，其中PagingBufferSegmentID必须是aperture segment。)
+DXGK_SEGMENTDESCRIPTOR4的一些重要成员 Flags.Aperture：/*aperture segment还是memory segment，aperture segment没有保存allocation内容的物理页，当vidmm将allocation paging到memory segment中，mm就需要将分配的内容从system memory backing store 传输到segment位置，如果vidmm将allocation paging到aperture segment中，mm就需要将分配backing store 的物理页映射到这个segment中，如果指定了这个flag，还需要在DxgkDdiBuildPagingBuffer中实现map/unmap-aperture-segment。*/ Flags.CacheCoherent：//指示aperture segment是否可以与映射到aperture中的可缓存页面保持缓存一致性，对于memory segment没有意义 Flags.CpuVisible //对于aperture segment没有意义，标志memory segment是否能被CPU访问 Flags.PitchAlignment //指定一个allocation映射到segment中是否需要对齐，vidmm使用DXGK_ALLOCATIONINFO结构的Size成员来为分配一个back store给allocation，然而，vidmm使用PictchAlignedSize为段分配资源，这种通常back store和segment有不同的大小，这时驱动程序必须确定如何正确地移动分配中的数据。这种类型的段不能用于移除。 Flags." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/e1cab2616ab3861395b9c82d029191cd/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-12-14T23:26:35+08:00" />
+<meta property="article:modified_time" content="2023-12-14T23:26:35+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Wddm内存段翻译</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <pre><code>本文翻译自https://learn.microsoft.com/zh-cn/windows-hardware/drivers/display/handling-memory-segments,并加上自己理解
+</code></pre> 
+<p>部分缩写</p> 
+<ul><li>vidmm:video memory manager</li><li>kmd：可以看作mini port driver</li><li>umd:user model driver<br> 
+  <div class="toc"> 
+   <h4>WDDM Segment</h4> 
+   <ul><li><ul><li><a href="#_Segment_11" rel="nofollow">创建 Segment</a></li><li><a href="#memory_segmentaperture_segment_40" rel="nofollow">memory segment和aperture segment（都为线性)</a></li><li><a href="#memory_segemnt_43" rel="nofollow">memory segemnt</a></li><li><a href="#aperture_segment_54" rel="nofollow">aperture segment</a></li><li><a href="#memorySpace_segmentbank_66" rel="nofollow">分割memory-Space segment为bank</a></li><li><a href="#_71" rel="nofollow">将虚拟地址映射到内存段</a></li><li><a href="#segmentDMA_Buffer_101" rel="nofollow">指定segment给DMA Buffer</a></li><li><a href="#allocation_segment_110" rel="nofollow">当创建allocation指定 segment</a></li></ul> 
+   </li></ul> 
+  </div></li></ul> 
+<p>在vidmm可以管理GPU的地址空间之前，miniportDriver必须使用内存段向vidmm描述Gpu的地址空间(这里应该指的是PA),MiniPortDriver创建内存段以统一和抽象Video memory，驱动可以根据硬件支持的内存类中配置内存段，（例如帧缓存或者系统内存段）</p> 
+<p>​ 在驱动初始化期间，驱动一定要返回segment 类型列表，它描述了vidmm 如何管理内存资源，驱动指定它支持的段类型，并通过响应对其DxgkDdiQueryAdapterInfo的调用来描述每个类型，即使用DXGK_SEGMENTDESCRIRPTOR来描述每个段。</p> 
+<h3><a id="_Segment_11"></a>创建 Segment</h3> 
+<p>​ 在DxgkDdiQueryAdapterInfo这个函数中，我们一般是使用 DXGKARG_QUERYADAPTERINFO 结构的 Type 成员来表示我们要表示的信息类型，而与memory segment相关的是DXGKQAITYPE_QUERYSEGMENT4。</p> 
+<p>​ 图形子系统调用驱动的DxgkDdiQueryAdapterInfo两次以获取segment信息，第一次将DXGK_QUERYSEGMENTOUT4的 pSegmentDescriptor 成员设置为 NULL ，用来检测驱动支持的segment数量，第二次则检索每个段的详细信息，即详细填充DXGK_QUERYSEGMENTOUT4的pSegmentDesciptor，一个segment对应一个pSegmentDesciptor，（PS：DXGK_QUERYSEGMENTOUT4填充在DXGKARG_QUERYADAPTERINFO的pOutputData里。同时在第二次调用时候，我们还应该为Paging buffer 分配内存，填充PagingBufferPrivateDataSize、PagingBufferSegmentId和PagingBufferSize，其中<strong>PagingBufferSegmentID</strong>必须是aperture segment。)</p> 
+<pre><code class="prism language-c++">DXGK_SEGMENTDESCRIPTOR4的一些重要成员
+Flags.Aperture：/*aperture segment还是memory segment，aperture segment没有保存allocation内容的物理页，当vidmm将allocation paging到memory segment中，mm就需要将分配的内容从system memory backing store 传输到segment位置，如果vidmm将allocation paging到aperture segment中，mm就需要将分配backing store 的物理页映射到这个segment中，如果指定了这个flag，还需要在DxgkDdiBuildPagingBuffer中实现map/unmap-aperture-segment。*/
+Flags.CacheCoherent：//指示aperture segment是否可以与映射到aperture中的可缓存页面保持缓存一致性，对于memory segment没有意义
+Flags.CpuVisible //对于aperture segment没有意义，标志memory segment是否能被CPU访问
+Flags.PitchAlignment //指定一个allocation映射到segment中是否需要对齐，vidmm使用DXGK_ALLOCATIONINFO结构的Size成员来为分配一个back store给allocation，然而，vidmm使用PictchAlignedSize为段分配资源，这种通常back store和segment有不同的大小，这时驱动程序必须确定如何正确地移动分配中的数据。这种类型的段不能用于移除。
+Flags.PreservedDuringStandby//指示在系统备用电源状态转换时是否保留该段。
+Flags.PreservedDuringHibernate//指定段是否保留到休眠系统电源状态。除非还设置了PreservedDuringStandby成员，否则不要设置此标志
+BaseAddress.QuadPart://由图形处理单元(GPU)确定的段的基址。vidmm在段中分页的分配的物理地址被分配一个GPU地址，该地址与BaseAddress指定的基址偏移。
+CpuTranslatedAddress.QuadPart://段的基址，相对于GPU连接的总线。例如，当GPU连接在PCI总线上时，CpuTranslatedAddress是由PCI base-address register (BAR)指定的可用范围的基址。驱动程序仅当它通过在Flags成员中设置CpuVisible位字段标志来指定cpu可访问的段时才指定此地址。对于aperture将忽略，除非没有设置pfnlock的UseAlternateVA.在vidmm将虚拟地址映射到物理范围之前，vidmm根据总线的CPU视图转换这个物理地址，并通知驱动程序有关操作，以便驱动程序可以设置一个aperture来访问给定位置的段的内容?
+Size://以字节为单位，必须是主机page 大小倍数，比如4kb的倍数
+</code></pre> 
+<p>在对 DxgkDdiQueryAdapterInfo 的两次调用中，它的 pInputData 成员指向包含有关 AGP 光圈位置和属性信息的DXGK_QUERYSEGMENTIN结构。 如果没有 AGP 光圈可用，或者存在但未安装适当的 GART 驱动程序，则有关 AGP 光圈的信息设置为零。 如果没有 AGP 光圈，则显示微型端口驱动程序不应在DXGKQAITYPE_QUERYSEGMENT3的 pSegmentDescriptor 数组中指示它支持 AGP 类型的光圈段。 如果在这种情况下指示 AGP 类型的光圈段，适配器将无法初始化 （这一段是WDDM V1的内容，V2后面应该不需要这个）。</p> 
+<p>​ 驱动不需要指定其memory segment中可供GPU使用的所有video memory资源，但必须指定vidmm在系统上运行的所有进程之间管理的所有内存资源，比如实现fix function pipe的微代码可以驻留在GPU地址空间，因为它供所有进程使用，所以在vidmm能管理的内存之外（也就是说，不是segment的一部分）vidmm必须从一个驱动程序的内存段分配视频内存资源，如顶点缓冲区、纹理、渲染目标和应用程序特定的着色器代码，因为资源类型必须对所有进程公平可用。</p> 
+<p>下图显示了驱动程序如何从 GPU 地址空间配置内存段。</p> 
+<p><img src="https://images2.imgbox.com/52/67/wA1UPdkz_o.png" alt="说明 GPU 地址空间划分为内存段的关系图。"></p> 
+<p>在视频内存管理器中隐藏的视频内存不能映射到用户空间，也不能以独占方式提供给任何特定进程。 这样做会破坏虚拟内存的基本规则，这些规则要求系统上运行的所有进程都有权访问所有内存。</p> 
+<h3><a id="memory_segmentaperture_segment_40"></a>memory segment和aperture segment（都为线性)</h3> 
+<p>memory segment和aperture segment的主要区别是，memory segment是由保存allocation位的介质?(个人理解这里指的是physical意思）组成，实际分配的是内存，而aperture segment是虚拟地址空间，当分配时，虚拟地址空间被重定向到独立于video memory pool或者system memory 的物理页面。</p> 
+<h3><a id="memory_segemnt_43"></a>memory segemnt</h3> 
+<ul><li>虚拟化位于图形适配器上的视频内存。</li><li>由GPU直接访问(即不需要通过页面映射进行重定向)。</li><li>在一维地址空间中线性管理。</li></ul> 
+<p>驱动程序将DXGK_SEGMENTDESCPIPTOR的flag成员设置为0就可以指定为memory segment，但是驱动程序可以设置以下flag来指示额外的segment支持</p> 
+<ul><li>CpuVisible:指示这个段是对CPU可以访问的</li><li>UseBanking:指示这个段可以拆分成多个bank<br> 下图即memory segment<br> <img src="https://images2.imgbox.com/3d/88/5vR0HARt_o.png" alt="在这里插入图片描述"></li></ul> 
+<h3><a id="aperture_segment_54"></a>aperture segment</h3> 
+<p>aperture segment类似于memory segment,aperture segment只是地址空间，不能包含位，若要保留位，必须分配系统内存页，并且必须重定向地址空间范围以引用这些页，miniPort Driver必须在DxgkDdiBuildPagingBuffer中实现dxgk_operation_map/unmap_aperture_segemnt来处理重定向，并且必须公开此函数，DxgkDdiBuildPagingBuffer函数接收要重定向的范围和引用已分配的物理系统内存页的MDL。</p> 
+<p>显示小端口驱动程序通常通过编程一个页表来完成地址空间范围的重定向，这是显存管理器所不知道的。</p> 
+<p>驱动程序必须在DXGK_SEGMENTDESCRIPTOR结构的Flags成员中设置孔径位域标志，以指定线性孔径空间段。驱动程序还可以设置以下位字段标志来指示额外的段支持:</p> 
+<ul><li>CpuVisible：表示该段是cpu可访问的。</li><li>CacheCoherent：表示该段为该段重定向到的页面与CPU保持缓存一致性</li></ul> 
+<p>下图即aperture segment<br> <img src="https://images2.imgbox.com/0c/aa/PM6Gv2Qq_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="memorySpace_segmentbank_66"></a>分割memory-Space segment为bank</h3> 
+<p>MiniProtDriver可以向vidmm提供细粒度的提示，通过将memory segment划分为存储库（banks),来确定视频资源在memory segment的最佳分配位置，如果驱动将memory segment划分成bank了，那么则必须在段的DXGK_SEGMENTDESCRIPTOR结构的Flags成员中设置UseBanking位域标志当Vidmm调用驱动的DxgkDdiAllocation函数时，驱动返回关于DXGK_ALLOCATIONINFO结构的HintedBank成员中的存储内存的提示。<br> 虽然Allocation必须分配在一个segment里，但是Allocation可以在一个segment里面跨bank。<br> 如果使用bank，驱动程序必须用bank覆盖整个段的地址空间，第一个bank总是在segment的offset为0开始，最后一个bank在segment的末尾结束，bank是连续的，它们中间不存在自由空间<br> （没太理解bank作用，也许为了性能？看了网上的一写wddm范例驱动都没有使用这个，后续补充）</p> 
+<h3><a id="_71"></a>将虚拟地址映射到内存段</h3> 
+<p>MiniPortDriver可以指定，对于它定义的每个memory/aperture segment是否可以通过设置在段的DXGK_SEGMENTDESCRIPTOR的CpuVisable flag来直接映射到段中的Allocation。（句子太长了，太难理解。。。）<br> 为了将一个CPU虚拟地址映射到一个segment，这个segment应该通过PCI aperture去线性访问，换句话说，segment里的任何Allocation的offset都应该和PCI aperture的offset相同，因此Vidmm可以通过给定的segment内的Allocation 's offset去计算总线的相关物理地址。<br> 下图展示了虚拟地址映射到线性memory space segment)<br> <img src="https://images2.imgbox.com/35/8f/hCkpJPfn_o.png" alt="在这里插入图片描述"><br> 下图展示了如何将虚拟地址映射到<br> <img src="https://images2.imgbox.com/8d/46/gxcnGv5o_o.png" alt="在这里插入图片描述"><br> 在将虚拟地址映射到段的一部分之前，Vidmm调用了mini port driver的<br> DxgkDdiAcquireSwizzlingRange函数，以便驱动设置用于可以访问可能被swizzled的allocation bits 的aperture(swizzled从app的概念看，是一种类似Z字形的存储方式，驱动程序即不能当访问allocation时改变PCI Aperture的offset也不能改变allocation的占用segment的访问量，如果驱动程序在给定的约束条件（例如，硬件耗光了unswizzled的aperture),下不能使allocation CPU可访问，则vidmm将evict allocation到系统内存，并允许应用程序访问那里的位）</p> 
+<p>如果UMD直接调用pfnLockcb函数请求直接访问内存时，预先创建的allocation在系统内存中，则vidmm直接将系统缓冲区返回给UMD，并且KMD不参与访问Allocation，因此，Allocation的内容不会被KMD修改，并且保持unswizzled fomat。这意味着当一个cpu可访问的allocation从video memory中被evict时，kmd必须unswizzle allocation，以便通过应用程序可以直接访问生成的系统内存位。</p> 
+<p>如果与当前映射给应用程序直接访问的allocation相关的GPU资源被evict，则allocation的内容将被转移到系统内存中，以便应用程序可以在相同的虚拟地址访问不同物理介质的内容。为了设置传输，vidmm调用kmd的DxgkDdiBuildPagingBuffer函数来创建paging buffer，GPU调度器调用kmd的DxgkDdiSubmitCommand函数来将paging buffer排队到GPU执行单元。特定于硬件的传输命令在paing buffer中，vidmm确保视频内存到系统内存的转换是对应用程序不可见，但是驱动程序必须确保通过PCI孔径的allocation字节顺序和当allocation被evict时的字节顺序完全匹配。</p> 
+<p>对于aperture segment，allocated的底层位已经在系统内存中，因此，在evict过程在不需要传输（unswizzled)数据，因此，如果应用程序直接访问位于aperture segment的cpu可访问的allocation，则不能被swizzled.</p> 
+<p>如果一个surface可以被应用程序通过CPU直接访问，但是在aperture segment里是swizzled,那么Driver应该将surface当作两个不同的allocation来实现，当UMD调用创建这样一个surface时候，它可以调用pfnAllocateCB函数，并可以将D3DDDICB_ALLOCATE结构体的NumAllocations成员设置为2，并将D3DDDICB_ALLOCATE的pAllocationInfo数组中的D3DDDI_ALLOCATIONINFO结构体的ppprivatedriverdata成员设置为指向有关分配的私有数据(例如它们的swizzled和unswizzled格式)。GPU使用的allocation包含swizzled的位，而应用程序访问的allocation包含unswizzled的位，vidmm调用kmd的DxgkDdiCreateAllocation函数来创建allocation，kmd解析umd传递的私有数据（在DXGK_ALLOCATIONINFO结构的ppprivatedriverdata成员中，用于每个allocation），vidmm不知道allocation的格式（swizzled?),它只是分配一定大小的内存块和allocation的对齐方式。调用umd的lock函数来lock surface以进行处理，会导致以下操作</p> 
+<ul><li>UMD调用pfnRenderCB函数，将命令缓冲区的unswizzled操作提交给D3D运行时和KMD。</li><li>UMD调用pfnLockCb函数来锁定unswizzled allocation，注意，UMD不能在D3DDDICB_LOCK结构的flag成员设置D3DDDILOCKCB_DONOTWAIT标志。（PS：WDDMV2中 pfnlock2cb已经没有任何flag，所有的flag都是UMD自己使用，不往其他传）</li><li>pfnLockCb函数等待，直到allocation之间的传输（unswizzled)完成。</li><li>pfnLockCb函数请求KMD获取一个VA，用于unswizzled，并将VA返回给D3DDDICB_LOCK的pData成员在UMD中</li><li>UMD在D3DDDIARG_LOCK的pSurfData成员中将未分配的虚拟地址返回给应用程序</li></ul> 
+<p>(PS:在WDDM V2中，由用户模式负责以下任务</p> 
+<ul><li>支持no-overwrite和discard ，vidmm不再支持rename，需要驱动来实现</li><li>其他锁类型的同步(不是no-overwrite or discard)</li><li>如果用户在指定D3D1X_MAP_FLAG_DO_NOT_WAIT标志时试图锁定分配，则必须返回WasStillDrawing</li><li>如果需要同步(例如，硬件正在访问allocation)，用户模式驱动程序必须阻塞。这必须作为非轮询等待来实现，并利用新的监视的fence同步对象。）</li></ul> 
+<h3><a id="segmentDMA_Buffer_101"></a>指定segment给DMA Buffer</h3> 
+<p>kmd可以指定能被DMA缓冲区分配的aperture segment,DMA缓冲区也可以分配为连续锁定的系统内存</p> 
+<p>vidmm在app需要DMA缓冲区时分配和销毁他们，因此，vidmm需要一组segment，它可以从中分配DMA缓冲区，注意，segment set可能只包含一个segment。</p> 
+<p>当dxgk子系统调用kmd的DxgkDdiCreateDevice函数来创建图形上下文设备时，kmd可以指定一个segment set,vidmm可以从中分配DMA缓冲区，如果kmd将DXGK_DEVICEINFO结构的DmaBufferSegmentSet成员设置为0，那么vidmm将为DMA缓冲区分配连续的非分页内存,在这种情况下，kmd必须使用PCI周期访问内存，并且通过DMA，必须直接从内存的物理地址发送数据。如果kmd将DmaBufferSegmentSet设置为非零，那么vidmm将分配可分页内存，并将页面映射到指定的aperture segment,aperture segment的页面调用其DxgkDdiSubmitCommand函数时显示给KMD。</p> 
+<p>注意，vidmm不支持local video memory的DMA缓冲区</p> 
+<h3><a id="allocation_segment_110"></a>当创建allocation指定 segment</h3> 
+<p>当vidmm调用kmd的DxgkDdiCreateAllocation函数时，kmd指定并返回有关其内存段的信息，它希望vidmm使用这些信息，在对DxgkDdiCreateAllocation的调用中，驱动程序为视频资源创建allocation。驱动程序在描述分配的DXGK_ALLOCATIONINFO结构中返回受支持的段的标识符和段首选项。(PS:在PreferredSegment里）<br> 从返回的段信息中，vidmm确定为给定操作分页入的适当内存段。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/1ecff4e30996f9037dcba45b32283100/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【K8S】docker打过tag标签后向镜像仓库推送镜像(push)</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a235921cbddd0a4d09cd3597be6a27c2/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">基于PyCharm实现串口GUI编程</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

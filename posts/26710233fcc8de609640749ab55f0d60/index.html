@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>扩展卡尔曼滤波在导航中的应用概述和整定参数 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="扩展卡尔曼滤波在导航中的应用概述和整定参数" />
+<meta property="og:description" content="原文名：Extended Kalman Filter Navigation Overview and Tuning
+翻译自http://ardupilot.org/dev/docs/extended-kalman-filter.html
+这篇文章描述直升机和飞机基于陀螺仪、加速计、罗盘、GPS、空速和气压计等设备估算位置、速度和航向角的卡尔曼滤波算法。文章包括算法的概述和用于整定的参数。
+概述 更快的处理器（如Pixhawk上的处理器）能够使用更高级的数学算法估计飞行器的方向、速度和位置。使用陀螺仪、加速度计、罗盘、GPS、空速和气压测量来估计飞行器的位置、速度和角度方向的扩展卡尔曼滤波器算法已经被开发了。此算法在AP_NavEKF库中实现，初步工作记录于：https://github.com/priseborough/InertialNav。
+PX4和Pixhawk的用户可以设置AHRS_EKF_USE（使用高程航向参考系统） = 1，从而使用此算法代替传统补充滤波器。
+相比方向余弦矩阵和直升机惯性导航使用的简单补充滤波算法，扩展卡尔曼滤波器的优势在于融合了所有可用的测量方法，能够改正测量中的重大错误，因此飞行器不易受单个传感器错误的影响。
+扩展卡尔曼滤波器的另一个特点是可以为飞机、直升机和车辆估算罗盘偏移和地球磁场。这使它比现行的方向余弦矩阵和惯性导航算法更不易受罗盘标定错误的影响。
+它也使可选传感器例如光流和激光测距仪能用于航行辅助。
+理论 已实现的扩展卡尔曼滤波器算法通过以下方法得到基础方程组，估计总共22个状态：https://github.com/priseborough/InertialNav/blob/master/derivations/GenerateEquations22states.m
+以下是滤波器工作原理的非常简化的非数学描述：
+对惯性测量单元角速度积分以计算角位置。通过角位置，把惯性测量单元加速度从船体的XYZ坐标系转换为以北、东和下为正方向的地球坐标系，并进行重力校正。对加速度积分以计算速度。对速度积分以计算位置。 从1）到4）的过程被称为“状态预测”。“状态”是试图估计的变量，如横摇、纵摇、首摇、高度、风速等。除了位置、速度和角度之外，滤波器还具有其他状态，包括陀螺仪偏差、Z加速度计偏差、风速、罗盘偏差和地球磁场，并且假设这些状态变化缓慢。这些其他状态不是通过“状态预测”步骤直接修改的，而是通过稍后描述的测量来修改。从1）到4）的过程被称为“状态预测”。“状态”是试图估计的变量，如横摇、纵摇、首摇、高度、风速等。除了位置、速度和角度之外，滤波器还具有其他状态，包括陀螺仪偏差、Z加速度计偏差、风速、罗盘偏差和地球磁场，并且假设这些状态变化缓慢。这些其他状态不是通过“状态预测”步骤直接修改的，而是通过稍后描述的测量来修改。
+使用惯性测量单元数据计算角度、速度和位置，用预计的陀螺仪噪声和加速度计噪声（EKF_GYRO_NOISE和EKF_ACC_NOISE）估计计算结果的误差增长。这些参数越大，会导致滤波器估计的误差增长得越快。如果没有使用其他测量（例如GPS）进行校正，则该估计误差将继续增长。这些估计的误差被存放在称为“状态协方差矩阵”的矩阵中。
+每当获得惯性测量单元的新数据时，重复步骤1）至5），直到可以使用来自另一传感器的新测量。 如果有完美的初始估计、完美的惯性测量单元测量和完美的计算，那么可以在整个飞行过程中不断重复1）到4）而无需其他计算。但是，初始值中的误差、惯性测量单元测量中的误差以及计算中的舍入误差意味着只能在速度和位置误差变得太大之前停留几秒钟。
+扩展卡尔曼滤波器算法提供了一种组合或融合来自惯性测量单元、GPS、罗盘、空速和气压计以及其他传感器的数据的方法，以更准确和可靠地估计位置、速度和角度方向。
+以下示例描述了如何使用GPS水平位置测量，但是相同的原理适用于其他测量类型（气压高度、GPS速度等）
+当GPS测量到达时，滤波器计算4）的预测位置与GPS位置之间的差值。这种差值被称为“创新”。综合利用来自6）的差值、来自5）的“状态协方差矩阵”以及由EKF_POSNE_NOISE（水平位置噪声）表示的GPS测量误差，以计算每个滤波器状态的校正值。这被称为“状态校正”。 这是卡尔曼滤波器高明的地方，因为它能够使用不同误差和不同状态之间的相关性的知识来校正其它状态，而不只是校正被测量的状态。例如，GPS位置测量能够校正位置、速度、角度和陀螺仪的误差。
+校正量的数值由状态误差与测量误差的假定比例控制。这意味着如果滤波器认为计算的位置比GPS测量更准确，则校正时GPS测量的权重将更小。如果它认为计算的位置不如GPS测量精确，则校正时GPS测量的权重将更大。GPS测量的假设精度由EKF_POSNE_NOISE（水平位置噪声）参数控制。EKF_POSNE_NOISE（水平位置噪声）越大，会导致滤波器认为GPS位置越不准确。
+由于现在已经进行了测量，因此减少了每个已更新状态的不确定性。滤波器计算由于“状态校正”导致的不确定性的降低，更新“状态协方差矩阵”，并返回步骤1）。 整定参数 AHRS_EKF_USE（使用高程航向参考系统） 将此值设置为1表示启用滤波器，设置为0表示使用传统算法。请注意，无论此参数为何值，两种算法都在运行，而且无论是否启用全速率的高程航向参考系统数据记录，都将记录所有扩展卡尔曼滤波数据。
+从Copter3.3开始，默认情况下已启用扩展卡尔曼滤波，不能使用此参数。Plane和Rover的用户仍然可以选择使用传统算法。
+EKF_ABIAS_PNOISE（加速度计偏差噪声） 该噪声控制垂直加速度计偏差状态的估计误差的增长。增大它会使加速度计的估计偏差变化得更快更嘈杂。
+EKF_ACC_PNOISE（加速度计噪声） 该噪声控制由于加速度计的除偏差之外的测量误差导致的预计误差的增长。增大它使得滤波器更不信任加速度计测量而更信任其他测量。
+EKF_ALT_NOISE（高度噪声） 这是高度测量中的噪声的均方根。如果增大此参数，滤波器会认为气压计噪声较大，并且减小其测量值的权重。
+如果此参数设置得太小，则滤波器将不断对气压计测量中的噪声做出反应，这将导致滤波器输出的高度产生噪声。在直升机中，这将导致直升机在尝试保持高度时上下摆动。
+如果此参数设置得太大，则高度精度将过小，并且更容易受到GPS垂直速度误差的影响。
+有关使用日志数据帮助设置此参数的详细信息，请参阅解释EKF3日志数据的部分。
+EKF_ALT_SOURCE（高度来源） 此参数控制在光流导航期间使用哪个测量源来确定高度。设置为0表示使用气压计，或1表示使用测距仪。如果设置为1，则飞行器将尝试相对于地面保持恒定的高度，这是光流导航期间的默认行为。警告：EK2_ALT_SOURCE = 1仅适用于平缓地面上的低空和低速操作，不适用于上飞行和下飞行。要在较低高度使用测距仪和使用气压计进行上行和下行，请设置EK2_ALT_SOURCE = 0，并且使用RNG_USE_HGT（测距仪用于高度）参数。
+EKF_EAS_GATE（预计空速阈值） 此参数调整测量空速与预计空速的一致性检查的阈值。减小它会使拒绝好的测量结果的可能性增大。增大它会使接受不良测量的可能性增大。它以标准差为单位进行缩放。例如，设置为3表示大于3倍的假设标准差的差值将导致测量被拒绝。
+EKF_EAS_NOISE（预计空速噪声） 这是罗盘测量中的噪声的均方根。增大它会减小这些测量的权重。有关使用日志数据来帮助设置此参数的详细信息，请参阅解释EKF3日志数据的部分。
+EKF_FALLBACK（回退） 此参数表示传感器数据中的不一致是否会导致回退到方向余弦矩阵。如果设置为0，则检测到不一致的传感器不会导致回退。如果设置为1，那么当方向余弦矩阵可用时，大的数据不一致将导致回退到方向余弦矩阵。
+EKF_FLOW_DELAY（流速滞后） 这是光流速度测量滞后于惯性测量单元测量的毫秒数。
+EKF_FLOW_GATE（流速阈值） 该参数控制测量的光流速度与预测速度之间的最大差值。差值超过此数值，扩展卡尔曼滤波将开始拒绝测量值。减小该参数会使拒绝有效的光流速度测量的可能性增大。增大该参数会使接受无效的光流速度测量的可能性增大。它以标准差为单位进行缩放。例如，设置为3表示大于3倍假设标准差的差值将导致测量被拒绝。
+EKF_FLOW_NOISE（流速噪声） 该参数表示允许的光流速度测量误差和噪声。它表示以rad / sec为单位的预计均方根误差。如果设置得太大，位置偏差会更大。如果设置得太小，扩展卡尔曼滤波输出的位置和速度将变得嘈杂，并且存在扩展卡尔曼滤波在机动期间开始拒绝光流速率测量的风险。
+EKF_GBIAS_PNOISE（陀螺仪偏差噪声） 该噪声控制陀螺仪偏差状态的估计误差的增长。它越大使得陀螺仪的估计偏差变化得越快越嘈杂。
+EKF_GLITCH_ACCEL（加速度误差） 此参数控制滤波器预测的水平加速度与GPS测量值之间的最大差值（以cm / s ^ 2为单位）。差值超过此数值，滤波器将拒绝GPS位置测量。如果此值设置得太低，则将经常丢弃有效的GPS数据，而且位置精度将降低。如果此参数设置得太高，则GPS故障会导致位置发生很大的快速变化。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/26710233fcc8de609640749ab55f0d60/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2019-03-06T20:04:48+08:00" />
+<meta property="article:modified_time" content="2019-03-06T20:04:48+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">扩展卡尔曼滤波在导航中的应用概述和整定参数</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>原文名：Extended Kalman Filter Navigation Overview and Tuning<br> 翻译自<a href="http://ardupilot.org/dev/docs/extended-kalman-filter.html" rel="nofollow">http://ardupilot.org/dev/docs/extended-kalman-filter.html</a></p> 
+<p>这篇文章描述直升机和飞机基于陀螺仪、加速计、罗盘、GPS、空速和气压计等设备估算位置、速度和航向角的卡尔曼滤波算法。文章包括算法的概述和用于整定的参数。</p> 
+<h3><a id="_5"></a>概述</h3> 
+<p>更快的处理器（如Pixhawk上的处理器）能够使用更高级的数学算法估计飞行器的方向、速度和位置。使用陀螺仪、加速度计、罗盘、GPS、空速和气压测量来估计飞行器的位置、速度和角度方向的扩展卡尔曼滤波器算法已经被开发了。此算法在AP_NavEKF库中实现，初步工作记录于：<a href="https://github.com/priseborough/InertialNav">https://github.com/priseborough/InertialNav</a>。<br> PX4和Pixhawk的用户可以设置<code>AHRS_EKF_USE</code>（使用高程航向参考系统） = 1，从而使用此算法代替传统补充滤波器。<br> 相比方向余弦矩阵和直升机惯性导航使用的简单补充滤波算法，扩展卡尔曼滤波器的优势在于融合了所有可用的测量方法，能够改正测量中的重大错误，因此飞行器不易受单个传感器错误的影响。<br> 扩展卡尔曼滤波器的另一个特点是可以为飞机、直升机和车辆估算罗盘偏移和地球磁场。这使它比现行的方向余弦矩阵和惯性导航算法更不易受罗盘标定错误的影响。<br> 它也使可选传感器例如光流和激光测距仪能用于航行辅助。</p> 
+<h3><a id="_13"></a>理论</h3> 
+<p>已实现的扩展卡尔曼滤波器算法通过以下方法得到基础方程组，估计总共22个状态：<a href="https://github.com/priseborough/InertialNav/blob/master/derivations/GenerateEquations22states.m">https://github.com/priseborough/InertialNav/blob/master/derivations/GenerateEquations22states.m</a><br> 以下是滤波器工作原理的非常简化的非数学描述：</p> 
+<ol><li>对惯性测量单元角速度积分以计算角位置。</li><li>通过角位置，把惯性测量单元加速度从船体的XYZ坐标系转换为以北、东和下为正方向的地球坐标系，并进行重力校正。</li><li>对加速度积分以计算速度。</li><li>对速度积分以计算位置。</li></ol> 
+<p>从1）到4）的过程被称为“状态预测”。“状态”是试图估计的变量，如横摇、纵摇、首摇、高度、风速等。除了位置、速度和角度之外，滤波器还具有其他状态，包括陀螺仪偏差、Z加速度计偏差、风速、罗盘偏差和地球磁场，并且假设这些状态变化缓慢。这些其他状态不是通过“状态预测”步骤直接修改的，而是通过稍后描述的测量来修改。从1）到4）的过程被称为“状态预测”。“状态”是试图估计的变量，如横摇、纵摇、首摇、高度、风速等。除了位置、速度和角度之外，滤波器还具有其他状态，包括陀螺仪偏差、Z加速度计偏差、风速、罗盘偏差和地球磁场，并且假设这些状态变化缓慢。这些其他状态不是通过“状态预测”步骤直接修改的，而是通过稍后描述的测量来修改。</p> 
+<ol start="5"><li>使用惯性测量单元数据计算角度、速度和位置，用预计的陀螺仪噪声和加速度计噪声（<code>EKF_GYRO_NOISE</code>和<code>EKF_ACC_NOISE</code>）估计计算结果的误差增长。这些参数越大，会导致滤波器估计的误差增长得越快。如果没有使用其他测量（例如GPS）进行校正，则该估计误差将继续增长。这些估计的误差被存放在称为“状态协方差矩阵”的矩阵中。<br> 每当获得惯性测量单元的新数据时，重复步骤1）至5），直到可以使用来自另一传感器的新测量。</li></ol> 
+<p>如果有完美的初始估计、完美的惯性测量单元测量和完美的计算，那么可以在整个飞行过程中不断重复1）到4）而无需其他计算。但是，初始值中的误差、惯性测量单元测量中的误差以及计算中的舍入误差意味着只能在速度和位置误差变得太大之前停留几秒钟。<br> 扩展卡尔曼滤波器算法提供了一种组合或融合来自惯性测量单元、GPS、罗盘、空速和气压计以及其他传感器的数据的方法，以更准确和可靠地估计位置、速度和角度方向。<br> 以下示例描述了如何使用GPS水平位置测量，但是相同的原理适用于其他测量类型（气压高度、GPS速度等）</p> 
+<ol start="6"><li>当GPS测量到达时，滤波器计算4）的预测位置与GPS位置之间的差值。这种差值被称为“创新”。</li><li>综合利用来自6）的差值、来自5）的“状态协方差矩阵”以及由<code>EKF_POSNE_NOISE</code>（水平位置噪声）表示的GPS测量误差，以计算每个滤波器状态的校正值。这被称为“状态校正”。</li></ol> 
+<p>这是卡尔曼滤波器高明的地方，因为它能够使用不同误差和不同状态之间的相关性的知识来校正其它状态，而不只是校正被测量的状态。例如，GPS位置测量能够校正位置、速度、角度和陀螺仪的误差。<br> 校正量的数值由状态误差与测量误差的假定比例控制。这意味着如果滤波器认为计算的位置比GPS测量更准确，则校正时GPS测量的权重将更小。如果它认为计算的位置不如GPS测量精确，则校正时GPS测量的权重将更大。GPS测量的假设精度由<code>EKF_POSNE_NOISE</code>（水平位置噪声）参数控制。<code>EKF_POSNE_NOISE</code>（水平位置噪声）越大，会导致滤波器认为GPS位置越不准确。</p> 
+<ol start="8"><li>由于现在已经进行了测量，因此减少了每个已更新状态的不确定性。滤波器计算由于“状态校正”导致的不确定性的降低，更新“状态协方差矩阵”，并返回步骤1）。</li></ol> 
+<h3><a id="_39"></a>整定参数</h3> 
+<h3><a id="AHRS_EKF_USE_41"></a>AHRS_EKF_USE（使用高程航向参考系统）</h3> 
+<p>将此值设置为1表示启用滤波器，设置为0表示使用传统算法。请注意，无论此参数为何值，两种算法都在运行，而且无论是否启用全速率的高程航向参考系统数据记录，都将记录所有扩展卡尔曼滤波数据。<br> 从Copter3.3开始，默认情况下已启用扩展卡尔曼滤波，不能使用此参数。Plane和Rover的用户仍然可以选择使用传统算法。</p> 
+<h3><a id="EKF_ABIAS_PNOISE_46"></a>EKF_ABIAS_PNOISE（加速度计偏差噪声）</h3> 
+<p>该噪声控制垂直加速度计偏差状态的估计误差的增长。增大它会使加速度计的估计偏差变化得更快更嘈杂。</p> 
+<h3><a id="EKF_ACC_PNOISE_50"></a>EKF_ACC_PNOISE（加速度计噪声）</h3> 
+<p>该噪声控制由于加速度计的除偏差之外的测量误差导致的预计误差的增长。增大它使得滤波器更不信任加速度计测量而更信任其他测量。</p> 
+<h3><a id="EKF_ALT_NOISE_54"></a>EKF_ALT_NOISE（高度噪声）</h3> 
+<p>这是高度测量中的噪声的均方根。如果增大此参数，滤波器会认为气压计噪声较大，并且减小其测量值的权重。<br> 如果此参数设置得太小，则滤波器将不断对气压计测量中的噪声做出反应，这将导致滤波器输出的高度产生噪声。在直升机中，这将导致直升机在尝试保持高度时上下摆动。<br> 如果此参数设置得太大，则高度精度将过小，并且更容易受到GPS垂直速度误差的影响。<br> 有关使用日志数据帮助设置此参数的详细信息，请参阅解释EKF3日志数据的部分。</p> 
+<h3><a id="EKF_ALT_SOURCE_61"></a>EKF_ALT_SOURCE（高度来源）</h3> 
+<p>此参数控制在光流导航期间使用哪个测量源来确定高度。设置为0表示使用气压计，或1表示使用测距仪。如果设置为1，则飞行器将尝试相对于地面保持恒定的高度，这是光流导航期间的默认行为。警告：<code>EK2_ALT_SOURCE = 1</code>仅适用于平缓地面上的低空和低速操作，不适用于上飞行和下飞行。要在较低高度使用测距仪和使用气压计进行上行和下行，请设置<code>EK2_ALT_SOURCE = 0</code>，并且使用<code>RNG_USE_HGT</code>（测距仪用于高度）参数。</p> 
+<h3><a id="EKF_EAS_GATE_65"></a>EKF_EAS_GATE（预计空速阈值）</h3> 
+<p>此参数调整测量空速与预计空速的一致性检查的阈值。减小它会使拒绝好的测量结果的可能性增大。增大它会使接受不良测量的可能性增大。它以标准差为单位进行缩放。例如，设置为3表示大于3倍的假设标准差的差值将导致测量被拒绝。</p> 
+<h3><a id="EKF_EAS_NOISE_69"></a>EKF_EAS_NOISE（预计空速噪声）</h3> 
+<p>这是罗盘测量中的噪声的均方根。增大它会减小这些测量的权重。有关使用日志数据来帮助设置此参数的详细信息，请参阅解释EKF3日志数据的部分。</p> 
+<h3><a id="EKF_FALLBACK_73"></a>EKF_FALLBACK（回退）</h3> 
+<p>此参数表示传感器数据中的不一致是否会导致回退到方向余弦矩阵。如果设置为0，则检测到不一致的传感器不会导致回退。如果设置为1，那么当方向余弦矩阵可用时，大的数据不一致将导致回退到方向余弦矩阵。</p> 
+<h3><a id="EKF_FLOW_DELAY_77"></a>EKF_FLOW_DELAY（流速滞后）</h3> 
+<p>这是光流速度测量滞后于惯性测量单元测量的毫秒数。</p> 
+<h3><a id="EKF_FLOW_GATE_81"></a>EKF_FLOW_GATE（流速阈值）</h3> 
+<p>该参数控制测量的光流速度与预测速度之间的最大差值。差值超过此数值，扩展卡尔曼滤波将开始拒绝测量值。减小该参数会使拒绝有效的光流速度测量的可能性增大。增大该参数会使接受无效的光流速度测量的可能性增大。它以标准差为单位进行缩放。例如，设置为3表示大于3倍假设标准差的差值将导致测量被拒绝。</p> 
+<h3><a id="EKF_FLOW_NOISE_85"></a>EKF_FLOW_NOISE（流速噪声）</h3> 
+<p>该参数表示允许的光流速度测量误差和噪声。它表示以rad / sec为单位的预计均方根误差。如果设置得太大，位置偏差会更大。如果设置得太小，扩展卡尔曼滤波输出的位置和速度将变得嘈杂，并且存在扩展卡尔曼滤波在机动期间开始拒绝光流速率测量的风险。</p> 
+<h3><a id="EKF_GBIAS_PNOISE_89"></a>EKF_GBIAS_PNOISE（陀螺仪偏差噪声）</h3> 
+<p>该噪声控制陀螺仪偏差状态的估计误差的增长。它越大使得陀螺仪的估计偏差变化得越快越嘈杂。</p> 
+<h3><a id="EKF_GLITCH_ACCEL_93"></a>EKF_GLITCH_ACCEL（加速度误差）</h3> 
+<p>此参数控制滤波器预测的水平加速度与GPS测量值之间的最大差值（以cm / s ^ 2为单位）。差值超过此数值，滤波器将拒绝GPS位置测量。如果此值设置得太低，则将经常丢弃有效的GPS数据，而且位置精度将降低。如果此参数设置得太高，则GPS故障会导致位置发生很大的快速变化。</p> 
+<h3><a id="EKF_GLITCH_RAD_97"></a>EKF_GLITCH_RAD（误差阈值）</h3> 
+<p>此参数控制滤波器预测的水平位置与GPS测量值之间的最大差值（以m为单位）。差值超过此数值，将激活长期误差保护，并将偏移应用于GPS测量补偿。小于此参数的位置跳跃将暂时被忽略，但如果它们持续存在，则滤波器将接受位置变化，而且输出新位置。大于此值的位置变化也将在最初被忽略，但如果它们持续存在，则将在使用GPS位置测量前先通过变化量进行校正。这可以防止位置发生较大的阶跃变化。该校正以恒定速率衰减回零，以便逐渐产生新的GPS位置。可以通过绘制EKF4.OFN和EKF4.OFE闪存日志数据来检查向北和向东的此校正值。</p> 
+<h3><a id="EKF_GND_GRADIENT_101"></a>EKF_GND_GRADIENT（地面坡度）</h3> 
+<p>此参数控制通过融合测距仪数据进行假设的地形坡度（％），并影响预计地形对测量变化的响应速度。当在不平坦的地形上操作时，该参数可以增大，以允许地形估计更快地改变。</p> 
+<h3><a id="EKF_GPS_TYPEGPS_105"></a>EKF_GPS_TYPE（GPS类型）</h3> 
+<p>此参数控制GPS速度测量的使用：0 = 使用三维速度，1 = 使用二维速度，2 = 不使用速度。</p> 
+<h3><a id="EKF_GYRO_PNOISE_109"></a>EKF_GYRO_PNOISE（陀螺仪噪声）</h3> 
+<p>该噪声控制由于陀螺仪除偏差之外的测量误差导致的预计误差的增长。增大它会使滤波器更不信任陀螺仪测量，而更信任其他测量。</p> 
+<h3><a id="EKF_HGT_GATE_113"></a>EKF_HGT_GATE（高度阈值）</h3> 
+<p>此参数调整测量高度与预计高度的一致性检查的阈值。减小它会增大好的测量结果被拒绝的可能性。增大它会使接受不良测量的可能性增大。</p> 
+<h3><a id="EKF_MAGB_PNOISE_117"></a>EKF_MAGB_PNOISE（体磁场偏差噪声）</h3> 
+<p>该噪声控制了体磁场状态的估计误差的增长。增大它会使罗盘偏移估计变化得更快更嘈杂。</p> 
+<h3><a id="EKF_MAGE_PNOISE_121"></a>EKF_MAGE_PNOISE（地磁场偏差噪声）</h3> 
+<p>该噪声控制地磁场状态的估计误差的增长。增大它会使地球磁场偏差估计变化得更快更嘈杂。</p> 
+<h3><a id="EKF_MAG_CAL_125"></a>EKF_MAG_CAL（磁力计校核）</h3> 
+<p>扩展卡尔曼滤波能够在飞行中学习磁力计偏移。此参数控制学习何时处于活动状态：<br> <code>EKF_MAG_CAL = 0</code>：当速度和高度表明飞行器在空中时，启用学习；<br> <code>EKF_MAG_CAL = 1</code>：当飞行器行驶时启用学习；<br> <code>EKF_MAG_CAL = 2</code>：禁用学习；<br> <code>EKF_MAG_CAL = 3</code>：飞行器被安装时启用学习功能。</p> 
+<h3><a id="EKF_MAG_GATE_133"></a>EKF_MAG_GATE（磁力阈值）</h3> 
+<p>此参数调整测量磁力与预计磁力的一致性检查的阈值。减小它会增大好的测量结果被拒绝的可能性。增大它会使接受不良测量的可能性增大。它以标准差为单位进行缩放。例如，设置为3表示大于3倍假设标准差的差值将导致测量被拒绝。</p> 
+<h3><a id="EKF_MAG_NOISE_137"></a>EKF_MAG_NOISE（磁力计噪声）</h3> 
+<p>这是磁力计测量中的噪声的均方根/1000。在滤波器使用磁力计读数之前先按1/1000缩放，以减少数字舍入误差的影响。增大此噪声参数可减小磁力计测量的权重，这将减小滤波器首摇受磁力计误差的影响，但增大受Z陀螺仪偏差的影响。有关使用日志数据来帮助设置此参数的详细信息，请参阅解释EKF3日志数据的部分。</p> 
+<h3><a id="EKF_MAX_FLOW_141"></a>EKF_MAX_FLOW（最大流速）</h3> 
+<p>该参数控制能被扩展卡尔曼滤波接受的最大光流速率（以rad / sec为单位）。这有助于拒绝在数据传输期间或当流速传感器无法跟上飞行器运动时损坏的测量值。</p> 
+<h3><a id="EKF_POS_DELAY_145"></a>EKF_POS_DELAY（位置滞后）</h3> 
+<p>这是GPS位置测量滞后于惯性测量的毫秒数。</p> 
+<h3><a id="EKF_POSNE_NOISE_149"></a>EKF_POSNE_NOISE（水平位置噪声）</h3> 
+<p>这是GPS水平位置测量中的噪声的均方根。如果增大此参数，滤波器会认为GPS噪声较大，并且减小GPS水平位置测量的权重。<br> 如果此参数设置过小，则滤波器将不断对GPS位置中的噪声做出反应，这可能导致直升机在游荡期间持续快速的小幅度的姿态和位置变化。<br> 如果此参数设置过大，则会因为惯性计算中的误差未被GPS足够地校正，惯性传感器的误差将导致滤波器位置误差不断增大。在游荡期间，这可能导致直升机的位置大幅度变动。<br> 有关使用日志数据来帮助设置此参数的详细信息，请参阅解释EKF3日志数据的部分。</p> 
+<h3><a id="EKF_POS_GATE_156"></a>EKF_POS_GATE（位置阈值）</h3> 
+<p>此参数调整GPS测量位置与预计位置的一致性检查的阈值。减小它会增大好的测量结果被拒绝的可能性。增大它会使接受不良测量的可能性增大。它以标准差为单位进行缩放。例如，设置为3表示大于3倍假设标准差的差值将导致测量被拒绝。</p> 
+<h3><a id="EKF_RNG_GATE_160"></a>EKF_RNG_GATE（距离阈值）</h3> 
+<p>此参数控制测量的与地面距离和预测距离的最大差值。差值超过此数值，扩展卡尔曼滤波将开始拒绝测量值。减小此参数会增大拒绝有效的测距仪测量的可能性。增大它会使接受无效的测距仪测量的可能性增大。它以标准差为单位进行缩放。例如，设置为3表示大于3倍假设标准差的差值将导致测量被拒绝。</p> 
+<h3><a id="EKF_VELD_NOISE_164"></a>EKF_VELD_NOISE（垂直速度噪声）</h3> 
+<p>这是GPS垂直速度测量中的噪声的均方根，单位为m / s。如果增大此参数，滤波器会认为GPS噪声较大，并且减小GPS垂直速度测量的权重。<br> 如果此参数设置得太小，则滤波器将不断对GPS测量中的噪声做出反应，这将导致滤波器输出的高度产生噪声。在直升机中，这将导致直升机上下摆动。<br> 如果此参数设置得太高，则滤波器将不会充分利用GPS速度信息，并且更容易受到气压计高度误差的影响。<br> 有关使用日志数据来帮助设置此参数的详细信息，请参阅解释EKF3日志数据的部分。</p> 
+<h3><a id="EKF_VELNE_NOISE_171"></a>EKF_VELNE_NOISE（水平速度噪声）</h3> 
+<p>这是GPS向北和向东速度测量中的噪声的均方根，单位为m/s。如果增大此参数，滤波器会认为GPS噪声较大，并且减小GPS水平速度测量的权重。<br> 如果此参数设置得太小，则滤波器将不断对GPS测量中的噪声做出反应，这将导致滤波器输出的横摇和纵摇角度产生噪声。如果飞行器外面有清晰的天空视野，远离建筑物和其他大型物体，那么Mission Planner中的Heads-up Display应该是稳定的。如果它明显移动，那么GPS噪声可能太高而不适合滤波器设置。这也将导致在飞行器游荡期间连续且快速的小幅度的角度和位置变化。<br> 如果此参数设置得太高，则滤波器将不会充分利用GPS速度信息，位置将在更大的范围内变动，并且更容易受到GPS位置误差的影响。<br> 有关使用日志数据来帮助设置此参数的详细信息，请参阅解释EKF3日志数据的部分。</p> 
+<h3><a id="EKF_VEL_DELAY_178"></a>EKF_VEL_DELAY（速度滞后）</h3> 
+<p>这是GPS速度测量滞后于惯性测量的毫秒数。</p> 
+<h3><a id="EKF_VEL_GATE_182"></a>EKF_VEL_GATE（速度阈值）</h3> 
+<p>此参数调整GPS测量速度与预计速度的一致性检查的阈值。减小它会增大好的测量结果被拒绝的可能性。增大它会使接受不良测量的可能性增大。它以标准差为单位进行缩放。例如，设置为3表示大于3倍假设标准差的差值将导致测量被拒绝。</p> 
+<h3><a id="EKF_WIND_PNOISE_186"></a>EKF_WIND_PNOISE（风偏差噪声）</h3> 
+<p>此噪声控制风状态的估计误差的增长。增大它会使风估计变化得更快更嘈杂。</p> 
+<h3><a id="EKF_WIND_PSCALE_190"></a>EKF_WIND_PSCALE（风偏差比例）</h3> 
+<p>增大此参数会加快风状态适应高度变化的速度，但确实会使风速估算的变化更嘈杂。</p> 
+<h3><a id="_194"></a>解释日志数据</h3> 
+<p>如果不对闪存日志中的滤波器记录的数据进行一些分析，则无法正确调整滤波器。要记录此数据，启用高程航向参考系统数据记录非常重要。扩展卡尔曼滤波数据包含在EKF1、EKF2、EKF3和EKF4日志消息中。本节介绍扩展卡尔曼滤波的各种日志数据的含义，并通过例子解析如何通过Mission Planner DataFlash日志查看功能绘制数据。</p> 
+<h3><a id="EKF1_198"></a>EKF1</h3> 
+<p><strong>TimeMS</strong> - 已启动时间（毫秒）<br> <strong>Roll</strong> - 横摇角（deg）<br> <strong>Pitch</strong> – 纵摇角（deg）<br> <strong>Yaw</strong> – 首摇角（deg）<br> <strong>VN，VE，VD</strong> - 向北、向东、向下速度（m / s）<br> <strong>PN，PE，PD</strong> - 相对于飞行器所在地的北、东、下位置（m）<br> <strong>GX，GY，GZ</strong> - 陀螺仪X、Y、Z偏差（deg/min）<br> 下图显示了带有Pixhawk控制器的飞机的陀螺仪偏差。可以看到陀螺仪偏差在开始后不断变化，并且随着传感器预热并达到其工作温度而稳定在新值。控制器使用的廉价微机电系统惯性传感器可能会随温度变化产生显著的偏差变化。<br> <img src="https://images2.imgbox.com/b1/4f/EVAswCvs_o.jpg" alt="在这里插入图片描述"></p> 
+<h3><a id="EKF2_210"></a>EKF2</h3> 
+<p><strong>TimeMS</strong> - 已启动时间（毫秒）<br> <strong>Ratio</strong> - 混合惯性测量单元1加速度计和惯性测量单元2加速度计的数据时，惯性测量单元1数据的加权百分比。如果硬件有两个惯性测量单元（例如Pixhawk），那么这通常会在50%区域内快速波动，如下图所示。<br> <img src="https://images2.imgbox.com/5b/81/uVMoDwF3_o.jpg" alt="在这里插入图片描述"><br> 如果在飞行过程中波动到接近100%或0%，则表明可能存在影响加速度计数据的混叠，应该寻找减轻此问题的解决方案（例如，为自动驾驶仪安装振动隔离装置）。<br> <strong>AZ1bias</strong> - 惯性测量单元1的Z加速度计偏差（cm / s^2）<br> <strong>AZ2bias</strong> - 惯性测量单元2的Z加速度计偏差（cm / s^2）<br> <strong>VWN，VWE</strong> - 北风和东风速度（m / s）。正值意味着风沿着该轴的方向移动，例如正北风速表示从南方吹来。<br> <strong>MN，ME，MD</strong> -地球磁场向北、向东、向下强度（传感器单位）。如果正在快速飞行，或者在启用<code>EKF_MAG_CAL</code>（磁力计校核）的情况下处于低速，那么这些将在飞行过程中缓慢变化，因为滤波器会“学习”地球的磁场。<br> <img src="https://images2.imgbox.com/2c/42/4bSRmjSU_o.jpg" alt="在这里插入图片描述"><br> <strong>MX，MY，MZ</strong> - 体磁场X、Y、Z偏差（传感器单位）。如果正在快速飞行，或者在启用<code>EKF_MAG_CAL</code>（磁力计校核）的情况下处于低速，那么这些将在飞行过程中缓慢变化，因为滤波器会“学习”地球的磁场。这些与罗盘偏移具有相同的含义，但是符号相反（例如，在下图中，MX稳定在+35的值，表示应使用-35的<code>COMPASS_OFS_X</code>（罗盘X轴偏移）值）。<br> <img src="https://images2.imgbox.com/2a/ae/FzeQfHQW_o.jpg" alt="在这里插入图片描述"></p> 
+<h3><a id="EKF3_224"></a>EKF3</h3> 
+<p>此消息包含每个传感器（GPS、气压计、磁力计和空速）的差值。差值是指在应用校正之前，使用惯性测量单元数据预测的值与传感器测量的值之间的差值。<br> <strong>TimeMS</strong> - 已启动时间（毫秒）<br> <strong>IVN，IVE，IVD</strong> - GPS测量的向北、向东、向下速度（m / s）与预计速度的差值。这些是滤波器的重要健康衡量标准。如果有优质的惯性测量单元和GPS数据，它们会很小并且大约为零，如下图所示：<br> <img src="https://images2.imgbox.com/ab/16/YQedibH3_o.jpg" alt="在这里插入图片描述"><br> 当飞行器不处于行驶状态时，这些差值的噪音水平可用于设定<code>EKF_VELNE_NOISE</code>（水平速度噪声）和<code>EKF_VELD_NOISE</code>（垂直速度噪声）的值。例如，在上图中，对于向北、向东和向下速度，飞行器非机动时的速度噪声约为±0.3 m/s。这意味着本例中<code>EKF_VELNE_NOISE</code>（水平速度噪声）和<code>EKF_VELD_NOISE</code>（垂直速度噪声）的良好初始值为0.3 m/s。<br> <strong>IPN，IPE</strong> - GPS测量的向北、向东位置与预计位置的差值（m）。与速度差值类似，它们应该很小并且以零为中心，如下例所示：<br> <img src="https://images2.imgbox.com/a0/ab/sZpNM36m_o.jpg" alt="在这里插入图片描述"><br> 这些差值的噪音水平可用于设定<code>EKF_POSNE_NOISE</code>（水平位置噪声）的值。在上图中，噪声位于±0.5m的范围内，因此本例中<code>EKF_POSNE_NOISE</code>（水平位置噪声）值的良好初始值为0.5m。<br> <strong>IPD</strong> - 气压计测量高度与预计高度的差值（m）。尽管当惯性测量单元误差、传感器滞后以及气流变化对气压计读数的影响导致突然的高度变化或操纵时，大约2米的瞬态是常见的，它们也应该很小并且以零为中心，如下例所示。<br> <img src="https://images2.imgbox.com/35/28/fwUxVW30_o.jpg" alt="在这里插入图片描述"><br> 在上图中可以看出，在2分钟后有一个小的1米负偏差被移除。这是由于滤波器需要时间来学习并补偿Z加速度计上的误差。在这个例子中，基础传感器噪声低约±0.15m，这表明飞机应用程序的<code>EKF_ALT_NOISE</code>（高度噪声）的良好初始值为0.15m。<br> 注意：对于直升机，经验表明<code>EKF_ALT_NOISE</code>（高度噪声）的值通常必须增大到理论值以上，才能平滑高度响应。<br> <strong>IMX，IMY，IMZ</strong> - 测量的X、Y、Z方向的磁力与预计磁力的差值。这些应该以零为中心，在机动过程中不超过+ - 50，如下图所示：<br> <img src="https://images2.imgbox.com/37/57/pNpoqku5_o.jpg" alt="在这里插入图片描述"><br> 在上面的示例中，<code>EKF_MAG_CAL</code>（磁力计校核）设置为1，因此直升机很快学会了磁力计偏差（罗盘偏移）。尽管磁力计的基础噪声相对较低（在大多数情况下为5或更小），但坐标轴之间的比例因子的差异、磁力计未对准以及由电力系统产生的变化的磁场还会导致其他误差。通常，这些会导致大约50的差值的急剧瞬变，如上图所示。因此，<code>EKF_MAG_NOISE</code>（磁力计噪声）的默认值设置为0.05（表示噪声为50传感器单位）。<br> 下图取自使用未经正确校准的磁力计，而且<code>EKF_MAG_CAL</code>（磁力计校核） = 0的慢速直升机飞行。当飞行器改变方向时，差值变化明显。<br> <img src="https://images2.imgbox.com/9f/f7/hzjpm7Yw_o.jpg" alt="在这里插入图片描述"><br> <strong>IVT</strong> - 测量空速与预计空速的差值（m/s）。如果未安装或未使用空速传感器（例如在地面上），则该值为零。如果正确地校准空速传感器，它应该以零为中心，但是根据飞行的风场条件，噪声水平会有所不同。以下是在低湍流中，在7m/s的中等风力条件下，使用经过良好校准的空速传感器的飞行的示例：<br> <img src="https://images2.imgbox.com/cf/75/KzaSUYHV_o.jpg" alt="在这里插入图片描述"><br> 从零时刻开始的1m/s的恒定偏移表示稳定的1m/s空速误差。如果空速传感器在刮风天初始化期间未被覆盖从而导致显著的压力偏移，或超出校准范围，或自初始化以来经历了大的温度变化，则可能导致稳定的空速误差。<br> 此图还可用于设置<code>EKF_EAS_NOISE</code>（预计空速噪声）的值。对于上面的示例，总噪声（包括阵风）约为1.4 m/s，因此这对于<code>EKF_EAS_NOISE</code>（预计空速噪声）来说是一个很好的初始值。</p> 
+<h3><a id="EKF4_248"></a>EKF4</h3> 
+<p>此消息包含一些图表，显示相对于<code>EKF_POS_GATE</code>（位置阈值）<code>EKF_VEL_GATE</code>（速度阈值）<code>EKF_HGT_GATE</code>（高度阈值）<code>EKF_MAG_GATE</code>（磁力阈值）和<code>EKF_EAS_GATE</code>（预计空速阈值）设置的误差阈值，每个传感器的运行情况。这些参数控制在滤波器允许的测量值的不一致。当在本节中提到测量的不一致时，讨论的是滤波器的预测值与传感器测量值之间的差值。检查测量不一致性对于GPS尤其重要，因为GPS测量可能具有非常大的瞬态位置和速度误差，如果滤波器使用它们会导致崩溃。 EKF4中提供以下消息：<br> <strong>TimeMS</strong> - 已启动时间（毫秒）<br> <strong>SV</strong> - GPS合速度的不一致与<code>EKF_VEL_GATE</code>（速度阈值）参数设置的限制之比。对于具有良好GPS数据的飞行，偶尔会有超过1/2的峰值，但不应超过1。如果此数值超过1，则表示滤波器在飞行期间停止使用GPS速度数据。对于好的传感器数据这应该永远不会发生。下图显示了使用默认参数、具有9到10颗在良好的GPS条件下的卫星的四旋翼飞行器获得的SV。如果此数值太高并且在具有良好GPS的情况下超过1，则应增大<code>EKF_VEL_GATE</code>（速度阈值）参数。<br> <img src="https://images2.imgbox.com/23/80/g1vwypwZ_o.jpg" alt="在这里插入图片描述"><br> <strong>SP</strong> - GPS总的位置不一致与<code>EKF_POS_GATE</code>（位置阈值）参数设置的限制之比。对于具有良好GPS数据的飞行，偶尔会有超过1/2的峰值，但不应超过1。如果此数值超过1，则表示滤波器在飞行期间停止使用GPS位置数据。对于好的传感器数据这应该永远不会发生。下图显示了使用默认参数、具有9到10颗在良好的GPS条件下的卫星的四旋翼飞行器获得的SP。如果此数值太高并且在具有良好GPS的情况下超过1，则应增大<code>EKF_POS_GATE</code>（位置阈值）参数。<br> <img src="https://images2.imgbox.com/df/af/3tp7NVYY_o.jpg" alt="在这里插入图片描述"><br> <strong>SH</strong> - 气压计高度不一致与<code>EKF_HGT_GATE</code>（高度阈值）参数设置的限制之比。这可能偶尔超过1/2，但不应超过1。如果此数值超过1，则表示滤波器在飞行中停止使用气压计数据。对于好的传感器数据这应该永远不会发生。下图显示了使用默认参数、最高速度为16 m/s的四旋翼飞行器获取的SH。如果此数值太高并超过1，则应增大<code>EBF_HGT_GATE</code>（高度阈值）参数。导致此数值过高的因素包括通过自动驾驶仪的气流影响气压计读数和由于传感器漂移或混叠引起的加速度计误差。<br> <img src="https://images2.imgbox.com/56/e9/Kod8CFAa_o.jpg" alt="在这里插入图片描述"><br> <strong>SMX，SMY，SMZ</strong> - 磁力计X、Y和Z方向的测量值不一致与<code>EKF_MAG_GATE</code>（磁力阈值）参数设置的限制之比。这可能偶尔超过1/2，但不应超过1。如果此数值超过1，则表示滤波器在飞行期间停止使用磁力计数据。对于好的传感器数据这应该永远不会发生。下图显示了使用默认参数的四旋翼飞行器获取的SMX、SMY和SMZ数据。如果此数值太高并且长期超过1，则表示罗盘校准或安装有问题。建议在增大<code>EKF_MAG_GATE</code>（磁力阈值）参数之前先调查罗盘误差的原因。<br> <img src="https://images2.imgbox.com/3b/07/RRNtqqV1_o.jpg" alt="在这里插入图片描述"><br> 下图显示了从车辆日志中获取的SMX、SMY和SMZ，还绘制了油门需求ThrOutR。<br> <img src="https://images2.imgbox.com/7a/80/q0poXb79_o.jpg" alt="在这里插入图片描述"><br> 每次油门加速时，大的尖峰都大于1，并且可以清楚地看到油门操作期间的大值。在此示例中，建议采取措施减小罗盘干扰量。<br> <strong>SVT</strong> - 空速测量不一致与<code>EKF_EAS_GATE</code>（预计空速阈值）参数设置的限制之比。这可能偶尔超过1/2，但应该很少超过1。如果此数值超过1，则表示滤波器在飞行中停止使用空速数据。导致此数值过高的因素包括空速校准误差、强阵风和湍流的存在以及风速的快速变化。飞行开始时，在滤波器估计风速之前，这是正常的。<br> <img src="https://images2.imgbox.com/f8/74/EjJ8eTUk_o.png" alt="在这里插入图片描述"></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/db70daa34786b9de1e9ea7319ff486f4/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Leetcode.合并两个有序数组(Java实现)</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/4a8ee0b71b2b269671754dc70e47632d/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">最新详细mysql安装和连接navicat</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>视觉SLAM十四讲 第八讲 视觉里程计2 8.5直接法 代码解析 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="视觉SLAM十四讲 第八讲 视觉里程计2 8.5直接法 代码解析" />
+<meta property="og:description" content="总体思路
+随机选取图像点
+根据选取到的点和depth图、相机内参，获取这些点的三维空间点坐标
+由三维空间点坐标，相机位姿，投影到第二幅图像的相机坐标，再由相机内参，投影到第二幅图像。
+在第二幅图像上，遍历每个投影点，并累积该投影点固定窗口半径内的误差和雅可比
+由雅可比矩阵计算Hessian矩阵和bias矩阵及代价
+由LDLT分解法，求解增量，并由增量更新位姿T21 = Sophus::SE3d::exp(update) * T21。重复4-6设定的迭代次数。
+代码
+#include &lt;opencv2/opencv.hpp&gt; #include &lt;sophus/se3.hpp&gt; #include &lt;boost/format.hpp&gt; #include &lt;pangolin/pangolin.h&gt; using namespace std; typedef vector&lt;Eigen::Vector2d, Eigen::aligned_allocator&lt;Eigen::Vector2d&gt;&gt; VecVector2d; // Camera intrinsics double fx = 718.856, fy = 718.856, cx = 607.1928, cy = 185.2157; // baseline double baseline = 0.573; // paths string left_file = &#34;./left.png&#34;; string disparity_file = &#34;./disparity.png&#34;; boost::format fmt_others(&#34;./%06d.png&#34;); // other files // useful typedefs typedef Eigen::Matrix&lt;double, 6, 6&gt; Matrix6d; typedef Eigen::Matrix&lt;double, 2, 6&gt; Matrix26d; typedef Eigen::Matrix&lt;double, 6, 1&gt; Vector6d; /// class for accumulator jacobians in parallel class JacobianAccumulator { public: JacobianAccumulator( const cv::Mat &amp;img1_, const cv::Mat &amp;img2_, const VecVector2d &amp;px_ref_, const vector&lt;double&gt; depth_ref_, Sophus::SE3d &amp;T21_) : img1(img1_), img2(img2_), px_ref(px_ref_), depth_ref(depth_ref_), T21(T21_) { projection = VecVector2d(px_ref." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/57d06ae1a37bab99435dbde67e2bc8d8/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-03-24T21:19:50+08:00" />
+<meta property="article:modified_time" content="2020-03-24T21:19:50+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">视觉SLAM十四讲 第八讲 视觉里程计2 8.5直接法 代码解析</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>总体思路<br> 随机选取图像点<br> 根据选取到的点和depth图、相机内参，获取这些点的三维空间点坐标<br> 由三维空间点坐标，相机位姿，投影到第二幅图像的相机坐标，再由相机内参，投影到第二幅图像。<br> 在第二幅图像上，遍历每个投影点，并累积该投影点固定窗口半径内的误差和雅可比<br> 由雅可比矩阵计算Hessian矩阵和bias矩阵及代价<br> 由LDLT分解法，求解增量，并由增量更新位姿T21 = Sophus::SE3d::exp(update) * T21。重复4-6设定的迭代次数。<br> 代码</p> 
+<pre><code class="prism language-cpp"><span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">&lt;opencv2/opencv.hpp&gt;</span></span>
+<span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">&lt;sophus/se3.hpp&gt;</span></span>
+<span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">&lt;boost/format.hpp&gt;</span></span>
+<span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">&lt;pangolin/pangolin.h&gt;</span></span>
+
+<span class="token keyword">using</span> <span class="token keyword">namespace</span> std<span class="token punctuation">;</span>
+
+<span class="token keyword">typedef</span> vector<span class="token operator">&lt;</span>Eigen<span class="token operator">::</span>Vector2d<span class="token punctuation">,</span> Eigen<span class="token operator">::</span>aligned_allocator<span class="token operator">&lt;</span>Eigen<span class="token operator">::</span>Vector2d<span class="token operator">&gt;&gt;</span> VecVector2d<span class="token punctuation">;</span>
+
+<span class="token comment">// Camera intrinsics</span>
+<span class="token keyword">double</span> fx <span class="token operator">=</span> <span class="token number">718.856</span><span class="token punctuation">,</span> fy <span class="token operator">=</span> <span class="token number">718.856</span><span class="token punctuation">,</span> cx <span class="token operator">=</span> <span class="token number">607.1928</span><span class="token punctuation">,</span> cy <span class="token operator">=</span> <span class="token number">185.2157</span><span class="token punctuation">;</span>
+<span class="token comment">// baseline</span>
+<span class="token keyword">double</span> baseline <span class="token operator">=</span> <span class="token number">0.573</span><span class="token punctuation">;</span>
+<span class="token comment">// paths</span>
+string left_file <span class="token operator">=</span> <span class="token string">"./left.png"</span><span class="token punctuation">;</span>
+string disparity_file <span class="token operator">=</span> <span class="token string">"./disparity.png"</span><span class="token punctuation">;</span>
+boost<span class="token operator">::</span>format <span class="token function">fmt_others</span><span class="token punctuation">(</span><span class="token string">"./%06d.png"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>    <span class="token comment">// other files</span>
+
+<span class="token comment">// useful typedefs</span>
+<span class="token keyword">typedef</span> Eigen<span class="token operator">::</span>Matrix<span class="token operator">&lt;</span><span class="token keyword">double</span><span class="token punctuation">,</span> <span class="token number">6</span><span class="token punctuation">,</span> <span class="token number">6</span><span class="token operator">&gt;</span> Matrix6d<span class="token punctuation">;</span>
+<span class="token keyword">typedef</span> Eigen<span class="token operator">::</span>Matrix<span class="token operator">&lt;</span><span class="token keyword">double</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">6</span><span class="token operator">&gt;</span> Matrix26d<span class="token punctuation">;</span>
+<span class="token keyword">typedef</span> Eigen<span class="token operator">::</span>Matrix<span class="token operator">&lt;</span><span class="token keyword">double</span><span class="token punctuation">,</span> <span class="token number">6</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token operator">&gt;</span> Vector6d<span class="token punctuation">;</span>
+
+<span class="token comment">/// class for accumulator jacobians in parallel</span>
+<span class="token keyword">class</span> <span class="token class-name">JacobianAccumulator</span> <span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+    <span class="token function">JacobianAccumulator</span><span class="token punctuation">(</span>
+        <span class="token keyword">const</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>img1_<span class="token punctuation">,</span>
+        <span class="token keyword">const</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>img2_<span class="token punctuation">,</span>
+        <span class="token keyword">const</span> VecVector2d <span class="token operator">&amp;</span>px_ref_<span class="token punctuation">,</span>
+        <span class="token keyword">const</span> vector<span class="token operator">&lt;</span><span class="token keyword">double</span><span class="token operator">&gt;</span> depth_ref_<span class="token punctuation">,</span>
+        Sophus<span class="token operator">::</span>SE3d <span class="token operator">&amp;</span>T21_<span class="token punctuation">)</span> <span class="token operator">:</span>
+        <span class="token function">img1</span><span class="token punctuation">(</span>img1_<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">img2</span><span class="token punctuation">(</span>img2_<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">px_ref</span><span class="token punctuation">(</span>px_ref_<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">depth_ref</span><span class="token punctuation">(</span>depth_ref_<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">T21</span><span class="token punctuation">(</span>T21_<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        projection <span class="token operator">=</span> <span class="token function">VecVector2d</span><span class="token punctuation">(</span>px_ref<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> Eigen<span class="token operator">::</span><span class="token function">Vector2d</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">/// accumulate jacobians in a range</span>
+    <span class="token keyword">void</span> <span class="token function">accumulate_jacobian</span><span class="token punctuation">(</span><span class="token keyword">const</span> cv<span class="token operator">::</span>Range <span class="token operator">&amp;</span>range<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">/// get hessian matrix</span>
+    Matrix6d <span class="token function">hessian</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">const</span> <span class="token punctuation">{<!-- --></span> <span class="token keyword">return</span> H<span class="token punctuation">;</span> <span class="token punctuation">}</span>
+
+    <span class="token comment">/// get bias</span>
+    Vector6d <span class="token function">bias</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">const</span> <span class="token punctuation">{<!-- --></span> <span class="token keyword">return</span> b<span class="token punctuation">;</span> <span class="token punctuation">}</span>
+
+    <span class="token comment">/// get total cost</span>
+    <span class="token keyword">double</span> <span class="token function">cost_func</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">const</span> <span class="token punctuation">{<!-- --></span> <span class="token keyword">return</span> cost<span class="token punctuation">;</span> <span class="token punctuation">}</span>
+
+    <span class="token comment">/// get projected points</span>
+    VecVector2d <span class="token function">projected_points</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">const</span> <span class="token punctuation">{<!-- --></span> <span class="token keyword">return</span> projection<span class="token punctuation">;</span> <span class="token punctuation">}</span>
+
+    <span class="token comment">/// reset h, b, cost to zero</span>
+    <span class="token keyword">void</span> <span class="token function">reset</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        H <span class="token operator">=</span> Matrix6d<span class="token operator">::</span><span class="token function">Zero</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        b <span class="token operator">=</span> Vector6d<span class="token operator">::</span><span class="token function">Zero</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        cost <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+<span class="token keyword">private</span><span class="token operator">:</span>
+    <span class="token keyword">const</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>img1<span class="token punctuation">;</span>
+    <span class="token keyword">const</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>img2<span class="token punctuation">;</span>
+    <span class="token keyword">const</span> VecVector2d <span class="token operator">&amp;</span>px_ref<span class="token punctuation">;</span>
+    <span class="token keyword">const</span> vector<span class="token operator">&lt;</span><span class="token keyword">double</span><span class="token operator">&gt;</span> depth_ref<span class="token punctuation">;</span>
+    Sophus<span class="token operator">::</span>SE3d <span class="token operator">&amp;</span>T21<span class="token punctuation">;</span>
+    VecVector2d projection<span class="token punctuation">;</span> <span class="token comment">// projected points</span>
+
+    std<span class="token operator">::</span>mutex hessian_mutex<span class="token punctuation">;</span>
+    Matrix6d H <span class="token operator">=</span> Matrix6d<span class="token operator">::</span><span class="token function">Zero</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    Vector6d b <span class="token operator">=</span> Vector6d<span class="token operator">::</span><span class="token function">Zero</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">double</span> cost <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token comment">/**
+ * pose estimation using direct method
+ * @param img1
+ * @param img2
+ * @param px_ref
+ * @param depth_ref
+ * @param T21
+ */</span>
+<span class="token keyword">void</span> <span class="token function">DirectPoseEstimationMultiLayer</span><span class="token punctuation">(</span>
+    <span class="token keyword">const</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>img1<span class="token punctuation">,</span>
+    <span class="token keyword">const</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>img2<span class="token punctuation">,</span>
+    <span class="token keyword">const</span> VecVector2d <span class="token operator">&amp;</span>px_ref<span class="token punctuation">,</span>
+    <span class="token keyword">const</span> vector<span class="token operator">&lt;</span><span class="token keyword">double</span><span class="token operator">&gt;</span> depth_ref<span class="token punctuation">,</span>
+    Sophus<span class="token operator">::</span>SE3d <span class="token operator">&amp;</span>T21
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">/**
+ * pose estimation using direct method
+ * @param img1
+ * @param img2
+ * @param px_ref
+ * @param depth_ref
+ * @param T21
+ */</span>
+<span class="token keyword">void</span> <span class="token function">DirectPoseEstimationSingleLayer</span><span class="token punctuation">(</span>
+    <span class="token keyword">const</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>img1<span class="token punctuation">,</span>
+    <span class="token keyword">const</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>img2<span class="token punctuation">,</span>
+    <span class="token keyword">const</span> VecVector2d <span class="token operator">&amp;</span>px_ref<span class="token punctuation">,</span>
+    <span class="token keyword">const</span> vector<span class="token operator">&lt;</span><span class="token keyword">double</span><span class="token operator">&gt;</span> depth_ref<span class="token punctuation">,</span>
+    Sophus<span class="token operator">::</span>SE3d <span class="token operator">&amp;</span>T21
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">// bilinear interpolation</span>
+<span class="token keyword">inline</span> <span class="token keyword">float</span> <span class="token function">GetPixelValue</span><span class="token punctuation">(</span><span class="token keyword">const</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>img<span class="token punctuation">,</span> <span class="token keyword">float</span> x<span class="token punctuation">,</span> <span class="token keyword">float</span> y<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// boundary check</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>x <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> x <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>y <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> y <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>x <span class="token operator">&gt;=</span> img<span class="token punctuation">.</span>cols<span class="token punctuation">)</span> x <span class="token operator">=</span> img<span class="token punctuation">.</span>cols <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>y <span class="token operator">&gt;=</span> img<span class="token punctuation">.</span>rows<span class="token punctuation">)</span> y <span class="token operator">=</span> img<span class="token punctuation">.</span>rows <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">;</span>
+    uchar <span class="token operator">*</span>data <span class="token operator">=</span> <span class="token operator">&amp;</span>img<span class="token punctuation">.</span>data<span class="token punctuation">[</span><span class="token keyword">int</span><span class="token punctuation">(</span>y<span class="token punctuation">)</span> <span class="token operator">*</span> img<span class="token punctuation">.</span>step <span class="token operator">+</span> <span class="token keyword">int</span><span class="token punctuation">(</span>x<span class="token punctuation">)</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+    <span class="token keyword">float</span> xx <span class="token operator">=</span> x <span class="token operator">-</span> <span class="token function">floor</span><span class="token punctuation">(</span>x<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">float</span> yy <span class="token operator">=</span> y <span class="token operator">-</span> <span class="token function">floor</span><span class="token punctuation">(</span>y<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> <span class="token keyword">float</span><span class="token punctuation">(</span>
+        <span class="token punctuation">(</span><span class="token number">1</span> <span class="token operator">-</span> xx<span class="token punctuation">)</span> <span class="token operator">*</span> <span class="token punctuation">(</span><span class="token number">1</span> <span class="token operator">-</span> yy<span class="token punctuation">)</span> <span class="token operator">*</span> data<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">+</span>
+        xx <span class="token operator">*</span> <span class="token punctuation">(</span><span class="token number">1</span> <span class="token operator">-</span> yy<span class="token punctuation">)</span> <span class="token operator">*</span> data<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">+</span>
+        <span class="token punctuation">(</span><span class="token number">1</span> <span class="token operator">-</span> xx<span class="token punctuation">)</span> <span class="token operator">*</span> yy <span class="token operator">*</span> data<span class="token punctuation">[</span>img<span class="token punctuation">.</span>step<span class="token punctuation">]</span> <span class="token operator">+</span>
+        xx <span class="token operator">*</span> yy <span class="token operator">*</span> data<span class="token punctuation">[</span>img<span class="token punctuation">.</span>step <span class="token operator">+</span> <span class="token number">1</span><span class="token punctuation">]</span>
+    <span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token keyword">int</span> argc<span class="token punctuation">,</span> <span class="token keyword">char</span> <span class="token operator">*</span><span class="token operator">*</span>argv<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+    cv<span class="token operator">::</span>Mat left_img <span class="token operator">=</span> cv<span class="token operator">::</span><span class="token function">imread</span><span class="token punctuation">(</span>left_file<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    cv<span class="token operator">::</span>Mat disparity_img <span class="token operator">=</span> cv<span class="token operator">::</span><span class="token function">imread</span><span class="token punctuation">(</span>disparity_file<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// let's randomly pick pixels in the first image and generate some 3d points in the first image's frame</span>
+    cv<span class="token operator">::</span>RNG rng<span class="token punctuation">;</span>
+    <span class="token keyword">int</span> nPoints <span class="token operator">=</span> <span class="token number">2000</span><span class="token punctuation">;</span>
+    <span class="token keyword">int</span> boarder <span class="token operator">=</span> <span class="token number">20</span><span class="token punctuation">;</span>
+    VecVector2d pixels_ref<span class="token punctuation">;</span>
+    vector<span class="token operator">&lt;</span><span class="token keyword">double</span><span class="token operator">&gt;</span> depth_ref<span class="token punctuation">;</span>
+
+    <span class="token comment">// generate pixels in ref and load depth data</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> nPoints<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">int</span> x <span class="token operator">=</span> rng<span class="token punctuation">.</span><span class="token function">uniform</span><span class="token punctuation">(</span>boarder<span class="token punctuation">,</span> left_img<span class="token punctuation">.</span>cols <span class="token operator">-</span> boarder<span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">// don't pick pixels close to boarder</span>
+        <span class="token keyword">int</span> y <span class="token operator">=</span> rng<span class="token punctuation">.</span><span class="token function">uniform</span><span class="token punctuation">(</span>boarder<span class="token punctuation">,</span> left_img<span class="token punctuation">.</span>rows <span class="token operator">-</span> boarder<span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">// don't pick pixels close to boarder</span>
+        <span class="token keyword">int</span> disparity <span class="token operator">=</span> disparity_img<span class="token punctuation">.</span>at<span class="token operator">&lt;</span>uchar<span class="token operator">&gt;</span><span class="token punctuation">(</span>y<span class="token punctuation">,</span> x<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">double</span> depth <span class="token operator">=</span> fx <span class="token operator">*</span> baseline <span class="token operator">/</span> disparity<span class="token punctuation">;</span> <span class="token comment">// you know this is disparity to depth</span>
+        depth_ref<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span>depth<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        pixels_ref<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span>Eigen<span class="token operator">::</span><span class="token function">Vector2d</span><span class="token punctuation">(</span>x<span class="token punctuation">,</span> y<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// estimates 01~05.png's pose using this information</span>
+    Sophus<span class="token operator">::</span>SE3d T_cur_ref<span class="token punctuation">;</span>
+
+    <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> i <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> <span class="token number">6</span><span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>  <span class="token comment">// 1~10</span>
+        cv<span class="token operator">::</span>Mat img <span class="token operator">=</span> cv<span class="token operator">::</span><span class="token function">imread</span><span class="token punctuation">(</span><span class="token punctuation">(</span>fmt_others <span class="token operator">%</span> i<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// try single layer by uncomment this line</span>
+        <span class="token comment">// DirectPoseEstimationSingleLayer(left_img, img, pixels_ref, depth_ref, T_cur_ref);</span>
+        <span class="token function">DirectPoseEstimationMultiLayer</span><span class="token punctuation">(</span>left_img<span class="token punctuation">,</span> img<span class="token punctuation">,</span> pixels_ref<span class="token punctuation">,</span> depth_ref<span class="token punctuation">,</span> T_cur_ref<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token function">DirectPoseEstimationSingleLayer</span><span class="token punctuation">(</span>
+    <span class="token keyword">const</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>img1<span class="token punctuation">,</span>
+    <span class="token keyword">const</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>img2<span class="token punctuation">,</span>
+    <span class="token keyword">const</span> VecVector2d <span class="token operator">&amp;</span>px_ref<span class="token punctuation">,</span>
+    <span class="token keyword">const</span> vector<span class="token operator">&lt;</span><span class="token keyword">double</span><span class="token operator">&gt;</span> depth_ref<span class="token punctuation">,</span>
+    Sophus<span class="token operator">::</span>SE3d <span class="token operator">&amp;</span>T21<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">const</span> <span class="token keyword">int</span> iterations <span class="token operator">=</span> <span class="token number">10</span><span class="token punctuation">;</span>
+    <span class="token keyword">double</span> cost <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">,</span> lastCost <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token keyword">auto</span> t1 <span class="token operator">=</span> chrono<span class="token operator">::</span>steady_clock<span class="token operator">::</span><span class="token function">now</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    JacobianAccumulator <span class="token function">jaco_accu</span><span class="token punctuation">(</span>img1<span class="token punctuation">,</span> img2<span class="token punctuation">,</span> px_ref<span class="token punctuation">,</span> depth_ref<span class="token punctuation">,</span> T21<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> iter <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> iter <span class="token operator">&lt;</span> iterations<span class="token punctuation">;</span> iter<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        jaco_accu<span class="token punctuation">.</span><span class="token function">reset</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        cv<span class="token operator">::</span><span class="token function">parallel_for_</span><span class="token punctuation">(</span>cv<span class="token operator">::</span><span class="token function">Range</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span> px_ref<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                          std<span class="token operator">::</span><span class="token function">bind</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>JacobianAccumulator<span class="token operator">::</span>accumulate_jacobian<span class="token punctuation">,</span> <span class="token operator">&amp;</span>jaco_accu<span class="token punctuation">,</span> std<span class="token operator">::</span>placeholders<span class="token operator">::</span>_1<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        Matrix6d H <span class="token operator">=</span> jaco_accu<span class="token punctuation">.</span><span class="token function">hessian</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        Vector6d b <span class="token operator">=</span> jaco_accu<span class="token punctuation">.</span><span class="token function">bias</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// solve update and put it into estimation</span>
+        Vector6d update <span class="token operator">=</span> H<span class="token punctuation">.</span><span class="token function">ldlt</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">solve</span><span class="token punctuation">(</span>b<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token punctuation">;</span>
+        T21 <span class="token operator">=</span> Sophus<span class="token operator">::</span>SE3d<span class="token operator">::</span><span class="token function">exp</span><span class="token punctuation">(</span>update<span class="token punctuation">)</span> <span class="token operator">*</span> T21<span class="token punctuation">;</span>
+        cost <span class="token operator">=</span> jaco_accu<span class="token punctuation">.</span><span class="token function">cost_func</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>std<span class="token operator">::</span><span class="token function">isnan</span><span class="token punctuation">(</span>update<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// sometimes occurred when we have a black or white patch and H is irreversible</span>
+            cout <span class="token operator">&lt;&lt;</span> <span class="token string">"update is nan"</span> <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+            <span class="token keyword">break</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>iter <span class="token operator">&gt;</span> <span class="token number">0</span> <span class="token operator">&amp;&amp;</span> cost <span class="token operator">&gt;</span> lastCost<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            cout <span class="token operator">&lt;&lt;</span> <span class="token string">"cost increased: "</span> <span class="token operator">&lt;&lt;</span> cost <span class="token operator">&lt;&lt;</span> <span class="token string">", "</span> <span class="token operator">&lt;&lt;</span> lastCost <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+            <span class="token keyword">break</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>update<span class="token punctuation">.</span><span class="token function">norm</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">1e-3</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// converge</span>
+            <span class="token keyword">break</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        lastCost <span class="token operator">=</span> cost<span class="token punctuation">;</span>
+        cout <span class="token operator">&lt;&lt;</span> <span class="token string">"iteration: "</span> <span class="token operator">&lt;&lt;</span> iter <span class="token operator">&lt;&lt;</span> <span class="token string">", cost: "</span> <span class="token operator">&lt;&lt;</span> cost <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    cout <span class="token operator">&lt;&lt;</span> <span class="token string">"T21 = \n"</span> <span class="token operator">&lt;&lt;</span> T21<span class="token punctuation">.</span><span class="token function">matrix</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+    <span class="token keyword">auto</span> t2 <span class="token operator">=</span> chrono<span class="token operator">::</span>steady_clock<span class="token operator">::</span><span class="token function">now</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">auto</span> time_used <span class="token operator">=</span> chrono<span class="token operator">::</span>duration_cast<span class="token operator">&lt;</span>chrono<span class="token operator">::</span>duration<span class="token operator">&lt;</span><span class="token keyword">double</span><span class="token operator">&gt;&gt;</span><span class="token punctuation">(</span>t2 <span class="token operator">-</span> t1<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    cout <span class="token operator">&lt;&lt;</span> <span class="token string">"direct method for single layer: "</span> <span class="token operator">&lt;&lt;</span> time_used<span class="token punctuation">.</span><span class="token function">count</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+
+    <span class="token comment">// plot the projected pixels here</span>
+    cv<span class="token operator">::</span>Mat img2_show<span class="token punctuation">;</span>
+    cv<span class="token operator">::</span><span class="token function">cvtColor</span><span class="token punctuation">(</span>img2<span class="token punctuation">,</span> img2_show<span class="token punctuation">,</span> CV_GRAY2BGR<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    VecVector2d projection <span class="token operator">=</span> jaco_accu<span class="token punctuation">.</span><span class="token function">projected_points</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span>size_t i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> px_ref<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token operator">++</span>i<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">auto</span> p_ref <span class="token operator">=</span> px_ref<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">;</span>
+        <span class="token keyword">auto</span> p_cur <span class="token operator">=</span> projection<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>p_cur<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">&gt;</span> <span class="token number">0</span> <span class="token operator">&amp;&amp;</span> p_cur<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">&gt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            cv<span class="token operator">::</span><span class="token function">circle</span><span class="token punctuation">(</span>img2_show<span class="token punctuation">,</span> cv<span class="token operator">::</span><span class="token function">Point2f</span><span class="token punctuation">(</span>p_cur<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">,</span> p_cur<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">,</span> cv<span class="token operator">::</span><span class="token function">Scalar</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">250</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            cv<span class="token operator">::</span><span class="token function">line</span><span class="token punctuation">(</span>img2_show<span class="token punctuation">,</span> cv<span class="token operator">::</span><span class="token function">Point2f</span><span class="token punctuation">(</span>p_ref<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">,</span> p_ref<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">,</span> cv<span class="token operator">::</span><span class="token function">Point2f</span><span class="token punctuation">(</span>p_cur<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">,</span> p_cur<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                     cv<span class="token operator">::</span><span class="token function">Scalar</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">250</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+    cv<span class="token operator">::</span><span class="token function">imshow</span><span class="token punctuation">(</span><span class="token string">"current"</span><span class="token punctuation">,</span> img2_show<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    cv<span class="token operator">::</span><span class="token function">waitKey</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> JacobianAccumulator<span class="token operator">::</span><span class="token function">accumulate_jacobian</span><span class="token punctuation">(</span><span class="token keyword">const</span> cv<span class="token operator">::</span>Range <span class="token operator">&amp;</span>range<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token comment">// parameters</span>
+    <span class="token keyword">const</span> <span class="token keyword">int</span> half_patch_size <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token keyword">int</span> cnt_good <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    Matrix6d hessian <span class="token operator">=</span> Matrix6d<span class="token operator">::</span><span class="token function">Zero</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    Vector6d bias <span class="token operator">=</span> Vector6d<span class="token operator">::</span><span class="token function">Zero</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">double</span> cost_tmp <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">for</span> <span class="token punctuation">(</span>size_t i <span class="token operator">=</span> range<span class="token punctuation">.</span>start<span class="token punctuation">;</span> i <span class="token operator">&lt;</span> range<span class="token punctuation">.</span>end<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+        <span class="token comment">// compute the projection in the second image</span>
+        Eigen<span class="token operator">::</span>Vector3d point_ref <span class="token operator">=</span>
+            depth_ref<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">*</span> Eigen<span class="token operator">::</span><span class="token function">Vector3d</span><span class="token punctuation">(</span><span class="token punctuation">(</span>px_ref<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">-</span> cx<span class="token punctuation">)</span> <span class="token operator">/</span> fx<span class="token punctuation">,</span> <span class="token punctuation">(</span>px_ref<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">-</span> cy<span class="token punctuation">)</span> <span class="token operator">/</span> fy<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        Eigen<span class="token operator">::</span>Vector3d point_cur <span class="token operator">=</span> T21 <span class="token operator">*</span> point_ref<span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>point_cur<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span>   <span class="token comment">// depth invalid</span>
+            <span class="token keyword">continue</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">float</span> u <span class="token operator">=</span> fx <span class="token operator">*</span> point_cur<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">/</span> point_cur<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span> <span class="token operator">+</span> cx<span class="token punctuation">,</span> v <span class="token operator">=</span> fy <span class="token operator">*</span> point_cur<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">/</span> point_cur<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span> <span class="token operator">+</span> cy<span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>u <span class="token operator">&lt;</span> half_patch_size <span class="token operator">||</span> u <span class="token operator">&gt;</span> img2<span class="token punctuation">.</span>cols <span class="token operator">-</span> half_patch_size <span class="token operator">||</span> v <span class="token operator">&lt;</span> half_patch_size <span class="token operator">||</span>
+            v <span class="token operator">&gt;</span> img2<span class="token punctuation">.</span>rows <span class="token operator">-</span> half_patch_size<span class="token punctuation">)</span>
+            <span class="token keyword">continue</span><span class="token punctuation">;</span>
+
+        projection<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">=</span> Eigen<span class="token operator">::</span><span class="token function">Vector2d</span><span class="token punctuation">(</span>u<span class="token punctuation">,</span> v<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">double</span> X <span class="token operator">=</span> point_cur<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">,</span> Y <span class="token operator">=</span> point_cur<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">,</span> Z <span class="token operator">=</span> point_cur<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span><span class="token punctuation">,</span>
+            Z2 <span class="token operator">=</span> Z <span class="token operator">*</span> Z<span class="token punctuation">,</span> Z_inv <span class="token operator">=</span> <span class="token number">1.0</span> <span class="token operator">/</span> Z<span class="token punctuation">,</span> Z2_inv <span class="token operator">=</span> Z_inv <span class="token operator">*</span> Z_inv<span class="token punctuation">;</span>
+        cnt_good<span class="token operator">++</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// and compute error and jacobian</span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> x <span class="token operator">=</span> <span class="token operator">-</span>half_patch_size<span class="token punctuation">;</span> x <span class="token operator">&lt;=</span> half_patch_size<span class="token punctuation">;</span> x<span class="token operator">++</span><span class="token punctuation">)</span>
+            <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> y <span class="token operator">=</span> <span class="token operator">-</span>half_patch_size<span class="token punctuation">;</span> y <span class="token operator">&lt;=</span> half_patch_size<span class="token punctuation">;</span> y<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+                <span class="token keyword">double</span> error <span class="token operator">=</span> <span class="token function">GetPixelValue</span><span class="token punctuation">(</span>img1<span class="token punctuation">,</span> px_ref<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">+</span> x<span class="token punctuation">,</span> px_ref<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">+</span> y<span class="token punctuation">)</span> <span class="token operator">-</span>
+                               <span class="token function">GetPixelValue</span><span class="token punctuation">(</span>img2<span class="token punctuation">,</span> u <span class="token operator">+</span> x<span class="token punctuation">,</span> v <span class="token operator">+</span> y<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                Matrix26d J_pixel_xi<span class="token punctuation">;</span>
+                Eigen<span class="token operator">::</span>Vector2d J_img_pixel<span class="token punctuation">;</span>
+
+                <span class="token function">J_pixel_xi</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token operator">=</span> fx <span class="token operator">*</span> Z_inv<span class="token punctuation">;</span>
+                <span class="token function">J_pixel_xi</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+                <span class="token function">J_pixel_xi</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span> <span class="token operator">=</span> <span class="token operator">-</span>fx <span class="token operator">*</span> X <span class="token operator">*</span> Z2_inv<span class="token punctuation">;</span>
+                <span class="token function">J_pixel_xi</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">)</span> <span class="token operator">=</span> <span class="token operator">-</span>fx <span class="token operator">*</span> X <span class="token operator">*</span> Y <span class="token operator">*</span> Z2_inv<span class="token punctuation">;</span>
+                <span class="token function">J_pixel_xi</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">4</span><span class="token punctuation">)</span> <span class="token operator">=</span> fx <span class="token operator">+</span> fx <span class="token operator">*</span> X <span class="token operator">*</span> X <span class="token operator">*</span> Z2_inv<span class="token punctuation">;</span>
+                <span class="token function">J_pixel_xi</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">5</span><span class="token punctuation">)</span> <span class="token operator">=</span> <span class="token operator">-</span>fx <span class="token operator">*</span> Y <span class="token operator">*</span> Z_inv<span class="token punctuation">;</span>
+
+                <span class="token function">J_pixel_xi</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+                <span class="token function">J_pixel_xi</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token operator">=</span> fy <span class="token operator">*</span> Z_inv<span class="token punctuation">;</span>
+                <span class="token function">J_pixel_xi</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span> <span class="token operator">=</span> <span class="token operator">-</span>fy <span class="token operator">*</span> Y <span class="token operator">*</span> Z2_inv<span class="token punctuation">;</span>
+                <span class="token function">J_pixel_xi</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">)</span> <span class="token operator">=</span> <span class="token operator">-</span>fy <span class="token operator">-</span> fy <span class="token operator">*</span> Y <span class="token operator">*</span> Y <span class="token operator">*</span> Z2_inv<span class="token punctuation">;</span>
+                <span class="token function">J_pixel_xi</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">4</span><span class="token punctuation">)</span> <span class="token operator">=</span> fy <span class="token operator">*</span> X <span class="token operator">*</span> Y <span class="token operator">*</span> Z2_inv<span class="token punctuation">;</span>
+                <span class="token function">J_pixel_xi</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">5</span><span class="token punctuation">)</span> <span class="token operator">=</span> fy <span class="token operator">*</span> X <span class="token operator">*</span> Z_inv<span class="token punctuation">;</span>
+
+                J_img_pixel <span class="token operator">=</span> Eigen<span class="token operator">::</span><span class="token function">Vector2d</span><span class="token punctuation">(</span>
+                    <span class="token number">0.5</span> <span class="token operator">*</span> <span class="token punctuation">(</span><span class="token function">GetPixelValue</span><span class="token punctuation">(</span>img2<span class="token punctuation">,</span> u <span class="token operator">+</span> <span class="token number">1</span> <span class="token operator">+</span> x<span class="token punctuation">,</span> v <span class="token operator">+</span> y<span class="token punctuation">)</span> <span class="token operator">-</span> <span class="token function">GetPixelValue</span><span class="token punctuation">(</span>img2<span class="token punctuation">,</span> u <span class="token operator">-</span> <span class="token number">1</span> <span class="token operator">+</span> x<span class="token punctuation">,</span> v <span class="token operator">+</span> y<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                    <span class="token number">0.5</span> <span class="token operator">*</span> <span class="token punctuation">(</span><span class="token function">GetPixelValue</span><span class="token punctuation">(</span>img2<span class="token punctuation">,</span> u <span class="token operator">+</span> x<span class="token punctuation">,</span> v <span class="token operator">+</span> <span class="token number">1</span> <span class="token operator">+</span> y<span class="token punctuation">)</span> <span class="token operator">-</span> <span class="token function">GetPixelValue</span><span class="token punctuation">(</span>img2<span class="token punctuation">,</span> u <span class="token operator">+</span> x<span class="token punctuation">,</span> v <span class="token operator">-</span> <span class="token number">1</span> <span class="token operator">+</span> y<span class="token punctuation">)</span><span class="token punctuation">)</span>
+                <span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+                <span class="token comment">// total jacobian</span>
+                Vector6d J <span class="token operator">=</span> <span class="token operator">-</span><span class="token number">1.0</span> <span class="token operator">*</span> <span class="token punctuation">(</span>J_img_pixel<span class="token punctuation">.</span><span class="token function">transpose</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">*</span> J_pixel_xi<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">transpose</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+                hessian <span class="token operator">+</span><span class="token operator">=</span> J <span class="token operator">*</span> J<span class="token punctuation">.</span><span class="token function">transpose</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                bias <span class="token operator">+</span><span class="token operator">=</span> <span class="token operator">-</span>error <span class="token operator">*</span> J<span class="token punctuation">;</span>
+                cost_tmp <span class="token operator">+</span><span class="token operator">=</span> error <span class="token operator">*</span> error<span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>cnt_good<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// set hessian, bias and cost</span>
+        unique_lock<span class="token operator">&lt;</span>mutex<span class="token operator">&gt;</span> <span class="token function">lck</span><span class="token punctuation">(</span>hessian_mutex<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        H <span class="token operator">+</span><span class="token operator">=</span> hessian<span class="token punctuation">;</span>
+        b <span class="token operator">+</span><span class="token operator">=</span> bias<span class="token punctuation">;</span>
+        cost <span class="token operator">+</span><span class="token operator">=</span> cost_tmp <span class="token operator">/</span> cnt_good<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token function">DirectPoseEstimationMultiLayer</span><span class="token punctuation">(</span>
+    <span class="token keyword">const</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>img1<span class="token punctuation">,</span>
+    <span class="token keyword">const</span> cv<span class="token operator">::</span>Mat <span class="token operator">&amp;</span>img2<span class="token punctuation">,</span>
+    <span class="token keyword">const</span> VecVector2d <span class="token operator">&amp;</span>px_ref<span class="token punctuation">,</span>
+    <span class="token keyword">const</span> vector<span class="token operator">&lt;</span><span class="token keyword">double</span><span class="token operator">&gt;</span> depth_ref<span class="token punctuation">,</span>
+    Sophus<span class="token operator">::</span>SE3d <span class="token operator">&amp;</span>T21<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token comment">// parameters</span>
+    <span class="token keyword">int</span> pyramids <span class="token operator">=</span> <span class="token number">4</span><span class="token punctuation">;</span>
+    <span class="token keyword">double</span> pyramid_scale <span class="token operator">=</span> <span class="token number">0.5</span><span class="token punctuation">;</span>
+    <span class="token keyword">double</span> scales<span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token number">1.0</span><span class="token punctuation">,</span> <span class="token number">0.5</span><span class="token punctuation">,</span> <span class="token number">0.25</span><span class="token punctuation">,</span> <span class="token number">0.125</span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// create pyramids</span>
+    vector<span class="token operator">&lt;</span>cv<span class="token operator">::</span>Mat<span class="token operator">&gt;</span> pyr1<span class="token punctuation">,</span> pyr2<span class="token punctuation">;</span> <span class="token comment">// image pyramids</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> pyramids<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>i <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            pyr1<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span>img1<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            pyr2<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span>img2<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            cv<span class="token operator">::</span>Mat img1_pyr<span class="token punctuation">,</span> img2_pyr<span class="token punctuation">;</span>
+            cv<span class="token operator">::</span><span class="token function">resize</span><span class="token punctuation">(</span>pyr1<span class="token punctuation">[</span>i <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">,</span> img1_pyr<span class="token punctuation">,</span>
+                       cv<span class="token operator">::</span><span class="token function">Size</span><span class="token punctuation">(</span>pyr1<span class="token punctuation">[</span>i <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">.</span>cols <span class="token operator">*</span> pyramid_scale<span class="token punctuation">,</span> pyr1<span class="token punctuation">[</span>i <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">.</span>rows <span class="token operator">*</span> pyramid_scale<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            cv<span class="token operator">::</span><span class="token function">resize</span><span class="token punctuation">(</span>pyr2<span class="token punctuation">[</span>i <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">,</span> img2_pyr<span class="token punctuation">,</span>
+                       cv<span class="token operator">::</span><span class="token function">Size</span><span class="token punctuation">(</span>pyr2<span class="token punctuation">[</span>i <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">.</span>cols <span class="token operator">*</span> pyramid_scale<span class="token punctuation">,</span> pyr2<span class="token punctuation">[</span>i <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">.</span>rows <span class="token operator">*</span> pyramid_scale<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            pyr1<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span>img1_pyr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            pyr2<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span>img2_pyr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">double</span> fxG <span class="token operator">=</span> fx<span class="token punctuation">,</span> fyG <span class="token operator">=</span> fy<span class="token punctuation">,</span> cxG <span class="token operator">=</span> cx<span class="token punctuation">,</span> cyG <span class="token operator">=</span> cy<span class="token punctuation">;</span>  <span class="token comment">// backup the old values</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> level <span class="token operator">=</span> pyramids <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">;</span> level <span class="token operator">&gt;=</span> <span class="token number">0</span><span class="token punctuation">;</span> level<span class="token operator">--</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        VecVector2d px_ref_pyr<span class="token punctuation">;</span> <span class="token comment">// set the keypoints in this pyramid level</span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">auto</span> <span class="token operator">&amp;</span>px<span class="token operator">:</span> px_ref<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            px_ref_pyr<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span>scales<span class="token punctuation">[</span>level<span class="token punctuation">]</span> <span class="token operator">*</span> px<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token comment">// scale fx, fy, cx, cy in different pyramid levels</span>
+        fx <span class="token operator">=</span> fxG <span class="token operator">*</span> scales<span class="token punctuation">[</span>level<span class="token punctuation">]</span><span class="token punctuation">;</span>
+        fy <span class="token operator">=</span> fyG <span class="token operator">*</span> scales<span class="token punctuation">[</span>level<span class="token punctuation">]</span><span class="token punctuation">;</span>
+        cx <span class="token operator">=</span> cxG <span class="token operator">*</span> scales<span class="token punctuation">[</span>level<span class="token punctuation">]</span><span class="token punctuation">;</span>
+        cy <span class="token operator">=</span> cyG <span class="token operator">*</span> scales<span class="token punctuation">[</span>level<span class="token punctuation">]</span><span class="token punctuation">;</span>
+        <span class="token function">DirectPoseEstimationSingleLayer</span><span class="token punctuation">(</span>pyr1<span class="token punctuation">[</span>level<span class="token punctuation">]</span><span class="token punctuation">,</span> pyr2<span class="token punctuation">[</span>level<span class="token punctuation">]</span><span class="token punctuation">,</span> px_ref_pyr<span class="token punctuation">,</span> depth_ref<span class="token punctuation">,</span> T21<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>参考文献<br> 高翔《视觉SLAM十四讲：从理论到实践》及代码</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/076a60f78d56036aa6bef7af1590317a/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">视觉SLAM十四讲 第八讲 视觉里程计2 8.3 使用LK光流 代码解析</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/86e811126c848a2dba7daa1307cd344f/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">视觉SLAM十四讲 第八讲 视觉里程计2 8.5直接法BA法 代码解析</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

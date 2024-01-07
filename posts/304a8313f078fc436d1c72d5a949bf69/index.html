@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【云原生--Kubernetes】ingress详解 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【云原生--Kubernetes】ingress详解" />
+<meta property="og:description" content="文章目录 一. Ingress简介1.1 service暴露方式1.2 ingress组件1.2.1 ingress1.2.2 ingress-controller 1.3 Ingress 工作原理 二. ingress 暴露服务的方式2.1 Deployment&#43;LoadBalancer2.2 DaemonSet&#43;HostNetwork&#43;nodeSelector2.3 Deployment&#43;NodePort 三. ingress-nginx3.1 Nginx Ingress Controller工作流程3.2 部署 nginx-ingress-controller3.3 DaemonSet&#43;HostNetwork&#43;nodeselector3.3 部署Deployment&#43;NodePort 四. ingress-nginx 反向代理4.1 ingress http代理访问虚拟主机4.2 ingress HTTPS 代理访问4.3 Nginx 重写跳转 五. 总结 一. Ingress简介 1.1 service暴露方式 service的作用体现在两个方面，对集群内部，它不断跟踪pod的变化，更新endpoint中对应pod的对象，提供了ip不断变化的pod的服务发现机制；对集群外部，他类似负载均衡器，可以在集群内外部对pod进行访问。
+在Kubernetes中，Pod的IP地址和service的ClusterIP仅可以在集群网络内部使用，对于集群外的应用是不可见的。为了使外部的应用能够访问集群内的服务，Kubernetes目前提供了以下几种方案：
+NodePort：将service暴露在节点网络上，NodePort背后就是Kube-Proxy，Kube-Proxy是沟通service网络、Pod网络和节点网络的桥梁。
+测试环境使用还行，当有几十上百的服务在集群中运行时，NodePort的端口管理就是个灾难。因为每个端口只能是一种服务，端口范围只能是 30000-32767。
+LoadBalancer：通过设置LoadBalancer映射到云服务商提供的LoadBalancer地址。这种用法仅用于在公有云服务提供商的云平台上设置 Service 的场景。受限于云平台，且通常在云平台部署LoadBalancer还需要额外的费用。
+在service提交后，Kubernetes就会调用CloudProvider在公有云上为你创建一个负载均衡服务，并且把被代理的Pod的IP地址配置给负载均衡服务做后端。
+externalIPs：service允许为其分配外部IP，如果外部IP路由到集群中一个或多个Node上，Service会被暴露给这些externalIPs。通过外部IP进入到集群的流量，将会被路由到Service的Endpoint上。
+Ingress：只需一个或者少量的公网IP和LB，即可同时将多个HTTP服务暴露到外网，七层反向代理。
+可以简单理解为service的service，它其实就是一组基于域名和URL路径，把用户的请求转发到一个或多个service的规则。
+1.2 ingress组件 1.2.1 ingress ingress是一个API对象，通过yaml文件来配置，ingress对象的作用是定义请求如何转发到service的规则，可以理解为配置模板。
+ingress通过http或https暴露集群内部service，给service提供外部URL、负载均衡、SSL/TLS能力以及基于域名的反向代理。ingress要依靠 ingress-controller 来具体实现以上功能。
+1.2.2 ingress-controller ingress-controller是具体实现反向代理及负载均衡的程序，对ingress定义的规则进行解析，根据配置的规则来实现请求转发。
+ingress-controller并不是k8s自带的组件，实际上ingress-controller只是一个统称，用户可以选择不同的ingress-controller实现，目前，由k8s维护的ingress-controller只有google云的GCE与ingress-nginx两个，其他还有很多第三方维护的ingress-controller，具体可以参考官方文档。但是不管哪一种ingress-controller，实现的机制都大同小异，只是在具体配置上有差异。
+一般来说**，ingress-controller的形式都是一个pod**，里面跑着daemon程序和反向代理程序。daemon负责不断监控集群的变化，根据 ingress对象生成配置并应用新配置到反向代理，比如ingress-nginx就是动态生成nginx配置，动态更新upstream，并在需要的时候reload程序应用新配置。为了方便，后面的例子都以k8s官方维护的ingress-nginx为例。
+Ingress-Nginx github 地址：https://github." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/304a8313f078fc436d1c72d5a949bf69/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-08-24T11:24:05+08:00" />
+<meta property="article:modified_time" content="2022-08-24T11:24:05+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【云原生--Kubernetes】ingress详解</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#_Ingress_1" rel="nofollow">一. Ingress简介</a></li><li><ul><li><a href="#11_service_2" rel="nofollow">1.1 service暴露方式</a></li><li><a href="#12_ingress_17" rel="nofollow">1.2 ingress组件</a></li><li><ul><li><a href="#121_ingress_18" rel="nofollow">1.2.1 ingress</a></li><li><a href="#122_ingresscontroller_21" rel="nofollow">1.2.2 ingress-controller</a></li></ul> 
+   </li><li><a href="#13_Ingress__31" rel="nofollow">1.3 Ingress 工作原理</a></li></ul> 
+  </li><li><a href="#_ingress__36" rel="nofollow">二. ingress 暴露服务的方式</a></li><li><ul><li><a href="#21_DeploymentLoadBalancer_37" rel="nofollow">2.1 Deployment+LoadBalancer</a></li><li><a href="#22_DaemonSetHostNetworknodeSelector_42" rel="nofollow">2.2 DaemonSet+HostNetwork+nodeSelector</a></li><li><a href="#23_DeploymentNodePort_46" rel="nofollow">2.3 Deployment+NodePort</a></li></ul> 
+  </li><li><a href="#_ingressnginx_51" rel="nofollow">三. ingress-nginx</a></li><li><ul><li><a href="#31_Nginx_Ingress_Controller_52" rel="nofollow">3.1 Nginx Ingress Controller工作流程</a></li><li><a href="#32__nginxingresscontroller_67" rel="nofollow">3.2 部署 nginx-ingress-controller</a></li><li><a href="#33_DaemonSetHostNetworknodeselector_88" rel="nofollow">3.3 DaemonSet+HostNetwork+nodeselector</a></li><li><a href="#33_DeploymentNodePort_222" rel="nofollow">3.3 部署Deployment+NodePort</a></li></ul> 
+  </li><li><a href="#_ingressnginx__333" rel="nofollow">四. ingress-nginx 反向代理</a></li><li><ul><li><a href="#41__ingress_http_334" rel="nofollow">4.1 ingress http代理访问虚拟主机</a></li><li><a href="#42_ingress__HTTPS__488" rel="nofollow">4.2 ingress HTTPS 代理访问</a></li><li><a href="#43_Nginx__566" rel="nofollow">4.3 Nginx 重写跳转</a></li></ul> 
+  </li><li><a href="#__607" rel="nofollow">五. 总结</a></li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_Ingress_1"></a>一. Ingress简介</h2> 
+<h3><a id="11_service_2"></a>1.1 service暴露方式</h3> 
+<p>service的作用体现在两个方面，对集群内部，它不断跟踪pod的变化，更新endpoint中对应pod的对象，提供了ip不断变化的pod的服务发现机制；对集群外部，他类似负载均衡器，可以在集群内外部对pod进行访问。<br> 在Kubernetes中，Pod的IP地址和service的ClusterIP仅可以在集群网络内部使用，对于集群外的应用是不可见的。为了使外部的应用能够访问集群内的服务，Kubernetes目前提供了以下几种方案：</p> 
+<ul><li> <p>NodePort：将service暴露在节点网络上，NodePort背后就是Kube-Proxy，Kube-Proxy是沟通service网络、Pod网络和节点网络的桥梁。<br> 测试环境使用还行，当有几十上百的服务在集群中运行时，NodePort的端口管理就是个灾难。因为每个端口只能是一种服务，端口范围只能是 30000-32767。</p> </li><li> <p>LoadBalancer：通过设置LoadBalancer映射到云服务商提供的LoadBalancer地址。这种用法仅用于在公有云服务提供商的云平台上设置 Service 的场景。受限于云平台，且通常在云平台部署LoadBalancer还需要额外的费用。<br> 在service提交后，Kubernetes就会调用CloudProvider在公有云上为你创建一个负载均衡服务，并且把被代理的Pod的IP地址配置给负载均衡服务做后端。</p> </li><li> <p>externalIPs：service允许为其分配外部IP，如果外部IP路由到集群中一个或多个Node上，Service会被暴露给这些externalIPs。通过外部IP进入到集群的流量，将会被路由到Service的Endpoint上。</p> </li><li> <p>Ingress：只需一个或者少量的公网IP和LB，即可同时将多个HTTP服务暴露到外网，七层反向代理。<br> 可以简单理解为service的service，它其实就是一组基于域名和URL路径，把用户的请求转发到一个或多个service的规则。</p> </li></ul> 
+<h3><a id="12_ingress_17"></a>1.2 ingress组件</h3> 
+<h4><a id="121_ingress_18"></a>1.2.1 ingress</h4> 
+<p>ingress是一个<strong>API对象</strong>，通过yaml文件来配置，ingress对象的作用是定义请求如何转发到service的规则，可以理解为配置模板。<br> ingress通过http或https暴露集群内部service，给service提供外部URL、负载均衡、SSL/TLS能力以及基于域名的反向代理。ingress要依靠 ingress-controller 来具体实现以上功能。</p> 
+<h4><a id="122_ingresscontroller_21"></a>1.2.2 ingress-controller</h4> 
+<p>ingress-controller是<strong>具体实现反向代理及负载均衡的程序</strong>，对ingress定义的规则进行解析，根据配置的规则来实现请求转发。<br> ingress-controller并不是k8s自带的组件，实际上ingress-controller只是一个统称，用户可以选择不同的ingress-controller实现，目前，<strong>由k8s维护的ingress-controller只有google云的GCE与ingress-nginx两个，其他还有很多第三方维护的ingress-controller</strong>，具体可以参考官方文档。但是不管哪一种ingress-controller，实现的机制都大同小异，只是在具体配置上有差异。<br> 一般来说**，ingress-controller的形式都是一个pod**，里面跑着daemon程序和反向代理程序。daemon负责不断监控集群的变化，根据 ingress对象生成配置并应用新配置到反向代理，比如ingress-nginx就是动态生成nginx配置，动态更新upstream，并在需要的时候reload程序应用新配置。为了方便，后面的例子都以k8s官方维护的ingress-nginx为例。</p> 
+<p>Ingress-Nginx github 地址：<a href="https://github.com/kubernetes/ingress-nginx">https://github.com/kubernetes/ingress-nginx</a><br> Ingress-Nginx 官方网站：<a href="https://kubernetes.github.io/ingress-nginx/" rel="nofollow">https://kubernetes.github.io/ingress-nginx/</a></p> 
+<p><strong>小结</strong>：ingress-controller才是负责具体转发的组件，通过各种方式将它暴露在集群入口，外部对集群的请求流量会先到 ingress-controller， 而ingress对象是用来告诉ingress-controller该如何转发请求，比如哪些域名、哪些URL要转发到哪些service等等。</p> 
+<h3><a id="13_Ingress__31"></a>1.3 Ingress 工作原理</h3> 
+<ol><li>ingress-controller通过和 kubernetes APIServer 交互，动态的去感知集群中ingress规则变化，</li><li>然后读取它，按照自定义的规则，规则就是写明了哪个域名对应哪个service，生成一段nginx配置，</li><li>再写到nginx-ingress-controller的pod里，这个ingress-controller的pod里运行着一个Nginx服务，控制器会把生成的 nginx配置写入 /etc/nginx.conf文件中，</li><li>然后reload一下使配置生效。以此达到域名区分配置和动态更新的作用。</li></ol> 
+<h2><a id="_ingress__36"></a>二. ingress 暴露服务的方式</h2> 
+<h3><a id="21_DeploymentLoadBalancer_37"></a>2.1 Deployment+LoadBalancer</h3> 
+<p>如果要把ingress部署在公有云，那用这种方式比较合适。用Deployment部署ingress-controller，创建一个 type为 LoadBalancer 的 service 关联这组 pod。大部分公有云，都会为 LoadBalancer 的 service 自动创建一个负载均衡器，通常还绑定了公网地址。 只要把域名解析指向该地址，就实现了集群服务的对外暴露</p> 
+<p>缺点：不适用于高并发、大集群</p> 
+<h3><a id="22_DaemonSetHostNetworknodeSelector_42"></a>2.2 DaemonSet+HostNetwork+nodeSelector</h3> 
+<p>用DaemonSet结合nodeselector来部署ingress-controller到特定的node上，然后使用HostNetwork直接把该pod与宿主机node的网络打通，直接使用宿主机的80/433端口就能访问服务。这时，ingress-controller所在的node机器就很类似传统架构的边缘节点，比如机房入口的nginx服务器。该方式整个请求链路最简单，性能相对NodePort模式更好。缺点是由于直接利用宿主机节点的网络和端口，一个node只能部署一个ingress-controller pod。 比较适合大并发的生产环境使用。</p> 
+<h3><a id="23_DeploymentNodePort_46"></a>2.3 Deployment+NodePort</h3> 
+<p>同样用deployment模式部署ingress-controller，并创建对应的service，但是type为NodePort。这样，ingress就会暴露在集群节点ip的特定端口上。由于nodeport暴露的端口是随机端口，一般会在前面再搭建一套负载均衡器来转发请求。该方式一般用于宿主机是相对固定的环境ip地址不变的场景。<br> NodePort方式暴露ingress虽然简单方便，但是NodePort多了一层NAT，在请求量级很大时可能对性能会有一定影响。</p> 
+<p>缺点：对后期维护难度加大，对流量转发压力也会变大，且对于高并发支持不是很友好</p> 
+<h2><a id="_ingressnginx_51"></a>三. ingress-nginx</h2> 
+<h3><a id="31_Nginx_Ingress_Controller_52"></a>3.1 Nginx Ingress Controller工作流程</h3> 
+<p>Nginx Ingress Controller容器中运行主要了Ingress Controller（下面简称IC）和Nginx两个程序，官方文档中非常详细地介绍了其工作原理：<a href="https://docs.nginx.com/nginx-ingress-controller/intro/how-nginx-ingress-controller-works/" rel="nofollow">How NGINX Ingress Controller Works</a>。下面截取了其中一张图：<br> <img src="https://images2.imgbox.com/a6/a5/vvJK62eF_o.png" alt="在这里插入图片描述"></p> 
+<p>1、IC会为每种其感兴趣的资源类型（如Ingress、VirtualServer、VirtualServerRoute及其关联资源）创建一个Informer，每个Informer包括一个存储该类型资源的store。Informer会通过Kubernetes API监视其对应资源类型的变化情况，来使store中内容保持最新。</p> 
+<p>2、IC会为每个Informer注册一个处理程序Handler。当用户创建或者更新了资源时（如创建了一个Ingress资源），Informer会更新其store并调用其它对应的Handler。</p> 
+<p>3、Handler会在工作队列Workqueue中为发生改变的资源创建一个条目，工作队列的元素包括资源的类型及其命名空间和名称，如(Ingress,default,cafe)。</p> 
+<p>4、Workqueue总是会试图清空队列中的元素，如果队列前面有一个元素，Workqueue将移除该元素并通过调用回调函数将其发送给控制器Controller。</p> 
+<p>5、Controller是IC中的主要组件，代表控制回路。Controller在接收到Workqueue发送的信息后（即变更的资源），将从store中获取相关资源的最新版本。</p> 
+<p>6、Controller根据获取的资源，生成相应的nginx配置文件，写入容器的文件系统，然后reload nginx，并通过Kubernetes API将reload结果更新到资源的status和event。</p> 
+<h3><a id="32__nginxingresscontroller_67"></a>3.2 部署 nginx-ingress-controller</h3> 
+<ul><li>部署ingress-controller pod及相关资源</li></ul> 
+<pre><code class="prism language-bash"><span class="token function">mkdir</span> /opt/ingress
+<span class="token builtin class-name">cd</span> /opt/ingress
+</code></pre> 
+<p>官方下载：</p> 
+<pre><code class="prism language-bash"><span class="token function">wget</span> https://gitee.com/mirrors/ingress-nginx/raw/nginx-0.30.0/deploy/static/mandatory.yaml
+</code></pre> 
+<p>mandatory.yaml文件中包含了很多资源的创建，包括namespace、ConfigMap、role，ServiceAccount等等所有部署ingress-controller需要的资源。</p> 
+<p><img src="https://images2.imgbox.com/74/58/m2V6AZeo_o.png" alt="在这里插入图片描述"><br> 修改mandatory.yaml配置</p> 
+<blockquote> 
+ <p>apiVersion: rbac.authorization.k8s.io/v1beta1<br> RBAC相关资源从1.17版本开始改用rbac.authorization.k8s.io/v1<br> 这儿使用v1beta1的版本可能会报错，将所有的v1beta1改为v1</p> 
+</blockquote> 
+<h3><a id="33_DaemonSetHostNetworknodeselector_88"></a>3.3 DaemonSet+HostNetwork+nodeselector</h3> 
+<ul><li>指定nginx-ingress-controller运行在node02节点</li></ul> 
+<pre><code class="prism language-bash">kubectl label <span class="token function">node</span> k8s-node2 <span class="token assign-left variable">ingress</span><span class="token operator">=</span>true
+ 
+kubectl get nodes --show-labels
+</code></pre> 
+<p><img src="https://images2.imgbox.com/66/90/NLIN6Ptp_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>修改Deployment为Daemonset,指定节点运行，并开启 hostNetwork</li></ul> 
+<p>vim mandatory.yaml</p> 
+<pre><code class="prism language-bash">apiversion: apps/vl
+kind: Daemonset   <span class="token comment">#修改kind</span>
+replicas: <span class="token number">1</span>        <span class="token comment"># 删除Replicas</span>
+hostNetwork: <span class="token boolean">true</span>  <span class="token comment">#使用主机网络</span>
+nodeSelector:
+  ingress: <span class="token string">"true"</span>   <span class="token comment">#选择节点运行</span>
+
+</code></pre> 
+<p><img src="https://images2.imgbox.com/75/dd/iX7kvviC_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/86/28/fUvjedRd_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>启动nginx-ingress-controller</li></ul> 
+<pre><code class="prism language-bash">kubectl apply -f mandatory.yaml
+ 
+kubectl get pod -n ingress-nginx -o wide
+</code></pre> 
+<p><img src="https://images2.imgbox.com/09/72/scgE2Yyl_o.png" alt="在这里插入图片描述"><br> 在node2节点查看</p> 
+<pre><code class="prism language-bash"><span class="token function">netstat</span> -natp <span class="token operator">|</span> <span class="token function">grep</span> nginx
+</code></pre> 
+<p><img src="https://images2.imgbox.com/cc/8e/YdElYVcc_o.png" alt="在这里插入图片描述"></p> 
+<p>由于配置了 hostnetwork，nginx 已经在 node 主机本地监听 80/443/8181 端口。其中 8181 是 nginx-controller 默认配置的一个 default backend（Ingress 资源没有匹配的 rule 对象时，流量就会被导向这个 default backend）。<br> 这样，只要访问 node 主机有公网 IP，就可以直接映射域名来对外网暴露服务了。如果要 nginx 高可用的话，可以在多个 node<br> 上部署，并在前面再搭建一套 LVS+keepalived 做负载均衡。</p> 
+<ul><li>创建 ingress 规则<br> vim service-nginx.yaml<br> 创建一个deploy和svc</li></ul> 
+<pre><code class="prism language-bash">apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-app
+spec:
+  replicas: <span class="token number">2</span>
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+        - name: nginx
+          image: nginx
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: <span class="token number">80</span>
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-app-svc
+spec:
+  type: ClusterIP
+  ports:
+  - protocol: TCP
+    port: <span class="token number">80</span>
+    targetPort: <span class="token number">80</span>
+  selector:
+    app: nginx
+</code></pre> 
+<pre><code class="prism language-bash">kubectl apply -f service-nginx.yaml
+kubectl get svc,pod
+</code></pre> 
+<p><img src="https://images2.imgbox.com/d4/73/fkd1nHaN_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>创建 ingress<br> vim ingress-app.yaml</li></ul> 
+<pre><code class="prism language-bash">apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nginx-app-ingress
+spec:
+  rules:
+  - host: www.xiayan.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: nginx-app-svc
+            port:
+              number: <span class="token number">80</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/1e/9e/o5JgcufG_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-bash">kubectl apply -f ingress-app.yaml
+</code></pre> 
+<p><img src="https://images2.imgbox.com/ad/42/56AhW9EF_o.png" alt="在这里插入图片描述"></p> 
+<p>添加本地域名映射，用于测试</p> 
+<pre><code class="prism language-bash"><span class="token comment">#注意此处使用的IP地址为node2节点的IP地址</span>
+<span class="token builtin class-name">echo</span> <span class="token string">"192.168.48.11 www.xiayan.com"</span> <span class="token operator">&gt;&gt;</span> /etc/hosts
+</code></pre> 
+<p><img src="https://images2.imgbox.com/88/a8/KFCQ56HX_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>查看nginx-ingress-controller</li></ul> 
+<pre><code class="prism language-bash">kubectl get pod -n ingress-nginx -o wide
+ 
+kubectl <span class="token builtin class-name">exec</span> -it nginx-ingress-controller-pplxc -n ingress-nginx <span class="token function">bash</span>
+<span class="token function">more</span> /etc/nginx/nginx.conf
+</code></pre> 
+<p><img src="https://images2.imgbox.com/f0/2f/Rga2Q7aR_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="33_DeploymentNodePort_222"></a>3.3 部署Deployment+NodePort</h3> 
+<p>在做此部署时，先将上面部署的DaemonSet+HostNetwork+nodeselector删除<br> <img src="https://images2.imgbox.com/a2/fa/2PVvaWK9_o.png" alt="在这里插入图片描述"><br> 部署Deployment+NodePort</p> 
+<ul><li>下载nginx-ingress-controller和ingress-nginx暴露端口配置文件</li></ul> 
+<pre><code class="prism language-bash">在主节点
+<span class="token function">mkdir</span> /opt/ingress-nodeport
+<span class="token builtin class-name">cd</span> /opt/ingress-nodeport
+ 
+官方下载地址：
+<span class="token function">wget</span> https://raw.githubusercontent.com/kubernetes/ingress-nginx/nginx-0.30.0/deploy/static/mandatory.yaml
+<span class="token function">wget</span> https://raw.githubusercontent.com/kubernetes/ingress-nginx/nginx-0.30.0/deploy/static/provider/baremetal/service-nodeport.yaml
+ 
+国内 gitee 资源地址：
+<span class="token function">wget</span> https://gitee.com/mirrors/ingress-nginx/raw/nginx-0.30.0/deploy/static/mandatory.yaml
+<span class="token function">wget</span> https://gitee.com/mirrors/ingress-nginx/raw/nginx-0.30.0/deploy/static/provider/baremetal/service-nodeport.yaml
+</code></pre> 
+<p><img src="https://images2.imgbox.com/cc/7e/JAO43a9B_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>启动nginx-ingress-controller</li></ul> 
+<pre><code class="prism language-bash">kubectl apply -f mandatory.yaml
+kubectl apply -f service-nodeport.yaml
+kubectl get pod,svc -n ingress-nginx
+</code></pre> 
+<p><img src="https://images2.imgbox.com/92/71/2EVtm6lr_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/ba/93/j3Olsyrk_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>创建deployment、service和ingress的yaml资源<br> vim ingress-nginx.yaml</li></ul> 
+<pre><code class="prism language-bash">apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-app
+spec:
+  replicas: <span class="token number">2</span>
+  selector:
+    matchLabels:
+      name: nginx
+  template:
+    metadata:
+      labels:
+        name: nginx
+    spec:
+      containers:
+        - name: nginx
+          image: nginx
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: <span class="token number">80</span>
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-svc
+spec:
+  ports:
+    - port: <span class="token number">80</span>
+      targetPort: <span class="token number">80</span>
+      protocol: TCP
+  selector:
+    name: nginx
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nginx-test
+spec:
+  rules:
+  - host: www.xiayan.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service: 
+            name: nginx-svc
+            port:
+              number: <span class="token number">80</span>
+</code></pre> 
+<p>发布</p> 
+<pre><code class="prism language-bash">kubectl apply -f ingress-nginx.yaml
+kubectl get svc,pods -o wide
+</code></pre> 
+<p><img src="https://images2.imgbox.com/04/82/NJ3pEgy4_o.png" alt="在这里插入图片描述"><br> 测试：</p> 
+<pre><code class="prism language-bash"><span class="token comment">#在两个pod中的nginx添加测试文件</span>
+kubectl <span class="token builtin class-name">exec</span> -it pod/nginx-app-57dd86f5cc-7vmf4 <span class="token function">bash</span>
+<span class="token builtin class-name">echo</span> <span class="token string">'this is web1'</span> <span class="token operator">&gt;&gt;</span> /usr/share/nginx/html/index.html 
+</code></pre> 
+<p><img src="https://images2.imgbox.com/9c/69/Dry1wvf9_o.png" alt="在这里插入图片描述"><br> 访问测试：<br> <img src="https://images2.imgbox.com/d1/5d/S3gV9yJ2_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/84/6f/pAh0b7SH_o.png" alt="在这里插入图片描述"><br> 做端口映射</p> 
+<pre><code class="prism language-bash"><span class="token builtin class-name">echo</span> <span class="token string">"192.168.48.14 www.xiayan.com"</span> <span class="token operator">&gt;&gt;</span> /etc/hosts
+</code></pre> 
+<p>在虚拟机的web浏览器打开www.xiayan.com:31018,使用curl访问也一样<br> <img src="https://images2.imgbox.com/24/68/NMItHnTM_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/75/7f/yQ2eSGr7_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="_ingressnginx__333"></a>四. ingress-nginx 反向代理</h2> 
+<h3><a id="41__ingress_http_334"></a>4.1 ingress http代理访问虚拟主机</h3> 
+<pre><code class="prism language-bash"><span class="token function">mkdir</span> /opt/vhost
+<span class="token builtin class-name">cd</span> /opt/vhost
+</code></pre> 
+<p><strong>创建虚拟主机2资源</strong><br> vim deployment1.yaml</p> 
+<pre><code class="prism language-bash">apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deployment1
+spec:
+  replicas: <span class="token number">2</span>
+  selector:
+    matchLabels:
+      name: nginx1
+  template:
+    metadata:
+      labels:
+        name: nginx1
+    spec:
+      containers:
+        - name: nginx1
+          image: nginx
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: <span class="token number">80</span>
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc-1
+spec:
+  ports:
+    - port: <span class="token number">80</span>
+      targetPort: <span class="token number">80</span>
+      protocol: TCP
+  selector:
+    name: nginx1
+</code></pre> 
+<p><strong>创建虚拟主机2资源</strong><br> vim deployment2.yaml</p> 
+<pre><code class="prism language-bash">apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deployment2
+spec:
+  replicas: <span class="token number">2</span>
+  selector:
+    matchLabels:
+      name: nginx2
+  template:
+    metadata:
+      labels:
+        name: nginx2
+    spec:
+      containers:
+        - name: nginx2
+          image: nginx
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: <span class="token number">80</span>
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc-2
+spec:
+  ports:
+    - port: <span class="token number">80</span>
+      targetPort: <span class="token number">80</span>
+      protocol: TCP
+  selector:
+    name: nginx2
+</code></pre> 
+<p>发布资源</p> 
+<pre><code class="prism language-bash">kubectl apply -f deployment1.yaml
+kubectl apply -f deployment2.yaml
+</code></pre> 
+<p><img src="https://images2.imgbox.com/2f/8b/7k7ONsRd_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>创建ingress资源</strong><br> vim ingress-nginx.yaml</p> 
+<pre><code class="prism language-bash">apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress1
+spec:
+  rules:
+    - host: www.xy.com
+      http:
+        paths:
+        - path: /
+          pathType: Prefix
+          backend:
+            service: 
+              name: svc-1
+              port:
+                number: <span class="token number">80</span>
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress2
+spec:
+  rules:
+    - host: www.xiayan.com
+      http:
+        paths:
+        - path: /
+          pathType: Prefix
+          backend:
+            service: 
+              name: svc-2
+              port:
+                number: <span class="token number">80</span>
+</code></pre> 
+<p>发布：</p> 
+<pre><code class="prism language-bash">kubectl apply -f ingress-nginx.yaml
+kubectl get ingress
+</code></pre> 
+<p>注意：这儿要把上个试验所做的ingress删除，只留如图所示的ingress，否则待会测试可能出问题<br> <img src="https://images2.imgbox.com/87/dd/TS0nEzJF_o.png" alt="在这里插入图片描述"><br> <strong>编写nginx的访问界面，用于测试</strong></p> 
+<pre><code class="prism language-bash">kubectl <span class="token builtin class-name">exec</span> -it deployment1-bc8f85f7-c99cl <span class="token function">bash</span>
+kubectl <span class="token builtin class-name">exec</span> -it deployment1-bc8f85f7-v4tbm <span class="token function">bash</span>
+kubectl <span class="token builtin class-name">exec</span> -it deployment2-68954b7689-8mrsd <span class="token function">bash</span> 
+kubectl <span class="token builtin class-name">exec</span> -it deployment2-68954b7689-hdnn6 <span class="token function">bash</span> 
+<span class="token builtin class-name">echo</span> <span class="token string">'this is www.xiayan.com web2'</span> <span class="token operator">&gt;</span> /usr/share/nginx/html/index.html
+
+</code></pre> 
+<p><img src="https://images2.imgbox.com/c4/28/zCOtPgAD_o.png" alt="在这里插入图片描述"></p> 
+<p>添加域名映射</p> 
+<pre><code class="prism language-bash"><span class="token builtin class-name">echo</span> <span class="token string">"192.168.48.14 www.xiayan.com"</span> <span class="token operator">&gt;&gt;</span> /etc/hosts
+<span class="token builtin class-name">echo</span> <span class="token string">"192.168.48.14 www.xy.com"</span> <span class="token operator">&gt;&gt;</span> /etc/hosts
+</code></pre> 
+<p><img src="https://images2.imgbox.com/5a/bd/JPdb4f4m_o.png" alt="在这里插入图片描述"><br> 访问测试：<br> <img src="https://images2.imgbox.com/97/bb/dDLmWorx_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="42_ingress__HTTPS__488"></a>4.2 ingress HTTPS 代理访问</h3> 
+<pre><code class="prism language-bash"><span class="token function">mkdir</span> /opt/https
+<span class="token builtin class-name">cd</span> /opt/https
+</code></pre> 
+<ul><li>创建SSL证书</li></ul> 
+<pre><code class="prism language-bash">openssl req -x509 -sha256 -nodes -days <span class="token number">365</span> -newkey rsa:2048 -keyout tls.key -out tls.crt -subj <span class="token string">"/CN=nginxsvc/O=nginxsvc"</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/aa/3a/pwbohlDI_o.png" alt="在这里插入图片描述"></p> 
+<ul><li> <p>创建 secret 资源进行存储<br> <img src="https://images2.imgbox.com/38/e9/GwimsBE6_o.png" alt="在这里插入图片描述"></p> </li><li> <p>创建 deployment、Service、Ingress Yaml 资源<br> vim ingress-https.yaml</p> </li></ul> 
+<pre><code class="prism language-bash">apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-app
+spec:
+  replicas: <span class="token number">2</span>
+  selector:
+    matchLabels:
+      name: nginx
+  template:
+    metadata:
+      labels:
+        name: nginx
+    spec:
+      containers:
+        - name: nginx
+          image: nginx
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: <span class="token number">80</span>
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-svc
+spec:
+  ports:
+    - port: <span class="token number">80</span>
+      targetPort: <span class="token number">80</span>
+      protocol: TCP
+  selector:
+    name: nginx
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nginx-https
+spec:
+  tls:
+    - hosts:
+      - www.xy.com
+      secretName: tls-secret
+  rules:
+    - host: www.xy.com
+      http:
+        paths:
+        - path: /
+          pathType: Prefix
+          backend:
+            service: 
+              name: nginx-svc
+              port:
+                number: <span class="token number">80</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/69/6d/cnuLtMjr_o.png" alt="在这里插入图片描述"><br> 访问测试：<br> <img src="https://images2.imgbox.com/e3/4d/0vj7ghts_o.png" alt="在这里插入图片描述"></p> 
+<p><img src="https://images2.imgbox.com/7e/c0/uBpFWXe2_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="43_Nginx__566"></a>4.3 Nginx 重写跳转</h3> 
+<ol><li>nginx.ingress.kubernetes.io/rewrite-target:&lt;字符串&gt;#必须重定向流量的目标URI</li><li>nginx.ingress . kubernetes.io/ssl-redirect:&lt;布尔值&gt;指示位置部分是否仅可访问sSL(当Ingress包含证书时，默认为true)</li><li>nginx.ingress . kubernetes.io/force-ssl-redirect:&lt;布尔值&gt;#即使Ingress未启用rLS，也强制重定向到HTTPS</li><li>nginx.ingress .kubernetes.io/app-root:&lt;字符串&gt;#定义controller必须重定向的应用程序根，如果它在’/'上下文中</li><li>nginx.ingress.kubernetes.io/use-regex:&lt;布尔值&gt;#指示Ingress.上定义的路径是否使用正则表达式</li></ol> 
+<p><strong>编写yaml文件</strong><br> vim ingress-rewrite.yaml</p> 
+<pre><code class="prism language-bash">apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nginx-rewrite
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: https://www.xy.com:31222
+spec:
+  rules:
+  - host: rewrite.xy.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+		  <span class="token comment">#由于rewrite.xy.com只是用于跳转不需要真实站点存在，因此svc资源名称可随意定义</span>
+          service: 
+            name: nginx-svc
+            port:
+              number: <span class="token number">80</span>
+</code></pre> 
+<pre><code class="prism language-bash"><span class="token builtin class-name">echo</span> <span class="token string">"192.168.48.14 rewrite.xy.com"</span> <span class="token operator">&gt;&gt;</span> /etc/hosts
+</code></pre> 
+<p><img src="https://images2.imgbox.com/06/48/Hnku21w1_o.png" alt="在这里插入图片描述"><br> 测试访问：<br> <img src="https://images2.imgbox.com/4d/be/3DOgGKqe_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/0a/7a/lxTeVci6_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="__607"></a>五. 总结</h2> 
+<p>ingress是k8s集群的请求入口，可以理解为对多个service的再次抽象<br> 通常说的ingress一般包括ingress资源对象及ingress-controller两部分组成<br> ingress-controller有多种实现，社区原生的是ingress-nginx，根据具体需求选择<br> ingress自身的暴露有多种方式，需要根据基础环境及业务类型选择合适的方式</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/e9c1b546afb619d1279579a5cad3dbc7/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">高德地图API 前端调用 搜索定位</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/20c7469af4b722e660ef4f512333aba5/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">C&#43;&#43;程序设计基础实验-实验二 函数的应用</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

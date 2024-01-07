@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>ResNeXt、DenseNet、CSPNet网络模型总结 - IT学习者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="ResNeXt、DenseNet、CSPNet网络模型总结" />
+<meta property="og:description" content="开源代码：https://github.com/xxcheng0708/Pytorch_Image_Classifier_Template ResNeXt 在网络架构设计层面，常见的几种提升网络性能的方法：
+网络的宽度width：每层卷积的输出通道数网络的深度depth：网络的层数网络的分辨率resolution：输入图像的分辨率大小网络的增长率growth：随着层数的增加，每层卷积输出通道数的增长比例网络的特征复用：如DenseNet可以使用更浅的网络，更少的参数，提升特征复用，达到与深度网络相当的性能高效特征融合：InceptionNet的split-transforms-merge模式，将输入分别使用不同的转换分支提取特征，然后将多个分支的结果进行合并实现特征融合 ResNeXT借鉴了VGGNet、ResNet中连续堆叠多个相同或相似block的特性，以及借鉴InceptionNet中split-transforms-merge对特征进行高效融合的特性。
+如上图所示，右图在卷积核的大小，以及输出通道数量上做了设计，使得左右两种结构在参数量和浮点运算量方面相当。右图中，将原本ResNet中的一条分支扩展程32条分支，并且每条分支是完全相同的，最后将各分支的输出结果相加（有点Transformer里面的Multi-Head Attention那味了，只不过Multi-Head Attention是将多个结果进行concat）。上右图的网络结构与下图网络结构是等价的：
+ResNeXt网络在每个分支中使用了bottleneck的结构，也就是先使用1x1卷积进行降维，减少特征图的通道数，然后再进行分组卷积等提取体征，最后再使用1x1卷积进行升维，还原特征图的通道数。ResNeXt中每个block可以表示如下：
+C代表block中分支的数量，T_i代表每个分支的子网络，x表示short-cut连接。
+基数cardinality：在ResNeXt中，将上述block中的分支数量称作基数，并且认为基数和网络的宽度width、深度depth同等重要，这一点在DenseNet网络中也可以看出，DenseNet是将基数发挥到极致。
+ResNeXt涉及的相关工作及概念
+多分支卷积网络：ResNeXt中使用了多分支的子网络进行特征融合
+分组卷积：ResNeXt中，使用分组卷积来控制网络的参数量和浮点计算量
+压缩卷积网络：不同于常见的以损失模型精度为代价的压缩方法，ResNeXt使用多分支的分组卷积等操作，在控制模型参数量和浮点计算量的前提下，还能进一步提升模型的表达能力
+集成算法：由于使用了多分支的子网络进行特征融合，这种操作类似于集成学习方法，不同于集成学习方法的是，ResNeXt中各个分支是完全相同的
+ResNeXt与Inception-ResNet的关系
+ResNeXt中block的每个分支是完全相同的结构，不需要进行特殊的设计，在Inception-ResNet中，block的每个分支是不同的，经过精心设计的。并且，在ResNeXt中，各个分支的结果使用加法进行合并。
+ResNet50与ResNeXt50网络模型对比：
+上表中的ResNeXt在block内部采用的是分组卷积的方式来实现多分支处理。其中，C=32表示在block中有32个分支或者32组分组卷积，d=4表示在block中的每个分支处理4个通道的输入数据，或者说每个分组卷积处理4个通道的输入。
+Pytorch版本中ResNeXt的block结构如下：
+可以看到，在128 x 4 x 3 x3卷积部分，将128个通道的输入分成了32组，每组处理4个通道，每组输出4个通道，然后将32组的输出结果concat得到输出的128个通道。
+DenseNet 鉴于ResNet等网络使用shot-cut来实现特征的融合，以及缓解梯度消失问题，DenseNet将这种shot-cut的思想发挥到极致，将网络每个Block中前面层所有分辨率相同的feature map进行融合，而不仅仅只融合上一层的feature map，所以DenseNet每个Block中网络层级之间具有L * (L &#43; 1)/2个连接，所以网络起名叫DenseNet。并且，不同于ResNet的shot-cut采用加法运算，DenseNet采用concat进行feature map的连接。用公式表示如下：
+DenseNet中，第i层的输入与第i层的输出做concat，作为第i&#43;1层的输入，这就要求输入和输出的分辨率保持不变，就是不做下采样操作，下采样操作在transition层进行。
+像上图这样，每一层都可以利用全面所有层学习得到的结果，在使用同样参数量的情况下，特征的重复利用率更高，不需要再进行重复的特征学习。同样的，这种密集连接方式也有利于网络的训练。
+DenseNet的网络结构如下：
+DenseNet包含以下模块：
+Block模块：DenseNet将整个网络划分成多个Block，每个Block里面包含多个conv&#43;BN&#43;Relu的操作，Block内部不做下采样操作（包括卷积下采样和池化下次采样），并且对卷积操作做padding填充，所以这些操作输出相同分辨率大小的feature map，所以在每个Block内部各层的feature map是可以进行concat融合的，在Block模块内部，设置每个卷积层的卷积核数量k，叫做Growth Rate，每层卷积的输入通道为前面所有层的通道数求和 ，输出通道数为k
+转换模块：在Block之间的层叫做转换层，转换层使用conv&#43;BN&#43;max pooling完成下采样操作。
+瓶颈层Neck：为了进一步提升每个Block模块中卷积操作的效率，在进行每次conv&#43;BN&#43;Relu之前，使用1x1卷积先将输入的feature map在通道维度上进行降维，将原本通道数为 的输入特征图的通道数减少到4k，然后在此基础上进行conv&#43;BN&#43;Relu操作。使用瓶颈层的DenseNet叫做DenseNet-B
+通道压缩模块：为了继续降低计算量，提升速度，原本的转换模块使用conv&#43;BN&#43;max pooling完成下采样操作，降低feature map的分辨率大小，在压缩模块，进一步对feature map的通道数进行压缩，假设原本的通道数为m，经过压缩之后的通道数变为 ， 。使用通道压缩的DenseNet叫做DenseNet-C。同时使用瓶颈层和压缩层的叫做DenseNet-BC。
+Pytorch版本中DenseNet的部分dense block结构如下： 真是将Dense发挥到极致！！！
+CSPNet 【CSPNet 解读】一种增强CNN学习能力的新型骨干网络_AI 菌的博客-CSDN博客_csp net有什么用 以DenseNet为例，DenseNet中，后面层的输入是前面层的输出做concat之后得到的，如下：
+在使用后向传播更新参数时，后面层会包含前面层的梯度，如下：
+其中f代表参数更新函数，g表示每一层的梯度，可以看出由于后面层的输入中包含前面层的输出，所以后面层计算的梯度也会包含前面层的梯度。这种就导致了梯度计算的重复，对此进行优化可以对模型进一步加速，因此，此种优化方式适用于使用short-cut的网络，比如DenseNet，ResNet, ResNeXt等。
+CSPNet思想" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://itnewbiea.github.io/posts/d2ed1bd425dfc1649af768d969443cfc/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-11-06T21:26:07+08:00" />
+<meta property="article:modified_time" content="2022-11-06T21:26:07+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="IT学习者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">IT学习者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">ResNeXt、DenseNet、CSPNet网络模型总结</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h4><strong>开源代码：</strong><a href="https://github.com/xxcheng0708/Pytorch_Image_Classifier_Template" title="https://github.com/xxcheng0708/Pytorch_Image_Classifier_Template">https://github.com/xxcheng0708/Pytorch_Image_Classifier_Template</a></h4> 
+<hr> 
+<h4>ResNeXt</h4> 
+<p style="margin-left:.0001pt;text-align:justify;">在网络架构设计层面，常见的几种提升网络性能的方法：</p> 
+<ol><li style="text-align:justify;">网络的宽度width：每层卷积的输出通道数</li><li style="text-align:justify;">网络的深度depth：网络的层数</li><li style="text-align:justify;">网络的分辨率resolution：输入图像的分辨率大小</li><li style="text-align:justify;">网络的增长率growth：随着层数的增加，每层卷积输出通道数的增长比例</li><li style="text-align:justify;">网络的特征复用：如DenseNet可以使用更浅的网络，更少的参数，提升特征复用，达到与深度网络相当的性能</li><li style="text-align:justify;">高效特征融合：InceptionNet的split-transforms-merge模式，将输入分别使用不同的转换分支提取特征，然后将多个分支的结果进行合并实现特征融合</li></ol> 
+<p style="margin-left:.0001pt;text-align:justify;">ResNeXT借鉴了VGGNet、ResNet中连续堆叠多个相同或相似block的特性，以及借鉴InceptionNet中split-transforms-merge对特征进行高效融合的特性。</p> 
+<p class="img-center"><img alt="" height="443" src="https://images2.imgbox.com/29/15/dKezghbx_o.png" width="729"></p> 
+<p>         如上图所示，右图在卷积核的大小，以及输出通道数量上做了设计，使得左右两种结构在参数量和浮点运算量方面相当。右图中，<strong>将原本ResNet中的一条分支扩展程32条分支，并且每条分支是完全相同的，最后将各分支的输出结果相加（有点Transformer里面的Multi-Head Attention那味了，只不过Multi-Head Attention是将多个结果进行concat）</strong>。上右图的网络结构与下图网络结构是等价的：</p> 
+<p class="img-center"><img alt="" height="325" src="https://images2.imgbox.com/f9/d9/fhA44XTZ_o.png" width="865"></p> 
+<p>         ResNeXt网络在每个分支中使用了bottleneck的结构，也就是先使用1x1卷积进行降维，减少特征图的通道数，然后再进行分组卷积等提取体征，最后再使用1x1卷积进行升维，还原特征图的通道数。ResNeXt中每个block可以表示如下：</p> 
+<p class="img-center"><img alt="" height="72" src="https://images2.imgbox.com/45/af/viuoqVv2_o.png" width="182"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">        C代表block中分支的数量，T_i代表每个分支的子网络，x表示short-cut连接。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>基数cardinality</strong>：在ResNeXt中，将上述block中的分支数量称作基数，并且认为基数和网络的宽度width、深度depth同等重要，这一点在DenseNet网络中也可以看出，DenseNet是将基数发挥到极致。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>ResNeXt涉及的相关工作及概念</strong></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>多分支卷积网络：</strong>ResNeXt中使用了多分支的子网络进行特征融合</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>分组卷积：</strong>ResNeXt中，使用分组卷积来控制网络的参数量和浮点计算量</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>压缩卷积网络：</strong>不同于常见的以损失模型精度为代价的压缩方法，ResNeXt使用多分支的分组卷积等操作，在控制模型参数量和浮点计算量的前提下，还能进一步提升模型的表达能力</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>集成算法：</strong>由于使用了多分支的子网络进行特征融合，这种操作类似于集成学习方法，不同于集成学习方法的是，ResNeXt中各个分支是完全相同的</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>ResNeXt与Inception-ResNet的关系</strong></p> 
+<p style="margin-left:.0001pt;text-align:justify;">ResNeXt中block的每个分支是完全相同的结构，不需要进行特殊的设计，在Inception-ResNet中，block的每个分支是不同的，经过精心设计的。并且，在ResNeXt中，各个分支的结果使用加法进行合并。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p><strong>ResNet50与ResNeXt50网络模型对比：</strong></p> 
+<p class="img-center"><img alt="" height="910" src="https://images2.imgbox.com/9b/22/h1yd3CJM_o.png" width="711"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">        上表中的ResNeXt在block内部采用的是分组卷积的方式来实现多分支处理。其中，C=32表示在block中有32个分支或者32组分组卷积，d=4表示在block中的每个分支处理4个通道的输入数据，或者说每个分组卷积处理4个通道的输入。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>Pytorch版本中ResNeXt的block结构如下：</strong></p> 
+<p class="img-center"><img alt="" height="636" src="https://images2.imgbox.com/bc/ec/IMgpZTah_o.png" width="865"></p> 
+<p>         可以看到，在128 x 4 x 3 x3卷积部分，将128个通道的输入分成了32组，每组处理4个通道，每组输出4个通道，然后将32组的输出结果concat得到输出的128个通道。</p> 
+<p></p> 
+<hr> 
+<h4>DenseNet</h4> 
+<p style="margin-left:.0001pt;text-align:justify;">        鉴于ResNet等网络使用shot-cut来实现特征的融合，以及缓解梯度消失问题，DenseNet将这种shot-cut的思想发挥到极致，将网络每个Block中前面层所有分辨率相同的feature map进行融合，而不仅仅只融合上一层的feature map，所以DenseNet每个Block中网络层级之间具有L * (L + 1)/2个连接，所以网络起名叫DenseNet。并且，不同于ResNet的shot-cut采用加法运算，DenseNet采用concat进行feature map的连接。用公式表示如下：</p> 
+<p class="img-center"><img alt="" height="131" src="https://images2.imgbox.com/8d/bf/dtLOdTYt_o.png" width="205"></p> 
+<p>        DenseNet中，第i层的输入与第i层的输出做concat，作为第i+1层的输入，这就要求输入和输出的分辨率保持不变，就是不做下采样操作，下采样操作在transition层进行。</p> 
+<p class="img-center"><img alt="" height="546" src="https://images2.imgbox.com/fd/1b/MY7dfXwc_o.png" width="640"></p> 
+<p>        像上图这样，每一层都可以利用全面所有层学习得到的结果，在使用同样参数量的情况下，特征的重复利用率更高，不需要再进行重复的特征学习。同样的，这种密集连接方式也有利于网络的训练。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p><strong>DenseNet的网络结构如下：</strong></p> 
+<p><img alt="" height="185" src="https://images2.imgbox.com/3a/97/Vrtxd6b1_o.png" width="865"></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>DenseNet包含以下模块：</strong></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>Block模块：</strong>DenseNet将整个网络划分成多个Block，每个Block里面包含多个conv+BN+Relu的操作，Block内部不做下采样操作（包括卷积下采样和池化下次采样），并且对卷积操作做padding填充，所以这些操作输出相同分辨率大小的feature map，所以在每个Block内部各层的feature map是可以进行concat融合的，在Block模块内部，设置每个卷积层的卷积核数量k，叫做Growth Rate，每层卷积的输入通道为前面所有层的通道数求和<img alt="" height="21" src="https://images2.imgbox.com/af/c6/IYEXtl2c_o.png" width="100"> ，输出通道数为k</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>转换模块：</strong>在Block之间的层叫做转换层，转换层使用conv+BN+max pooling完成下采样操作。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>瓶颈层Neck：</strong>为了进一步提升每个Block模块中卷积操作的效率，在进行每次conv+BN+Relu之前，使用1x1卷积先将输入的feature map在通道维度上进行降维，将原本通道数为<img alt="" height="21" src="https://images2.imgbox.com/4d/a1/rjCZ1KRz_o.png" width="100"> 的输入特征图的通道数减少到4k，然后在此基础上进行conv+BN+Relu操作。使用瓶颈层的DenseNet叫做DenseNet-B</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>通道压缩模块：</strong>为了继续降低计算量，提升速度，原本的转换模块使用conv+BN+max pooling完成下采样操作，降低feature map的分辨率大小，在压缩模块，进一步对feature map的通道数进行压缩，假设原本的通道数为m，经过压缩之后的通道数变为<img alt="" height="21" src="https://images2.imgbox.com/a0/6a/SIMYHpzV_o.png" width="25"> ，<img alt="" height="21" src="https://images2.imgbox.com/3f/7b/0ecEcldo_o.png" width="69"> 。使用通道压缩的DenseNet叫做DenseNet-C。同时使用瓶颈层和压缩层的叫做DenseNet-BC。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p><strong>Pytorch版本中DenseNet的部分dense block结构如下：</strong> </p> 
+<p class="img-center"><img alt="" height="534" src="https://images2.imgbox.com/5d/9a/1T3Q85Im_o.png" width="1003"></p> 
+<p>         真是将Dense发挥到极致！！！</p> 
+<p></p> 
+<hr> 
+<h4>CSPNet   <a href="https://ai-wx.blog.csdn.net/article/details/110952648" rel="nofollow" title="【CSPNet 解读】一种增强CNN学习能力的新型骨干网络_AI 菌的博客-CSDN博客_csp net有什么用">【CSPNet 解读】一种增强CNN学习能力的新型骨干网络_AI 菌的博客-CSDN博客_csp net有什么用</a></h4> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">以DenseNet为例，DenseNet中，后面层的输入是前面层的输出做concat之后得到的，如下：</p> 
+<p class="img-center"><img alt="" height="437" src="https://images2.imgbox.com/a8/e4/lKXctQTX_o.png" width="512"></p> 
+<p class="img-center"><img alt="" height="131" src="https://images2.imgbox.com/a4/81/K5Q3ZXNX_o.png" width="205"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">        在使用后向传播更新参数时，后面层会包含前面层的梯度，如下：</p> 
+<p class="img-center"><img alt="" height="151" src="https://images2.imgbox.com/2c/35/g0FYKsRn_o.png" width="269"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">        其中f代表参数更新函数，g表示每一层的梯度，可以看出由于后面层的输入中包含前面层的输出，所以后面层计算的梯度也会包含前面层的梯度。这种就导致了梯度计算的重复，对此进行优化可以对模型进一步加速，因此，此种优化方式适用于使用short-cut的网络，比如DenseNet，ResNet, ResNeXt等。</p> 
+<p></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong><span style="color:#000000;">CSPNet</span></strong><strong><span style="color:#000000;">思想</span></strong></p> 
+<p style="margin-left:.0001pt;text-align:justify;">        在原本DenseNet中，前面层的feature map全部传入后面层作为输入，<strong>在CSPNet中，将前面层的feature map在通道上一分为二，一部分输入到后面层，一部分直接通过short-cut的方式连接到transition层，这样可以缓解一部分的梯度信息重复计算问题，从而减少模型的计算量和显存占用</strong>。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong><span style="color:#000000;">Cross Stage Partial DenseNet</span></strong></p> 
+<p class="img-center"><img alt="" height="414" src="https://images2.imgbox.com/d2/19/g5lFllGA_o.png" width="1200"></p> 
+<p class="img-center"><img alt="" height="435" src="https://images2.imgbox.com/a3/f9/7WH3ZZD5_o.png" width="1200"></p> 
+<p>        上图是在DenseNet上应用CSP的示意图。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">        传统的DenseNet中，第i层的输入与第i层的输出做concat，作为第i+1层的输入，这就要求输入和输出的分辨率保持不变，就是不做下采样操作，下采样操作在transition层进行。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">        在CSPDenseNet中，将输入特征数据在通道维度上划分为<img alt="" height="21" src="https://images2.imgbox.com/b7/1d/olIHaHuM_o.png" width="67"> ，<img alt="" height="21" src="https://images2.imgbox.com/5f/a6/g73Tf0fH_o.png" width="26"> 输入到DenseNet中，<img alt="" height="21" src="https://images2.imgbox.com/8e/f8/YRxKJkHy_o.png" width="22"> 直接在transition层与DenseBlock的输出在通道维度上做concat。在CSPDenseNet的transition层，先将Dense Block的输出结果<img alt="" height="21" src="https://images2.imgbox.com/b4/17/KAKeXPbc_o.png" width="110"> 经过一个conv卷积操作，然后和<img alt="" height="21" src="https://images2.imgbox.com/ac/10/29ylwg4e_o.png" width="22"> 进行concat得到<img alt="" height="21" src="https://images2.imgbox.com/50/f9/n0xVyxvQ_o.png" width="139"> ，输入到另一个conv卷积操作得到<img alt="" height="21" src="https://images2.imgbox.com/d7/60/bbhzXuDb_o.png" width="21"> 。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">        上述图（b）中CSPDenseNet的前向推理过程如下：</p> 
+<p class="img-center"><img alt="" height="183" src="https://images2.imgbox.com/9a/0c/evitePBO_o.png" width="344"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">        参数更新过程如下：</p> 
+<p class="img-center"><img alt="" height="158" src="https://images2.imgbox.com/5a/ca/5LpwnB0m_o.png" width="359"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">        经过上述改进之后，CSPDenseNet将原来DenseNet中对于全部feature map的重复梯度计算降低了一半，因为另一半<em>x</em><em>0'</em><img alt="" height="21" src="https://images2.imgbox.com/95/92/F2zfQ30Q_o.png" width="22"> 的feature map不在经过Dense Block，直接送入了transition层。所以这种网络结构叫做Cross Stage Partial DenseNet，就是跨Stage的部分的DenseNet。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">        在CSP结构中，几种不同的特征融合变体，其中Fusion Last效果最好：</p> 
+<p class="img-center"><img alt="" height="625" src="https://images2.imgbox.com/9c/0a/fgmeOltQ_o.png" width="504"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">        CSP结构用于ResNeXT网络：</p> 
+<p class="img-center"><img alt="" height="385" src="https://images2.imgbox.com/ff/c5/xlM9J46u_o.png" width="616"></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/a4f6ddaefc96e0684a2014474f7fb7fe/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">java学习笔记【1】</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/207150d023823a485ea693500d98ad36/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">全屏了却判断为未全屏（已解决)</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 IT学习者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<script src="https://itnewbiea.github.io/js/foot.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>
